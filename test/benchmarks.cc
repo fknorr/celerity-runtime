@@ -22,7 +22,7 @@ void intrusive_graph_benchmark() {
 		bench_graph_node n0;
 		bench_graph_node nodes[N];
 		for(int i = 0; i < N; ++i) {
-			n0.add_dependency({&nodes[i], dependency_kind::TRUE_DEP});
+			n0.add_dependency({&nodes[i], dependency_kind::TRUE_DEP, dependency_origin::dataflow});
 		}
 		return n0.get_dependencies();
 	};
@@ -31,7 +31,7 @@ void intrusive_graph_benchmark() {
 	bench_graph_node nodes[N];
 	BENCHMARK("adding and removing dependencies") {
 		for(int i = 0; i < N; ++i) {
-			n0.add_dependency({&nodes[i], dependency_kind::TRUE_DEP});
+			n0.add_dependency({&nodes[i], dependency_kind::TRUE_DEP, dependency_origin::dataflow});
 		}
 		for(int i = 0; i < N; ++i) {
 			n0.remove_dependency(&nodes[i]);
@@ -40,7 +40,7 @@ void intrusive_graph_benchmark() {
 	};
 
 	for(int i = 0; i < N; ++i) {
-		n0.add_dependency({&nodes[i], dependency_kind::TRUE_DEP});
+		n0.add_dependency({&nodes[i], dependency_kind::TRUE_DEP, dependency_origin::dataflow});
 	}
 	BENCHMARK("checking for dependencies") {
 		int d = 0;

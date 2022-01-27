@@ -359,7 +359,7 @@ namespace test_utils {
 	// Printing of graphs can be enabled using the "--print-graphs" command line flag
 	inline bool print_graphs = false;
 
-	inline void maybe_print_graph(celerity::detail::task_manager& tm) {
+	inline void maybe_print_graph(const celerity::detail::task_manager& tm) {
 		if(print_graphs) {
 			const auto graph_str = tm.print_graph(std::numeric_limits<size_t>::max());
 			assert(graph_str.has_value());
@@ -367,9 +367,9 @@ namespace test_utils {
 		}
 	}
 
-	inline void maybe_print_graph(celerity::detail::command_graph& cdag) {
+	inline void maybe_print_graph(const celerity::detail::command_graph& cdag, const celerity::detail::task_manager& tm) {
 		if(print_graphs) {
-			const auto graph_str = cdag.print_graph(std::numeric_limits<size_t>::max());
+			const auto graph_str = cdag.print_graph(std::numeric_limits<size_t>::max(), tm);
 			assert(graph_str.has_value());
 			CELERITY_INFO("Command graph:\n\n{}\n", *graph_str);
 		}
@@ -378,7 +378,7 @@ namespace test_utils {
 	inline void maybe_print_graphs(celerity::test_utils::cdag_test_context& ctx) {
 		if(print_graphs) {
 			maybe_print_graph(ctx.get_task_manager());
-			maybe_print_graph(ctx.get_command_graph());
+			maybe_print_graph(ctx.get_command_graph(), ctx.get_task_manager());
 		}
 	}
 
