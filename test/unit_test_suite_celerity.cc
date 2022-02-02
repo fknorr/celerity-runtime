@@ -20,7 +20,7 @@ void maybe_print_graph(celerity::detail::task_manager& tm) {
 	}
 }
 
-void maybe_print_graph(celerity::detail::command_graph& cdag, const celerity::detail::task_manager &tm) {
+void maybe_print_graph(celerity::detail::command_graph& cdag, const celerity::detail::task_manager& tm) {
 	if(print_graphs) {
 		const auto graph_str = cdag.print_graph(std::numeric_limits<size_t>::max(), tm);
 		assert(graph_str.has_value());
