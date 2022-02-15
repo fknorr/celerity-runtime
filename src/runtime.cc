@@ -172,11 +172,11 @@ namespace detail {
 		exec->startup();
 	}
 
-	void runtime::shutdown() noexcept {
+	void runtime::shutdown(buffer_access_map access_map, side_effect_map side_effect_map) noexcept {
 		assert(is_active);
 		is_shutting_down = true;
 
-		const auto final_epoch = task_mngr->finish_epoch(epoch_action::shutdown);
+		const auto final_epoch = task_mngr->finish_epoch(epoch_action::shutdown, std::move(access_map), std::move(side_effect_map));
 
 		if(is_master_node()) { schdlr->shutdown(); }
 
@@ -216,8 +216,8 @@ namespace detail {
 		maybe_destroy_runtime();
 	}
 
-	void runtime::sync() noexcept {
-		const auto epoch = task_mngr->finish_epoch(epoch_action::barrier);
+	void runtime::sync(buffer_access_map access_map, side_effect_map side_effect_map) {
+		const auto epoch = task_mngr->finish_epoch(epoch_action::barrier, std::move(access_map), std::move(side_effect_map));
 		task_mngr->await_epoch_completed(epoch);
 	}
 

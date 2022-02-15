@@ -145,8 +145,9 @@ namespace detail {
 
 		epoch_action get_epoch_action() const { return epoch_action; }
 
-		static std::unique_ptr<task> make_epoch(task_id tid, epoch_action action) {
-			return std::unique_ptr<task>(new task(tid, task_type::EPOCH, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, action));
+		static std::unique_ptr<task> make_epoch(task_id tid, buffer_access_map access_map, side_effect_map side_effect_map, epoch_action action) {
+			return std::unique_ptr<task>(new task(
+			    tid, task_type::EPOCH, collective_group_id{}, task_geometry{}, nullptr, std::move(access_map), std::move(side_effect_map), {}, {}, action));
 		}
 
 		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf,

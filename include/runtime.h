@@ -52,9 +52,9 @@ namespace detail {
 		 */
 		void startup();
 
-		void shutdown() noexcept;
+		void shutdown(buffer_access_map access_map, side_effect_map side_effect_map) noexcept;
 
-		void sync() noexcept;
+		void sync(buffer_access_map access_map, side_effect_map side_effect_map);
 
 		bool is_master_node() const { return local_nid == 0; }
 

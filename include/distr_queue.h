@@ -201,7 +201,7 @@ class distr_queue {
 	distr_queue& operator=(const distr_queue&) = delete;
 
 	~distr_queue() {
-		if(!drained) { detail::runtime::get_instance().shutdown(); }
+		if(!drained) { drain({}, {}); }
 	}
 
 	/**
@@ -241,7 +241,7 @@ class distr_queue {
 	 */
 	void slow_full_sync() { // NOLINT(readability-convert-member-functions-to-static)
 		check_not_drained();
-		detail::runtime::get_instance().sync();
+		detail::runtime::get_instance().sync({}, {});
 	}
 
 	template <typename T>
@@ -250,8 +250,7 @@ class distr_queue {
 		detail::buffer_access_map accesses;
 		detail::side_effect_map side_effects;
 		detail::capture_inspector::record_requirements(cap, accesses, side_effects);
-		detail::runtime::get_instance().get_task_manager().create_capture_task(std::move(accesses), std::move(side_effects));
-		detail::runtime::get_instance().sync();
+		detail::runtime::get_instance().sync(std::move(accesses), std::move(side_effects));
 		return detail::capture_inspector::exfiltrate_by_copy(cap);
 	}
 
@@ -261,8 +260,7 @@ class distr_queue {
 		detail::buffer_access_map accesses;
 		detail::side_effect_map side_effects;
 		detail::capture_inspector::record_requirements_on_tuple(caps, accesses, side_effects);
-		detail::runtime::get_instance().get_task_manager().create_capture_task(std::move(accesses), std::move(side_effects));
-		detail::runtime::get_instance().sync();
+		detail::runtime::get_instance().sync(std::move(accesses), std::move(side_effects));
 		return detail::capture_inspector::exfiltrate_tuple_by_copy(caps);
 	}
 
@@ -280,9 +278,9 @@ class distr_queue {
 		if(drained) { throw std::runtime_error("distr_queue has already been drained"); }
 	}
 
-	void drain() {
+	void drain(detail::buffer_access_map buffer_accesses, detail::side_effect_map side_effects) {
 		check_not_drained();
-		detail::runtime::get_instance().shutdown();
+		detail::runtime::get_instance().shutdown(std::move(buffer_accesses), std::move(side_effects));
 		drained = true;
 	}
 
@@ -292,22 +290,23 @@ class distr_queue {
 namespace detail {
 
 	struct queue_inspector {
-		static void drain(distr_queue& q) { q.drain(); }
+		static void drain(distr_queue& q, buffer_access_map buffer_accesses, side_effect_map side_effects) {
+			q.drain(std::move(buffer_accesses), std::move(side_effects));
+		}
 	};
 
 } // namespace detail
 
 namespace experimental {
 
-	inline void drain(distr_queue&& q) { detail::queue_inspector::drain(q); }
+	inline void drain(distr_queue&& q) { detail::queue_inspector::drain(q, {}, {}); }
 
 	template <typename T>
 	typename experimental::capture<T>::value_type drain(distr_queue&& q, const experimental::capture<T>& cap) {
 		detail::buffer_access_map accesses;
 		detail::side_effect_map side_effects;
 		detail::capture_inspector::record_requirements(cap, accesses, side_effects);
-		detail::runtime::get_instance().get_task_manager().create_capture_task(std::move(accesses), std::move(side_effects));
-		detail::queue_inspector::drain(q);
+		detail::queue_inspector::drain(q, std::move(accesses), std::move(side_effects));
 		return detail::capture_inspector::exfiltrate_by_move(cap);
 	}
 
@@ -316,8 +315,7 @@ namespace experimental {
 		detail::buffer_access_map accesses;
 		detail::side_effect_map side_effects;
 		detail::capture_inspector::record_requirements_on_tuple(caps, accesses, side_effects);
-		detail::runtime::get_instance().get_task_manager().create_capture_task(std::move(accesses), std::move(side_effects));
-		detail::queue_inspector::drain(q);
+		detail::queue_inspector::drain(q, std::move(accesses), std::move(side_effects));
 		return detail::capture_inspector::exfiltrate_tuple_by_move(caps);
 	}
 
