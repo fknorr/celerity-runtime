@@ -63,9 +63,7 @@ namespace detail {
 			return {};
 		}
 
-		bool reads(buffer_id bid) const {
-			return regions.count(bid) != 0;
-		}
+		bool reads(buffer_id bid) const { return regions.count(bid) != 0; }
 
 		auto begin() const { return regions.begin(); }
 		auto end() const { return regions.end(); }

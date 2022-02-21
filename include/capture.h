@@ -9,36 +9,36 @@ namespace celerity::detail {
 
 struct capture_inspector {
   public:
-	template <typename ...Captures>
+	template <typename... Captures>
 	static std::tuple<buffer_capture_map, side_effect_map> collect_requirements(const std::tuple<Captures...>& caps) {
 		return collect_requirements(caps, std::make_index_sequence<sizeof...(Captures)>{});
 	}
 
-	template <typename ...Captures>
+	template <typename... Captures>
 	static auto exfiltrate_by_copy(const std::tuple<Captures...>& caps) {
 		return exfiltrate_by_copy(caps, std::make_index_sequence<sizeof...(Captures)>{});
 	}
 
-	template <typename ...Captures>
+	template <typename... Captures>
 	static auto exfiltrate_by_move(const std::tuple<Captures...>& caps) {
 		return exfiltrate_by_move(caps, std::make_index_sequence<sizeof...(Captures)>{});
 	}
 
   private:
-	template <typename ...Captures, size_t... Is>
-	static std::tuple<buffer_capture_map, side_effect_map> collect_requirements(const std::tuple<Captures...>& caps,  std::index_sequence<Is...>) {
+	template <typename... Captures, size_t... Is>
+	static std::tuple<buffer_capture_map, side_effect_map> collect_requirements(const std::tuple<Captures...>& caps, std::index_sequence<Is...>) {
 		buffer_capture_map bcm;
 		side_effect_map sem;
 		(std::get<Is>(caps).record_requirements(bcm, sem), ...);
 		return {std::move(bcm), std::move(sem)};
 	}
 
-	template <typename ...Captures, size_t... Is>
+	template <typename... Captures, size_t... Is>
 	static auto exfiltrate_by_copy(const std::tuple<Captures...>& caps, std::index_sequence<Is...>) {
 		return std::tuple{std::get<Is>(caps).exfiltrate_by_copy()...};
 	}
 
-	template <typename ...Captures, size_t... Is>
+	template <typename... Captures, size_t... Is>
 	static auto exfiltrate_by_move(const std::tuple<Captures...>& caps, std::index_sequence<Is...>) {
 		return std::tuple{std::get<Is>(caps).exfiltrate_by_move()...};
 	}

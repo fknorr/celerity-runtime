@@ -305,7 +305,7 @@ namespace detail {
 		});
 	}
 
-	TEST_CASE("captures") {
+	TEST_CASE("captures transfer data before the epoch command is executed", "[captures]") {
 		buffer<int, 3> buf{{5, 4, 7}}; // Use an oddly-sized buffer to test the buffer subrange extraction logic
 		experimental::host_object<int> obj;
 

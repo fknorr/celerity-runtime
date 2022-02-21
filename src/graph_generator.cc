@@ -72,13 +72,6 @@ namespace detail {
 				} else if(tsk->get_type() == task_type::EPOCH) {
 					new_front = cdag.create<epoch_command>(nid, tid, tsk->get_epoch_action());
 				}
-
-				// Make the horizon or epoch command depend on the previous execution front
-				const auto previous_execution_front = cdag.get_execution_front(nid);
-				for(const auto front_cmd : previous_execution_front) {
-					if(front_cmd != new_front) { cdag.add_dependency(new_front, front_cmd, dependency_kind::TRUE_DEP, dependency_origin::execution_front); }
-				}
-				assert(cdag.get_execution_front(nid).size() == 1 && *cdag.get_execution_front(nid).begin() == new_front);
 			}
 		} else if(tsk->get_type() == task_type::COLLECTIVE) {
 			for(size_t nid = 0; nid < num_nodes; ++nid) {
@@ -126,6 +119,21 @@ namespace detail {
 		// --> So that more advanced transformations can also take data transfers into account
 		process_task_data_requirements(tid);
 		process_task_side_effect_requirements(tid);
+
+		if(tsk->get_type() == task_type::HORIZON || tsk->get_type() == task_type::EPOCH) {
+			command_id min_completed_epoch;
+			for(node_id nid = 0; nid < num_nodes; ++nid) {
+				auto& node = node_data.at(nid);
+				const auto& new_front = new_execution_fronts[nid];
+
+				// Make the horizon or epoch command depend on the previous execution front
+				const auto previous_execution_front = cdag.get_execution_front(nid);
+				for(const auto front_cmd : previous_execution_front) {
+					if(front_cmd != new_front) { cdag.add_dependency(new_front, front_cmd, dependency_kind::TRUE_DEP, dependency_origin::execution_front); }
+				}
+				assert(cdag.get_execution_front(nid).size() == 1 && *cdag.get_execution_front(nid).begin() == new_front);
+			}
+		}
 
 		// Commands without any other true-dependency must depend on the current epoch command to ensure they cannot be re-ordered before the epoch
 		for(const auto cmd : cdag.task_commands(tid)) {

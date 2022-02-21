@@ -95,7 +95,7 @@ namespace detail {
 
 		for(const auto bid : buffers) {
 			auto modes = access_map.get_access_modes(bid);
-			if (tsk->get_buffer_capture_map().reads(bid)) { modes.insert(access_mode::read); }
+			if(tsk->get_buffer_capture_map().reads(bid)) { modes.insert(access_mode::read); }
 
 			std::optional<reduction_info> reduction;
 			for(auto maybe_rid : tsk->get_reductions()) {

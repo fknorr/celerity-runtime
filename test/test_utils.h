@@ -488,9 +488,7 @@ class capture<test_utils::mock_buffer<Dims>> {
 	test_utils::mock_buffer<Dims> buffer;
 	subrange<Dims> sr;
 
-	void record_requirements(detail::buffer_capture_map& accesses, detail::side_effect_map&) const {
-		accesses.add_read_access(buffer.get_id(), sr);
-	}
+	void record_requirements(detail::buffer_capture_map& accesses, detail::side_effect_map&) const { accesses.add_read_access(buffer.get_id(), sr); }
 };
 
 template <int Dims>
@@ -514,7 +512,7 @@ class capture<test_utils::mock_host_object> {
 	}
 };
 
-capture(test_utils::mock_host_object) -> capture<test_utils::mock_host_object>;
+capture(test_utils::mock_host_object)->capture<test_utils::mock_host_object>;
 
 } // namespace celerity::experimental
 
