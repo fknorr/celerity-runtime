@@ -304,6 +304,7 @@ namespace detail {
 			cgh.parallel_for<class UKN(kernel)>(buf.get_range(), [=](item<2> it) { acc[it] = 0; });
 		});
 	}
+
 	TEST_CASE("captures") {
 		buffer<int, 3> buf{{5, 4, 7}}; // Use an oddly-sized buffer to test the buffer subrange extraction logic
 		experimental::host_object<int> obj;

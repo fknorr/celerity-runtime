@@ -6,6 +6,7 @@
 #include "command.h"
 #include "command_graph.h"
 #include "graph_transformer.h"
+#include "print_graph.h"
 #include "task.h"
 #include "task_manager.h"
 
@@ -61,25 +62,15 @@ namespace detail {
 
 		auto tsk = task_mngr.get_task(tid);
 
-		std::optional<command_id> new_completed_epoch;
-
+		std::vector<abstract_command*> new_execution_fronts;
 		if(tsk->get_type() == task_type::HORIZON || tsk->get_type() == task_type::EPOCH) {
+			new_execution_fronts.resize(num_nodes);
 			for(node_id nid = 0; nid < num_nodes; ++nid) {
-				auto& node = node_data.at(nid);
-				const auto apply_epoch = [&](const command_id cid) {
-					node.set_current_epoch(cid);
-					new_completed_epoch = new_completed_epoch ? std::min(*new_completed_epoch, cid) : cid;
-				};
-
-				abstract_command* new_front = nullptr;
+				auto& new_front = new_execution_fronts[nid];
 				if(tsk->get_type() == task_type::HORIZON) {
 					new_front = cdag.create<horizon_command>(nid, tid);
-					if(node.current_horizon) { apply_epoch(*node.current_horizon); }
-					node.current_horizon = new_front->get_cid();
 				} else if(tsk->get_type() == task_type::EPOCH) {
 					new_front = cdag.create<epoch_command>(nid, tid, tsk->get_epoch_action());
-					apply_epoch(new_front->get_cid());
-					node.current_horizon = std::nullopt;
 				}
 
 				// Make the horizon or epoch command depend on the previous execution front
@@ -115,34 +106,31 @@ namespace detail {
 			t->transform_task(*tsk, cdag);
 		}
 
-		// Only execution tasks can have data requirements or reductions
-		if(tsk->get_execution_target() != execution_target::NONE) {
 #ifndef NDEBUG
-			// It is currently undefined to split reduction-producer tasks into multiple chunks on the same node:
-			//   - Per-node reduction intermediate results are stored with fixed access to a single SYCL buffer, so multiple chunks on the same node will race
-			//   on
-			//     this buffer access
-			//   - Inputs to the final reduction command are ordered by origin node ids to guarantee bit-identical results. It is not possible to distinguish
-			//     more than one chunk per node in the serialized commands, so different nodes can produce different final reduction results for non-associative
-			//     or non-commutative operations
-			if(!tsk->get_reductions().empty()) {
-				std::unordered_set<node_id> producer_nids;
-				for(auto& cmd : cdag.task_commands(tid)) {
-					assert(producer_nids.insert(cmd->get_nid()).second);
-				}
+		// It is currently undefined to split reduction-producer tasks into multiple chunks on the same node:
+		//   - Per-node reduction intermediate results are stored with fixed access to a single SYCL buffer, so multiple chunks on the same node will race
+		//   on
+		//     this buffer access
+		//   - Inputs to the final reduction command are ordered by origin node ids to guarantee bit-identical results. It is not possible to distinguish
+		//     more than one chunk per node in the serialized commands, so different nodes can produce different final reduction results for non-associative
+		//     or non-commutative operations
+		if(!tsk->get_reductions().empty()) {
+			std::unordered_set<node_id> producer_nids;
+			for(auto& cmd : cdag.task_commands(tid)) {
+				assert(producer_nids.insert(cmd->get_nid()).second);
 			}
+		}
 #endif
 
-			// TODO: At some point we might want to do this also before calling transformers
-			// --> So that more advanced transformations can also take data transfers into account
-			process_task_data_requirements(tid);
-			process_task_side_effect_requirements(tid);
-		}
+		// TODO: At some point we might want to do this also before calling transformers
+		// --> So that more advanced transformations can also take data transfers into account
+		process_task_data_requirements(tid);
+		process_task_side_effect_requirements(tid);
 
 		// Commands without any other true-dependency must depend on the current epoch command to ensure they cannot be re-ordered before the epoch
 		for(const auto cmd : cdag.task_commands(tid)) {
 			if(const auto deps = cmd->get_dependencies();
-			    std::none_of(deps.begin(), deps.end(), [](const abstract_command::dependency d) { return d.kind == dependency_kind::TRUE_DEP; })) {
+				std::none_of(deps.begin(), deps.end(), [](const abstract_command::dependency d) { return d.kind == dependency_kind::TRUE_DEP; })) {
 				auto current_epoch = node_data.at(cmd->get_nid()).current_epoch;
 				assert(cmd->get_cid() != current_epoch);
 				cdag.add_dependency(cmd, cdag.get(current_epoch), dependency_kind::TRUE_DEP, dependency_origin::current_epoch);
@@ -163,9 +151,21 @@ namespace detail {
 			last_pruned_epoch = last_completed_epoch;
 		}
 
-		if(new_completed_epoch) {
-			assert(*new_completed_epoch > last_completed_epoch);
-			last_completed_epoch = *new_completed_epoch;
+		if(tsk->get_type() == task_type::HORIZON || tsk->get_type() == task_type::EPOCH) {
+			command_id min_completed_epoch;
+			for(node_id nid = 0; nid < num_nodes; ++nid) {
+				auto& node = node_data.at(nid);
+				const auto& new_front = new_execution_fronts[nid];
+				if(tsk->get_type() == task_type::HORIZON) {
+					if(node.current_horizon) { node.set_current_epoch(*node.current_horizon); }
+					node.current_horizon = new_front->get_cid();
+				} else if(tsk->get_type() == task_type::EPOCH) {
+					node.set_current_epoch(new_front->get_cid());
+					node.current_horizon = std::nullopt;
+				}
+				min_completed_epoch = nid > 0 ? std::min(min_completed_epoch, node.current_epoch) : node.current_epoch;
+			}
+			last_completed_epoch = min_completed_epoch;
 		}
 	}
 
@@ -302,36 +302,38 @@ namespace detail {
 			const command_id cid = cmd->get_cid();
 			const node_id nid = cmd->get_nid();
 
-			assert(isa<execution_command>(cmd));
-			auto* ecmd = static_cast<execution_command*>(cmd);
-
-			ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
-
-			auto requirements = get_buffer_requirements_for_mapped_access(tsk, ecmd->get_execution_range(), tsk->get_global_size());
-
-			// Any reduction that includes the value previously found in the buffer (i.e. the absence of sycl::property::reduction::initialize_to_identity)
-			// must read that original value in the eventual reduction_command generated by a future buffer requirement. Since whenever a buffer is used as
-			// a reduction output, we replace its state with a pending_reduction_state, that original value would be lost. To avoid duplicating the buffer,
-			// we simply include it in the pre-reduced state of a single execution_command.
+			buffer_requirements_map requirements;
 			std::unordered_map<buffer_id, reduction_id> buffer_reduction_map;
-			for(auto rid : tsk->get_reductions()) {
-				auto reduction = reduction_mngr.get_reduction(rid);
+			if(auto* ecmd = dynamic_cast<execution_command*>(cmd)) {
+				requirements = get_buffer_requirements_for_mapped_access(tsk, ecmd->get_execution_range(), tsk->get_global_size());
 
-				auto rmode = cl::sycl::access::mode::discard_write;
-				if(ecmd->is_reduction_initializer() && reduction.initialize_from_buffer) { rmode = cl::sycl::access::mode::read_write; }
+				// Any reduction that includes the value previously found in the buffer (i.e. the absence of sycl::property::reduction::initialize_to_identity)
+				// must read that original value in the eventual reduction_command generated by a future buffer requirement. Since whenever a buffer is used as
+				// a reduction output, we replace its state with a pending_reduction_state, that original value would be lost. To avoid duplicating the buffer,
+				// we simply include it in the pre-reduced state of a single execution_command.
+				for(auto rid : tsk->get_reductions()) {
+					auto reduction = reduction_mngr.get_reduction(rid);
 
-				auto bid = reduction.output_buffer_id;
+					auto rmode = cl::sycl::access::mode::discard_write;
+					if(ecmd->is_reduction_initializer() && reduction.initialize_from_buffer) { rmode = cl::sycl::access::mode::read_write; }
+
+					auto bid = reduction.output_buffer_id;
 #ifndef NDEBUG
-				for(auto pmode : detail::access::producer_modes) {
-					assert(requirements[bid].count(pmode) == 0); // We verify in the task manager that there are no reduction <-> write-access conflicts
-				}
+					for(auto pmode : detail::access::producer_modes) {
+						assert(requirements[bid].count(pmode) == 0); // We verify in the task manager that there are no reduction <-> write-access conflicts
+					}
 #endif
 
-				// We need to add a proper requirement here because bid might itself be in pending_reduction_state
-				requirements[bid][rmode] = GridRegion<3>{{1, 1, 1}};
+					// We need to add a proper requirement here because bid might itself be in pending_reduction_state
+					requirements[bid][rmode] = GridRegion<3>{{1, 1, 1}};
 
-				// TODO fill in debug build only
-				buffer_reduction_map.emplace(bid, rid);
+					// TODO fill in debug build only
+					buffer_reduction_map.emplace(bid, rid);
+				}
+
+				ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
+			} else {
+				requirements = get_buffer_requirements_for_mapped_access(tsk, subrange<3>{{0, 0, 0}, {1, 1, 1}}, {1, 1, 1});
 			}
 
 			for(auto& it : requirements) {

@@ -85,6 +85,8 @@ namespace test_utils {
 
 		detail::buffer_id get_id() const { return id; }
 
+		cl::sycl::range<Dims> get_range() const { return size; }
+
 	  private:
 		friend class mock_buffer_factory;
 
@@ -102,6 +104,8 @@ namespace test_utils {
 				prepass_cgh.add_requirement(id, order);
 			}
 		}
+
+		detail::host_object_id get_id() const { return id; }
 
 	  private:
 		friend class mock_host_object_factory;
@@ -465,6 +469,55 @@ namespace test_utils {
 
 } // namespace test_utils
 } // namespace celerity
+
+
+namespace celerity::experimental {
+
+template <typename>
+class capture;
+
+template <int Dims>
+class capture<test_utils::mock_buffer<Dims>> {
+  public:
+	explicit capture(test_utils::mock_buffer<Dims> buf) : buffer{std::move(buf)}, sr{{}, buffer.get_range()} {}
+	explicit capture(test_utils::mock_buffer<Dims> buf, const subrange<Dims>& sr) : buffer{std::move(buf)}, sr{sr} {}
+
+  private:
+	friend struct detail::capture_inspector;
+
+	test_utils::mock_buffer<Dims> buffer;
+	subrange<Dims> sr;
+
+	void record_requirements(detail::buffer_access_map& accesses, detail::side_effect_map&) const {
+		accesses.add_access(
+		    buffer.get_id(), std::make_unique<detail::range_mapper<Dims, celerity::access::fixed<Dims>>>(sr, access_mode::read, buffer.get_range()));
+	}
+};
+
+template <int Dims>
+capture(test_utils::mock_buffer<Dims>) -> capture<test_utils::mock_buffer<Dims>>;
+
+template <int Dims>
+capture(test_utils::mock_buffer<Dims>, const subrange<Dims>&) -> capture<test_utils::mock_buffer<Dims>>;
+
+template <>
+class capture<test_utils::mock_host_object> {
+  public:
+	explicit capture(test_utils::mock_host_object ho) : ho{std::move(ho)} {}
+
+  private:
+	friend struct detail::capture_inspector;
+
+	test_utils::mock_host_object ho;
+
+	void record_requirements(detail::buffer_access_map&, detail::side_effect_map& side_effects) const {
+		side_effects.add_side_effect(ho.get_id(), side_effect_order::sequential);
+	}
+};
+
+capture(test_utils::mock_host_object) -> capture<test_utils::mock_host_object>;
+
+} // namespace celerity::experimental
 
 
 namespace Catch {

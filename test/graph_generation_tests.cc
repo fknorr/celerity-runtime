@@ -1612,7 +1612,7 @@ namespace detail {
 		    test_utils::add_compute_task<class UKN(task_b)>(
 		        tm, [&](handler& cgh) {}, node_range));
 
-		const auto tid_epoch = test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none));
+		const auto tid_epoch = test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none, {}, {}));
 
 		for(node_id nid = 0; nid < num_nodes; ++nid) {
 			CAPTURE(nid);
@@ -1686,6 +1686,47 @@ namespace detail {
 		}
 
 		maybe_print_graphs(ctx);
+	}
+
+	TEST_CASE("captures") {
+		const size_t num_nodes = 2;
+		const range<2> node_range{num_nodes, 1};
+		test_utils::cdag_test_context ctx(num_nodes);
+		auto& tm = ctx.get_task_manager();
+		auto& ggen = ctx.get_graph_generator();
+
+		test_utils::mock_buffer_factory mbf(&tm, &ggen);
+		test_utils::mock_host_object_factory mhof;
+
+		auto& inspector = ctx.get_inspector();
+		auto& cdag = ctx.get_command_graph();
+
+		auto buf = mbf.create_buffer(range<3>{5, 4, 7});
+		auto obj = mhof.create_host_object();
+
+		test_utils::build_and_flush(ctx, num_nodes, test_utils::add_host_task(tm, experimental::collective, [&](handler& cgh) {
+			obj.add_side_effect(cgh, experimental::side_effect_order::sequential);
+		}));
+		test_utils::build_and_flush(ctx, num_nodes,
+		    test_utils::add_host_task(tm, on_master_node, [&](handler& cgh) { buf.get_access<access_mode::discard_write>(cgh, celerity::access::all{}); }));
+
+		{
+			buffer_access_map bam;
+			side_effect_map sem;
+			capture_inspector::record_requirements(experimental::capture{buf, subrange<3>{{1, 2, 3}, {1, 1, 1}}}, bam, sem);
+			test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none, std::move(bam), std::move(sem)));
+		}
+
+		test_utils::build_and_flush(ctx, num_nodes,
+		    test_utils::add_host_task(tm, on_master_node, [&](handler& cgh) { buf.get_access<access_mode::read_write>(cgh, celerity::access::all{}); }));
+
+
+		{
+			buffer_access_map bam;
+			side_effect_map sem;
+			capture_inspector::record_requirements(experimental::capture{buf, subrange<3>{{1, 2, 3}, {1, 1, 1}}}, bam, sem);
+			test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none, std::move(bam), std::move(sem)));
+		}
 	}
 
 } // namespace detail
