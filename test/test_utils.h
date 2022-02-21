@@ -488,9 +488,8 @@ class capture<test_utils::mock_buffer<Dims>> {
 	test_utils::mock_buffer<Dims> buffer;
 	subrange<Dims> sr;
 
-	void record_requirements(detail::buffer_access_map& accesses, detail::side_effect_map&) const {
-		accesses.add_access(
-		    buffer.get_id(), std::make_unique<detail::range_mapper<Dims, celerity::access::fixed<Dims>>>(sr, access_mode::read, buffer.get_range()));
+	void record_requirements(detail::buffer_capture_map& accesses, detail::side_effect_map&) const {
+		accesses.add_read_access(buffer.get_id(), sr);
 	}
 };
 
@@ -510,7 +509,7 @@ class capture<test_utils::mock_host_object> {
 
 	test_utils::mock_host_object ho;
 
-	void record_requirements(detail::buffer_access_map&, detail::side_effect_map& side_effects) const {
+	void record_requirements(detail::buffer_capture_map&, detail::side_effect_map& side_effects) const {
 		side_effects.add_side_effect(ho.get_id(), side_effect_order::sequential);
 	}
 };

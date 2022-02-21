@@ -9,50 +9,37 @@ namespace celerity::detail {
 
 struct capture_inspector {
   public:
-	template <typename Capture>
-	static void record_requirements(const Capture& cap, detail::buffer_access_map& accesses, detail::side_effect_map& side_effects) {
-		cap.record_requirements(accesses, side_effects);
+	template <typename ...Captures>
+	static std::tuple<buffer_capture_map, side_effect_map> collect_requirements(const std::tuple<Captures...>& caps) {
+		return collect_requirements(caps, std::make_index_sequence<sizeof...(Captures)>{});
 	}
 
-	template <typename Captures>
-	static void record_requirements_on_tuple(const Captures& caps, detail::buffer_access_map& accesses, detail::side_effect_map& side_effects) {
-		record_requirements_on_tuple(caps, accesses, side_effects, std::make_index_sequence<std::tuple_size_v<Captures>>{});
+	template <typename ...Captures>
+	static auto exfiltrate_by_copy(const std::tuple<Captures...>& caps) {
+		return exfiltrate_by_copy(caps, std::make_index_sequence<sizeof...(Captures)>{});
 	}
 
-	template <typename Capture>
-	static auto exfiltrate_by_copy(const Capture& cap) {
-		return cap.exfiltrate_by_copy();
-	}
-
-	template <typename Capture>
-	static auto exfiltrate_by_move(const Capture& cap) {
-		return cap.exfiltrate_by_move();
-	}
-
-	template <typename Captures>
-	static auto exfiltrate_tuple_by_copy(const Captures& caps) {
-		return exfiltrate_tuple_by_copy(caps, std::make_index_sequence<std::tuple_size_v<Captures>>{});
-	}
-
-	template <typename Captures>
-	static auto exfiltrate_tuple_by_move(const Captures& caps) {
-		return exfiltrate_tuple_by_move(caps, std::make_index_sequence<std::tuple_size_v<Captures>>{});
+	template <typename ...Captures>
+	static auto exfiltrate_by_move(const std::tuple<Captures...>& caps) {
+		return exfiltrate_by_move(caps, std::make_index_sequence<sizeof...(Captures)>{});
 	}
 
   private:
-	template <typename Captures, size_t... Is>
-	static void record_requirements_on_tuple(
-	    const Captures& caps, detail::buffer_access_map& accesses, detail::side_effect_map& side_effects, std::index_sequence<Is...>) {
-		(std::get<Is>(caps).record_requirements(accesses, side_effects), ...);
+	template <typename ...Captures, size_t... Is>
+	static std::tuple<buffer_capture_map, side_effect_map> collect_requirements(const std::tuple<Captures...>& caps,  std::index_sequence<Is...>) {
+		buffer_capture_map bcm;
+		side_effect_map sem;
+		(std::get<Is>(caps).record_requirements(bcm, sem), ...);
+		return {std::move(bcm), std::move(sem)};
 	}
 
-	template <typename Captures, size_t... Is>
-	static auto exfiltrate_tuple_by_copy(const Captures& caps, std::index_sequence<Is...>) {
+	template <typename ...Captures, size_t... Is>
+	static auto exfiltrate_by_copy(const std::tuple<Captures...>& caps, std::index_sequence<Is...>) {
 		return std::tuple{std::get<Is>(caps).exfiltrate_by_copy()...};
 	}
 
-	template <typename Captures, size_t... Is>
-	static auto exfiltrate_tuple_by_move(const Captures& caps, std::index_sequence<Is...>) {
+	template <typename ...Captures, size_t... Is>
+	static auto exfiltrate_by_move(const std::tuple<Captures...>& caps, std::index_sequence<Is...>) {
 		return std::tuple{std::get<Is>(caps).exfiltrate_by_move()...};
 	}
 };
@@ -102,9 +89,8 @@ class capture<buffer<T, Dims>> {
 	buffer<T, Dims> buffer;
 	subrange<Dims> sr;
 
-	void record_requirements(detail::buffer_access_map& accesses, detail::side_effect_map&) const {
-		accesses.add_access(detail::get_buffer_id(buffer),
-		    std::make_unique<detail::range_mapper<Dims, celerity::access::fixed<Dims>>>(sr, access_mode::read, buffer.get_range()));
+	void record_requirements(detail::buffer_capture_map& accesses, detail::side_effect_map&) const {
+		accesses.add_read_access(detail::get_buffer_id(buffer), sr);
 	}
 
 	value_type exfiltrate_by_copy() const {
@@ -160,7 +146,7 @@ class capture<host_object<T>> {
 
 	host_object<T> ho;
 
-	void record_requirements(detail::buffer_access_map&, detail::side_effect_map& side_effects) const {
+	void record_requirements(detail::buffer_capture_map&, detail::side_effect_map& side_effects) const {
 		side_effects.add_side_effect(ho.get_id(), side_effect_order::sequential);
 	}
 

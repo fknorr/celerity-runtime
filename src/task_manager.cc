@@ -94,7 +94,8 @@ namespace detail {
 		}
 
 		for(const auto bid : buffers) {
-			const auto modes = access_map.get_access_modes(bid);
+			auto modes = access_map.get_access_modes(bid);
+			if (tsk->get_buffer_capture_map().reads(bid)) { modes.insert(access_mode::read); }
 
 			std::optional<reduction_info> reduction;
 			for(auto maybe_rid : tsk->get_reductions()) {
@@ -258,13 +259,13 @@ namespace detail {
 		invoke_callbacks(*current_horizon);
 	}
 
-	task_id task_manager::finish_epoch(epoch_action action, buffer_access_map access_map, side_effect_map side_effect_map) {
+	task_id task_manager::finish_epoch(epoch_action action, buffer_capture_map capture_map, side_effect_map side_effect_map) {
 		// we are probably overzealous in locking here
 		task_id tid;
 		{
 			std::lock_guard lock(task_mutex);
 			tid = get_new_tid();
-			const auto new_epoch = collect_execution_front(task::make_epoch(tid, std::move(access_map), std::move(side_effect_map), action));
+			const auto new_epoch = collect_execution_front(task::make_epoch(tid, std::move(capture_map), std::move(side_effect_map), action));
 			compute_dependencies(new_epoch);
 			set_current_epoch(new_epoch);
 			current_horizon = std::nullopt; // if there is a current horizon, it is now behind the new current epoch, so it will become an current_epoch itself

@@ -51,6 +51,29 @@ namespace detail {
 		void operator()(handler& cgh) const override { fun(cgh); }
 	};
 
+	class buffer_capture_map {
+	  public:
+		void add_read_access(const buffer_id bid, const subrange<3>& sr) {
+			auto& reg = regions[bid];
+			reg = GridRegion<3>::merge(reg, subrange_to_grid_box(sr));
+		}
+
+		GridRegion<3> get_read_requirements(const buffer_id bid) const {
+			if(const auto it = regions.find(bid); it != regions.end()) { return it->second; }
+			return {};
+		}
+
+		bool reads(buffer_id bid) const {
+			return regions.count(bid) != 0;
+		}
+
+		auto begin() const { return regions.begin(); }
+		auto end() const { return regions.end(); }
+
+	  private:
+		std::unordered_map<buffer_id, GridRegion<3>> regions;
+	};
+
 	class buffer_access_map {
 	  public:
 		void add_access(buffer_id bid, std::unique_ptr<range_mapper_base>&& rm) { map.emplace(bid, std::move(rm)); }
@@ -109,6 +132,8 @@ namespace detail {
 
 		collective_group_id get_collective_group_id() const { return cgid; }
 
+		const buffer_capture_map& get_buffer_capture_map() const { return capture_map; }
+
 		const buffer_access_map& get_buffer_access_map() const { return access_map; }
 
 		const side_effect_map& get_side_effect_map() const { return side_effect_map; }
@@ -145,38 +170,38 @@ namespace detail {
 
 		epoch_action get_epoch_action() const { return epoch_action; }
 
-		static std::unique_ptr<task> make_epoch(task_id tid, buffer_access_map access_map, side_effect_map side_effect_map, epoch_action action) {
-			return std::unique_ptr<task>(new task(
-			    tid, task_type::EPOCH, collective_group_id{}, task_geometry{}, nullptr, std::move(access_map), std::move(side_effect_map), {}, {}, action));
+		static std::unique_ptr<task> make_epoch(task_id tid, buffer_capture_map capture_map, side_effect_map side_effect_map, epoch_action action) {
+			return std::unique_ptr<task>(new task(tid, task_type::EPOCH, collective_group_id{}, task_geometry{}, nullptr, std::move(capture_map), {},
+			    std::move(side_effect_map), {}, {}, action));
 		}
 
 		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf,
 		    buffer_access_map access_map, side_effect_map side_effect_map, std::vector<reduction_id> reductions) {
-			return std::unique_ptr<task>(new task(tid, task_type::HOST_COMPUTE, collective_group_id{}, geometry, std::move(cgf), std::move(access_map),
+			return std::unique_ptr<task>(new task(tid, task_type::HOST_COMPUTE, collective_group_id{}, geometry, std::move(cgf), {}, std::move(access_map),
 			    std::move(side_effect_map), std::move(reductions), {}, {}));
 		}
 
 		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf,
 		    buffer_access_map access_map, std::vector<reduction_id> reductions, std::string debug_name) {
-			return std::unique_ptr<task>(new task(tid, task_type::DEVICE_COMPUTE, collective_group_id{}, geometry, std::move(cgf), std::move(access_map), {},
-			    std::move(reductions), std::move(debug_name), {}));
+			return std::unique_ptr<task>(new task(tid, task_type::DEVICE_COMPUTE, collective_group_id{}, geometry, std::move(cgf), {}, std::move(access_map),
+			    {}, std::move(reductions), std::move(debug_name), {}));
 		}
 
 		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
 		    std::unique_ptr<command_group_storage_base> cgf, buffer_access_map access_map, side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(cl::sycl::range<1>{num_collective_nodes}), {}, {1, 1, 1}};
 			return std::unique_ptr<task>(
-			    new task(tid, task_type::COLLECTIVE, cgid, geometry, std::move(cgf), std::move(access_map), std::move(side_effect_map), {}, {}, {}));
+			    new task(tid, task_type::COLLECTIVE, cgid, geometry, std::move(cgf), {}, std::move(access_map), std::move(side_effect_map), {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_master_node(
 		    task_id tid, std::unique_ptr<command_group_storage_base> cgf, buffer_access_map access_map, side_effect_map side_effect_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::MASTER_NODE, collective_group_id{}, task_geometry{}, std::move(cgf), std::move(access_map),
-			    std::move(side_effect_map), {}, {}, {}));
+			return std::unique_ptr<task>(new task(tid, task_type::MASTER_NODE, collective_group_id{}, task_geometry{}, std::move(cgf), {},
+			    std::move(access_map), std::move(side_effect_map), {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_horizon_task(task_id tid) {
-			return std::unique_ptr<task>(new task(tid, task_type::HORIZON, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, {}));
+			return std::unique_ptr<task>(new task(tid, task_type::HORIZON, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, {}, {}));
 		}
 
 	  private:
@@ -185,6 +210,7 @@ namespace detail {
 		collective_group_id cgid;
 		task_geometry geometry;
 		std::unique_ptr<command_group_storage_base> cgf;
+		buffer_capture_map capture_map;
 		buffer_access_map access_map;
 		detail::side_effect_map side_effect_map;
 		std::vector<reduction_id> reductions;
@@ -192,9 +218,9 @@ namespace detail {
 		detail::epoch_action epoch_action;
 
 		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf,
-		    buffer_access_map access_map, detail::side_effect_map side_effect_map, std::vector<reduction_id> reductions, std::string debug_name,
-		    detail::epoch_action epoch_action)
-		    : tid(tid), type(type), cgid(cgid), geometry(geometry), cgf(std::move(cgf)), access_map(std::move(access_map)),
+		    buffer_capture_map capture_map, buffer_access_map access_map, detail::side_effect_map side_effect_map, std::vector<reduction_id> reductions,
+		    std::string debug_name, detail::epoch_action epoch_action)
+		    : tid(tid), type(type), cgid(cgid), geometry(geometry), cgf(std::move(cgf)), capture_map(std::move(capture_map)), access_map(std::move(access_map)),
 		      side_effect_map(std::move(side_effect_map)), reductions(std::move(reductions)), debug_name(std::move(debug_name)), epoch_action(epoch_action) {
 			assert(type == task_type::HOST_COMPUTE || type == task_type::DEVICE_COMPUTE || get_granularity().size() == 1);
 			assert((type != task_type::HOST_COMPUTE && type != task_type::COLLECTIVE && type != task_type::MASTER_NODE) || side_effect_map.empty());

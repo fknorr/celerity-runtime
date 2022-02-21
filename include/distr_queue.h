@@ -83,21 +83,17 @@ class distr_queue {
 	template <typename T>
 	typename experimental::capture<T>::value_type slow_full_sync(const experimental::capture<T>& cap) {
 		check_not_drained();
-		detail::buffer_access_map accesses;
-		detail::side_effect_map side_effects;
-		detail::capture_inspector::record_requirements(cap, accesses, side_effects);
-		detail::runtime::get_instance().sync(std::move(accesses), std::move(side_effects));
-		return detail::capture_inspector::exfiltrate_by_copy(cap);
+		auto [buffer_captures, side_effects] = detail::capture_inspector::collect_requirements(std::tuple{cap});
+		detail::runtime::get_instance().sync(std::move(buffer_captures), std::move(side_effects));
+		return std::get<0>(detail::capture_inspector::exfiltrate_by_copy(cap));
 	}
 
 	template <typename... Ts>
 	std::tuple<typename experimental::capture<Ts>::value_type...> slow_full_sync(const std::tuple<experimental::capture<Ts>...>& caps) {
 		check_not_drained();
-		detail::buffer_access_map accesses;
-		detail::side_effect_map side_effects;
-		detail::capture_inspector::record_requirements_on_tuple(caps, accesses, side_effects);
-		detail::runtime::get_instance().sync(std::move(accesses), std::move(side_effects));
-		return detail::capture_inspector::exfiltrate_tuple_by_copy(caps);
+		auto [buffer_captures, side_effects] = detail::capture_inspector::collect_requirements(caps);
+		detail::runtime::get_instance().sync(std::move(buffer_captures), std::move(side_effects));
+		return detail::capture_inspector::exfiltrate_by_copy(caps);
 	}
 
   private:
@@ -114,9 +110,9 @@ class distr_queue {
 		if(drained) { throw std::runtime_error("distr_queue has already been drained"); }
 	}
 
-	void drain(detail::buffer_access_map buffer_accesses, detail::side_effect_map side_effects) {
+	void drain(detail::buffer_capture_map buffer_captures, detail::side_effect_map side_effects) {
 		check_not_drained();
-		detail::runtime::get_instance().shutdown(std::move(buffer_accesses), std::move(side_effects));
+		detail::runtime::get_instance().shutdown(std::move(buffer_captures), std::move(side_effects));
 		drained = true;
 	}
 
@@ -126,8 +122,8 @@ class distr_queue {
 namespace detail {
 
 	struct queue_inspector {
-		static void drain(distr_queue& q, buffer_access_map buffer_accesses, side_effect_map side_effects) {
-			q.drain(std::move(buffer_accesses), std::move(side_effects));
+		static void drain(distr_queue& q, buffer_capture_map buffer_captures, side_effect_map side_effects) {
+			q.drain(std::move(buffer_captures), std::move(side_effects));
 		}
 	};
 
@@ -139,20 +135,16 @@ namespace experimental {
 
 	template <typename T>
 	typename experimental::capture<T>::value_type drain(distr_queue&& q, const experimental::capture<T>& cap) {
-		detail::buffer_access_map accesses;
-		detail::side_effect_map side_effects;
-		detail::capture_inspector::record_requirements(cap, accesses, side_effects);
-		detail::queue_inspector::drain(q, std::move(accesses), std::move(side_effects));
-		return detail::capture_inspector::exfiltrate_by_move(cap);
+		auto [buffer_captures, side_effects] = detail::capture_inspector::collect_requirements(std::tuple{cap});
+		detail::queue_inspector::drain(q, std::move(buffer_captures), std::move(side_effects));
+		return std::get<0>(detail::capture_inspector::exfiltrate_by_move(std::tuple{cap}));
 	}
 
 	template <typename... Ts>
 	std::tuple<typename experimental::capture<Ts>::value_type...> drain(distr_queue&& q, const std::tuple<experimental::capture<Ts>...>& caps) {
-		detail::buffer_access_map accesses;
-		detail::side_effect_map side_effects;
-		detail::capture_inspector::record_requirements_on_tuple(caps, accesses, side_effects);
-		detail::queue_inspector::drain(q, std::move(accesses), std::move(side_effects));
-		return detail::capture_inspector::exfiltrate_tuple_by_move(caps);
+		auto [buffer_captures, side_effects] = detail::capture_inspector::collect_requirements(caps);
+		detail::queue_inspector::drain(q, std::move(buffer_captures), std::move(side_effects));
+		return detail::capture_inspector::exfiltrate_by_move(caps);
 	}
 
 } // namespace experimental

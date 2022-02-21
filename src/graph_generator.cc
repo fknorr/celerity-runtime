@@ -130,7 +130,7 @@ namespace detail {
 		// Commands without any other true-dependency must depend on the current epoch command to ensure they cannot be re-ordered before the epoch
 		for(const auto cmd : cdag.task_commands(tid)) {
 			if(const auto deps = cmd->get_dependencies();
-				std::none_of(deps.begin(), deps.end(), [](const abstract_command::dependency d) { return d.kind == dependency_kind::TRUE_DEP; })) {
+			    std::none_of(deps.begin(), deps.end(), [](const abstract_command::dependency d) { return d.kind == dependency_kind::TRUE_DEP; })) {
 				auto current_epoch = node_data.at(cmd->get_nid()).current_epoch;
 				assert(cmd->get_cid() != current_epoch);
 				cdag.add_dependency(cmd, cdag.get(current_epoch), dependency_kind::TRUE_DEP, dependency_origin::current_epoch);
@@ -333,7 +333,9 @@ namespace detail {
 
 				ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
 			} else {
-				requirements = get_buffer_requirements_for_mapped_access(tsk, subrange<3>{{0, 0, 0}, {1, 1, 1}}, {1, 1, 1});
+				for(auto& [bid, region] : tsk->get_buffer_capture_map()) {
+					requirements[bid][hipsycl::sycl::access_mode::read] = region;
+				}
 			}
 
 			for(auto& it : requirements) {

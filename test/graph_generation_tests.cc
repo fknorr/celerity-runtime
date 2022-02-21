@@ -1711,10 +1711,9 @@ namespace detail {
 		    test_utils::add_host_task(tm, on_master_node, [&](handler& cgh) { buf.get_access<access_mode::discard_write>(cgh, celerity::access::all{}); }));
 
 		{
-			buffer_access_map bam;
-			side_effect_map sem;
-			capture_inspector::record_requirements(experimental::capture{buf, subrange<3>{{1, 2, 3}, {1, 1, 1}}}, bam, sem);
-			test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none, std::move(bam), std::move(sem)));
+			auto [bcm, sem] = capture_inspector::collect_requirements(std::tuple{experimental::capture{buf, subrange<3>{{1, 2, 3}, {1, 1, 1}}}, //
+			    experimental::capture{obj}});
+			test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none, std::move(bcm), std::move(sem)));
 		}
 
 		test_utils::build_and_flush(ctx, num_nodes,
@@ -1722,10 +1721,8 @@ namespace detail {
 
 
 		{
-			buffer_access_map bam;
-			side_effect_map sem;
-			capture_inspector::record_requirements(experimental::capture{buf, subrange<3>{{1, 2, 3}, {1, 1, 1}}}, bam, sem);
-			test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none, std::move(bam), std::move(sem)));
+			auto [bcm, sem] = capture_inspector::collect_requirements(std::tuple{experimental::capture{buf, subrange<3>{{1, 2, 3}, {1, 1, 1}}}});
+			test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(epoch_action::none, std::move(bcm), std::move(sem)));
 		}
 	}
 
