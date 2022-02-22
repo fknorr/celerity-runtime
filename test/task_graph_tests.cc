@@ -690,7 +690,7 @@ namespace detail {
 
 		auto tid_before = task_manager::initial_epoch_task;
 		for(const auto action : {epoch_action::barrier, epoch_action::shutdown}) {
-			const auto tid = tm.finish_epoch(action);
+			const auto tid = tm.finish_epoch(action, {}, {});
 			CAPTURE(tid_before, tid);
 			const auto deps = tm.get_task(tid)->get_dependencies();
 			CHECK(std::distance(deps.begin(), deps.end()) == 1);

@@ -1673,7 +1673,7 @@ namespace detail {
 
 		auto tid_before = task_manager::initial_epoch_task;
 		for(const auto action : {epoch_action::barrier, epoch_action::shutdown}) {
-			const auto tid = test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(action));
+			const auto tid = test_utils::build_and_flush(ctx, num_nodes, tm.finish_epoch(action, {}, {}));
 			CAPTURE(tid_before, tid);
 			for(const auto cid : inspector.get_commands(tid, std::nullopt, std::nullopt)) {
 				CAPTURE(cid);

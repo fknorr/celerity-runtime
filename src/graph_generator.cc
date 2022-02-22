@@ -121,9 +121,7 @@ namespace detail {
 		process_task_side_effect_requirements(tid);
 
 		if(tsk->get_type() == task_type::HORIZON || tsk->get_type() == task_type::EPOCH) {
-			command_id min_completed_epoch;
 			for(node_id nid = 0; nid < num_nodes; ++nid) {
-				auto& node = node_data.at(nid);
 				const auto& new_front = new_execution_fronts[nid];
 
 				// Make the horizon or epoch command depend on the previous execution front
