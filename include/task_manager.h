@@ -162,6 +162,11 @@ namespace detail {
 		task_id get_current_task_count() const { return task_map.size(); }
 
 	  private:
+		struct collective_group_state {
+			bool had_tasks_before_current_epoch = false;
+			std::unordered_set<task_id> active_conflict_set;
+		};
+
 		const size_t num_collective_nodes;
 		host_queue* queue;
 
@@ -179,7 +184,7 @@ namespace detail {
 		// NOTE: This represents the state after the latest performed pre-pass.
 		buffer_writers_map buffers_last_writers;
 
-		std::unordered_map<collective_group_id, task_id> last_collective_tasks;
+		std::unordered_map<collective_group_id, collective_group_state> collective_groups;
 
 		// Stores which host object was last affected by which task.
 		std::unordered_map<host_object_id, task_id> host_object_last_effects;
