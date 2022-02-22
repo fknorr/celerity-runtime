@@ -9,7 +9,7 @@ namespace detail {
 
 	struct my_graph_node : intrusive_graph_node<my_graph_node> {};
 
-	TEST_CASE("intrusive_graph_node correctly handles adding and removing of", "[intrusive_graph_node]") {
+	TEST_CASE("intrusive_graph_node correctly handles adding of", "[intrusive_graph_node]") {
 		SECTION("true dependencies") {
 			// Adding and removing true dependency
 			{
@@ -17,9 +17,6 @@ namespace detail {
 				n0.add_dependency({&n1, dependency_kind::TRUE_DEP, dependency_origin::dataflow});
 				REQUIRE(n0.has_dependency(&n1, dependency_kind::TRUE_DEP));
 				REQUIRE(n1.has_dependent(&n0, dependency_kind::TRUE_DEP));
-				n0.remove_dependency(&n1);
-				REQUIRE_FALSE(n0.has_dependency(&n1));
-				REQUIRE_FALSE(n1.has_dependent(&n0));
 			}
 			// Pseudo- or anti-dependency is upgraded to true dependency
 			{

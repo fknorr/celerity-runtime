@@ -50,7 +50,6 @@ namespace detail {
 		// Should only be possible to add/remove dependencies using command_graph.
 		using parent_type = intrusive_graph_node<abstract_command>;
 		using parent_type::add_dependency;
-		using parent_type::remove_dependency;
 
 		command_id cid;
 		node_id nid;

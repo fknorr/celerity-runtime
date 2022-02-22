@@ -103,19 +103,6 @@ namespace detail {
 			pseudo_critical_path_length = std::max(pseudo_critical_path_length, static_cast<intrusive_graph_node*>(dep.node)->pseudo_critical_path_length + 1);
 		}
 
-		void remove_dependency(T* node) {
-			auto it = maybe_get_dep(dependencies, node);
-			if(it != std::nullopt) {
-				{
-					auto& dep_dependents = static_cast<intrusive_graph_node*>((*it)->node)->dependents;
-					auto this_it = maybe_get_dep(dep_dependents, static_cast<T*>(this));
-					assert(this_it != std::nullopt);
-					dep_dependents.erase(*this_it);
-				}
-				dependencies.erase(*it);
-			}
-		}
-
 		bool has_dependency(T* node, std::optional<dependency_kind> kind = std::nullopt) {
 			auto result = maybe_get_dep(dependencies, node);
 			if(result == std::nullopt) return false;

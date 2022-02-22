@@ -137,8 +137,6 @@ namespace detail {
 			execution_fronts[depender->get_nid()].erase(dependee);
 		}
 
-		void remove_dependency(abstract_command* depender, abstract_command* dependee) { depender->remove_dependency(dependee); }
-
 		const std::unordered_set<abstract_command*>& get_execution_front(node_id nid) const { return execution_fronts.at(nid); }
 
 	  private:
