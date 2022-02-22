@@ -342,7 +342,7 @@ namespace detail {
 				ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
 			} else {
 				for(auto& [bid, region] : tsk->get_buffer_capture_map()) {
-					requirements[bid][hipsycl::sycl::access_mode::read] = region;
+					requirements[bid][access_mode::read] = region;
 				}
 			}
 
