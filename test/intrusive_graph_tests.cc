@@ -35,6 +35,32 @@ namespace detail {
 				REQUIRE_FALSE(n0.has_dependency(&n2, dependency_kind::ANTI_DEP));
 				REQUIRE_FALSE(n2.has_dependent(&n0, dependency_kind::ANTI_DEP));
 			}
+
+			{
+				INFO("conflicts are upgraded to true dependencies");
+				my_graph_node n0, n1;
+				n0.add_conflict({&n1, conflict_origin::side_effect_order});
+				CHECK(n0.has_conflict(&n1));
+				CHECK(n1.has_conflict(&n0));
+				n1.add_dependency({&n0, dependency_kind::TRUE_DEP, dependency_origin::dataflow});
+				CHECK(!n0.has_conflict(&n1));
+				CHECK(!n1.has_conflict(&n0));
+				CHECK(n1.has_dependency(&n0, dependency_kind::TRUE_DEP));
+				CHECK(n0.has_dependent(&n1, dependency_kind::TRUE_DEP));
+			}
+
+			{
+				INFO("conflicts co-exist with anti dependencies");
+				my_graph_node n0, n1;
+				n0.add_conflict({&n1, conflict_origin::side_effect_order});
+				CHECK(n0.has_conflict(&n1));
+				CHECK(n1.has_conflict(&n0));
+				n1.add_dependency({&n0, dependency_kind::ANTI_DEP, dependency_origin::dataflow});
+				CHECK(n0.has_conflict(&n1));
+				CHECK(n1.has_conflict(&n0));
+				CHECK(n1.has_dependency(&n0, dependency_kind::ANTI_DEP));
+				CHECK(n0.has_dependent(&n1, dependency_kind::ANTI_DEP));
+			}
 		}
 
 		SECTION("anti-dependencies") {
@@ -54,6 +80,30 @@ namespace detail {
 				REQUIRE_FALSE(n1.has_dependent(&n0, dependency_kind::ANTI_DEP));
 				REQUIRE(n0.has_dependency(&n1, dependency_kind::TRUE_DEP));
 				REQUIRE(n1.has_dependent(&n0, dependency_kind::TRUE_DEP));
+			}
+		}
+
+		SECTION("conflicts") {
+			{
+				INFO("conflicts are not added if a true-dependency exists");
+				my_graph_node n0, n1;
+				n0.add_dependency({&n1, dependency_kind::TRUE_DEP, dependency_origin::dataflow});
+				n0.add_conflict({&n1, conflict_origin::side_effect_order});
+				CHECK(n0.has_dependency(&n1, dependency_kind::TRUE_DEP));
+				CHECK(n1.has_dependent(&n0, dependency_kind::TRUE_DEP));
+				CHECK(!n0.has_conflict(&n1));
+				CHECK(!n1.has_conflict(&n0));
+			}
+
+			{
+				INFO("but they are added if only an anti-dependency exists");
+				my_graph_node n0, n1;
+				n0.add_dependency({&n1, dependency_kind::ANTI_DEP, dependency_origin::dataflow});
+				n0.add_conflict({&n1, conflict_origin::side_effect_order});
+				CHECK(n0.has_dependency(&n1, dependency_kind::ANTI_DEP));
+				CHECK(n1.has_dependent(&n0, dependency_kind::ANTI_DEP));
+				CHECK(n0.has_conflict(&n1));
+				CHECK(n1.has_conflict(&n0));
 			}
 		}
 	}
