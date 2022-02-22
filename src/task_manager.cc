@@ -180,11 +180,15 @@ namespace detail {
 		}
 
 		if(auto cgid = tsk->get_collective_group_id(); cgid != 0) {
-			if(auto prev = last_collective_tasks.find(cgid); prev != last_collective_tasks.end()) {
-				add_dependency(tsk.get(), task_map.at(prev->second).get(), dependency_kind::TRUE_DEP, dependency_origin::collective_group_serialization);
-				last_collective_tasks.erase(prev);
+			auto& collective_state = collective_groups[cgid];
+			if(collective_state.had_tasks_before_current_epoch) {
+				// This true dependency would also be added through dependency_origin::last_epoch below, but we want to visualize the correct origin here
+				add_dependency(tsk.get(), task_map.at(epoch_for_new_tasks).get(), dependency_kind::TRUE_DEP, dependency_origin::collective_group_serialization);
 			}
-			last_collective_tasks.emplace(cgid, tid);
+			for(auto& other : collective_state.active_conflict_set) {
+				tsk->add_conflict({task_map.at(other).get(), conflict_origin::collective_group});
+			}
+			collective_state.active_conflict_set.insert(tsk->get_id());
 		}
 
 		// Tasks without any other true-dependency must depend on the last epoch to ensure they cannot be re-ordered before the epoch
@@ -234,8 +238,15 @@ namespace detail {
 				return {std::max(epoch, *tid)};
 			});
 		}
-		for(auto& [cgid, tid] : last_collective_tasks) {
-			tid = std::max(epoch, tid);
+		for(auto& [_, collective_state] : collective_groups) {
+			for(auto it = collective_state.active_conflict_set.begin(); it != collective_state.active_conflict_set.end();) {
+				if(*it < epoch) {
+					collective_state.had_tasks_before_current_epoch = true;
+					it = collective_state.active_conflict_set.erase(it);
+				} else {
+					++it;
+				}
+			}
 		}
 		for(auto& [hoid, tid] : host_object_last_effects) {
 			tid = std::max(epoch, tid);
