@@ -175,12 +175,13 @@ namespace detail {
 			const auto [hoid, order] = side_effect;
 			auto& ho = host_objects[hoid];
 			if(ho.last_serializing_effect_or_epoch && (order != experimental::side_effect_order::sequential || ho.active_concurrent_set.empty())) {
-				add_dependency(tsk.get(), task_map.at(*ho.last_serializing_effect_or_epoch).get(), dependency_kind::TRUE_DEP, dependency_origin::dataflow);
+				add_dependency(
+				    tsk.get(), task_map.at(*ho.last_serializing_effect_or_epoch).get(), dependency_kind::TRUE_DEP, dependency_origin::side_effect_order);
 			}
 			if(order == experimental::side_effect_order::sequential) {
 				for(const auto [earlier_tid, weaker_order] : ho.active_concurrent_set) {
 					assert(weaker_order < experimental::side_effect_order::sequential);
-					add_dependency(tsk.get(), task_map.at(earlier_tid).get(), dependency_kind::TRUE_DEP, dependency_origin::dataflow);
+					add_dependency(tsk.get(), task_map.at(earlier_tid).get(), dependency_kind::TRUE_DEP, dependency_origin::side_effect_order);
 				}
 				ho.active_concurrent_set.clear();
 				ho.last_serializing_effect_or_epoch = tsk->get_id();

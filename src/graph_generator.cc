@@ -569,12 +569,12 @@ namespace detail {
 				const auto [hoid, order] = side_effect;
 				auto& ho = nd.host_objects[hoid];
 				if(ho.last_serializing_effect_or_epoch && (order != experimental::side_effect_order::sequential || ho.active_concurrent_set.empty())) {
-					cdag.add_dependency(cmd, cdag.get(*ho.last_serializing_effect_or_epoch), dependency_kind::TRUE_DEP, dependency_origin::dataflow);
+					cdag.add_dependency(cmd, cdag.get(*ho.last_serializing_effect_or_epoch), dependency_kind::TRUE_DEP, dependency_origin::side_effect_order);
 				}
 				if(order == experimental::side_effect_order::sequential) {
 					for(const auto [earlier_cid, weaker_order] : ho.active_concurrent_set) {
 						assert(weaker_order < experimental::side_effect_order::sequential);
-						cdag.add_dependency(cmd, cdag.get(earlier_cid), dependency_kind::TRUE_DEP, dependency_origin::dataflow);
+						cdag.add_dependency(cmd, cdag.get(earlier_cid), dependency_kind::TRUE_DEP, dependency_origin::side_effect_order);
 					}
 					ho.active_concurrent_set.clear();
 					ho.last_serializing_effect_or_epoch = cmd->get_cid();
