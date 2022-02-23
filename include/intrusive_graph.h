@@ -157,6 +157,7 @@ namespace detail {
 		int get_pseudo_critical_path_length() const { return pseudo_critical_path_length; }
 
 		void add_conflict(conflict cf) {
+			assert(cf.node != this);
 			if(!has_conflict(cf.node) && !has_dependency(cf.node, dependency_kind::TRUE_DEP) && !has_dependent(cf.node, dependency_kind::TRUE_DEP)) {
 				assert(!cf.node->has_conflict(static_cast<T*>(this)));
 				conflicts.push_back(cf);
