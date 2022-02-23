@@ -167,6 +167,11 @@ namespace detail {
 			std::unordered_set<task_id> active_conflict_set;
 		};
 
+		struct host_object_state {
+			std::optional<task_id> last_serializing_effect_or_epoch;
+			std::unordered_map<task_id, experimental::side_effect_order> active_concurrent_set;
+		};
+
 		const size_t num_collective_nodes;
 		host_queue* queue;
 
@@ -186,8 +191,7 @@ namespace detail {
 
 		std::unordered_map<collective_group_id, collective_group_state> collective_groups;
 
-		// Stores which host object was last affected by which task.
-		std::unordered_map<host_object_id, task_id> host_object_last_effects;
+		std::unordered_map<host_object_id, host_object_state> host_objects;
 
 		// For simplicity we use a single mutex to control access to all task-related (i.e. the task graph, task_map, ...) data structures.
 		mutable std::mutex task_mutex;
