@@ -111,7 +111,8 @@ namespace detail {
 
 		struct flush_handle {
 			command_pkg pkg;
-			std::vector<command_id> dependencies;
+			size_t num_dependencies;
+			std::vector<command_id> refs;
 			MPI_Request req;
 			mpi_support::single_use_data_type data_type;
 		};
@@ -129,7 +130,7 @@ namespace detail {
 		 */
 		void maybe_destroy_runtime() const;
 
-		void flush_command(node_id target, const command_pkg& pkg, const std::vector<command_id>& dependencies);
+		void flush_command(node_id target, command_info cmd);
 
 		// ------------------------------------------ TESTING UTILS ------------------------------------------
 		// We have to jump through some hoops to be able to re-initialize the runtime for unit testing.

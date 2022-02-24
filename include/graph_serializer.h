@@ -3,7 +3,7 @@
 #include <functional>
 #include <vector>
 
-#include "types.h"
+#include "command.h"
 
 namespace celerity {
 namespace detail {
@@ -14,13 +14,13 @@ namespace detail {
 	class command_graph;
 
 	class graph_serializer {
-		using flush_callback = std::function<void(node_id, command_pkg, const std::vector<command_id>&)>;
+		using flush_callback = std::function<void(node_id, command_info cmd)>;
 
 	  public:
 		/*
 		 * @param flush_cb Callback invoked for each command that is being flushed
 		 */
-		graph_serializer(command_graph& cdag, flush_callback flush_cb) : cdag(cdag), flush_cb(flush_cb) {}
+		graph_serializer(command_graph& cdag, flush_callback flush_cb) : cdag(cdag), flush_cb(std::move(flush_cb)) {}
 
 		void flush(task_id tid);
 
@@ -37,7 +37,7 @@ namespace detail {
 
 
 		void flush_dependency(abstract_command* dep) const;
-		void serialize_and_flush(abstract_command* cmd, const std::vector<command_id>& dependencies) const;
+		void serialize_and_flush(abstract_command* cmd) const;
 	};
 
 } // namespace detail
