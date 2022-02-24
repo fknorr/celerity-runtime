@@ -47,6 +47,7 @@ namespace detail {
 		bool done = false;
 
 		std::queue<command_info> command_queue;
+		std::unordered_set<command_id> running_jobs;
 
 		while(!done || !jobs.empty()) {
 			// Bail if a device error ocurred.
@@ -79,6 +80,8 @@ namespace detail {
 					continue;
 				}
 
+				running_jobs.erase(it->first);
+
 				for(const auto& d : job_handle.dependents) {
 					assert(jobs.count(d) == 1);
 					jobs[d].unsatisfied_dependencies--;
@@ -102,10 +105,15 @@ namespace detail {
 				std::sort(ready_jobs.begin(), ready_jobs.end(),
 				    [this](command_id a, command_id b) { return jobs[a].cmd == command_type::PUSH && jobs[b].cmd != command_type::PUSH; });
 				for(command_id cid : ready_jobs) {
-					auto* job = jobs.at(cid).job.get();
-					job->start();
-					job->update();
-					if(isa<device_execute_job>(job)) { running_device_compute_jobs++; }
+					auto& job_handle = jobs.at(cid);
+					if(std::none_of(job_handle.conflicts.begin(), job_handle.conflicts.end(),
+					       [&](const command_id conflict) { return running_jobs.find(conflict) != running_jobs.end(); })) {
+						auto* job = job_handle.job.get();
+						job->start();
+						job->update();
+						running_jobs.insert(cid);
+						if(isa<device_execute_job>(job)) { running_device_compute_jobs++; }
+					}
 				}
 			}
 
