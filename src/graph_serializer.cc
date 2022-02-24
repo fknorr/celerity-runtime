@@ -57,7 +57,7 @@ namespace detail {
 
 		// Finally, flush all the task commands.
 		for(auto& cad : cmds_and_deps) {
-			serialize_and_flush(cad.first, cad.second);
+			serialize_and_flush(cad.first);
 		}
 	}
 
@@ -79,15 +79,16 @@ namespace detail {
 				assert(isa<reduction_command>(dep) && isa<await_push_command>(dd.node));
 				flush_dependency(dd.node);
 			}
-			if(!flushed_manually(dd.node)) { dep_deps.push_back(dd.node->get_cid()); }
 		}
-		serialize_and_flush(dep, dep_deps);
+		serialize_and_flush(dep);
 	}
 
-	void graph_serializer::serialize_and_flush(abstract_command* cmd, const std::vector<command_id>& dependencies) const {
+	void graph_serializer::serialize_and_flush(abstract_command* cmd) const {
 		assert(!cmd->is_flushed() && "Command has already been flushed.");
 
-		command_pkg pkg;
+		command_info serialized;
+		auto& [pkg, dependencies, conflicts] = serialized;
+
 		pkg.cid = cmd->get_cid();
 		if(const auto* tcmd = dynamic_cast<task_command*>(cmd)) { pkg.tid = tcmd->get_tid(); }
 
@@ -113,7 +114,15 @@ namespace detail {
 			assert(false && "Unknown command");
 		}
 
-		flush_cb(cmd->get_nid(), pkg, dependencies);
+		for(const auto& dep : cmd->get_dependencies()) {
+			if(!flushed_manually(dep.node)) { dependencies.push_back(dep.node->get_cid()); }
+		}
+
+		for(const auto& cf : cmd->get_conflicts()) {
+			conflicts.push_back(cf.node->get_cid());
+		}
+
+		flush_cb(cmd->get_nid(), std::move(serialized));
 		cmd->mark_as_flushed();
 	}
 

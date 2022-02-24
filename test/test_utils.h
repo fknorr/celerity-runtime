@@ -115,16 +115,16 @@ namespace test_utils {
 	class cdag_inspector {
 	  public:
 		auto get_cb() {
-			return [this](detail::node_id nid, detail::command_pkg pkg, const std::vector<detail::command_id>& dependencies) {
-				for(detail::command_id dep : dependencies) {
+			return [this](detail::node_id nid, detail::command_info cmd) {
+				for(detail::command_id dep : cmd.dependencies) {
 					// Sanity check: All dependencies must have already been flushed
 					(void)dep;
 					assert(commands.count(dep) == 1);
 				}
 
-				const detail::command_id cid = pkg.cid;
-				commands[cid] = {nid, pkg, dependencies};
-				if(pkg.tid) { by_task[*pkg.tid].insert(cid); }
+				const detail::command_id cid = cmd.pkg.cid;
+				commands[cid] = {nid, cmd.pkg, cmd.dependencies};
+				if(cmd.pkg.tid) { by_task[*cmd.pkg.tid].insert(cid); }
 				by_node[nid].insert(cid);
 			};
 		}

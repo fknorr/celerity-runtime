@@ -42,10 +42,6 @@ namespace detail {
 	void executor::run() {
 		bool done = false;
 
-		struct command_info {
-			command_pkg pkg;
-			std::vector<command_id> dependencies;
-		};
 		std::queue<command_info> command_queue;
 
 		while(!done || !jobs.empty()) {
@@ -115,15 +111,22 @@ namespace detail {
 			MPI_Improbe(MPI_ANY_SOURCE, mpi_support::TAG_CMD, MPI_COMM_WORLD, &flag, &msg, &status);
 			if(flag == 1) {
 				// Commands should be small enough to block here (TODO: Re-evaluate this now that we also transfer dependencies)
-				command_queue.emplace<command_info>({});
-				auto& pkg = command_queue.back().pkg;
-				auto& dependencies = command_queue.back().dependencies;
-				int count;
-				MPI_Get_count(&status, MPI_CHAR, &count);
-				const size_t deps_size = count - sizeof(command_pkg);
-				dependencies.resize(deps_size / sizeof(command_id));
-				const auto data_type = mpi_support::build_single_use_composite_type({{sizeof(command_pkg), &pkg}, {deps_size, dependencies.data()}});
+				auto& cmd = command_queue.emplace<command_info>({});
+				int num_bytes;
+				MPI_Get_count(&status, MPI_CHAR, &num_bytes);
+				size_t num_dependencies;
+				std::vector<command_id> refs((num_bytes - sizeof(command_pkg)) / sizeof(command_id));
+				const auto data_type = mpi_support::build_single_use_composite_type({
+				    {sizeof(command_pkg), &cmd.pkg},                //
+				    {sizeof(size_t), &num_dependencies},            //
+				    {refs.size() * sizeof(command_id), refs.data()} //
+				});
 				MPI_Mrecv(MPI_BOTTOM, 1, *data_type, &msg, &status);
+
+				assert(num_dependencies <= refs.size());
+				cmd.conflicts = std::vector<command_id>(refs.begin() + static_cast<std::vector<command_id>::difference_type>(num_dependencies), refs.end());
+				refs.resize(num_dependencies);
+				cmd.dependencies = std::move(refs);
 
 				if(!first_command_received) {
 					metrics.initial_idle.pause();
@@ -133,8 +136,8 @@ namespace detail {
 			}
 
 			if(jobs.size() < MAX_CONCURRENT_JOBS && !command_queue.empty()) {
-				const auto info = command_queue.front();
-				if(!handle_command(info.pkg, info.dependencies)) {
+				const auto& cmd = command_queue.front();
+				if(!handle_command(cmd)) {
 					// In case the command couldn't be handled, don't pop it from the queue.
 					continue;
 				}
@@ -147,28 +150,30 @@ namespace detail {
 		assert(running_device_compute_jobs == 0);
 	}
 
-	bool executor::handle_command(const command_pkg& pkg, const std::vector<command_id>& dependencies) {
+	bool executor::handle_command(const command_info& cmd) {
+		const auto& pkg = cmd.pkg;
+
 		// A worker might receive a task command before creating the corresponding horizon task itself
 		if(pkg.tid && !task_mngr.has_task(*pkg.tid)) { return false; }
 
 		switch(pkg.cmd) {
 		case command_type::HORIZON:
 			assert(pkg.tid.has_value());
-			create_job<horizon_job>(pkg, dependencies, task_mngr);
+			create_job<horizon_job>(cmd, task_mngr);
 			break;
 		case command_type::EPOCH:
 			assert(pkg.tid.has_value());
-			create_job<epoch_job>(pkg, dependencies, task_mngr);
+			create_job<epoch_job>(cmd, task_mngr);
 			break;
-		case command_type::PUSH: create_job<push_job>(pkg, dependencies, *btm, buffer_mngr); break;
-		case command_type::AWAIT_PUSH: create_job<await_push_job>(pkg, dependencies, *btm); break;
-		case command_type::REDUCTION: create_job<reduction_job>(pkg, dependencies, reduction_mngr); break;
+		case command_type::PUSH: create_job<push_job>(cmd, *btm, buffer_mngr); break;
+		case command_type::AWAIT_PUSH: create_job<await_push_job>(cmd, *btm); break;
+		case command_type::REDUCTION: create_job<reduction_job>(cmd, reduction_mngr); break;
 		case command_type::EXECUTION:
 			assert(pkg.tid.has_value());
 			if(task_mngr.get_task(*pkg.tid)->get_execution_target() == execution_target::HOST) {
-				create_job<host_execute_job>(pkg, dependencies, h_queue, task_mngr, buffer_mngr);
+				create_job<host_execute_job>(cmd, h_queue, task_mngr, buffer_mngr);
 			} else {
-				create_job<device_execute_job>(pkg, dependencies, d_queue, task_mngr, buffer_mngr, reduction_mngr, local_nid);
+				create_job<device_execute_job>(cmd, d_queue, task_mngr, buffer_mngr, reduction_mngr, local_nid);
 			}
 			break;
 		default: assert(!"Unexpected command");

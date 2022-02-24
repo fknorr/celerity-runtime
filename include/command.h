@@ -187,5 +187,11 @@ namespace detail {
 		command_data data;
 	};
 
+	struct command_info {
+		command_pkg pkg;
+		std::vector<command_id> dependencies;
+		std::vector<command_id> conflicts;
+	};
+
 } // namespace detail
 } // namespace celerity

@@ -78,22 +78,24 @@ namespace detail {
 		bool first_command_received = false;
 
 		template <typename Job, typename... Args>
-		void create_job(const command_pkg& pkg, const std::vector<command_id>& dependencies, Args&&... args) {
-			jobs[pkg.cid] = {std::make_unique<Job>(pkg, std::forward<Args>(args)...), pkg.cmd, {}, 0};
+		void create_job(const command_info& cmd, Args&&... args) {
+			const auto& [pkg, dependencies, conflicts] = cmd;
+			jobs[pkg.cid] = {std::make_unique<Job>(cmd.pkg, std::forward<Args>(args)...), pkg.cmd, {}, 0};
 
 			// If job doesn't exist we assume it has already completed.
 			// This is true as long as we're respecting task-graph (anti-)dependencies when processing tasks.
 			for(const command_id& d : dependencies) {
-				const auto it = jobs.find(d);
-				if(it != jobs.end()) {
+				if(const auto it = jobs.find(d); it != jobs.end()) {
 					it->second.dependents.push_back(pkg.cid);
 					jobs[pkg.cid].unsatisfied_dependencies++;
 				}
 			}
+
+			// TODO something with conflicts
 		}
 
 		void run();
-		bool handle_command(const command_pkg& pkg, const std::vector<command_id>& dependencies);
+		bool handle_command(const command_info& cmd);
 
 		void update_metrics();
 	};

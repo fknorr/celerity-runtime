@@ -126,8 +126,7 @@ namespace detail {
 		if(is_master_node()) {
 			cdag = std::make_unique<command_graph>();
 			ggen = std::make_shared<graph_generator>(num_nodes, *task_mngr, *reduction_mngr, *cdag);
-			gsrlzr = std::make_unique<graph_serializer>(*cdag,
-			    [this](node_id target, const command_pkg& pkg, const std::vector<command_id>& dependencies) { flush_command(target, pkg, dependencies); });
+			gsrlzr = std::make_unique<graph_serializer>(*cdag, [this](node_id target, command_info cmd) { flush_command(target, std::move(cmd)); });
 			schdlr = std::make_unique<scheduler>(*ggen, *gsrlzr, num_nodes);
 			task_mngr->register_task_callback([this](task_id tid) { schdlr->notify_task_created(tid); });
 		}
@@ -245,14 +244,20 @@ namespace detail {
 		instance.reset();
 	}
 
-	void runtime::flush_command(node_id target, const command_pkg& pkg, const std::vector<command_id>& dependencies) {
+	void runtime::flush_command(node_id target, command_info cmd) {
+		// We need to be able to reconstruct the variable number of dependencies and the variable number of conflicts from the struct size alone,
+		// so we concatenate both vectors and send the number of dependencies as an additional field.
+		auto& handle = active_flushes.emplace_back(flush_handle{cmd.pkg, cmd.dependencies.size(), std::move(cmd.dependencies), MPI_REQUEST_NULL, {}});
+		handle.refs.insert(handle.refs.end(), cmd.conflicts.begin(), cmd.conflicts.end());
+
 		// Even though command packages are small enough to use a blocking send we want to be able to send to the master node as well,
 		// which is why we have to use Isend after all. We also have to make sure that the buffer stays around until the send is complete.
-		active_flushes.push_back(flush_handle{pkg, dependencies, MPI_REQUEST_NULL, {}});
-		auto it = active_flushes.rbegin();
-		it->data_type = mpi_support::build_single_use_composite_type(
-		    {{sizeof(command_pkg), &it->pkg}, {sizeof(command_id) * dependencies.size(), it->dependencies.data()}});
-		MPI_Isend(MPI_BOTTOM, 1, *it->data_type, static_cast<int>(target), mpi_support::TAG_CMD, MPI_COMM_WORLD, &active_flushes.rbegin()->req);
+		handle.data_type = mpi_support::build_single_use_composite_type({
+		    {sizeof(command_pkg), &handle.pkg},                           //
+		    {sizeof(size_t), &handle.num_dependencies},                   //
+		    {sizeof(command_id) * handle.refs.size(), handle.refs.data()} //
+		});
+		MPI_Isend(MPI_BOTTOM, 1, *handle.data_type, static_cast<int>(target), mpi_support::TAG_CMD, MPI_COMM_WORLD, &handle.req);
 
 		// Cleanup finished transfers.
 		// Just check the oldest flush. Since commands are small this will stay in equilibrium fairly quickly.
