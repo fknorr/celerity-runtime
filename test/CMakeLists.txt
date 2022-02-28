@@ -37,6 +37,7 @@ set(TEST_TARGETS
   runtime_deprecation_tests
   sycl_tests
   task_graph_tests
+  executor_tests
 )
 
 add_library(test_main test_main.cc)
@@ -56,7 +57,7 @@ foreach(TEST_TARGET ${TEST_TARGETS})
   add_executable(${TEST_TARGET} $<TARGET_OBJECTS:${TEST_OBJ}>)
   target_link_libraries(${TEST_TARGET} PRIVATE test_main)
   set_test_target_parameters(${TEST_TARGET} "")
-  
+
   # We use the (undocumented) per-file function as we otherwise run into
   # problems with ComputeCpp's generated integration headers.
   ParseAndAddCatchTests_ParseFile(${TEST_SOURCE} ${TEST_TARGET})
