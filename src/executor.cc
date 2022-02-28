@@ -1,6 +1,7 @@
 #include "executor.h"
 
 #include <queue>
+#include <unordered_map>
 
 #include "distr_queue.h"
 #include "log.h"
@@ -12,6 +13,41 @@ constexpr size_t MAX_CONCURRENT_JOBS = 20;
 
 namespace celerity {
 namespace detail {
+	class conflict_graph {
+	  public:
+		void add_conflict(const command_id a, const command_id b) {
+			conflicts.emplace(a, b);
+			conflicts.emplace(b, a);
+		}
+
+		bool has_conflict(const command_id a, const command_id b) {
+			const auto [first, last] = conflicts.equal_range(a);
+			return std::find(first, last, conflict_pair{a, b}) != last;
+		}
+
+		template <typename Predicate>
+		bool has_conflict_if(const command_id cid, Predicate&& predicate) const {
+			const auto [first, last] = conflicts.equal_range(cid);
+			return std::find_if(first, last, [=](const conflict_pair& cf) { return predicate(cf.second); }) != last;
+		}
+
+		void erase_command(const command_id cid) {
+			for(auto it = conflicts.begin(); it != conflicts.end();) {
+				if(it->first == cid || it->second == cid) {
+					it = conflicts.erase(it);
+				} else {
+					++it;
+				}
+			}
+		}
+
+	  private:
+		using conflict_map = std::unordered_multimap<command_id, command_id>;
+		using conflict_pair = conflict_map::value_type;
+
+		conflict_map conflicts;
+	};
+
 	void duration_metric::resume() {
 		assert(!running);
 		current_start = clock.now();
@@ -47,7 +83,8 @@ namespace detail {
 		bool done = false;
 
 		std::queue<command_info> command_queue;
-		std::unordered_set<command_id> running_jobs;
+		std::unordered_set<command_id> executing_commands;
+		conflict_graph conflict_graph;
 
 		while(!done || !jobs.empty()) {
 			// Bail if a device error ocurred.
@@ -61,6 +98,7 @@ namespace detail {
 
 			std::vector<command_id> ready_jobs;
 			for(auto it = jobs.begin(); it != jobs.end();) {
+				const auto cid = it->first;
 				auto& job_handle = it->second;
 
 				if(job_handle.unsatisfied_dependencies > 0) {
@@ -69,7 +107,7 @@ namespace detail {
 				}
 
 				if(!job_handle.job->is_running()) {
-					if(std::find(ready_jobs.cbegin(), ready_jobs.cend(), it->first) == ready_jobs.cend()) { ready_jobs.push_back(it->first); }
+					if(std::find(ready_jobs.cbegin(), ready_jobs.cend(), cid) == ready_jobs.cend()) { ready_jobs.push_back(cid); }
 					++it;
 					continue;
 				}
@@ -80,7 +118,7 @@ namespace detail {
 					continue;
 				}
 
-				running_jobs.erase(it->first);
+				executing_commands.erase(cid);
 
 				for(const auto& d : job_handle.dependents) {
 					assert(jobs.count(d) == 1);
@@ -95,6 +133,7 @@ namespace detail {
 					done = true;
 				}
 
+				conflict_graph.erase_command(cid);
 				it = jobs.erase(it);
 			}
 
@@ -106,12 +145,12 @@ namespace detail {
 				    [this](command_id a, command_id b) { return jobs[a].cmd == command_type::PUSH && jobs[b].cmd != command_type::PUSH; });
 				for(command_id cid : ready_jobs) {
 					auto& job_handle = jobs.at(cid);
-					if(std::none_of(job_handle.conflicts.begin(), job_handle.conflicts.end(),
-					       [&](const command_id conflict) { return running_jobs.find(conflict) != running_jobs.end(); })) {
+					if(!conflict_graph.has_conflict_if(
+					       cid, [&](const command_id conflict) { return executing_commands.find(conflict) != executing_commands.end(); })) {
 						auto* job = job_handle.job.get();
 						job->start();
 						job->update();
-						running_jobs.insert(cid);
+						executing_commands.insert(cid);
 						if(isa<device_execute_job>(job)) { running_device_compute_jobs++; }
 					}
 				}
@@ -139,6 +178,10 @@ namespace detail {
 				cmd.conflicts = std::vector<command_id>(refs.begin() + static_cast<std::vector<command_id>::difference_type>(num_dependencies), refs.end());
 				refs.resize(num_dependencies);
 				cmd.dependencies = std::move(refs);
+
+				for(const auto conflict_cid : cmd.conflicts) {
+					conflict_graph.add_conflict(cmd.pkg.cid, conflict_cid);
+				}
 
 				if(!first_command_received) {
 					metrics.initial_idle.pause();
