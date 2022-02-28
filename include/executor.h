@@ -69,7 +69,6 @@ namespace detail {
 			std::unique_ptr<worker_job> job;
 			command_type cmd;
 			std::vector<command_id> dependents;
-			std::unordered_set<command_id> conflicts;
 			size_t unsatisfied_dependencies;
 		};
 
@@ -81,7 +80,7 @@ namespace detail {
 		template <typename Job, typename... Args>
 		void create_job(const command_info& cmd, Args&&... args) {
 			const auto& [pkg, dependencies, conflicts] = cmd;
-			auto& job = jobs[pkg.cid] = job_handle{std::make_unique<Job>(cmd.pkg, std::forward<Args>(args)...), pkg.cmd, {}, {}, 0};
+			auto& job = jobs[pkg.cid] = job_handle{std::make_unique<Job>(cmd.pkg, std::forward<Args>(args)...), pkg.cmd, {}, 0};
 
 			// If job doesn't exist we assume it has already completed.
 			// This is true as long as we're respecting task-graph (anti-)dependencies when processing tasks.
@@ -91,12 +90,6 @@ namespace detail {
 					it->second.dependents.push_back(pkg.cid);
 					job.unsatisfied_dependencies++;
 				}
-			}
-
-			for(const auto c : conflicts) {
-				assert(c != pkg.cid);
-				job.conflicts.insert(c);
-				if(const auto it = jobs.find(c); it != jobs.end()) { it->second.conflicts.insert(pkg.cid); }
 			}
 		}
 
