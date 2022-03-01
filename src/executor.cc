@@ -100,7 +100,7 @@ namespace detail {
 					done = true;
 				}
 
-				conflict_graph.erase_command(cid);
+				conflict_graph.forget_command(cid);
 				it = jobs.erase(it);
 			}
 
@@ -148,10 +148,7 @@ namespace detail {
 				cmd.dependencies = std::move(refs);
 
 				const auto cid = cmd.pkg.cid;
-				conflict_graph.add_command(cid);
 				for(const auto conflict_cid : cmd.conflicts) {
-					// TODO how to decide when to add/remove a command to/from the CG? Like for dependencies, we should not track conflicts to old commands
-					conflict_graph.add_command(conflict_cid);
 					conflict_graph.add_conflict(cid, conflict_cid);
 				}
 
