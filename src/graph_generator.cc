@@ -311,6 +311,8 @@ namespace detail {
 			buffer_requirements_map requirements;
 			std::unordered_map<buffer_id, reduction_id> buffer_reduction_map;
 			if(auto* ecmd = dynamic_cast<execution_command*>(cmd)) {
+				ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
+
 				requirements = get_buffer_requirements_for_mapped_access(tsk, ecmd->get_execution_range(), tsk->get_global_size());
 
 				// Any reduction that includes the value previously found in the buffer (i.e. the absence of sycl::property::reduction::initialize_to_identity)
@@ -336,8 +338,6 @@ namespace detail {
 					// TODO fill in debug build only
 					buffer_reduction_map.emplace(bid, rid);
 				}
-
-				ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
 			} else {
 				for(auto& [bid, region] : tsk->get_buffer_capture_map()) {
 					requirements[bid][access_mode::read] = region;
