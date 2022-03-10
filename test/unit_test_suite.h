@@ -11,6 +11,7 @@ extern bool print_graphs;
 // compiled as SYCL code.
 namespace detail {
 void test_run_started_callback();
+void test_case_partial_ended();
 void test_case_ended_callback();
 void test_run_ended_callback();
 } // namespace detail

@@ -1,8 +1,18 @@
 #include "unit_test_suite_celerity.h"
 
+#include <cassert>
+#include <limits>
+
+#include "log.h"
+#include "runtime.h"
+
 namespace detail {
 void test_run_started_callback() {
 	celerity::detail::runtime::enable_test_mode();
+}
+void test_case_partial_ended() {
+	// Reset REQUIRE_LOOP after each test case, section or generator value.
+	celerity::test_utils::require_loop_assertion_registry::get_instance().reset();
 }
 void test_case_ended_callback() {
 	if(celerity::detail::runtime::is_initialized()) { celerity::detail::runtime::teardown(); }
