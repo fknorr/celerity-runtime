@@ -652,7 +652,7 @@ namespace detail {
 		CHECK(has_dependency(tm, tid_g, tid_f, dependency_kind::ANTI_DEP));
 		CHECK(has_dependency(tm, tid_g, tid_epoch)); // needs a TRUE_DEP on barrier since it only has ANTI_DEPs otherwise
 
-		maybe_print_graph(tm);
+		test_utils::maybe_print_graph(tm);
 	}
 
 	TEST_CASE("inserting epochs resets the need for horizons", "[task_manager][task-graph][task-horizon][epoch]") {
@@ -668,7 +668,7 @@ namespace detail {
 
 		CHECK(task_manager_testspy::get_num_horizons(tm) == 0);
 
-		maybe_print_graph(tm);
+		test_utils::maybe_print_graph(tm);
 	}
 
 	TEST_CASE("a sequence of epochs without intermediate tasks has defined behavior", "[task_manager][task-graph][epoch]") {
@@ -687,7 +687,7 @@ namespace detail {
 			tid_before = tid;
 		}
 
-		maybe_print_graph(tm);
+		test_utils::maybe_print_graph(tm);
 	}
 
 } // namespace detail
