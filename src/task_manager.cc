@@ -81,7 +81,7 @@ namespace detail {
 		return result;
 	}
 
-	void task_manager::compute_dependencies(task_id tid) {
+	[[gnu::noinline]] void task_manager::compute_dependencies(task_id tid) {
 		using namespace cl::sycl::access;
 
 		const auto& tsk = task_map[tid];
@@ -216,7 +216,7 @@ namespace detail {
 		max_pseudo_critical_path_length = std::max(max_pseudo_critical_path_length, depender->get_pseudo_critical_path_length());
 	}
 
-	task_id task_manager::reduce_execution_front(std::unique_ptr<task> new_front) {
+	[[gnu::noinline]] task_id task_manager::reduce_execution_front(std::unique_ptr<task> new_front) {
 		// add dependencies from a copy of the front to this task
 		const auto current_front = execution_front;
 		for(task* front_task : current_front) {
@@ -226,8 +226,9 @@ namespace detail {
 		return register_task_internal(std::move(new_front)).get_id();
 	}
 
-	void task_manager::set_epoch_for_new_tasks(const task_id epoch) {
+	[[gnu::noinline]] void task_manager::set_epoch_for_new_tasks(const task_id epoch) {
 		// apply the new epoch to buffers_last_writers and last_collective_tasks data structs
+		assert(buffers_last_writers.size() <= 2);
 		for(auto& [_, buffer_region_map] : buffers_last_writers) {
 			buffer_region_map.apply_to_values([epoch](const std::optional<task_id> tid) -> std::optional<task_id> {
 				if(!tid) return tid;
@@ -244,7 +245,7 @@ namespace detail {
 		epoch_for_new_tasks = epoch;
 	}
 
-	task_id task_manager::generate_horizon_task() {
+	[[gnu::noinline]] task_id task_manager::generate_horizon_task() {
 		// we are probably overzealous in locking here
 		task_id tid;
 		{
@@ -261,7 +262,7 @@ namespace detail {
 		return tid;
 	}
 
-	task_id task_manager::generate_epoch_task(epoch_action action) {
+	[[gnu::noinline]] task_id task_manager::generate_epoch_task(epoch_action action) {
 		// we are probably overzealous in locking here
 		task_id tid;
 		{

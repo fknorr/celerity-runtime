@@ -238,15 +238,15 @@ TEST_CASE("generating large task graphs", "[benchmark][task-graph]") {
 	BENCHMARK("wave_sim topology") { generate_wave_sim_graph(task_manager_benchmark_context{}); };
 }
 
-TEMPLATE_TEST_CASE_SIG("generating large command graphs for N nodes", "[benchmark][command-graph]", ((size_t NumNodes), NumNodes), 1, 2, 4) {
-	BENCHMARK("soup topology") { generate_soup_graph(graph_generator_benchmark_context{NumNodes}); };
-	BENCHMARK("chain topology") { generate_chain_graph(graph_generator_benchmark_context{NumNodes}); };
-	BENCHMARK("map topology") { generate_tree_graph<TreeTopology::Map>(graph_generator_benchmark_context{NumNodes}); };
-	BENCHMARK("reduce topology") { generate_tree_graph<TreeTopology::Reduce>(graph_generator_benchmark_context{NumNodes}); };
+TEMPLATE_TEST_CASE_SIG("generating large command graphs for N nodes", "[benchmark][command-graph]", ((size_t NumNodes), NumNodes), 4) {
+	// BENCHMARK("soup topology") { generate_soup_graph(graph_generator_benchmark_context{NumNodes}); };
+	// BENCHMARK("chain topology") { generate_chain_graph(graph_generator_benchmark_context{NumNodes}); };
+	// BENCHMARK("map topology") { generate_tree_graph<TreeTopology::Map>(graph_generator_benchmark_context{NumNodes}); };
+	// BENCHMARK("reduce topology") { generate_tree_graph<TreeTopology::Reduce>(graph_generator_benchmark_context{NumNodes}); };
 	BENCHMARK("wave_sim topology") { generate_wave_sim_graph(graph_generator_benchmark_context{NumNodes}); };
 }
 
-TEMPLATE_TEST_CASE_SIG("processing large graphs with a scheduler thread for N nodes", "[benchmark][scheduler]", ((size_t NumNodes), NumNodes), 1, 2, 4) {
+TEMPLATE_TEST_CASE_SIG("processing large graphs with a scheduler thread for N nodes", "[benchmark][scheduler]", ((size_t NumNodes), NumNodes), 4) {
 	BENCHMARK("soup topology") { generate_soup_graph(scheduler_benchmark_context{NumNodes}); };
 	BENCHMARK("chain topology") { generate_chain_graph(scheduler_benchmark_context{NumNodes}); };
 	BENCHMARK("map topology") { generate_tree_graph<TreeTopology::Map>(scheduler_benchmark_context{NumNodes}); };

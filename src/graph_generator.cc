@@ -37,7 +37,7 @@ namespace detail {
 		buffer_states.emplace(bid, distributed_state{{range, std::move(all_nodes)}});
 	}
 
-	void graph_generator::per_node_data::set_epoch_for_new_commands(const command_id epoch) {
+	[[gnu::noinline]] void graph_generator::per_node_data::set_epoch_for_new_commands(const command_id epoch) {
 		// update "buffer_last_writer" and "last_collective_commands" structures to subsume pre-epoch commands
 		for(auto& blw_pair : buffer_last_writer) {
 			blw_pair.second.apply_to_values([epoch](const std::optional<command_id> cid) -> std::optional<command_id> {
@@ -55,7 +55,7 @@ namespace detail {
 		epoch_for_new_commands = epoch;
 	}
 
-	void graph_generator::build_task(const task_id tid, const std::vector<graph_transformer*>& transformers) {
+	[[gnu::noinline]] void graph_generator::build_task(const task_id tid, const std::vector<graph_transformer*>& transformers) {
 		std::lock_guard<std::mutex> lock(buffer_mutex);
 		// TODO: Maybe assert that this task hasn't been processed before
 
@@ -107,7 +107,7 @@ namespace detail {
 		prune_commands_before(min_epoch_to_prune_before);
 	}
 
-	void graph_generator::reduce_execution_front_to(abstract_command* const new_front) {
+	[[gnu::noinline]] void graph_generator::reduce_execution_front_to(abstract_command* const new_front) {
 		const auto nid = new_front->get_nid();
 		const auto previous_execution_front = cdag.get_execution_front(nid);
 		for(const auto front_cmd : previous_execution_front) {
@@ -116,7 +116,7 @@ namespace detail {
 		assert(cdag.get_execution_front(nid).size() == 1 && *cdag.get_execution_front(nid).begin() == new_front);
 	}
 
-	void graph_generator::generate_epoch_commands(const task* const tsk) {
+	[[gnu::noinline]] void graph_generator::generate_epoch_commands(const task* const tsk) {
 		assert(tsk->get_type() == task_type::EPOCH);
 
 		command_id min_new_epoch;
@@ -137,7 +137,7 @@ namespace detail {
 		min_epoch_for_new_commands = min_new_epoch;
 	}
 
-	void graph_generator::generate_horizon_commands(const task* const tsk) {
+	[[gnu::noinline]] void graph_generator::generate_horizon_commands(const task* const tsk) {
 		assert(tsk->get_type() == task_type::HORIZON);
 
 		std::optional<command_id> min_new_epoch;
@@ -167,7 +167,7 @@ namespace detail {
 		}
 	}
 
-	void graph_generator::generate_collective_execution_commands(const task* const tsk) {
+	[[gnu::noinline]] void graph_generator::generate_collective_execution_commands(const task* const tsk) {
 		assert(tsk->get_type() == task_type::COLLECTIVE);
 
 		for(size_t nid = 0; nid < num_nodes; ++nid) {
@@ -188,7 +188,7 @@ namespace detail {
 		}
 	}
 
-	void graph_generator::generate_independent_execution_commands(const task* const tsk) {
+	[[gnu::noinline]] void graph_generator::generate_independent_execution_commands(const task* const tsk) {
 		assert(tsk->get_type() == task_type::HOST_COMPUTE || tsk->get_type() == task_type::DEVICE_COMPUTE || tsk->get_type() == task_type::MASTER_NODE);
 
 		const auto sr = subrange<3>{tsk->get_global_offset(), tsk->get_global_size()};
@@ -262,7 +262,7 @@ namespace detail {
 		}
 	} // namespace
 
-	void graph_generator::process_task_data_requirements(task_id tid) {
+	[[gnu::noinline]] void graph_generator::process_task_data_requirements(task_id tid) {
 		const auto tsk = task_mngr.get_task(tid);
 
 		// Copy the list of task commands so we can safely modify the command graph in the loop below
@@ -572,7 +572,7 @@ namespace detail {
 		}
 	}
 
-	void graph_generator::process_task_side_effect_requirements(const task_id tid) {
+	[[gnu::noinline]] void graph_generator::process_task_side_effect_requirements(const task_id tid) {
 		const auto tsk = task_mngr.get_task(tid);
 		if(tsk->get_side_effect_map().empty()) return; // skip the loop in the common case
 
@@ -595,7 +595,7 @@ namespace detail {
 		}
 	}
 
-	void graph_generator::process_epoch_dependencies(const task_id tid) {
+	[[gnu::noinline]] void graph_generator::process_epoch_dependencies(const task_id tid) {
 		for(const auto cmd : cdag.task_commands(tid)) {
 			if(const auto deps = cmd->get_dependencies();
 			    std::none_of(deps.begin(), deps.end(), [](const abstract_command::dependency d) { return d.kind == dependency_kind::TRUE_DEP; })) {
@@ -606,7 +606,7 @@ namespace detail {
 		}
 	}
 
-	void graph_generator::prune_commands_before(const command_id min_epoch) {
+	[[gnu::noinline]] void graph_generator::prune_commands_before(const command_id min_epoch) {
 		if(min_epoch > min_epoch_last_pruned_before) {
 			cdag.erase_if([&](abstract_command* cmd) {
 				if(cmd->get_cid() < min_epoch) {

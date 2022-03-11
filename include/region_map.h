@@ -88,7 +88,7 @@ namespace detail {
 		}
 
 		template <typename Functor>
-		void apply_to_values(Functor f) {
+		[[gnu::noinline]] void apply_to_values(Functor f) {
 			for(auto& pair : region_values) {
 				pair.second = f(pair.second);
 			}
@@ -121,15 +121,25 @@ namespace detail {
 		 */
 		void collapse_regions() {
 			std::set<size_t> erase_indices;
+			size_t merges = 0;
 			for(auto i = 0u; i < region_values.size(); ++i) {
 				const auto& values_i = region_values[i].second;
 				for(auto j = i + 1; j < region_values.size(); ++j) {
 					const auto& values_j = region_values[j].second;
 					if(values_i == values_j) {
+						++merges;
 						region_values[i].first = GridRegion<3>::merge(region_values[i].first, region_values[j].first);
 						erase_indices.insert(j);
 					}
 				}
+			}
+
+			static size_t max_merges = 0;
+			if(merges > max_merges) {
+				FILE* f = fopen("/tmp/merges.log", "a");
+				fprintf(f, "%zu merges\n", merges);
+				fclose(f);
+				max_merges = merges;
 			}
 
 			for(auto it = erase_indices.rbegin(); it != erase_indices.rend(); ++it) {
