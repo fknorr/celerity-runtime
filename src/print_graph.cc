@@ -9,6 +9,8 @@
 #include "command.h"
 #include "command_graph.h"
 #include "grid.h"
+#include "task_manager.h"
+#include "reduction_manager.h"
 
 namespace celerity {
 namespace detail {
@@ -61,10 +63,45 @@ namespace detail {
 		return ss.str();
 	}
 
-	std::string get_command_label(const abstract_command* cmd) {
+	std::string make_requirements_label(const execution_command* const cmd, const task_manager& tm, const reduction_manager& rm) {
+		const auto tsk = tm.get_task(cmd->get_tid());
+
+		auto access_map = tsk->get_buffer_access_map();
+		std::unordered_map<buffer_id, reduction_id> reduction_map;
+		for(auto rid : tsk->get_reductions()) {
+			const auto reduction = rm.get_reduction(rid);
+			const auto bid = reduction.output_buffer_id;
+			const auto rmode = cmd->is_reduction_initializer() && reduction.initialize_from_buffer ? access_mode::read_write : access_mode::discard_write;
+			access_map.add_access(bid, std::make_unique<range_mapper<1, celerity::access::all<>>>(celerity::access::all{}, rmode, range<1>{1}));
+			reduction_map.emplace(bid, rid);
+		}
+
+		const auto sr = cmd->get_execution_range();
+		const auto global_size = tsk->get_global_size();
+
+		std::string debug_label;
+		for(const buffer_id bid : access_map.get_accessed_buffers()) {
+			std::unordered_map<cl::sycl::access::mode, GridRegion<3>> required_modes;
+			for(const auto mode : detail::access::all_modes) {
+				if(const auto req = access_map.get_requirements_for_access(bid, mode, tsk->get_dimensions(), sr, global_size); !req.empty()) {
+					if(const auto rit = reduction_map.find(bid); rit != reduction_map.end()) { debug_label += fmt::format("(R{}) ", rit->second); }
+					debug_label += fmt::format("{} {} {}\\n", detail::access::mode_traits::name(mode), bid, req);
+				}
+			}
+		}
+
+		for(const auto& side_effect : tsk->get_side_effect_map()) {
+			const auto [hoid, order] = side_effect;
+			debug_label += fmt::format("affect host-object {}\\n", hoid);
+		}
+
+		return debug_label;
+	}
+
+	std::string get_command_label(const abstract_command* cmd, const task_manager& tm, const reduction_manager& rm) {
 		std::string label = fmt::format("[{}] Node {}:\\n", cmd->get_cid(), cmd->get_nid());
 		if(const auto ecmd = dynamic_cast<const execution_command*>(cmd)) {
-			label += fmt::format("EXECUTION {}\\n{}", subrange_to_grid_box(ecmd->get_execution_range()), cmd->debug_label);
+			label += fmt::format("EXECUTION {}\\n{}", subrange_to_grid_box(ecmd->get_execution_range()), make_requirements_label(ecmd, tm, rm));
 		} else if(const auto pcmd = dynamic_cast<const push_command*>(cmd)) {
 			if(pcmd->get_rid()) { label += fmt::format("(R{}) ", pcmd->get_rid()); }
 			label += fmt::format("PUSH {} to {}\\n {}", pcmd->get_bid(), pcmd->get_target(), subrange_to_grid_box(pcmd->get_range()));
@@ -77,12 +114,12 @@ namespace detail {
 		} else if(const auto hcmd = dynamic_cast<const horizon_command*>(cmd)) {
 			label += "HORIZON";
 		} else {
-			return fmt::format("[{}] UNKNOWN\\n{}", cmd->get_cid(), cmd->debug_label);
+			label += "UNKNOWN";
 		}
 		return label;
 	}
 
-	std::string print_graph(const command_graph& cdag) {
+	std::string print_graph(const command_graph& cdag, const task_manager& tm, const reduction_manager& rm) {
 		std::ostringstream main_ss;
 		std::unordered_map<task_id, std::ostringstream> task_subgraph_ss;
 
@@ -90,7 +127,7 @@ namespace detail {
 			const char* colors[] = {"black", "crimson", "dodgerblue4", "goldenrod", "maroon4", "springgreen2", "tan1", "chartreuse2"};
 
 			std::unordered_map<std::string, std::string> props;
-			props["label"] = "\"" + get_command_label(cmd) + "\"";
+			props["label"] = "\"" + get_command_label(cmd, tm, rm) + "\"";
 			props["fontcolor"] = colors[cmd->get_nid() % (sizeof(colors) / sizeof(char*))];
 			if(isa<task_command>(cmd)) { props["shape"] = "box"; }
 

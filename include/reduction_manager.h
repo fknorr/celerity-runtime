@@ -71,7 +71,7 @@ namespace detail {
 			return reductions.count(rid) != 0;
 		}
 
-		reduction_info get_reduction(reduction_id rid) {
+		reduction_info get_reduction(reduction_id rid) const {
 			std::lock_guard lock{mutex};
 			return reductions.at(rid)->get_info();
 		}
