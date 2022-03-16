@@ -1004,5 +1004,52 @@ namespace detail {
 		dry_run_with_nodes(nodes);
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "fences extract data from host objects", "[runtime][fence]") {
+		experimental::host_object<int> ho{1};
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			experimental::side_effect e(ho, cgh);
+			cgh.host_task(on_master_node, [=] { *e = 2; });
+		});
+		int v = experimental::fence(q, ho);
+		CHECK(v == 2);
+
+		q.submit([=](handler& cgh) {
+			experimental::side_effect e(ho, cgh);
+			cgh.host_task(on_master_node, [=] { *e = 3; });
+		});
+		v = experimental::fence(q, ho);
+		CHECK(v == 3);
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "fences extract data from buffers", "[runtime][fence]") {
+		buffer<int, 1> buf(range<1>(3));
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, all{}, write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(int i = 0; i < 3; ++i) {
+					acc[i] = i + 1;
+				}
+			});
+		});
+
+		{
+			const auto sr = subrange<1>(1, 1);
+			const auto snapshot = experimental::fence(q, experimental::buffer_subrange(buf, sr));
+			CHECK(snapshot.get_subrange() == sr);
+			CHECK(snapshot.get_data() == std::vector{2});
+		}
+
+		{
+			const auto sr = subrange<1>(0, 3);
+			const auto [snapshot] = experimental::fence(q, std::tuple(experimental::buffer_subrange(buf, sr)));
+			CHECK(snapshot.get_subrange() == sr);
+			CHECK(snapshot.get_data().size() == 3);
+			CHECK(snapshot.get_data() == std::vector{1, 2, 3});
+		}
+	}
 } // namespace detail
 } // namespace celerity

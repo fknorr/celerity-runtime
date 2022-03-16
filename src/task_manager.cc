@@ -62,6 +62,7 @@ namespace detail {
 		for(auto m : modes) {
 			result = GridRegion<3>::merge(result, access_map.get_mode_requirements(bid, m, tsk.get_dimensions(), full_range, tsk.get_global_size()));
 		}
+		result = GridRegion<3>::merge(result, tsk.get_buffer_capture_map().get_read_requirements(bid));
 		return result;
 	}
 
@@ -69,14 +70,19 @@ namespace detail {
 		using namespace cl::sycl::access;
 
 		const auto& access_map = tsk.get_buffer_access_map();
+		const auto& capture_map = tsk.get_buffer_capture_map();
 
 		auto buffers = access_map.get_accessed_buffers();
 		for(const auto& reduction : tsk.get_reductions()) {
 			buffers.emplace(reduction.bid);
 		}
+		for(const auto& [bid, req] : capture_map) {
+			buffers.emplace(bid);
+		}
 
 		for(const auto bid : buffers) {
-			const auto modes = access_map.get_access_modes(bid);
+			auto modes = access_map.get_access_modes(bid);
+			if(capture_map.reads(bid)) { modes.emplace(access_mode::read); }
 
 			std::optional<reduction_info> reduction;
 			for(const auto& maybe_reduction : tsk.get_reductions()) {
@@ -249,6 +255,15 @@ namespace detail {
 		m_current_horizon_critical_path_length = m_max_pseudo_critical_path_length; // the explicit epoch resets the need to create horizons
 
 		invoke_callbacks(&new_epoch);
+		return tid;
+	}
+
+	task_id task_manager::generate_fence_task(buffer_capture_map buffer_captures, side_effect_map side_effects) {
+		auto reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
+		const auto tid = reserve.get_tid();
+		auto& tsk = register_task_internal(std::move(reserve), task::make_fence(tid, std::move(buffer_captures), std::move(side_effects)));
+		compute_dependencies(tsk);
+		invoke_callbacks(&tsk);
 		return tid;
 	}
 

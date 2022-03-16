@@ -98,6 +98,8 @@ namespace detail {
 		 */
 		task_id generate_epoch_task(epoch_action action);
 
+		task_id generate_fence_task(buffer_capture_map buffer_captures, side_effect_map side_effects);
+
 		/**
 		 * @brief Registers a new callback that will be called whenever a new task is created.
 		 */

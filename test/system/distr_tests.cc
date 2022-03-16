@@ -343,5 +343,34 @@ namespace detail {
 		});
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "fences transfer data correctly between nodes", "[fence]") {
+		buffer<int, 3> buf{{5, 4, 7}}; // Use an oddly-sized buffer to test the buffer subrange extraction logic
+		experimental::host_object<int> obj;
+
+		distr_queue q;
+		q.submit([=](handler& cgh) {
+			experimental::side_effect eff{obj, cgh};
+			cgh.host_task(experimental::collective, [=](experimental::collective_partition p) { *eff = static_cast<int>(p.get_node_index()); });
+		});
+		q.submit([=](handler& cgh) {
+			accessor acc{buf, cgh, celerity::access::all{}, write_only_host_task, no_init};
+			cgh.host_task(on_master_node, [=] { acc[{1, 2, 3}] = 42; });
+		});
+
+		const auto [gathered_from_master, host_rank] =
+		    experimental::fence(q, std::tuple{experimental::buffer_subrange(buf, subrange<3>({1, 2, 3}, {1, 1, 1})), obj});
+		const auto gathered_from_master_individual = experimental::fence(q, experimental::buffer_subrange(buf, subrange<3>({1, 2, 3}, {1, 1, 1})));
+		const auto host_rank_individual = experimental::fence(q, obj);
+
+		REQUIRE(gathered_from_master.get_range() == range<3>{1, 1, 1});
+		CHECK(gathered_from_master[0][0][0] == 42);
+		CHECK(gathered_from_master_individual == gathered_from_master);
+
+		int global_rank;
+		MPI_Comm_rank(MPI_COMM_WORLD, &global_rank);
+		CHECK(host_rank == global_rank);
+		CHECK(host_rank_individual == global_rank);
+	}
+
 } // namespace detail
 } // namespace celerity

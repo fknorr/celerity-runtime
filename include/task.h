@@ -1,6 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -52,6 +55,7 @@ namespace detail {
 		collective,     ///< host task with implicit 1d global size = #ranks and fixed split
 		master_node,    ///< zero-dimensional host task
 		horizon,        ///< task horizon
+		fence,          ///< fence task synchronizing between executor and main threads
 	};
 
 	enum class execution_target {
@@ -100,6 +104,29 @@ namespace detail {
 				throw std::runtime_error("Cannot launch command function with provided arguments");
 			}
 		}
+	};
+
+	class buffer_capture_map {
+	  public:
+		void add_read_access(const buffer_id bid, const subrange<3>& sr) {
+			auto& reg = m_regions[bid];
+			reg = GridRegion<3>::merge(reg, subrange_to_grid_box(sr));
+		}
+
+		GridRegion<3> get_read_requirements(const buffer_id bid) const {
+			if(const auto it = m_regions.find(bid); it != m_regions.end()) { return it->second; }
+			return {};
+		}
+
+		bool reads(buffer_id bid) const { return m_regions.count(bid) != 0; }
+
+		auto begin() const { return m_regions.begin(); }
+		auto end() const { return m_regions.end(); }
+
+		bool empty() const { return m_regions.empty(); }
+
+	  private:
+		std::unordered_map<buffer_id, GridRegion<3>> m_regions;
 	};
 
 	class buffer_access_map {
@@ -161,6 +188,44 @@ namespace detail {
 		cl::sycl::range<3> granularity{1, 1, 1};
 	};
 
+	class fence;
+
+	/**
+	 * RAII guard releasing a fence when it goes out of scope, even if copying of one of the captured objects throws.
+	 */
+	class [[nodiscard]] fence_guard {
+		friend class runtime;
+
+	  public:
+		fence_guard(const fence_guard&) = delete;
+		fence_guard& operator=(const fence_guard&) = delete;
+		~fence_guard();
+
+	  private:
+		friend class fence;
+
+		fence* m_fence;
+
+		explicit fence_guard(fence* fence) : m_fence(fence) {}
+	};
+
+	class fence {
+	  public:
+		void notify_arrived();
+		fence_guard await_arrived_and_acquire();
+		bool poll_released();
+
+	  private:
+		friend class fence_guard;
+
+		enum state { created, arrived, acquired, released };
+		std::atomic<state> m_state{created};
+		std::mutex m_mutex;
+		std::condition_variable m_state_change;
+
+		void release();
+	};
+
 	class task : public intrusive_graph_node<task> {
 	  public:
 		task_type get_type() const { return m_type; }
@@ -168,6 +233,8 @@ namespace detail {
 		task_id get_id() const { return m_tid; }
 
 		collective_group_id get_collective_group_id() const { return m_cgid; }
+
+		const buffer_capture_map& get_buffer_capture_map() const { return m_capture_map; }
 
 		const buffer_access_map& get_buffer_access_map() const { return m_access_map; }
 
@@ -203,6 +270,11 @@ namespace detail {
 
 		epoch_action get_epoch_action() const { return m_epoch_action; }
 
+		fence& get_fence() const {
+			assert(m_fence != nullptr);
+			return *m_fence;
+		}
+
 		// NOCOMMIT TODO We can do better with typings here...
 		template <typename... Args>
 		auto launch(Args&&... args) const {
@@ -224,18 +296,18 @@ namespace detail {
 		}
 
 		static std::unique_ptr<task> make_epoch(task_id tid, detail::epoch_action action) {
-			return std::unique_ptr<task>(new task(tid, task_type::epoch, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, action));
+			return std::unique_ptr<task>(new task(tid, task_type::epoch, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, {}, action));
 		}
 
 		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
 		    buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
-			return std::unique_ptr<task>(new task(tid, task_type::host_compute, collective_group_id{}, geometry, std::move(launcher), std::move(access_map),
+			return std::unique_ptr<task>(new task(tid, task_type::host_compute, collective_group_id{}, geometry, std::move(launcher), {}, std::move(access_map),
 			    std::move(side_effect_map), std::move(reductions), {}, {}));
 		}
 
 		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
 		    buffer_access_map access_map, reduction_set reductions, std::string debug_name) {
-			return std::unique_ptr<task>(new task(tid, task_type::device_compute, collective_group_id{}, geometry, std::move(launcher), std::move(access_map),
+			return std::unique_ptr<task>(new task(tid, task_type::device_compute, collective_group_id{}, geometry, std::move(launcher), {}, std::move(access_map),
 			    {}, std::move(reductions), std::move(debug_name), {}));
 		}
 
@@ -243,17 +315,22 @@ namespace detail {
 		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(cl::sycl::range<1>{num_collective_nodes}), {}, {1, 1, 1}};
 			return std::unique_ptr<task>(
-			    new task(tid, task_type::collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}, {}));
+			    new task(tid, task_type::collective, cgid, geometry, std::move(launcher), {}, std::move(access_map), std::move(side_effect_map), {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_master_node(
 		    task_id tid, std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::master_node, collective_group_id{}, task_geometry{}, std::move(launcher),
+			return std::unique_ptr<task>(new task(tid, task_type::master_node, collective_group_id{}, task_geometry{}, std::move(launcher), {},
 			    std::move(access_map), std::move(side_effect_map), {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_horizon_task(task_id tid) {
-			return std::unique_ptr<task>(new task(tid, task_type::horizon, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, {}));
+			return std::unique_ptr<task>(new task(tid, task_type::horizon, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, {}, {}));
+		}
+
+		static std::unique_ptr<task> make_fence(task_id tid, buffer_capture_map capture_map, side_effect_map side_effect_map) {
+			return std::unique_ptr<task>(new task(
+			    tid, task_type::fence, collective_group_id{}, task_geometry{}, nullptr, std::move(capture_map), {}, std::move(side_effect_map), {}, {}, {}));
 		}
 
 	  private:
@@ -262,21 +339,30 @@ namespace detail {
 		collective_group_id m_cgid;
 		task_geometry m_geometry;
 		std::unique_ptr<command_launcher_storage_base> m_launcher;
+		buffer_capture_map m_capture_map;
 		buffer_access_map m_access_map;
 		detail::side_effect_map m_side_effects;
 		reduction_set m_reductions;
 		std::string m_debug_name;
 		detail::epoch_action m_epoch_action;
+		std::unique_ptr<fence> m_fence;
 		std::vector<std::unique_ptr<hint_base>> m_hints;
 
 		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions, std::string debug_name,
-		    detail::epoch_action epoch_action)
-		    : m_tid(tid), m_type(type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),
-		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)), m_epoch_action(epoch_action) {
+		    buffer_capture_map capture_map, buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions,
+		    std::string debug_name, detail::epoch_action epoch_action)
+		    : m_tid(tid), m_type(type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_capture_map(std::move(capture_map)),
+		      m_access_map(std::move(access_map)), m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)),
+		      m_debug_name(std::move(debug_name)), m_epoch_action(epoch_action) {
+			// only compute tasks can be split
 			assert(type == task_type::host_compute || type == task_type::device_compute || get_granularity().size() == 1);
-			// Only host tasks can have side effects
-			assert(this->m_side_effects.empty() || type == task_type::host_compute || type == task_type::collective || type == task_type::master_node);
+			// only host tasks and fences can have side effects (fences have "reading" sequential side effects due to captures)
+			assert(m_side_effects.empty() || type == task_type::host_compute || type == task_type::collective || type == task_type::master_node
+			       || type == task_type::fence);
+			// only fences can have buffer captures
+			assert(m_capture_map.empty() || type == task_type::fence);
+
+			if(type == task_type::fence) { m_fence = std::make_unique<fence>(); }
 		}
 	};
 

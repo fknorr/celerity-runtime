@@ -171,6 +171,8 @@ namespace test_utils {
 	  public:
 		void add_side_effect(handler& cgh, const experimental::side_effect_order order) { (void)detail::add_requirement(cgh, m_id, order); }
 
+		detail::host_object_id get_id() const { return m_id; }
+
 	  private:
 		friend class mock_host_object_factory;
 		friend class ::dist_cdag_test_context;
@@ -348,6 +350,26 @@ namespace test_utils {
 			cgf(cgh);
 			cgh.host_task(spec, [](auto...) {});
 		});
+	}
+
+	inline detail::task_id add_fence_task(detail::task_manager& tm, mock_host_object ho) {
+		detail::side_effect_map side_effects;
+		side_effects.add_side_effect(ho.get_id(), experimental::side_effect_order::sequential);
+		return tm.generate_fence_task({}, std::move(side_effects));
+	}
+
+	template <int Dims>
+	inline detail::task_id add_fence_task(detail::task_manager& tm, mock_buffer<Dims> buf, subrange<Dims> sr) {
+		detail::buffer_capture_map buffer_captures;
+		buffer_captures.add_read_access(buf.get_id(), sr);
+		return tm.generate_fence_task(std::move(buffer_captures), {});
+	}
+
+	template <int Dims>
+	inline detail::task_id add_fence_task(detail::task_manager& tm, mock_buffer<Dims> buf) {
+		detail::buffer_capture_map buffer_captures;
+		buffer_captures.add_read_access(buf.get_id(), detail::subrange_cast<3>(subrange({}, buf.get_range())));
+		return tm.generate_fence_task(std::move(buffer_captures), {});
 	}
 
 	inline detail::task_id build_and_flush(cdag_test_context& ctx, size_t num_nodes, size_t num_chunks, detail::task_id tid) {

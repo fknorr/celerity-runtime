@@ -30,6 +30,7 @@ namespace detail {
 		case task_type::collective: return "collective host";
 		case task_type::master_node: return "master-node host";
 		case task_type::horizon: return "horizon";
+		case task_type::fence: return "fence";
 		default: return "unknown";
 		}
 	}
@@ -61,6 +62,10 @@ namespace detail {
 				// While uncommon, we do support chunks that don't require access to a particular buffer at all.
 				if(!req.empty()) { fmt::format_to(std::back_inserter(label), "<br/><i>{}</i> {} {}", detail::access::mode_traits::name(mode), bl, req); }
 			}
+		}
+
+		for(const auto& [bid, req] : tsk.get_buffer_capture_map()) {
+			fmt::format_to(std::back_inserter(label), "<br/><i>read</i> {} {}", get_buffer_label(bm, bid), req);
 		}
 
 		for(const auto& [hoid, order] : tsk.get_side_effect_map()) {
@@ -133,6 +138,8 @@ namespace detail {
 			fmt::format_to(std::back_inserter(label), "<b>reduction</b> R{}<br/> {} {}", reduction.rid, bl, req);
 		} else if(const auto hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 			label += "<b>horizon</b>";
+		} else if(const auto fcmd = dynamic_cast<const fence_command*>(&cmd)) {
+			label += "<b>fence</b>";
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";

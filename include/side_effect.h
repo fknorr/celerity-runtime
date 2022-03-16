@@ -15,19 +15,19 @@ namespace celerity::experimental {
 template <typename T, side_effect_order Order = side_effect_order::sequential>
 class side_effect {
   public:
-	using object_type = typename host_object<T>::object_type;
+	using instance_type = typename host_object<T>::instance_type;
 	constexpr static inline side_effect_order order = Order;
 
-	explicit side_effect(const host_object<T>& object, handler& cgh) : m_object{object} { detail::add_requirement(cgh, object.get_id(), order); }
+	explicit side_effect(const host_object<T>& object, handler& cgh) : m_object{object} { detail::add_requirement(cgh, detail::get_host_object_id(object), order); }
 
 	template <typename U = T>
-	std::enable_if_t<!std::is_void_v<U>, object_type>& operator*() const {
-		return *m_object.get_object();
+	std::enable_if_t<!std::is_void_v<U>, instance_type>& operator*() const {
+		return detail::get_host_object_instance(m_object);
 	}
 
 	template <typename U = T>
-	std::enable_if_t<!std::is_void_v<U>, object_type>* operator->() const {
-		return m_object.get_object();
+	std::enable_if_t<!std::is_void_v<U>, instance_type>* operator->() const {
+		return &detail::get_host_object_instance(m_object);
 	}
 
   private:

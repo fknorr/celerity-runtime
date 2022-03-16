@@ -52,27 +52,27 @@ void multiply(celerity::distr_queue queue, celerity::buffer<T, 2> mat_a, celerit
 	});
 }
 
+// TODO this should really reduce into a buffer<bool> on the device, but not all backends currently support reductions
 template <typename T>
-void verify(celerity::distr_queue queue, celerity::buffer<T, 2> mat_a_buf, bool& verification_passed) {
-	// allow_by_ref is safe here as long as the caller of verify() ensures that verification_passed lives until the next synchronization point
-	queue.submit(celerity::allow_by_ref, [=, &verification_passed](celerity::handler& cgh) {
-		celerity::accessor result{mat_a_buf, cgh, celerity::access::one_to_one{}, celerity::read_only_host_task};
+void verify(celerity::distr_queue& queue, celerity::buffer<T, 2> mat_c, celerity::buffer<bool> passed_buf) {
+	queue.submit([=](celerity::handler& cgh) {
+		celerity::accessor c{mat_c, cgh, celerity::access::one_to_one{}, celerity::read_only_host_task};
+		celerity::accessor passed{passed_buf, cgh, celerity::access::all{}, celerity::write_only_host_task, celerity::no_init};
 
-		cgh.host_task(mat_a_buf.get_range(), [=, &verification_passed](celerity::partition<2> part) {
-			auto sr = part.get_subrange();
+		cgh.host_task(mat_c.get_range(), [=](celerity::partition<2> part) {
+			passed[0] = true;
+			const auto& sr = part.get_subrange();
 			for(size_t i = sr.offset[0]; i < sr.offset[0] + sr.range[0]; ++i) {
-				for(size_t j = sr.offset[0]; j < sr.offset[0] + sr.range[0]; ++j) {
-					const float received = result[{i, j}];
+				for(size_t j = sr.offset[1]; j < sr.offset[1] + sr.range[1]; ++j) {
+					const float received = c[i][j];
 					const float expected = i == j;
 					if(expected != received) {
-						fprintf(stderr, "VERIFICATION FAILED for element %zu,%zu: %f (received) != %f (expected)\n", i, j, received, expected);
-						verification_passed = false;
-						break;
+						CELERITY_ERROR("Verification failed for element {},{}: {} (received) != {} (expected)", i, j, received, expected);
+						passed[0] = false;
 					}
 				}
-				if(!verification_passed) { break; }
 			}
-			if(verification_passed) { printf("VERIFICATION PASSED!\n"); }
+			if(passed[0]) { CELERITY_INFO("Verification passed for {}", part.get_subrange()); }
 		});
 	});
 }
@@ -88,6 +88,8 @@ int main() {
 	celerity::debug::set_buffer_name(mat_a_buf, "mat_a");
 	celerity::debug::set_buffer_name(mat_b_buf, "mat_b");
 
+	const auto before = std::chrono::steady_clock::now();
+
 	queue.slow_full_sync();
 	const auto before = std::chrono::steady_clock::now();
 
@@ -97,14 +99,14 @@ int main() {
 	multiply(queue, mat_a_buf, mat_b_buf, mat_c_buf);
 	multiply(queue, mat_b_buf, mat_c_buf, mat_a_buf);
 
-	queue.slow_full_sync();
-	const auto after = std::chrono::steady_clock::now();
+	celerity::buffer<bool> passed_buf(1);
+	verify(queue, mat_c_buf, passed_buf);
 
+	// The value of `passed` can differ between hosts if only part of the verification failed.
+	const auto passed = celerity::experimental::fence(queue, passed_buf);
+
+	const auto after = std::chrono::steady_clock::now();
 	fmt::print("Time: {}ms\n", std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count());
 
-	bool verification_passed = true;
-	verify(queue, mat_a_buf, verification_passed);
-	queue.slow_full_sync(); // Wait for verification_passed to become available
-
-	return verification_passed ? EXIT_SUCCESS : EXIT_FAILURE;
+	return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

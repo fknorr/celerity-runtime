@@ -64,5 +64,46 @@ namespace detail {
 		// TODO for multiple side effects on the same hoid, find the weakest order satisfying all of them
 		emplace(hoid, order);
 	}
+
+	fence_guard::~fence_guard() { m_fence->release(); }
+
+	void fence::notify_arrived() {
+		{
+			const std::lock_guard lock(m_mutex);
+			assert(m_state.load(std::memory_order_relaxed) == created);
+			m_state.store(arrived, std::memory_order_relaxed);
+		}
+		m_state_change.notify_all();
+	}
+
+	fence_guard fence::await_arrived_and_acquire() {
+		{
+			std::unique_lock lock(m_mutex);
+			state state_before;
+			while((state_before = m_state.load(std::memory_order_relaxed)) != arrived) {
+				assert(state_before == created);
+				m_state_change.wait(lock);
+			}
+			m_state.store(acquired, std::memory_order_relaxed);
+		}
+		m_state_change.notify_all();
+		return fence_guard(this);
+	}
+
+	bool fence::poll_released() {
+		const auto state = m_state.load(std::memory_order_relaxed);
+		assert(state == arrived || state == acquired || state == released);
+		return state == released;
+	}
+
+	void fence::release() {
+		{
+			const std::lock_guard lock(m_mutex);
+			assert(m_state.load(std::memory_order_relaxed) == acquired);
+			m_state.store(released, std::memory_order_relaxed);
+		}
+		m_state_change.notify_all();
+	}
+
 } // namespace detail
 } // namespace celerity
