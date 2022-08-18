@@ -78,7 +78,11 @@ namespace detail {
 				tsk_ptr = &task_ref;
 
 				compute_dependencies(task_ref);
-				if(m_queue) m_queue->require_collective_group(task_ref.get_collective_group_id());
+				if(m_queue) {
+					if(const auto* chtsk = dynamic_cast<const collective_host_task*>(tsk_ptr)) {
+						m_queue->require_collective_group(chtsk->get_collective_group_id());
+					}
+				}
 
 				// the following deletion is intentionally redundant with the one happening when waiting for free task slots
 				// we want to free tasks earlier than just when running out of slots,

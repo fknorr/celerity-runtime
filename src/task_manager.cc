@@ -10,7 +10,8 @@ namespace detail {
 	    : m_num_collective_nodes(num_collective_nodes), m_queue(queue), m_reduction_mngr(reduction_mgr) {
 		// We manually generate the initial epoch task, which we treat as if it has been reached immediately.
 		auto reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
-		m_task_buffer.put(std::move(reserve), task::make_epoch(initial_epoch_task, epoch_action::none));
+		m_task_buffer.put(
+		    std::move(reserve), std::make_unique<epoch_task>(initial_epoch_task, "init", buffer_access_map{}, side_effect_map{}, epoch_action::none));
 	}
 
 	void task_manager::add_buffer(buffer_id bid, const cl::sycl::range<3>& range, bool host_initialized) {
