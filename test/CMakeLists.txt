@@ -26,6 +26,7 @@ file(GLOB_RECURSE TEST_INCLUDES *.h)
 set(TEST_TARGETS
   accessor_tests
   buffer_manager_tests
+  distributed_graph_generation_tests
   graph_generation_tests
   graph_gen_granularity_tests
   graph_gen_reduction_tests
