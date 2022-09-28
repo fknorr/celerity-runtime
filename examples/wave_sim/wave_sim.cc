@@ -68,7 +68,9 @@ void stream_open(celerity::distr_queue& queue, size_t N, size_t num_samples, cel
 		celerity::experimental::side_effect os_eff{os, cgh};
 		cgh.host_task(celerity::on_master_node, [=] {
 			os_eff->open("wave_sim_result.bin", std::ios_base::out | std::ios_base::binary);
-			const struct { uint64_t n, t; } header{N, num_samples};
+			const struct {
+				uint64_t n, t;
+			} header{N, num_samples};
 			os_eff->write(reinterpret_cast<const char*>(&header), sizeof(header));
 		});
 	});
@@ -153,6 +155,9 @@ int main(int argc, char* argv[]) {
 		stream_append(queue, u, os); // Store initial state
 	}
 
+	queue.slow_full_sync();
+	const auto before = std::chrono::steady_clock::now();
+
 	auto t = 0.0;
 	size_t i = 0;
 	while(t < cfg.T) {
@@ -163,6 +168,11 @@ int main(int argc, char* argv[]) {
 		std::swap(u, up);
 		t += cfg.dt;
 	}
+
+	queue.slow_full_sync();
+	const auto after = std::chrono::steady_clock::now();
+
+	fmt::print("Time: {}ms\n", std::chrono::duration_cast<std::chrono::milliseconds>(after - before).count());
 
 	if(cfg.output_sample_rate > 0) { stream_close(queue, os); }
 
