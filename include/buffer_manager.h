@@ -90,6 +90,7 @@ namespace detail {
 		using buffer_lifecycle_callback = std::function<void(buffer_lifecycle_event, buffer_id)>;
 
 		struct buffer_info {
+			int dims = 0; // NOCOMMIT Added for cool region map w/o thinking about it too much. Is this redundant?
 			cl::sycl::range<3> range = {1, 1, 1};
 			size_t element_size = 0;
 			bool is_host_initialized;
@@ -125,7 +126,7 @@ namespace detail {
 			{
 				std::unique_lock lock(m_mutex);
 				bid = m_buffer_count++;
-				m_buffer_infos[bid] = buffer_info{range, sizeof(DataT), is_host_initialized};
+				m_buffer_infos[bid] = buffer_info{Dims, range, sizeof(DataT), is_host_initialized};
 				m_newest_data_location.emplace(bid, region_map<data_location>(range, data_location::nowhere));
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
