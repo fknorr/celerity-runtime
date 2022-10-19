@@ -611,7 +611,7 @@ namespace detail {
 
 	TEMPLATE_TEST_CASE_METHOD_SIG(
 	    dimension_runtime_fixture, "item::get_id() includes global offset, item::get_linear_id() does not", "[item]", ((int Dims), Dims), 1, 2, 3) {
-		distr_queue q;
+		distr_queue q{sycl::device{sycl::default_selector_v}}; // Initialize runtime with a single device so we don't get multiple chunks
 
 		const int n = 3;
 		const auto global_offset = detail::id_cast<Dims>(id<3>{4, 5, 6});
@@ -1192,7 +1192,7 @@ namespace detail {
 		const std::string dryrun_envvar_name = "CELERITY_DRY_RUN_NODES";
 		const auto ste = test_utils::set_test_env(dryrun_envvar_name, std::to_string(num_nodes));
 
-		distr_queue q;
+		distr_queue q{sycl::device{sycl::default_selector_v}}; // Initialize runtime with a single device so we don't get multiple chunks
 
 		auto& rt = runtime::get_instance();
 		auto& tm = rt.get_task_manager();
@@ -1315,7 +1315,7 @@ namespace detail {
 		distr_queue q;
 
 		q.submit([&](handler& cgh) {
-			accessor acc(buf, cgh, all{}, write_only, no_init);
+			accessor acc(buf, cgh, one_to_one{}, write_only, no_init);
 			cgh.parallel_for<class UKN(init)>(buf.get_range(), [=](celerity::item<2> item) { acc[item] = static_cast<int>(item.get_linear_id()); });
 		});
 

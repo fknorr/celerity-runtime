@@ -316,22 +316,26 @@ namespace test_utils {
 		}
 	};
 
-	class device_queue_fixture : public mpi_fixture { // mpi_fixture for config
+	class local_devices_fixture : public mpi_fixture { // mpi_fixture for config
 	  public:
-		~device_queue_fixture() { get_device_queue().get_sycl_queue().wait_and_throw(); }
+		local_devices_fixture() : m_cfg(nullptr, nullptr) { m_devices.init(m_cfg, detail::auto_select_device{}); }
 
-		detail::device_queue& get_device_queue() {
-			if(!m_dq) {
-				m_cfg = std::make_unique<detail::config>(nullptr, nullptr);
-				m_dq = std::make_unique<detail::device_queue>();
-				m_dq->init(*m_cfg, detail::auto_select_device{});
+		~local_devices_fixture() {
+			for(size_t i = 0; i < m_devices.num_compute_devices(); ++i) {
+				m_devices.get_device_queue(i).wait();
 			}
-			return *m_dq;
+		}
+
+		detail::local_devices& get_local_devices() { return m_devices; }
+
+		detail::device_queue& get_default_device_queue() {
+			assert(m_devices.num_compute_devices() > 0);
+			return m_devices.get_device_queue(0);
 		}
 
 	  private:
-		std::unique_ptr<detail::config> m_cfg;
-		std::unique_ptr<detail::device_queue> m_dq;
+		detail::config m_cfg;
+		detail::local_devices m_devices;
 	};
 
 	// Printing of graphs can be enabled using the "--print-graphs" command line flag

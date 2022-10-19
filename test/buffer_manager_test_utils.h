@@ -49,13 +49,13 @@ namespace test_utils {
 		q.wait_and_throw();
 	}
 
-	class buffer_manager_fixture : public device_queue_fixture {
+	class buffer_manager_fixture : public local_devices_fixture {
 	  public:
 		enum class access_target { host, device };
 
 		void initialize(detail::buffer_manager::buffer_lifecycle_callback cb = [](detail::buffer_manager::buffer_lifecycle_event, detail::buffer_id) {}) {
 			assert(!m_bm);
-			m_bm = std::make_unique<detail::buffer_manager>(get_device_queue(), cb);
+			m_bm = std::make_unique<detail::buffer_manager>(get_local_devices(), cb);
 			m_bm->enable_test_mode();
 		}
 
@@ -69,13 +69,29 @@ namespace test_utils {
 			return access_target::host;
 		}
 
+		// Access buffer on default (=first) device, wait for async transfers to complete
+		template <typename DataT, int Dims>
+		detail::buffer_manager::access_info access_default_device_buffer_sync(const detail::buffer_id bid, const access_mode mode, const subrange<Dims>& sr) {
+			auto info = m_bm->access_device_buffer<DataT, Dims>(get_default_device_queue().get_memory_id(), bid, mode, sr);
+			info.pending_transfers.wait();
+			return std::move(info);
+		}
+
+		// Access buffer on host, wait for async transfers to complete
+		template <typename DataT, int Dims>
+		detail::buffer_manager::access_info access_host_buffer_sync(const detail::buffer_id bid, const access_mode mode, const subrange<Dims>& sr) {
+			auto info = m_bm->access_host_buffer<DataT, Dims>(bid, mode, sr);
+			info.pending_transfers.wait();
+			return std::move(info);
+		}
+
 		template <typename DataT, int Dims>
 		range<Dims> get_backing_buffer_range(detail::buffer_id bid, access_target tgt, range<Dims> range, id<Dims> offset) {
 			if(tgt == access_target::host) {
 				const auto info = m_bm->access_host_buffer<DataT, Dims>(bid, access_mode::read, {offset, range});
 				return detail::range_cast<Dims>(info.backing_buffer_range);
 			}
-			const auto info = m_bm->access_device_buffer<DataT, Dims>(bid, access_mode::read, {offset, range});
+			const auto info = access_default_device_buffer_sync<DataT, Dims>(bid, access_mode::read, {offset, range});
 			return detail::range_cast<Dims>(info.backing_buffer_range);
 		}
 
@@ -100,10 +116,10 @@ namespace test_utils {
 			}
 
 			if(tgt == access_target::device) {
-				const auto info = m_bm->access_device_buffer<DataT, Dims>(bid, Mode, {offset, range});
+				const auto info = access_default_device_buffer_sync<DataT, Dims>(bid, Mode, {offset, range});
 				const auto buf_offset = detail::id_cast<Dims>(info.backing_buffer_offset);
 				const auto buf_range = detail::range_cast<Dims>(info.backing_buffer_range);
-				get_device_queue()
+				get_default_device_queue()
 				    .submit([&](sycl::handler& cgh) {
 					    auto ptr = info.ptr;
 					    cgh.parallel_for<KernelName>(sycl::range<Dims>(range), [=](sycl::id<Dims> s_global_idx) {
@@ -138,12 +154,12 @@ namespace test_utils {
 				return result;
 			}
 
-			const auto info = m_bm->access_device_buffer<DataT, Dims>(bid, access_mode::read, {offset, range});
+			const auto info = access_default_device_buffer_sync<DataT, Dims>(bid, access_mode::read, {offset, range});
 			const auto buf_offset = info.backing_buffer_offset;
 			const auto buf_range = info.backing_buffer_range;
 			cl::sycl::buffer<ReduceT, 1> result_buf(1); // Use 1-dimensional instead of 0-dimensional since it's NYI in hipSYCL as of 0.8.1
 			// Simply do a serial reduction on the device as well
-			get_device_queue()
+			get_default_device_queue()
 			    .submit([&](cl::sycl::handler& cgh) {
 				    auto ptr = static_cast<DataT*>(info.ptr);
 				    auto result_acc = result_buf.template get_access<cl::sycl::access::mode::read_write>(cgh);
@@ -164,7 +180,7 @@ namespace test_utils {
 			    .wait();
 
 			ReduceT result;
-			get_device_queue()
+			get_default_device_queue()
 			    .submit([&](cl::sycl::handler& cgh) {
 				    auto acc = result_buf.template get_access<cl::sycl::access::mode::read>(cgh);
 				    cgh.copy(acc, &result);
@@ -176,7 +192,7 @@ namespace test_utils {
 
 		template <typename DataT, int Dims, access_mode Mode>
 		accessor<DataT, Dims, Mode, target::device> get_device_accessor(detail::buffer_id bid, const range<Dims>& range, const id<Dims>& offset) {
-			auto buf_info = m_bm->access_device_buffer<DataT, Dims>(bid, Mode, {offset, range});
+			auto buf_info = access_default_device_buffer_sync<DataT, Dims>(bid, Mode, {offset, range});
 			return detail::accessor_testspy::make_device_accessor<DataT, Dims, Mode>(static_cast<DataT*>(buf_info.ptr),
 			    detail::id_cast<Dims>(buf_info.backing_buffer_offset), detail::range_cast<Dims>(buf_info.backing_buffer_range));
 		}

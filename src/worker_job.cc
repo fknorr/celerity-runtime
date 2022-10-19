@@ -110,7 +110,7 @@ namespace detail {
 			// If any other tasks are currently using this buffer for reading, we run into problems.
 			// To avoid this, we use a very crude buffer locking mechanism for now.
 			// FIXME: Get rid of this, replace with finer grained approach.
-			if(m_buffer_mngr.is_locked(data.bid)) { return false; }
+			if(m_buffer_mngr.is_locked(data.bid, 0 /* FIXME: Host memory id - should use host_queue::get_memory_id */)) { return false; }
 
 			CELERITY_TRACE("Submit buffer to BTM");
 			m_data_handle = m_btm.push(pkg);
@@ -149,7 +149,7 @@ namespace detail {
 			assert(tsk->get_execution_target() == execution_target::host);
 			assert(!data.initialize_reductions); // For now, we do not support reductions in host tasks
 
-			if(!m_buffer_mngr.try_lock(pkg.cid, tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
 
 			CELERITY_TRACE("Scheduling host task in thread pool");
 
@@ -190,7 +190,7 @@ namespace detail {
 
 	std::string device_execute_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<execution_data>(pkg.data);
-		return fmt::format("DEVICE_EXECUTE {}", data.sr);
+		return fmt::format("DEVICE_EXECUTE {} on device {}", data.sr, m_queue.get_id());
 	}
 
 	bool device_execute_job::execute(const command_pkg& pkg) {
@@ -199,7 +199,7 @@ namespace detail {
 			auto tsk = m_task_mngr.get_task(data.tid);
 			assert(tsk->get_execution_target() == execution_target::device);
 
-			if(!m_buffer_mngr.try_lock(pkg.cid, tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
 
 			CELERITY_TRACE("Submit kernel to SYCL");
 
@@ -215,7 +215,7 @@ namespace detail {
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
 
 				try {
-					const auto info = m_buffer_mngr.access_device_buffer(bid, mode, sr);
+					const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr);
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 					auto* const oob_idx = sycl::malloc_host<id<3>>(2, m_queue.get_sycl_queue());
 					assert(oob_idx != nullptr);
@@ -237,12 +237,17 @@ namespace detail {
 			for(size_t i = 0; i < reductions.size(); ++i) {
 				const auto& rd = reductions[i];
 				const auto mode = rd.init_from_buffer ? access_mode::read_write : access_mode::discard_write;
-				const auto info = m_buffer_mngr.access_device_buffer(rd.bid, mode, subrange<3>{{}, range<3>{1, 1, 1}});
+				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), rd.bid, mode, subrange<3>{{}, range<3>{1, 1, 1}});
 				reduction_ptrs.push_back(info.ptr);
 			}
 
 			closure_hydrator::get_instance().arm(target::device, std::move(accessor_infos));
 			m_event = tsk->launch(m_queue, data.sr, reduction_ptrs, data.initialize_reductions);
+
+			// {
+			// 	const auto msg = fmt::format("{}: Job submitted to SYCL (blocked on transfers until now!)", pkg.cid);
+			// 	TracyMessage(msg.c_str(), msg.size());
+			// }
 
 			m_submitted = true;
 			CELERITY_TRACE("Kernel submitted to SYCL");
