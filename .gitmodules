@@ -8,3 +8,6 @@
 	path = vendor/small_vector
 	url = https://github.com/gharveymn/small_vector.git
 	branch = main
+[submodule "vendor/tracy"]
+	path = vendor/tracy
+	url = https://github.com/wolfpld/tracy.git

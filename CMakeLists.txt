@@ -165,6 +165,17 @@ if(WIN32)
 endif()
 add_submodule_directory(vendor/Catch2)
 
+include(FetchContent)
+set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  tracy
+  GIT_REPOSITORY ${CMAKE_CURRENT_LIST_DIR}/vendor/tracy
+  GIT_TAG v0.9
+  GIT_SHALLOW TRUE
+  GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable(tracy)
+
 configure_file(include/version.h.in include/version.h @ONLY)
 
 # Add includes to library so they show up in IDEs
@@ -248,7 +259,14 @@ target_link_libraries(celerity_runtime PUBLIC
   MPI::MPI_CXX
   spdlog::spdlog
   ${SYCL_LIB}
+  Tracy::TracyClient
 )
+
+if(MSVC)
+  target_compile_options(celerity_runtime PUBLIC /FI"${CMAKE_CURRENT_LIST_DIR}/include/tracy.h")
+else()
+  target_compile_options(celerity_runtime PUBLIC -include "${CMAKE_CURRENT_LIST_DIR}/include/tracy.h")
+endif()
 
 # For debug builds, we set the CELERITY_DETAIL_ENABLE_DEBUG preprocessor flag,
 # which allows Celerity to control debug functionality within headers regardless
