@@ -502,3 +502,16 @@ TEST_CASE("fences introduce dependencies on buffers", "[distributed_graph_genera
 		CHECK(dctx.query(tid_fence, nid).have_successors(dctx.query(tid_b, nid)));
 	}
 }
+
+TEST_CASE("overlapping read/write access to the same buffer doesn't generate intra-task dependencies between chunks on the same worker") {
+	dist_cdag_test_context dctx(1, 2);
+
+	const auto test_range = range<1>(128);
+	auto buf = dctx.create_buffer(test_range, true);
+	dctx.device_compute(test_range).read(buf, acc::neighborhood<1>{1}).discard_write(buf, acc::one_to_one{}).submit();
+	CHECK(dctx.query().find_all(command_type::execution).count() == 2);
+	dctx.query().find_all(command_type::execution).for_each_command([](const auto& q) {
+		// Both commands should only depend on initial epoch, not each other
+		CHECK(q.find_predecessors().count() == 1);
+	});
+}

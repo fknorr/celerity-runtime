@@ -66,6 +66,7 @@ TEST_CASE("discarding the reduction result from a execution_command will not gen
 
 TEST_CASE("distributed_graph_generator does not generate multiple reduction commands for redundant requirements",
     "[distributed_graph_generator][command-graph][reductions]") {
+	// NOCOMMIT Also test for multiple devices (GENERATE?) - does not work yet, we expect a single reduction initializer chunk
 	dist_cdag_test_context dctx(4);
 
 	const range<1> test_range = {64};

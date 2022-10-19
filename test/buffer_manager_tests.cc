@@ -3,6 +3,7 @@
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -128,11 +129,11 @@ namespace detail {
 		};
 
 		SECTION("when using device buffers") {
-			run_test([&bm, bid](size_t range, size_t offset) { return bm.access_device_buffer<float, 1>(bid, access_mode::read, {offset, range}); });
+			run_test([this, bid](size_t range, size_t offset) { return access_default_device_buffer_sync<float, 1>(bid, access_mode::read, {offset, range}); });
 		}
 
 		SECTION("when using host buffers") {
-			run_test([&bm, bid](size_t range, size_t offset) { return bm.access_host_buffer<float, 1>(bid, access_mode::read, {offset, range}); });
+			run_test([this, bid](size_t range, size_t offset) { return access_host_buffer_sync<float, 1>(bid, access_mode::read, {offset, range}); });
 		}
 	}
 
@@ -151,11 +152,11 @@ namespace detail {
 		};
 
 		SECTION("when using device buffers") {
-			run_test([&bm, bid](size_t range, size_t offset) { return bm.access_device_buffer<float, 1>(bid, access_mode::read, {offset, range}); });
+			run_test([this, bid](size_t range, size_t offset) { return access_default_device_buffer_sync<float, 1>(bid, access_mode::read, {offset, range}); });
 		}
 
 		SECTION("when using host buffers") {
-			run_test([&bm, bid](size_t range, size_t offset) { return bm.access_host_buffer<float, 1>(bid, access_mode::read, {offset, range}); });
+			run_test([this, bid](size_t range, size_t offset) { return access_host_buffer_sync<float, 1>(bid, access_mode::read, {offset, range}); });
 		}
 	}
 
@@ -365,7 +366,7 @@ namespace detail {
 	TEST_CASE_METHOD(
 	    test_utils::buffer_manager_fixture, "buffer_manager remembers coherency replications between consecutive accesses", "[buffer_manager][performance]") {
 		auto& bm = get_buffer_manager();
-		auto& dq = get_device_queue();
+		auto& dq = get_default_device_queue();
 
 		auto bid = bm.register_buffer<size_t, 1>(range<3>(32, 1, 1));
 
@@ -374,7 +375,7 @@ namespace detail {
 
 			// Remember host buffer for later.
 			{
-				auto info = bm.access_host_buffer<size_t, 1>(bid, access_mode::discard_write, {0, 32});
+				auto info = access_host_buffer_sync<size_t, 1>(bid, access_mode::discard_write, {0, 32});
 				host_ptr = static_cast<size_t*>(info.ptr);
 			}
 
@@ -383,7 +384,7 @@ namespace detail {
 			    bid, access_target::host, {32}, {}, [](id<1> idx, size_t& value) { value = idx[0]; });
 
 			// Read buffer on device. This makes the device buffer coherent with the host buffer.
-			bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {0, 32});
+			(void)access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 32});
 
 			// Here we cheat: We override the host data using the pointer we kept from before, without telling the BM (which is not allowed).
 			for(size_t i = 0; i < 32; ++i) {
@@ -392,7 +393,7 @@ namespace detail {
 
 			// Now access the buffer on device again for reading and writing. The buffer manager should realize that the newest version is already on the
 			// device. After this, the device holds the newest version of the buffer.
-			bm.access_device_buffer<size_t, 1>(bid, access_mode::read_write, {0, 32});
+			(void)access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read_write, {0, 32});
 
 			// Verify that the data is still what we expect.
 			{
@@ -420,7 +421,7 @@ namespace detail {
 
 			// Remember device buffer for later.
 			{
-				auto info = bm.access_device_buffer<size_t, 1>(bid, access_mode::discard_write, {0, 32});
+				auto info = access_default_device_buffer_sync<size_t, 1>(bid, access_mode::discard_write, {0, 32});
 				device_ptr = static_cast<size_t*>(info.ptr);
 			}
 
@@ -429,7 +430,7 @@ namespace detail {
 			    bid, access_target::device, {32}, {}, [](id<1> idx, size_t& value) { value = idx[0]; });
 
 			// Read buffer on host. This makes the host buffer coherent with the device buffer.
-			bm.access_host_buffer<size_t, 1>(bid, access_mode::read, {0, 32});
+			(void)access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 32});
 
 			// Here we cheat: We override the device data using the pointer we kept from before, without telling the BM (which is not allowed).
 			dq.get_sycl_queue()
@@ -440,11 +441,11 @@ namespace detail {
 
 			// Now access the buffer on host again for reading and writing. The buffer manager should realize that the newest version is already on the
 			// host. After this, the host holds the newest version of the buffer.
-			bm.access_host_buffer<size_t, 1>(bid, access_mode::read_write, {0, 32});
+			(void)access_host_buffer_sync<size_t, 1>(bid, access_mode::read_write, {0, 32});
 
 			// Verify that the data is still what we expect.
 			{
-				auto info = bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {0, 32});
+				auto info = access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 32});
 				std::vector<size_t> tmp_host(info.backing_buffer_range.size());
 				dq.get_sycl_queue().memcpy(tmp_host.data(), info.ptr, sizeof(size_t) * info.backing_buffer_range.size()).wait();
 				for(size_t i = 0; i < 32; ++i) {
@@ -462,7 +463,7 @@ namespace detail {
 
 			// Access host buffer. This should still contain the original data.
 			{
-				auto info = bm.access_host_buffer<size_t, 1>(bid, access_mode::read, {0, 32});
+				auto info = access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 32});
 				for(size_t i = 0; i < 32; ++i) {
 					REQUIRE_LOOP(static_cast<size_t*>(info.ptr)[i] == i);
 				}
@@ -667,7 +668,7 @@ namespace detail {
 			    bid, get_other_target(tgt), {32}, {0}, [](id<1> idx, size_t& value) { value = idx[0]; });
 			buffer_for_each<size_t, 1, access_mode::read_write, class UKN(update_buffer)>(bid, tgt, {32}, {0}, [](id<1> idx, size_t& value) { value += 1; });
 			std::vector<size_t> data(32);
-			bm.get_buffer_data(bid, {{0, 0, 0}, {32, 1, 1}}, data.data());
+			bm.get_buffer_data(bid, {{0, 0, 0}, {32, 1, 1}}, data.data()).wait();
 			for(size_t i = 0; i < 32; ++i) {
 				REQUIRE_LOOP(data[i] == i + 1);
 			}
@@ -682,7 +683,7 @@ namespace detail {
 			buffer_for_each<size_t, 1, access_mode::discard_write, class UKN(write_second_half)>(
 			    bid, access_target::host, {16}, {16}, [](id<1> idx, size_t& value) { value = idx[0] * 2; });
 			std::vector<size_t> data(32);
-			bm.get_buffer_data(bid, {{0, 0, 0}, {32, 1, 1}}, data.data());
+			bm.get_buffer_data(bid, {{0, 0, 0}, {32, 1, 1}}, data.data()).wait();
 			for(size_t i = 0; i < 32; ++i) {
 				REQUIRE_LOOP(data[i] == (i < 16 ? i : 2 * i));
 			}
@@ -724,39 +725,41 @@ namespace detail {
 	TEST_CASE_METHOD(test_utils::buffer_manager_fixture, "buffer_manager correctly handles locking", "[buffer_manager]") {
 		auto& bm = get_buffer_manager();
 
+		const memory_id mid = 1;
+
 		// Check that basic functionality works.
-		REQUIRE(bm.try_lock(0, {}));
+		REQUIRE(bm.try_lock(0, mid, {}));
 		bm.unlock(0);
 
 		// Lock buffers 1 - 3.
-		CHECK(bm.try_lock(1, {1, 2, 3}));
+		CHECK(bm.try_lock(1, mid, {1, 2, 3}));
 
 		// No combination of these buffers can be locked.
-		REQUIRE(!bm.try_lock(2, {1}));
-		REQUIRE(!bm.try_lock(2, {1, 2}));
-		REQUIRE(!bm.try_lock(2, {1, 3}));
-		REQUIRE(!bm.try_lock(2, {2}));
-		REQUIRE(!bm.try_lock(2, {2, 3}));
-		REQUIRE(!bm.try_lock(2, {3}));
+		REQUIRE(!bm.try_lock(2, mid, {1}));
+		REQUIRE(!bm.try_lock(2, mid, {1, 2}));
+		REQUIRE(!bm.try_lock(2, mid, {1, 3}));
+		REQUIRE(!bm.try_lock(2, mid, {2}));
+		REQUIRE(!bm.try_lock(2, mid, {2, 3}));
+		REQUIRE(!bm.try_lock(2, mid, {3}));
 
 		// However another buffer can be locked.
-		REQUIRE(bm.try_lock(2, {4}));
+		REQUIRE(bm.try_lock(2, mid, {4}));
 
 		// A single locked buffer prevents an entire set of otherwise unlocked buffers from being locked.
-		REQUIRE(!bm.try_lock(3, {4, 5, 6}));
+		REQUIRE(!bm.try_lock(3, mid, {4, 5, 6}));
 
 		// After unlocking buffer 4 can be locked again.
 		bm.unlock(2);
-		REQUIRE(bm.try_lock(3, {4, 5, 6}));
+		REQUIRE(bm.try_lock(3, mid, {4, 5, 6}));
 
 		// But 1 - 3 are still locked.
-		REQUIRE(!bm.try_lock(4, {1}));
-		REQUIRE(!bm.try_lock(4, {2}));
-		REQUIRE(!bm.try_lock(4, {3}));
+		REQUIRE(!bm.try_lock(4, mid, {1}));
+		REQUIRE(!bm.try_lock(4, mid, {2}));
+		REQUIRE(!bm.try_lock(4, mid, {3}));
 
 		// Now they can be locked again as well.
 		bm.unlock(1);
-		REQUIRE(bm.try_lock(4, {3}));
+		REQUIRE(bm.try_lock(4, mid, {3}));
 	}
 
 	TEST_CASE_METHOD(test_utils::buffer_manager_fixture, "buffer_manager throws if accessing locked buffers in unsupported order", "[buffer_manager]") {
@@ -764,8 +767,8 @@ namespace detail {
 		auto bid = bm.register_buffer<size_t, 1>(range<3>(128, 1, 1));
 
 		task_id tid = 0;
-		auto run_test = [&](auto test_fn) {
-			CHECK(bm.try_lock(tid, {bid}));
+		auto run_test = [&](const memory_id mid, auto test_fn) {
+			CHECK(bm.try_lock(tid, mid, {bid}));
 			test_fn();
 			bm.unlock(tid);
 			tid++;
@@ -779,37 +782,37 @@ namespace detail {
 		    "This is currently unsupported. Try changing the order of your calls to buffer::get_access.";
 
 		SECTION("when running on device, requiring resize on second access") {
-			run_test([&]() {
-				bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {0, 64});
-				REQUIRE_THROWS_WITH((bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {0, 128})), resize_error_msg);
+			run_test(get_default_device_queue().get_memory_id(), [&]() {
+				(void)access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 64});
+				REQUIRE_THROWS_WITH((access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 128})), resize_error_msg);
 			});
 		}
 
 		SECTION("when running on host, requiring resize on second access") {
-			run_test([&]() {
-				bm.access_host_buffer<size_t, 1>(bid, access_mode::read, {0, 64});
-				REQUIRE_THROWS_WITH((bm.access_host_buffer<size_t, 1>(bid, access_mode::read, {0, 128})), resize_error_msg);
+			run_test(host_memory_id, [&]() {
+				(void)access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 64});
+				REQUIRE_THROWS_WITH((access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 128})), resize_error_msg);
 			});
 		}
 
 		SECTION("when running on device, using consumer after discard access") {
-			run_test([&]() {
-				bm.access_device_buffer<size_t, 1>(bid, access_mode::discard_write, {0, 64});
-				REQUIRE_THROWS_WITH((bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {0, 64})), discard_error_msg);
+			run_test(get_default_device_queue().get_memory_id(), [&]() {
+				(void)access_default_device_buffer_sync<size_t, 1>(bid, access_mode::discard_write, {0, 64});
+				REQUIRE_THROWS_WITH((access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 64})), discard_error_msg);
 			});
 		}
 
 		SECTION("when running on host, using consumer after discard access") {
-			run_test([&]() {
-				bm.access_host_buffer<size_t, 1>(bid, access_mode::discard_write, {0, 64});
-				REQUIRE_THROWS_WITH((bm.access_host_buffer<size_t, 1>(bid, access_mode::read, {0, 64})), discard_error_msg);
+			run_test(host_memory_id, [&]() {
+				(void)access_host_buffer_sync<size_t, 1>(bid, access_mode::discard_write, {0, 64});
+				REQUIRE_THROWS_WITH((access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {0, 64})), discard_error_msg);
 			});
 		}
 	}
 
 	TEST_CASE_METHOD(test_utils::buffer_manager_fixture, "accessor correctly handles backing buffer offsets", "[accessor][buffer_manager]") {
 		auto& bm = get_buffer_manager();
-		auto& dq = get_device_queue();
+		auto& dq = get_default_device_queue();
 		auto bid = bm.register_buffer<size_t, 2>(range<3>(64, 32, 1));
 
 		SECTION("when using device buffers") {
@@ -822,7 +825,7 @@ namespace detail {
 
 			test_utils::run_parallel_for<class UKN(write_buf)>(dq.get_sycl_queue(), range, offset, [=](id<2> id) { acc[id] = id[0] + id[1]; });
 
-			auto buf_info = bm.access_host_buffer<size_t, 2>(bid, access_mode::read, {{32, 0}, {32, 32}});
+			auto buf_info = access_host_buffer_sync<size_t, 2>(bid, access_mode::read, {{32, 0}, {32, 32}});
 			for(size_t i = 32; i < 64; ++i) {
 				for(size_t j = 0; j < 32; ++j) {
 					REQUIRE_LOOP(
@@ -839,7 +842,7 @@ namespace detail {
 					acc[{i, j}] = i + j;
 				}
 			}
-			auto buf_info = bm.access_host_buffer<size_t, 2>(bid, access_mode::read, {{32, 0}, {32, 32}});
+			auto buf_info = access_host_buffer_sync<size_t, 2>(bid, access_mode::read, {{32, 0}, {32, 32}});
 			for(size_t i = 32; i < 64; ++i) {
 				for(size_t j = 0; j < 32; ++j) {
 					REQUIRE_LOOP(
@@ -851,7 +854,7 @@ namespace detail {
 
 	TEST_CASE_METHOD(test_utils::buffer_manager_fixture, "accessor supports SYCL special member and hidden friend functions", "[accessor]") {
 		auto& bm = get_buffer_manager();
-		auto& dq = get_device_queue();
+		auto& dq = get_default_device_queue();
 
 		auto bid_a = bm.register_buffer<size_t, 1>(range<3>(32, 1, 1));
 		auto bid_b = bm.register_buffer<size_t, 1>(range<3>(32, 1, 1));
@@ -1054,7 +1057,7 @@ namespace detail {
 
 		const auto access_1_empty = access_1_sr.range.size() == 0;
 		CAPTURE(access_1_empty);
-		const auto backing_buffer_1 = bm.access_device_buffer<int, 2>(bid, access_mode::discard_write, access_1_sr);
+		const auto backing_buffer_1 = access_default_device_buffer_sync<int, 2>(bid, access_mode::discard_write, access_1_sr);
 		auto* const backing_buffer_1_ptr = backing_buffer_1.ptr;
 		if(access_1_empty) {
 			CHECK(backing_buffer_1.backing_buffer_range.size() == 0);
@@ -1065,7 +1068,7 @@ namespace detail {
 
 		const auto access_2_empty = access_2_sr.range.size() == 0;
 		CAPTURE(access_2_empty);
-		const auto backing_buffer_2 = bm.access_device_buffer<int, 2>(bid, access_mode::write, access_2_sr);
+		const auto backing_buffer_2 = access_default_device_buffer_sync<int, 2>(bid, access_mode::write, access_2_sr);
 		auto* const backing_buffer_2_ptr = backing_buffer_2.ptr;
 		if(access_2_empty) {
 			CHECK(backing_buffer_2_ptr == backing_buffer_1_ptr); // no re-allocation was made
@@ -1088,8 +1091,8 @@ namespace detail {
 		CHECK(detail::runtime::get_instance().get_buffer_manager().get_debug_name(detail::get_buffer_id(buff_a)) == buff_name);
 	}
 
-	TEST_CASE_METHOD(test_utils::device_queue_fixture, "device_queue allows to allocate device memory and query usage", "[device_queue]") {
-		auto& dq = get_device_queue();
+	TEST_CASE_METHOD(test_utils::local_devices_fixture, "device_queue allows to allocate device memory and query usage", "[device_queue]") {
+		auto& dq = get_default_device_queue();
 		const size_t ten_mib = 1024ul * 1024ul * 10ul;
 		auto alloc1 = dq.malloc<char>(ten_mib);
 		CHECK(alloc1.size_bytes == ten_mib);
@@ -1102,11 +1105,11 @@ namespace detail {
 		dq.free(alloc2);
 	}
 
-	TEST_CASE_METHOD(test_utils::device_queue_fixture, "device_queue throws on allocation if device is out of memory", "[device_queue]") {
+	TEST_CASE_METHOD(test_utils::local_devices_fixture, "device_queue throws on allocation if device is out of memory", "[device_queue]") {
 #if CELERITY_DPCPP
 		SKIP("DPC++ swaps to system memory instead of failing");
 #else
-		auto& dq = get_device_queue();
+		auto& dq = get_default_device_queue();
 		const auto one_quarter = dq.get_global_memory_total_size_bytes() / 4;
 		// The device queue expects the user to keep track of memory usage (and asserts that an allocation will fit),
 		// so we have to allocate manually through SYCL to trigger an OOM error.
@@ -1115,8 +1118,9 @@ namespace detail {
 		CHECK(ptr != nullptr);
 		auto alloc1 = dq.malloc<char>(one_quarter);
 		CHECK_THROWS_MATCHES(dq.malloc<char>(2 * one_quarter), allocation_error,
-		    Catch::Matchers::Message(fmt::format("Allocation of {} bytes failed; likely out of memory. Currently allocated: {} out of {} bytes.",
-		        2 * one_quarter, one_quarter, dq.get_global_memory_total_size_bytes())));
+		    Catch::Matchers::Message(
+		        fmt::format("Allocation of {} bytes on device {} (memory {}) failed; likely out of memory. Currently allocated: {} out of {} bytes.",
+		            2 * one_quarter, dq.get_id(), dq.get_memory_id(), one_quarter, dq.get_global_memory_total_size_bytes())));
 		dq.free(alloc1);
 		sycl::free(ptr, my_queue);
 		auto alloc2 = dq.malloc<char>(2 * one_quarter);
@@ -1129,9 +1133,9 @@ namespace detail {
 
 		// Set memory usage limit to something low so the test doesn't run forever
 		const size_t buf_size_bytes = 100 * sizeof(size_t);
-		REQUIRE(buf_size_bytes < get_device_queue().get_global_memory_total_size_bytes());
+		REQUIRE(buf_size_bytes < get_default_device_queue().get_global_memory_total_size_bytes());
 		bm.set_max_device_global_memory_usage(
-		    static_cast<double>(buf_size_bytes) / static_cast<double>(get_device_queue().get_global_memory_total_size_bytes()));
+		    static_cast<double>(buf_size_bytes) / static_cast<double>(get_default_device_queue().get_global_memory_total_size_bytes()));
 
 		const auto one_quarter_elements = buf_size_bytes / (4 * sizeof(size_t));
 		const auto bid = bm.register_buffer<size_t, 1>(range<3>(4 * one_quarter_elements, 1, 1));
@@ -1139,7 +1143,7 @@ namespace detail {
 		// Initialize buffer to use 75% of available device memory
 		buffer_for_each<size_t, 1, access_mode::discard_write, class UKN(write_linear_id)>(
 		    bid, access_target::device, {3 * one_quarter_elements}, {0}, [](id<1> idx, size_t& value) { value = idx[0]; });
-		const auto dinfo1 = bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {{}, {3 * one_quarter_elements}});
+		const auto dinfo1 = access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {{}, {3 * one_quarter_elements}});
 
 		test_utils::log_capture lc(spdlog::level::warn);
 
@@ -1149,7 +1153,7 @@ namespace detail {
 			    value *= 2;
 			    if(idx[0] == 3 * one_quarter_elements) { value = 1337; }
 		    });
-		const auto dinfo2 = bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {{}, {3 * one_quarter_elements + 1}});
+		const auto dinfo2 = access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {{}, {3 * one_quarter_elements + 1}});
 
 		// Sanity check: Did we actually reallocate the buffer?
 		CHECK_FALSE((dinfo1.ptr == dinfo2.ptr && dinfo1.backing_buffer_offset == dinfo2.backing_buffer_offset
@@ -1173,9 +1177,9 @@ namespace detail {
 
 		// Set memory usage limit to something low so the test doesn't run forever
 		const size_t buf_size_bytes = 100 * sizeof(size_t);
-		REQUIRE(buf_size_bytes < get_device_queue().get_global_memory_total_size_bytes());
+		REQUIRE(buf_size_bytes < get_default_device_queue().get_global_memory_total_size_bytes());
 		bm.set_max_device_global_memory_usage(
-		    static_cast<double>(buf_size_bytes) / static_cast<double>(get_device_queue().get_global_memory_total_size_bytes()));
+		    static_cast<double>(buf_size_bytes) / static_cast<double>(get_default_device_queue().get_global_memory_total_size_bytes()));
 
 		const auto one_quarter_elements = buf_size_bytes / (4 * sizeof(size_t));
 		const auto bid = bm.register_buffer<size_t, 1>(range<3>(4 * one_quarter_elements, 1, 1));
@@ -1183,24 +1187,24 @@ namespace detail {
 		// Initialize full buffer on host with known values
 		buffer_for_each<size_t, 1, access_mode::discard_write, class UKN(write_linear_id)>(
 		    bid, access_target::host, {4 * one_quarter_elements}, {0}, [](id<1> idx, size_t& value) { value = idx[0]; });
-		const auto hinfo1 = bm.access_host_buffer<size_t, 1>(bid, access_mode::read, {{}, {4 * one_quarter_elements}});
+		const auto hinfo1 = access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {{}, {4 * one_quarter_elements}});
 
 		// Allocate 0-75 of buffer on device
 		buffer_for_each<size_t, 1, access_mode::read_write, class UKN(update)>(
 		    bid, access_target::device, {3 * one_quarter_elements}, {0}, [](id<1> idx, size_t& value) { value *= 2; });
-		const auto dinfo1 = bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {{}, {3 * one_quarter_elements}});
+		const auto dinfo1 = access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {{}, {3 * one_quarter_elements}});
 
 		// Now access 25-75 + 1, forcing reallocation. Important: Use discarding access mode so 25-75 does not need to be retained on host
 		buffer_for_each<size_t, 1, access_mode::discard_write, class UKN(overwrite)>(
 		    bid, access_target::device, {2 * one_quarter_elements + 1}, {one_quarter_elements}, [](id<1> idx, size_t& value) { value = 3 * idx[0]; });
-		const auto dinfo2 = bm.access_device_buffer<size_t, 1>(bid, access_mode::read, {{one_quarter_elements}, {2 * one_quarter_elements + 1}});
+		const auto dinfo2 = access_default_device_buffer_sync<size_t, 1>(bid, access_mode::read, {{one_quarter_elements}, {2 * one_quarter_elements + 1}});
 
 		// Sanity check: Did we actually reallocate the buffer?
 		CHECK_FALSE((dinfo1.ptr == dinfo2.ptr && dinfo1.backing_buffer_offset == dinfo2.backing_buffer_offset
 		             && dinfo1.backing_buffer_range == dinfo2.backing_buffer_range));
 
 		// Access full buffer on host
-		const auto hinfo2 = bm.access_host_buffer<size_t, 1>(bid, access_mode::read, {{}, {100}});
+		const auto hinfo2 = access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {{}, {100}});
 		// Host buffer should not have been reallocated
 		CHECK((hinfo1.ptr == hinfo2.ptr && hinfo1.backing_buffer_offset == hinfo2.backing_buffer_offset
 		       && hinfo1.backing_buffer_range == hinfo2.backing_buffer_range));
@@ -1225,23 +1229,23 @@ namespace detail {
 
 		// Set memory usage limit to something low so the test doesn't run forever
 		const size_t buf_size_bytes = 100 * sizeof(size_t);
-		REQUIRE(buf_size_bytes < get_device_queue().get_global_memory_total_size_bytes());
+		REQUIRE(buf_size_bytes < get_default_device_queue().get_global_memory_total_size_bytes());
 		bm.set_max_device_global_memory_usage(
-		    static_cast<double>(buf_size_bytes) / static_cast<double>(get_device_queue().get_global_memory_total_size_bytes()));
+		    static_cast<double>(buf_size_bytes) / static_cast<double>(get_default_device_queue().get_global_memory_total_size_bytes()));
 
 		const auto bid = bm.register_buffer<size_t, 2>(range<3>(100, 100, 1));
 
 		// Access "top left" of buffer first
 		buffer_for_each<size_t, 2, access_mode::discard_write, class UKN(write_linear_id)>(
 		    bid, access_target::device, {8, 8}, {0, 0}, [](id<2> idx, size_t& value) { value = idx[0] * 100 + idx[1]; });
-		const auto dinfo1 = bm.access_device_buffer<size_t, 2>(bid, access_mode::read, {{}, {8, 8}});
+		const auto dinfo1 = access_default_device_buffer_sync<size_t, 2>(bid, access_mode::read, {{}, {8, 8}});
 
 		test_utils::log_capture lc(spdlog::level::warn);
 
 		// Now access "bottom right", which normally would result in the full buffer to be allocated
 		buffer_for_each<size_t, 2, access_mode::discard_write, class UKN(write_linear_id)>(
 		    bid, access_target::device, {8, 8}, {91, 91}, [](id<2> idx, size_t& value) { value = idx[0] * 100 + idx[1]; });
-		const auto dinfo2 = bm.access_device_buffer<size_t, 2>(bid, access_mode::read, {{91, 91}, {8, 8}});
+		const auto dinfo2 = access_default_device_buffer_sync<size_t, 2>(bid, access_mode::read, {{91, 91}, {8, 8}});
 
 		// Sanity check: Did we actually reallocate the buffer?
 		CHECK_FALSE((dinfo1.ptr == dinfo2.ptr && dinfo1.backing_buffer_offset == dinfo2.backing_buffer_offset
@@ -1270,27 +1274,31 @@ namespace detail {
 		using Catch::Matchers::MessageMatches;
 		auto& bm = get_buffer_manager();
 
-		const size_t global_mem_size_bytes = get_device_queue().get_global_memory_total_size_bytes();
+		const size_t global_mem_size_bytes = get_default_device_queue().get_global_memory_total_size_bytes();
 		const auto one_quarter_elements = global_mem_size_bytes / (4 * sizeof(size_t));
 		const auto bid0 = bm.register_buffer<size_t, 1>(range<3>(10 * one_quarter_elements, 1, 1));
 		const auto bid1 = bm.register_buffer<size_t, 1>(range<3>(10 * one_quarter_elements, 1, 1));
 
-		bm.access_device_buffer(bid0, access_mode::discard_write, subrange<3>{{}, {one_quarter_elements, 1, 1}});
+		(void)access_default_device_buffer_sync<size_t, 1>(bid0, access_mode::discard_write, {{}, one_quarter_elements});
 
 		// Order of listed buffers is implementation defined (unordered_map), so we match them separately
-		const auto error_msg = fmt::format("Unable to allocate buffer {} of size {}.\n\nCurrent allocations:", bid1, 4 * one_quarter_elements * sizeof(size_t));
+		const auto& dq = get_default_device_queue();
+		const auto error_msg = fmt::format("Unable to allocate buffer {} of size {} on device {} (memory {}).\n\nCurrent allocations on device {}:", bid1,
+		    4 * one_quarter_elements * sizeof(size_t), dq.get_id(), dq.get_memory_id(), dq.get_id());
 		const auto buf0_size = fmt::format("Buffer {}: {} bytes", bid0, one_quarter_elements * sizeof(size_t));
 
 		SECTION("upon first creation") {
-			CHECK_THROWS_MATCHES(bm.access_device_buffer(bid1, access_mode::discard_write, subrange<3>{{}, {4 * one_quarter_elements, 1, 1}}), allocation_error,
+			CHECK_THROWS_MATCHES((access_default_device_buffer_sync<size_t, 1>(bid1, access_mode::discard_write, {{}, {4 * one_quarter_elements}})),
+			    allocation_error,
 			    MessageMatches(ContainsSubstring(error_msg) && ContainsSubstring(buf0_size)
 			                   && ContainsSubstring(fmt::format("Total usage: {} / {} bytes ({:.1f}%)", one_quarter_elements * sizeof(size_t),
 			                       global_mem_size_bytes, 100 * static_cast<double>(one_quarter_elements * sizeof(size_t)) / global_mem_size_bytes))));
 		}
 		SECTION("upon resizing") {
 			const auto buf1_size = fmt::format("Buffer {}: {} bytes", bid1, 2 * one_quarter_elements * sizeof(size_t));
-			CHECK_NOTHROW(bm.access_device_buffer(bid1, access_mode::discard_write, subrange<3>{{}, {2 * one_quarter_elements, 1, 1}}));
-			CHECK_THROWS_MATCHES(bm.access_device_buffer(bid1, access_mode::discard_write, subrange<3>{{}, {4 * one_quarter_elements, 1, 1}}), allocation_error,
+			CHECK_NOTHROW(access_default_device_buffer_sync<size_t, 1>(bid1, access_mode::discard_write, {{}, {2 * one_quarter_elements}}));
+			CHECK_THROWS_MATCHES((access_default_device_buffer_sync<size_t, 1>(bid1, access_mode::discard_write, {{}, {4 * one_quarter_elements}})),
+			    allocation_error,
 			    MessageMatches(ContainsSubstring(error_msg) && ContainsSubstring(buf0_size) && ContainsSubstring(buf1_size)
 			                   && ContainsSubstring(fmt::format("Total usage: {} / {} bytes ({:.1f}%)", 3 * one_quarter_elements * sizeof(size_t),
 			                       global_mem_size_bytes, 100 * static_cast<double>(3 * one_quarter_elements * sizeof(size_t)) / global_mem_size_bytes))));

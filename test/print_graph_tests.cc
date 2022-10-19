@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "catch2/matchers/catch_matchers_string.hpp"
 #include "distributed_graph_generator_test_utils.h"
 #include "test_utils.h"
 
@@ -99,15 +100,6 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "Buffer debug names show up in the
 	// wait for commands to be generated in the scheduler thread
 	q.slow_full_sync();
 
-	// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graph is sane and
-	// replace the `expected` value with the new dot graph.
-	const auto expected =
-	    "digraph G{label=\"Command Graph\" subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_0_0[label=<C0 on "
-	    "N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font color=\"#606060\">T1 \"print_graph_buffer_name_12\" "
-	    "(device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [[0,0,0] - [16,1,1]]<br/><i>write</i> B0 \"my_buffer\" {[[0,0,0] "
-	    "- [16,1,1]]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font color=\"#606060\">T2 (epoch)</font>>;color=darkgray;id_0_2[label=<C2 "
-	    "on N0<br/><b>epoch</b> (barrier)> fontcolor=black shape=box];}id_0_1->id_0_2[color=orange];id_0_0->id_0_1[];}";
-
 	const auto dot = runtime_testspy::print_graph(celerity::detail::runtime::get_instance());
-	CHECK(dot == expected);
+	CHECK_THAT(dot, Catch::Matchers::ContainsSubstring("my_buffer"));
 }

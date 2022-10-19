@@ -10,6 +10,7 @@
 #include "backend/backend.h"
 #include "config.h"
 #include "log.h"
+#include "types.h"
 #include "workaround.h"
 
 namespace celerity {
@@ -36,6 +37,8 @@ namespace detail {
 	 */
 	class device_queue {
 	  public:
+		device_queue(device_id did, memory_id mid) : m_did(did), m_mid(mid) {}
+
 		/**
 		 * @brief Initializes the @p device_queue, selecting an appropriate device in the process.
 		 *
@@ -43,6 +46,12 @@ namespace detail {
 		 * @param user_device_or_selector Optionally a device (which will take precedence over any configuration) or a device selector can be provided.
 		 */
 		void init(const config& cfg, const device_or_selector& user_device_or_selector);
+
+		void init(const config& cfg, sycl::device device);
+
+		device_id get_id() const { return m_did; }
+
+		memory_id get_memory_id() const { return m_mid; }
 
 		/**
 		 * @brief Executes the kernel associated with task @p ctsk over the chunk @p chnk.
@@ -64,7 +73,7 @@ namespace detail {
 			const size_t size_bytes = count * sizeof(T);
 			assert(m_sycl_queue != nullptr);
 			assert(m_global_mem_allocated_bytes + size_bytes < m_global_mem_total_size_bytes);
-			CELERITY_DEBUG("Allocating {} bytes on device", size_bytes);
+			CELERITY_DEBUG("Allocating {} bytes on device {} (memory {})", size_bytes, m_did, m_mid);
 			T* ptr = nullptr;
 			try {
 				ptr = sycl::aligned_alloc_device<T>(alignof(T), count, *m_sycl_queue);
@@ -73,8 +82,9 @@ namespace detail {
 				ptr = nullptr;
 			}
 			if(ptr == nullptr) {
-				throw allocation_error(fmt::format("Allocation of {} bytes failed; likely out of memory. Currently allocated: {} out of {} bytes.",
-				    count * sizeof(T), m_global_mem_allocated_bytes, m_global_mem_total_size_bytes));
+				throw allocation_error(
+				    fmt::format("Allocation of {} bytes on device {} (memory {}) failed; likely out of memory. Currently allocated: {} out of {} bytes.",
+				        count * sizeof(T), m_did, m_mid, m_global_mem_allocated_bytes, m_global_mem_total_size_bytes));
 			}
 			m_global_mem_allocated_bytes += size_bytes;
 			return device_allocation{ptr, size_bytes};
@@ -84,7 +94,7 @@ namespace detail {
 			assert(m_sycl_queue != nullptr);
 			assert(alloc.size_bytes <= m_global_mem_allocated_bytes);
 			assert(alloc.ptr != nullptr || alloc.size_bytes == 0);
-			CELERITY_DEBUG("Freeing {} bytes on device", alloc.size_bytes);
+			CELERITY_DEBUG("Freeing {} bytes on device {} (memory {})", alloc.size_bytes, m_did, m_mid);
 			if(alloc.size_bytes != 0) { sycl::free(alloc.ptr, *m_sycl_queue); }
 			m_global_mem_allocated_bytes -= alloc.size_bytes;
 		}
@@ -109,6 +119,8 @@ namespace detail {
 		}
 
 	  private:
+		device_id m_did;
+		memory_id m_mid;
 		size_t m_global_mem_total_size_bytes = 0;
 		size_t m_global_mem_allocated_bytes = 0;
 		std::unique_ptr<cl::sycl::queue> m_sycl_queue;

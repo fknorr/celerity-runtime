@@ -221,6 +221,19 @@ class command_query {
 		}
 	}
 
+	// Call the provided function once for each command, with a subquery only containing that command.
+	template <typename PerCmdCallback>
+	void for_each_command(PerCmdCallback&& cb) const {
+		for(node_id nid = 0; nid < m_commands_by_node.size(); ++nid) {
+			for(auto* cmd : m_commands_by_node[nid]) {
+				UNSCOPED_INFO(fmt::format("Command {} on node {}", nid, cmd->get_cid()));
+				std::vector<std::unordered_set<const abstract_command*>> by_node{m_commands_by_node.size()};
+				by_node[nid].insert(cmd);
+				cb(command_query{std::move(by_node)});
+			}
+		}
+	}
+
 	bool have_type(const command_type expected) const {
 		assert_not_empty(__FUNCTION__);
 		return for_all_commands([expected](const node_id nid, const abstract_command* cmd) {
@@ -373,12 +386,12 @@ class dist_cdag_test_context {
 	friend class task_builder;
 
   public:
-	dist_cdag_test_context(size_t num_nodes) : m_num_nodes(num_nodes) {
+	dist_cdag_test_context(size_t num_nodes, size_t devices_per_node = 1) : m_num_nodes(num_nodes) {
 		m_rm = std::make_unique<reduction_manager>();
 		m_tm = std::make_unique<task_manager>(num_nodes, nullptr /* host_queue */);
 		for(node_id nid = 0; nid < num_nodes; ++nid) {
 			m_cdags.emplace_back(std::make_unique<command_graph>());
-			m_dggens.emplace_back(std::make_unique<distributed_graph_generator>(num_nodes, nid, *m_cdags[nid], *m_tm));
+			m_dggens.emplace_back(std::make_unique<distributed_graph_generator>(num_nodes, devices_per_node, nid, *m_cdags[nid], *m_tm));
 		}
 	}
 

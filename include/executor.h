@@ -11,8 +11,7 @@ namespace celerity {
 
 namespace detail {
 
-	class host_queue;
-	class device_queue;
+	class local_devices;
 	class task_manager;
 	class buffer_manager;
 
@@ -44,7 +43,7 @@ namespace detail {
 
 	  public:
 		// TODO: Try to decouple this more.
-		executor(const size_t num_nodes, const node_id local_nid, host_queue& h_queue, device_queue& d_queue, task_manager& tm, buffer_manager& buffer_mngr,
+		executor(const size_t num_nodes, const node_id local_nid, local_devices& devices, task_manager& tm, buffer_manager& buffer_mngr,
 		    reduction_manager& reduction_mngr);
 
 		void startup();
@@ -61,8 +60,8 @@ namespace detail {
 
 	  private:
 		node_id m_local_nid;
-		host_queue& m_h_queue;
-		device_queue& m_d_queue;
+		local_devices& m_local_devices;
+		std::vector<size_t> m_active_compute_jobs_by_device;
 		task_manager& m_task_mngr;
 		// FIXME: We currently need this for buffer locking in some jobs, which is a bit of a band-aid fix. Get rid of this at some point.
 		buffer_manager& m_buffer_mngr;

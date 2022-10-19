@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bitset>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -13,13 +14,14 @@
 
 #include "access_modes.h"
 #include "buffer_storage.h"
-#include "device_queue.h"
+#include "local_devices.h"
 #include "mpi_support.h"
 #include "payload.h"
 #include "ranges.h"
 #include "region_map.h"
 #include "sycl_wrappers.h"
 #include "types.h"
+#include "utils.h"
 
 namespace celerity {
 namespace detail {
@@ -126,7 +128,7 @@ namespace detail {
 		using buffer_lock_id = size_t;
 
 	  public:
-		buffer_manager(device_queue& queue, buffer_lifecycle_callback lifecycle_cb);
+		buffer_manager(local_devices& devices, buffer_lifecycle_callback lifecycle_cb);
 
 		template <typename DataT, int Dims>
 		buffer_id register_buffer(range<3> range, const DataT* host_init_ptr = nullptr) {
@@ -139,14 +141,14 @@ namespace detail {
 			{
 				std::unique_lock lock(m_mutex);
 				bid = m_buffer_count++;
-				m_buffers.emplace(std::piecewise_construct, std::tuple{bid}, std::tuple{});
+				m_buffers.emplace(std::piecewise_construct, std::tuple{bid}, std::tuple{m_local_devices.num_memories()});
 				auto device_factory = [](const celerity::range<3>& r, device_queue& q) {
 					return std::make_unique<device_buffer_storage<DataT, Dims>>(range_cast<Dims>(r), q);
 				};
 				auto host_factory = [](const celerity::range<3>& r) { return std::make_unique<host_buffer_storage<DataT, Dims>>(range_cast<Dims>(r)); };
 				m_buffer_infos.emplace(
 				    bid, buffer_info{Dims, range, sizeof(DataT), is_host_initialized, {}, std::move(device_factory), std::move(host_factory)});
-				m_newest_data_location.emplace(bid, region_map<data_location>(range, Dims, data_location::nowhere));
+				m_newest_data_location.emplace(bid, region_map<data_location>(range, Dims, data_location{}));
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 				m_buffer_types.emplace(bid, new buffer_type_guard<DataT, Dims>());
@@ -222,17 +224,17 @@ namespace detail {
 		}
 
 		template <typename DataT, int Dims>
-		access_info access_device_buffer(buffer_id bid, access_mode mode, const subrange<Dims>& sr) {
+		access_info access_device_buffer(const memory_id mid, buffer_id bid, access_mode mode, const subrange<Dims>& sr) {
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 			{
 				std::unique_lock lock(m_mutex);
 				assert((m_buffer_types.at(bid)->has_type<DataT, Dims>()));
 			}
 #endif
-			return access_device_buffer(bid, mode, subrange_cast<3>(sr));
+			return access_device_buffer(mid, bid, mode, subrange_cast<3>(sr));
 		}
 
-		access_info access_device_buffer(buffer_id bid, access_mode mode, const subrange<3>& sr);
+		access_info access_device_buffer(const memory_id mid, buffer_id bid, access_mode mode, const subrange<3>& sr);
 
 		template <typename DataT, int Dims>
 		access_info access_host_buffer(buffer_id bid, access_mode mode, const subrange<Dims>& sr) {
@@ -264,14 +266,14 @@ namespace detail {
 		 *
 		 * @returns Returns true if the list of buffers was successfully locked.
 		 */
-		bool try_lock(buffer_lock_id, const std::unordered_set<buffer_id>& buffers);
+		bool try_lock(const buffer_lock_id, const memory_id mid, const std::unordered_set<buffer_id>& buffers);
 
 		/**
 		 * Unlocks all buffers that were previously locked with a call to try_lock with the given @p id.
 		 */
 		void unlock(buffer_lock_id id);
 
-		bool is_locked(buffer_id bid) const;
+		bool is_locked(const buffer_id bid, const memory_id mid) const;
 
 		void set_debug_name(const buffer_id bid, const std::string& debug_name) {
 			std::lock_guard lock(m_mutex);
@@ -300,9 +302,22 @@ namespace detail {
 			id<3> get_local_offset(const celerity::id<3>& virtual_offset) const { return virtual_offset - offset; }
 		};
 
-		struct virtual_buffer {
-			backing_buffer device_buf;
-			backing_buffer host_buf;
+		class virtual_buffer {
+		  public:
+			virtual_buffer(const size_t num_memories) : m_backing_buffers(num_memories) {}
+
+			backing_buffer& get(const memory_id mid) {
+				assert(mid < m_backing_buffers.size());
+				return m_backing_buffers[mid];
+			}
+
+			const backing_buffer& get(const memory_id mid) const {
+				assert(mid < m_backing_buffers.size());
+				return m_backing_buffers[mid];
+			}
+
+		  private:
+			std::vector<backing_buffer> m_backing_buffers;
 		};
 
 		struct transfer {
@@ -316,7 +331,8 @@ namespace detail {
 			range<3> new_range = {1, 1, 1};
 		};
 
-		enum class data_location { nowhere, host, device, host_and_device };
+		static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
+		using data_location = std::bitset<max_memories>;
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 		struct buffer_type_guard_base {
@@ -342,7 +358,7 @@ namespace detail {
 	  private:
 		// Leave some memory for other processes.
 		double m_max_device_global_mem_usage = 0.95;
-		device_queue& m_queue;
+		local_devices& m_local_devices;
 		buffer_lifecycle_callback m_lifecycle_cb;
 		size_t m_buffer_count = 0;
 		mutable std::shared_mutex m_mutex;
@@ -351,8 +367,8 @@ namespace detail {
 		std::unordered_map<buffer_id, std::vector<transfer>> m_scheduled_transfers;
 		std::unordered_map<buffer_id, region_map<data_location>> m_newest_data_location;
 
-		std::unordered_map<buffer_id, buffer_lock_info> m_buffer_lock_infos;
-		std::unordered_map<buffer_lock_id, std::vector<buffer_id>> m_buffer_locks_by_id;
+		std::unordered_map<std::pair<buffer_id, memory_id>, buffer_lock_info, utils::pair_hash> m_buffer_lock_infos;
+		std::unordered_map<buffer_lock_id, std::vector<std::pair<buffer_id, memory_id>>> m_buffer_locks_by_id;
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 		// Since we store buffers without type information (i.e., its data type and dimensionality),
@@ -362,7 +378,7 @@ namespace detail {
 #endif
 
 		static resize_info is_resize_required(const backing_buffer& buffer, range<3> request_range, id<3> request_offset) {
-			assert(buffer.is_allocated());
+			if(!buffer.is_allocated()) { return resize_info{true, request_offset, request_range}; }
 
 			// Empty-range buffer requirements never count towards the bounding box
 			if(request_range.size() == 0) { return resize_info{}; }
@@ -390,9 +406,10 @@ namespace detail {
 		 *
 		 * NOTE: SYCL does not provide us with a way of getting the actual current memory usage of a device, so this is just a best effort guess.
 		 */
-		bool can_allocate(const size_t size_bytes, const size_t assume_bytes_freed = 0) const {
-			const auto total = m_queue.get_global_memory_total_size_bytes();
-			const auto current = m_queue.get_global_memory_allocated_bytes();
+		bool can_allocate(const memory_id mid, const size_t size_bytes, const size_t assume_bytes_freed = 0) const {
+			const auto& device = m_local_devices.get_close_device_queue(mid);
+			const auto total = device.get_global_memory_total_size_bytes();
+			const auto current = device.get_global_memory_allocated_bytes();
 			assert(assume_bytes_freed <= current);
 			return static_cast<double>(current - assume_bytes_freed + size_bytes) / static_cast<double>(total) < m_max_device_global_mem_usage;
 		}
@@ -419,8 +436,8 @@ namespace detail {
 		 *	- Queued transfers are processed (if applicable).
 		 *  - The newest data locations are updated to reflect replicated data as well as newly written ranges (depending on access mode).
 		 */
-		backing_buffer make_buffer_subrange_coherent(buffer_id bid, cl::sycl::access::mode mode, backing_buffer existing_buffer, const subrange<3>& coherent_sr,
-		    backing_buffer replacement_buffer = backing_buffer{});
+		backing_buffer make_buffer_subrange_coherent(const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, backing_buffer existing_buffer,
+		    const subrange<3>& coherent_sr, backing_buffer replacement_buffer = backing_buffer{});
 
 		/**
 		 * Checks whether access to a currently locked buffer is safe.
@@ -429,7 +446,7 @@ namespace detail {
 		 *	- If a buffer that has been accessed earlier needs to be resized (reallocated) now
 		 *	- If a buffer was previously accessed using a discard_* mode and is now accessed using a consumer mode
 		 */
-		void audit_buffer_access(buffer_id bid, bool requires_allocation, cl::sycl::access::mode mode);
+		void audit_buffer_access(const buffer_id bid, const memory_id mid, const bool requires_allocation, const access_mode mode);
 
 	  public:
 		static constexpr unsigned char test_mode_pattern = 0b10101010;
