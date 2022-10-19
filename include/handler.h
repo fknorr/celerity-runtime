@@ -501,6 +501,10 @@ namespace detail {
 
 		cl::sycl::handler* const* get_eventual_sycl_cgh() const { return &m_eventual_cgh; }
 
+		// For now we assume that all buffers reside in the same memory (the main memory of the device),
+		// which is why this function isn't parameterized with a buffer id.
+		memory_id get_memory_id() const { return m_d_queue->get_memory_id(); }
+
 	  private:
 		device_queue* m_d_queue;
 		cl::sycl::handler* m_eventual_cgh = nullptr;

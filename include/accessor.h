@@ -355,7 +355,7 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 			// It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper manually.
 			const auto mapped_sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
 			const auto access_info = detail::runtime::get_instance().get_buffer_manager().get_device_buffer<DataT, Dims>(
-			    detail::get_buffer_id(buff), Mode, detail::range_cast<3>(mapped_sr.range), detail::id_cast<3>(mapped_sr.offset));
+			    live_cgh.get_memory_id(), detail::get_buffer_id(buff), Mode, detail::range_cast<3>(mapped_sr.range), detail::id_cast<3>(mapped_sr.offset));
 			const auto effective_sr = detail::get_effective_sycl_accessor_subrange(access_info.offset, mapped_sr);
 			const auto sycl_accessor = sycl_accessor_t(access_info.buffer, effective_sr.range, effective_sr.offset);
 
