@@ -86,15 +86,15 @@ namespace detail {
 		m_scheduled_transfers[bid].push_back({std::move(in_linearized), sr});
 	}
 
-	bool buffer_manager::try_lock(buffer_lock_id id, const std::unordered_set<buffer_id>& buffers) {
+	bool buffer_manager::try_lock(const buffer_lock_id id, const memory_id mid, const std::unordered_set<buffer_id>& buffers) {
 		assert(m_buffer_locks_by_id.count(id) == 0);
 		for(auto bid : buffers) {
-			if(m_buffer_lock_infos[bid].is_locked) return false;
+			if(m_buffer_lock_infos[std::pair{bid, mid}].is_locked) return false;
 		}
 		m_buffer_locks_by_id[id].reserve(buffers.size());
 		for(auto bid : buffers) {
-			m_buffer_lock_infos[bid] = {true, std::nullopt};
-			m_buffer_locks_by_id[id].push_back(bid);
+			m_buffer_lock_infos[std::pair{bid, mid}] = {true, std::nullopt};
+			m_buffer_locks_by_id[id].push_back(std::pair{bid, mid});
 		}
 		return true;
 	}
@@ -107,9 +107,9 @@ namespace detail {
 		m_buffer_locks_by_id.erase(id);
 	}
 
-	bool buffer_manager::is_locked(buffer_id bid) const {
-		if(m_buffer_lock_infos.count(bid) == 0) return false;
-		return m_buffer_lock_infos.at(bid).is_locked;
+	bool buffer_manager::is_locked(const buffer_id bid, const memory_id mid) const {
+		if(m_buffer_lock_infos.count(std::pair{bid, mid}) == 0) return false;
+		return m_buffer_lock_infos.at(std::pair{bid, mid}).is_locked;
 	}
 
 	// TODO: Something we could look into is to dispatch all memory copies concurrently and wait for them in the end.
@@ -282,8 +282,8 @@ namespace detail {
 		return target_buffer;
 	}
 
-	void buffer_manager::audit_buffer_access(buffer_id bid, bool requires_allocation, cl::sycl::access::mode mode) {
-		auto& lock_info = m_buffer_lock_infos[bid];
+	void buffer_manager::audit_buffer_access(const buffer_id bid, const memory_id mid, const bool requires_allocation, const access_mode mode) {
+		auto& lock_info = m_buffer_lock_infos[std::pair{bid, mid}];
 
 		// Buffer locking is currently opt-in, so if this buffer isn't locked, we won't check anything else.
 		if(!lock_info.is_locked) return;
