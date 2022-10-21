@@ -260,6 +260,7 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 	sycl::id<Dims> m_index_offset;
 	sycl::range<Dims> m_buffer_range = detail::zero_range;
 
+	// NOCOMMIT These ctors (same for host) are only used for tests, right? If so, add note
 	accessor(detail::device_buffer<DataT, Dims>& buffer, id<Dims> index_offset)
 	    : m_device_ptr(buffer.get_pointer()), m_index_offset(index_offset), m_buffer_range(buffer.get_range()) {
 #if CELERITY_WORKAROUND_HIPSYCL

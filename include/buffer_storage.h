@@ -50,6 +50,7 @@ namespace detail {
 			if(m_range.size() != 0) {
 				// NOCOMMIT TODO Use aligned allocation?
 				m_device_ptr = sycl::malloc_device<DataT>(m_range.size(), m_queue);
+				// m_device_ptr = sycl::aligned_alloc_device<DataT>(alignof(DataT), m_range.size(), m_queue);
 				assert(m_device_ptr != nullptr);
 			}
 		}

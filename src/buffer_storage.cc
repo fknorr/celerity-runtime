@@ -60,6 +60,15 @@ namespace detail {
 		const size_t line_size = elem_size * copy_range[1];
 		const auto source_base_offset = get_linear_index(source_range, source_offset);
 		const auto target_base_offset = get_linear_index(target_range, target_offset);
+
+// NOCOMMIT Move into backend-specific module
+#if defined(__HIPSYCL__)
+		cudaMemcpy2D(reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
+		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size,
+		    copy_range[0], cudaMemcpyDefault);
+		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
+		cudaStreamSynchronize(0);
+#else
 		std::vector<cl::sycl::event> wait_list;
 		wait_list.reserve(copy_range[0]);
 		for(size_t i = 0; i < copy_range[0]; ++i) {
@@ -70,6 +79,7 @@ namespace detail {
 		for(auto& e : wait_list) {
 			e.wait();
 		}
+#endif
 	}
 
 	// TODO Optimize for contiguous copies?
@@ -81,12 +91,28 @@ namespace detail {
 		    get_linear_index(source_range, source_offset) - get_linear_index({source_range[1], source_range[2]}, {source_offset[1], source_offset[2]});
 		const auto target_base_offset =
 		    get_linear_index(target_range, target_offset) - get_linear_index({target_range[1], target_range[2]}, {target_offset[1], target_offset[2]});
+
+// NOCOMMIT Move into backend-specific module
+#if defined(__HIPSYCL__)
+		// NOCOMMIT TODO This needs thorough testing. I don't think current unit tests exercise strided 3D copies much (if at all)
+		cudaMemcpy3DParms parms = {0};
+		parms.srcPos = make_cudaPos(source_offset[2], source_offset[1], source_offset[0]);
+		parms.srcPtr = make_cudaPitchedPtr(const_cast<void*>(source_base_ptr), source_range[2] * elem_size, source_range[2], source_range[1]);
+		parms.dstPos = make_cudaPos(target_offset[2], target_offset[1], target_offset[0]);
+		parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
+		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
+		parms.kind = cudaMemcpyDefault;
+		cudaMemcpy3D(&parms);
+		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
+		cudaStreamSynchronize(0);
+#else
 		for(size_t i = 0; i < copy_range[0]; ++i) {
 			const auto source_ptr = reinterpret_cast<const char*>(source_base_ptr) + elem_size * (source_base_offset + i * (source_range[1] * source_range[2]));
 			const auto target_ptr = reinterpret_cast<char*>(target_base_ptr) + elem_size * (target_base_offset + i * (target_range[1] * target_range[2]));
 			memcpy_strided_device(queue, source_ptr, target_ptr, elem_size, {source_range[1], source_range[2]}, {source_offset[1], source_offset[2]},
 			    {target_range[1], target_range[2]}, {target_offset[1], target_offset[2]}, {copy_range[1], copy_range[2]});
 		}
+#endif
 	}
 
 	void linearize_subrange(const void* source_base_ptr, void* target_ptr, size_t elem_size, const range<3>& source_range, const subrange<3>& copy_sr) {
