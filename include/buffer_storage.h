@@ -241,10 +241,13 @@ namespace detail {
 	template <typename DataT, int Dims>
 	void device_buffer_storage<DataT, Dims>::copy(
 	    const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) {
+		ZoneScopedN("device_buffer_storage::copy");
 		assert_copy_is_in_range(source.get_range(), range_cast<3>(m_device_buf.get_range()), source_offset, target_offset, copy_range);
 
 		if(source.get_type() == buffer_type::device_buffer) {
 			auto& device_source = dynamic_cast<const device_buffer_storage<DataT, Dims>&>(source);
+			const auto msg = fmt::format("Copying {},{},{} elements", copy_range[0], copy_range[1], copy_range[2]);
+			ZoneText(msg.c_str(), msg.size());
 			auto event = m_transfer_queue.submit([&](cl::sycl::handler& cgh) {
 				// FIXME: Getting read access is currently not a const operation on SYCL buffers
 				// Resolve once https://github.com/KhronosGroup/SYCL-Docs/issues/10 has been clarified
