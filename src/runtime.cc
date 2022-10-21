@@ -126,6 +126,7 @@ namespace detail {
 		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, static_cast<node_id>(world_rank));
 
 		m_local_devices = std::make_unique<local_devices>();
+		m_local_devices->init(*m_cfg /*, user_device_or_selector*/);
 
 		// Initialize worker classes (but don't start them up yet)
 		m_buffer_mngr = std::make_unique<buffer_manager>(*m_local_devices, [this](buffer_manager::buffer_lifecycle_event event, buffer_id bid) {
@@ -141,7 +142,7 @@ namespace detail {
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, &m_local_devices->get_host_queue());
 		m_exec = std::make_unique<executor>(m_local_nid, *m_local_devices, *m_task_mngr, *m_buffer_mngr, *m_reduction_mngr);
 		m_cdag = std::make_unique<command_graph>();
-		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr);
+		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_devices->num_compute_devices(), m_local_nid, *m_cdag, *m_task_mngr);
 		auto gser = std::make_unique<graph_serializer>(
 		    *m_cdag, [this](node_id target, unique_frame_ptr<command_frame> frame) { flush_command(target, std::move(frame)); });
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), *m_exec, m_num_nodes);
@@ -149,7 +150,6 @@ namespace detail {
 
 		CELERITY_INFO(
 		    "Celerity runtime version {} running on {}. PID = {}, build type = {}", get_version_string(), get_sycl_version(), get_pid(), get_build_type());
-		m_local_devices->init(*m_cfg /*, user_device_or_selector*/);
 	}
 
 	runtime::~runtime() {
