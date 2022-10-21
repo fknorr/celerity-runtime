@@ -28,6 +28,8 @@ namespace detail {
 	/**
 	 * The buffer_manager keeps track of all Celerity buffers currently existing within the runtime.
 	 *
+	 * NOCOMMIT UPDATE DESCRIPTION
+	 *
 	 * This includes both host and device buffers. Note that instead of relying on SYCL's host-side buffers,
 	 * we keep separate copies that allow for more explicit control. All data accesses within device buffers
 	 * are on the device or through explicit memory operations, meaning that a sufficiently optimized SYCL
@@ -233,28 +235,10 @@ namespace detail {
 			audit_buffer_access(bid, mid, replacement_buf.is_allocated(), mode);
 
 			if(m_test_mode && replacement_buf.is_allocated()) {
-				auto device_buf = static_cast<device_buffer_storage<DataT, Dims>*>(replacement_buf.storage.get())->get_device_buffer();
-
-				// We need two separate approaches here for hipSYCL and ComputeCpp, as hipSYCL currently (0.9.1) does
-				// not support reinterpreting buffers to other dimensionalities, while ComputeCpp (2.5.0) does not
-				// support filling buffers with arbitrary data types.
-#if CELERITY_WORKAROUND(HIPSYCL)
-				DataT pattern;
-				memset(&pattern, test_mode_pattern, sizeof(DataT));
-#else
-				auto byte_buf = device_buf.template reinterpret<unsigned char, 1>();
-#endif
-
+				auto& device_buf = static_cast<device_buffer_storage<DataT, Dims>*>(replacement_buf.storage.get())->get_device_buffer();
 				device_queue.get_sycl_queue()
-				    .submit([&](cl::sycl::handler& cgh) {
-#if CELERITY_WORKAROUND(HIPSYCL)
-					    auto acc = device_buf.template get_access<cl::sycl::access::mode::discard_write>(cgh);
-					    cgh.fill(acc, pattern);
-#else
-					    auto acc = byte_buf.template get_access<cl::sycl::access::mode::discard_write>(cgh);
-					    cgh.fill(acc, test_mode_pattern);
-#endif
-				    })
+				    .submit(
+				        [&](cl::sycl::handler& cgh) { cgh.memset(device_buf.get_pointer(), test_mode_pattern, device_buf.get_range().size() * sizeof(DataT)); })
 				    .wait();
 			}
 

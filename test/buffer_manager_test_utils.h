@@ -70,13 +70,14 @@ namespace test_utils {
 			if(tgt == access_target::device) {
 				auto info = m_bm->get_device_buffer<DataT, Dims>(bid, Mode, range3, offset3);
 				const auto buf_offset = info.offset;
+				const auto buf_range = info.buffer.get_range();
 				get_device_queue()
 				    .submit([&](cl::sycl::handler& cgh) {
-					    auto acc = info.buffer.template get_access<Mode>(cgh);
+					    auto ptr = info.buffer.get_pointer();
 					    cgh.parallel_for<detail::bind_kernel_name<KernelName>>(range, [=](cl::sycl::id<Dims> global_idx) {
 						    global_idx += offset;
 						    const auto local_idx = global_idx - buf_offset;
-						    cb(global_idx, acc[local_idx]);
+						    cb(global_idx, ptr[detail::get_linear_index(buf_range, local_idx)]);
 					    });
 				    })
 				    .wait();
@@ -107,11 +108,12 @@ namespace test_utils {
 
 			auto info = m_bm->get_device_buffer<DataT, Dims>(bid, cl::sycl::access::mode::read, range3, offset3);
 			const auto buf_offset = info.offset;
+			const auto buf_range = info.buffer.get_range();
 			cl::sycl::buffer<ReduceT, 1> result_buf(1); // Use 1-dimensional instead of 0-dimensional since it's NYI in hipSYCL as of 0.8.1
 			// Simply do a serial reduction on the device as well
 			get_device_queue()
 			    .submit([&](cl::sycl::handler& cgh) {
-				    auto acc = info.buffer.template get_access<cl::sycl::access::mode::read>(cgh);
+				    auto ptr = info.buffer.get_pointer();
 				    auto result_acc = result_buf.template get_access<cl::sycl::access::mode::read_write>(cgh);
 				    cgh.single_task<detail::bind_kernel_name<KernelName>>([=]() {
 					    result_acc[0] = init;
@@ -120,7 +122,8 @@ namespace test_utils {
 							    for(size_t k = offset3[2]; k < offset3[2] + range3[2]; ++k) {
 								    const auto global_idx = cl::sycl::id<3>(i, j, k);
 								    const cl::sycl::id<3> local_idx = global_idx - detail::id_cast<3>(buf_offset);
-								    result_acc[0] = op(detail::id_cast<Dims>(global_idx), result_acc[0], acc[detail::id_cast<Dims>(local_idx)]);
+								    result_acc[0] = op(detail::id_cast<Dims>(global_idx), result_acc[0],
+								        ptr[detail::get_linear_index(buf_range, detail::id_cast<Dims>(local_idx))]);
 							    }
 						    }
 					    }
@@ -143,8 +146,7 @@ namespace test_utils {
 		accessor<DataT, Dims, Mode, target::device> get_device_accessor(
 		    detail::live_pass_device_handler& cgh, detail::buffer_id bid, const cl::sycl::range<Dims>& range, const cl::sycl::id<Dims>& offset) {
 			auto buf_info = m_bm->get_device_buffer<DataT, Dims>(bid, Mode, detail::range_cast<3>(range), detail::id_cast<3>(offset));
-			return detail::make_device_accessor<DataT, Dims, Mode>(cgh.get_eventual_sycl_cgh(), buf_info.buffer,
-			    detail::get_effective_sycl_accessor_subrange(buf_info.offset, subrange<Dims>(offset, range)), offset);
+			return detail::make_device_accessor<DataT, Dims, Mode>(buf_info.buffer, buf_info.offset);
 		}
 
 		template <typename DataT, int Dims, access_mode Mode>

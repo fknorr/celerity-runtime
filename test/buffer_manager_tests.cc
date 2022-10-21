@@ -433,7 +433,7 @@ namespace detail {
 		}
 
 		SECTION("when using host buffers") {
-			cl::sycl::buffer<size_t, 1>* device_buf;
+			device_buffer<size_t, 1>* device_buf;
 
 			// Remember device buffer for later.
 			{
@@ -451,8 +451,8 @@ namespace detail {
 			// Here we cheat: We override the device data using the pointer we kept from before, without telling the BM (which is not allowed).
 			dq.get_sycl_queue()
 			    .submit([&](cl::sycl::handler& cgh) {
-				    auto acc = device_buf->get_access<cl::sycl::access::mode::discard_write>(cgh);
-				    cgh.parallel_for<bind_kernel_name<class UKN(overwrite_buf)>>(cl::sycl::range<1>(32), [=](cl::sycl::item<1> item) { acc[item] = 33; });
+				    auto ptr = device_buf->get_pointer();
+				    cgh.parallel_for<bind_kernel_name<class UKN(overwrite_buf)>>(sycl::range<1>(32), [=](sycl::item<1> item) { ptr[item[0]] = 33; });
 			    })
 			    .wait();
 
@@ -463,9 +463,10 @@ namespace detail {
 			// Verify that the data is still what we expect.
 			{
 				auto info = bm.get_device_buffer<size_t, 1>(bid, cl::sycl::access::mode::read, cl::sycl::range<3>(32, 1, 1), cl::sycl::id<3>(0, 0, 0));
-				auto acc = info.buffer.get_access<cl::sycl::access::mode::read>();
+				std::vector<size_t> tmp_host(info.buffer.get_range().size());
+				dq.get_sycl_queue().memcpy(tmp_host.data(), info.buffer.get_pointer(), sizeof(size_t) * info.buffer.get_range().size()).wait();
 				for(size_t i = 0; i < 32; ++i) {
-					REQUIRE_LOOP(acc[i] == i);
+					REQUIRE_LOOP(tmp_host[i] == i);
 				}
 			}
 
@@ -473,8 +474,8 @@ namespace detail {
 			// First, we cheat again.
 			dq.get_sycl_queue()
 			    .submit([&](cl::sycl::handler& cgh) {
-				    auto acc = device_buf->get_access<cl::sycl::access::mode::discard_write>(cgh);
-				    cgh.parallel_for<bind_kernel_name<class UKN(overwrite_buf)>>(cl::sycl::range<1>(32), [=](cl::sycl::item<1> item) { acc[item] = 34; });
+				    auto ptr = device_buf->get_pointer();
+				    cgh.parallel_for<bind_kernel_name<class UKN(overwrite_buf)>>(cl::sycl::range<1>(32), [=](cl::sycl::item<1> item) { ptr[item[0]] = 34; });
 			    })
 			    .wait();
 
