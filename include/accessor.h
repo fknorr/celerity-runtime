@@ -68,6 +68,44 @@ namespace detail {
 	};
 #endif
 
+	class accessor_hydrator {
+	  public:
+		struct NOCOMMIT_info {
+			void* ptr;
+			range<3> range;
+			id<3> offset;
+		};
+
+		static accessor_hydrator& get_instance() {
+			if(m_instance == nullptr) { m_instance = std::unique_ptr<accessor_hydrator>(new accessor_hydrator()); }
+			return *m_instance;
+		}
+
+		void prepare(std::vector<NOCOMMIT_info> infos) {
+			assert(m_next_idx == m_infos.size() && "Unconsumed pointers left");
+			m_infos = std::move(infos);
+			m_next_idx = 0;
+		}
+
+		bool can_hydrate() const { return !m_infos.empty(); }
+
+		// NOCOMMIT Change return type
+		NOCOMMIT_info hydrate() {
+			assert(!m_infos.empty());
+			assert(m_next_idx < m_infos.size());
+			return m_infos[m_next_idx++];
+		}
+
+	  private:
+		inline static thread_local std::unique_ptr<accessor_hydrator> m_instance;
+		size_t m_next_idx = 0;
+		std::vector<NOCOMMIT_info> m_infos;
+
+		accessor_hydrator() = default;
+		accessor_hydrator(const accessor_hydrator&) = delete;
+		accessor_hydrator(accessor_hydrator&&) = delete;
+	};
+
 } // namespace detail
 } // namespace celerity
 
@@ -231,6 +269,15 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 		    "as a last argument in the constructor");
 	}
 
+#if !defined(__SYCL_DEVICE_ONLY__) && !defined(SYCL_DEVICE_ONLY)
+	accessor(const accessor& other) { init_from(other); }
+
+	accessor& operator=(const accessor& other) {
+		if(this != &other) { init_from(other); }
+		return *this;
+	}
+#endif
+
 	template <access_mode M = Mode, int D = Dims>
 	std::enable_if_t<detail::access::mode_traits::is_producer(M) && M != access_mode::atomic && (D > 0), DataT&> operator[](id<Dims> index) const {
 		return m_device_ptr[get_linear_offset(index)];
@@ -253,7 +300,7 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 	friend bool operator!=(const accessor& lhs, const accessor& rhs) { return !(lhs == rhs); }
 
   private:
-	DataT* m_device_ptr;
+	DataT* m_device_ptr = nullptr;
 	sycl::id<Dims> m_index_offset;
 	sycl::range<Dims> m_buffer_range = detail::zero_range;
 
@@ -266,28 +313,46 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 #endif
 	}
 
+	// NOCOMMIT Rename maybe_hydrate or something?
+	void init_from(const accessor& other) {
+		m_device_ptr = other.m_device_ptr;
+		m_index_offset = other.m_index_offset;
+		m_buffer_range = other.m_buffer_range;
+
+#if !defined(__SYCL_DEVICE_ONLY__) && !defined(SYCL_DEVICE_ONLY)
+		if(m_device_ptr == nullptr) {
+			if(detail::accessor_hydrator::get_instance().can_hydrate()) {
+				const auto info = detail::accessor_hydrator::get_instance().hydrate();
+				m_device_ptr = static_cast<DataT*>(info.ptr);
+				m_index_offset = detail::id_cast<Dims>(info.offset);
+				m_buffer_range = detail::range_cast<Dims>(info.range);
+			}
+		}
+#endif
+	}
+
 	template <typename Functor>
 	accessor(const ctor_internal_tag, const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) {
-		if(detail::is_prepass_handler(cgh)) {
-			auto& prepass_cgh = dynamic_cast<detail::prepass_handler&>(cgh);
-			prepass_cgh.add_requirement(detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
-		} else {
-			if(detail::get_handler_execution_target(cgh) != detail::execution_target::device) {
-				throw std::runtime_error(
-				    "Calling accessor constructor with device target is only allowed in parallel_for tasks."
-				    "If you want to access this buffer from within a host task, please specialize the call using one of the *_host_task tags");
-			}
+		detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
 
-			auto& live_cgh = dynamic_cast<detail::live_pass_device_handler&>(cgh);
-			// It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper manually.
-			const auto mapped_sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
-			auto access_info = detail::runtime::get_instance().get_buffer_manager().access_device_buffer<DataT, Dims>(
-			    live_cgh.get_memory_id(), detail::get_buffer_id(buff), Mode, detail::range_cast<3>(mapped_sr.range), detail::id_cast<3>(mapped_sr.offset));
+		// NOCOMMIT Move stuff below to hydration mechanism
+		// NOCOMMIT Can we still do this check during hydration?
 
-			m_device_ptr = reinterpret_cast<DataT*>(access_info.ptr);
-			m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
-			m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
-		}
+		// if(detail::get_handler_execution_target(cgh) != detail::execution_target::device) {
+		// 	throw std::runtime_error(
+		// 	    "Calling accessor constructor with device target is only allowed in parallel_for tasks."
+		// 	    "If you want to access this buffer from within a host task, please specialize the call using one of the *_host_task tags");
+		// }
+
+		// auto& live_cgh = dynamic_cast<detail::live_pass_device_handler&>(cgh);
+		// // It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper manually.
+		// const auto mapped_sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
+		// auto access_info = detail::runtime::get_instance().get_buffer_manager().access_device_buffer<DataT, Dims>(
+		//     live_cgh.get_memory_id(), detail::get_buffer_id(buff), Mode, detail::range_cast<3>(mapped_sr.range), detail::id_cast<3>(mapped_sr.offset));
+
+		// m_device_ptr = reinterpret_cast<DataT*>(access_info.ptr);
+		// m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
+		// m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
 	}
 
 	size_t get_linear_offset(id<Dims> index) const { return detail::get_linear_index(m_buffer_range, index - m_index_offset); }
@@ -317,31 +382,30 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) {
 		static_assert(!std::is_same_v<Functor, range<Dims>>, "The accessor constructor overload for master-access tasks (now called 'host tasks') has "
 		                                                     "been removed with Celerity 0.2.0. Please provide a range mapper instead.");
+		detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
 
-		if(detail::is_prepass_handler(cgh)) {
-			auto& prepass_cgh = dynamic_cast<detail::prepass_handler&>(cgh);
-			prepass_cgh.add_requirement(detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
-		} else {
-			if constexpr(Target == target::host_task) {
-				if(detail::get_handler_execution_target(cgh) != detail::execution_target::host) {
-					throw std::runtime_error(
-					    "Calling accessor constructor with host_buffer target is only allowed in host tasks."
-					    "If you want to access this buffer from within a parallel_for task, please specialize the call using one of the non host tags");
-				}
-				auto& live_cgh = dynamic_cast<detail::live_pass_host_handler&>(cgh);
-				// It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper
-				// manually.
-				const auto sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
-				auto access_info = detail::runtime::get_instance().get_buffer_manager().access_host_buffer<DataT, Dims>(
-				    detail::get_buffer_id(buff), Mode, detail::range_cast<3>(sr.range), detail::id_cast<3>(sr.offset));
+		// NOCOMMIT Move stuff below to hydration mechanism
+		// NOCOMMIT Can we still do this check during hydration?
 
-				m_mapped_subrange = sr;
-				m_host_ptr = reinterpret_cast<DataT*>(access_info.ptr);
-				m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
-				m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
-				m_virtual_buffer_range = buff.get_range();
-			}
-		}
+		// if constexpr(Target == target::host_task) { // NOCOMMIT ?!
+		// 	if(detail::get_handler_execution_target(cgh) != detail::execution_target::host) {
+		// 		throw std::runtime_error(
+		// 		    "Calling accessor constructor with host_buffer target is only allowed in host tasks."
+		// 		    "If you want to access this buffer from within a parallel_for task, please specialize the call using one of the non host tags");
+		// 	}
+		// 	auto& live_cgh = dynamic_cast<detail::live_pass_host_handler&>(cgh);
+		// // It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper
+		// // manually.
+		// const auto sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
+		// auto access_info = detail::runtime::get_instance().get_buffer_manager().access_host_buffer<DataT, Dims>(
+		//     detail::get_buffer_id(buff), Mode, detail::range_cast<3>(sr.range), detail::id_cast<3>(sr.offset));
+
+		// m_mapped_subrange = sr;
+		// m_host_ptr = reinterpret_cast<DataT*>(access_info.ptr);
+		// m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
+		// m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
+		// m_virtual_buffer_range = buff.get_range();
+		// }
 	}
 
 	template <typename Functor, typename TagT>
@@ -507,10 +571,11 @@ class local_accessor {
 
 #if !defined(__SYCL_DEVICE_ONLY__) && !defined(SYCL_DEVICE_ONLY)
 	local_accessor(const range<Dims>& allocation_size, handler& cgh) : m_sycl_acc{make_placeholder_sycl_accessor()}, m_allocation_size(allocation_size) {
-		if(!detail::is_prepass_handler(cgh)) {
-			auto& device_handler = dynamic_cast<detail::live_pass_device_handler&>(cgh);
-			m_eventual_sycl_cgh = device_handler.get_eventual_sycl_cgh();
-		}
+		// NOCOMMIT HYDRATE
+		// if(!detail::is_prepass_handler(cgh)) {
+		// 	auto& device_handler = dynamic_cast<detail::live_pass_device_handler&>(cgh);
+		// 	m_eventual_sycl_cgh = device_handler.get_eventual_sycl_cgh();
+		// }
 	}
 
 	local_accessor(const local_accessor& other)
@@ -548,6 +613,7 @@ class local_accessor {
 	cl::sycl::handler* const* m_eventual_sycl_cgh = nullptr;
 
 	static sycl_accessor make_placeholder_sycl_accessor() {
+		// NOCOMMIT Oops - need to bring this back (removed in USM buffers patch)
 #if CELERITY_WORKAROUND(DPCPP) || CELERITY_WORKAROUND_LESS_OR_EQUAL(COMPUTECPP, 2, 9)
 		detail::hack_null_sycl_handler null_cgh;
 		return sycl_accessor{detail::zero_range, null_cgh};

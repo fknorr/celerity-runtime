@@ -2,6 +2,7 @@
 
 #include <spdlog/fmt/fmt.h>
 
+#include "accessor.h" // NOCOMMIT Move hydrator to separate file?
 #include "buffer_manager.h"
 #include "device_queue.h"
 #include "handler.h"
@@ -176,12 +177,8 @@ namespace detail {
 
 			CELERITY_TRACE("Execute live-pass, scheduling host task in thread pool");
 
-			// Note that for host tasks, there is no indirection through a queue->submit step like there is for SYCL tasks. The CGF is executed directly,
-			// which then schedules task in the thread pool through the host_queue.
-			auto& cgf = tsk->get_command_group();
-			live_pass_host_handler cgh(tsk, data.sr, data.initialize_reductions, m_queue);
-			cgf(cgh);
-			m_future = cgh.into_future();
+			// NOCOMMIT TODO: There should be no need to pass cgid or global size from here, store inside launcher.
+			m_future = tsk->launch(m_queue, tsk->get_collective_group_id(), tsk->get_global_size(), data.sr);
 
 			assert(m_future.valid());
 			m_submitted = true;
@@ -221,10 +218,17 @@ namespace detail {
 
 			CELERITY_TRACE("Execute live-pass, submit kernel to SYCL");
 
-			live_pass_device_handler cgh(tsk, data.sr, data.initialize_reductions, m_queue);
-			auto& cgf = tsk->get_command_group();
-			cgf(cgh);
-			m_event = cgh.get_submission_event();
+			const auto& access_map = tsk->get_buffer_access_map();
+			std::vector<accessor_hydrator::NOCOMMIT_info> access_infos;
+			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
+				const auto [bid, mode] = access_map.get_nth_access(i);
+				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
+				access_infos.push_back(accessor_hydrator::NOCOMMIT_info{info.ptr, info.backing_buffer_range, info.backing_buffer_offset});
+			}
+
+			accessor_hydrator::get_instance().prepare(std::move(access_infos));
+			m_event = tsk->launch(m_queue, data.sr);
 
 			{
 				const auto msg = fmt::format("{}: Job submitted to SYCL (blocked on transfers until now!)", pkg.cid);
