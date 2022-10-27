@@ -7,6 +7,7 @@
 #include "access_modes.h"
 #include "buffer.h"
 #include "buffer_storage.h"
+#include "closure_hydrator.h"
 #include "handler.h"
 #include "sycl_wrappers.h"
 
@@ -67,53 +68,6 @@ namespace detail {
 		hack_null_sycl_handler() : sycl::handler(nullptr) {}
 	};
 #endif
-
-	class accessor_hydrator {
-	  public:
-		struct NOCOMMIT_info {
-			target tgt;
-			void* ptr;
-			range<3> buffer_range;
-			id<3> buffer_offset;
-			subrange<3> accessor_sr;
-		};
-
-		static void enable() {
-			assert(m_instance == nullptr);
-			m_instance = std::unique_ptr<accessor_hydrator>(new accessor_hydrator());
-		}
-
-		static bool is_available() { return m_instance != nullptr; }
-
-		static accessor_hydrator& get_instance() {
-			assert(m_instance != nullptr);
-			return *m_instance;
-		}
-
-		void prepare(std::vector<NOCOMMIT_info> infos) {
-			assert(m_next_idx == m_infos.size() && "Unconsumed pointers left");
-			m_infos = std::move(infos);
-			m_next_idx = 0;
-		}
-
-		bool can_hydrate() const { return !m_infos.empty(); }
-
-		// NOCOMMIT Change return type
-		NOCOMMIT_info hydrate() {
-			assert(!m_infos.empty());
-			assert(m_next_idx < m_infos.size());
-			return m_infos[m_next_idx++];
-		}
-
-	  private:
-		inline static thread_local std::unique_ptr<accessor_hydrator> m_instance;
-		size_t m_next_idx = 0;
-		std::vector<NOCOMMIT_info> m_infos;
-
-		accessor_hydrator() = default;
-		accessor_hydrator(const accessor_hydrator&) = delete;
-		accessor_hydrator(accessor_hydrator&&) = delete;
-	};
 
 } // namespace detail
 } // namespace celerity
@@ -330,8 +284,8 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 
 #if !defined(__SYCL_DEVICE_ONLY__) && !defined(SYCL_DEVICE_ONLY)
 		if(m_device_ptr == nullptr) {
-			if(detail::accessor_hydrator::is_available() && detail::accessor_hydrator::get_instance().can_hydrate()) {
-				const auto info = detail::accessor_hydrator::get_instance().hydrate();
+			if(detail::closure_hydrator::is_available() && detail::closure_hydrator::get_instance().can_hydrate()) {
+				const auto info = detail::closure_hydrator::get_instance().hydrate();
 
 				// NOCOMMIT Do we have tests for that?
 				if(info.tgt != target::device) {
@@ -539,8 +493,8 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 		m_virtual_buffer_range = other.m_virtual_buffer_range;
 
 		if(m_host_ptr == nullptr) {
-			if(detail::accessor_hydrator::is_available() && detail::accessor_hydrator::get_instance().can_hydrate()) {
-				const auto info = detail::accessor_hydrator::get_instance().hydrate();
+			if(detail::closure_hydrator::is_available() && detail::closure_hydrator::get_instance().can_hydrate()) {
+				const auto info = detail::closure_hydrator::get_instance().hydrate();
 
 				// NOCOMMIT Do we have tests for that?
 				if(info.tgt != target::host_task) {
@@ -588,8 +542,10 @@ class local_accessor {
 	}
 
 	local_accessor(const local_accessor& other)
-	    : m_sycl_acc(other.sycl_cgh() ? sycl_accessor{other.m_allocation_size, *other.sycl_cgh()} : other.m_sycl_acc),
-	      m_allocation_size(other.m_allocation_size), m_eventual_sycl_cgh(other.sycl_cgh() ? nullptr : other.m_eventual_sycl_cgh) {}
+	    : m_sycl_acc(detail::closure_hydrator::is_available() && detail::closure_hydrator::get_instance().has_sycl_handler()
+	                     ? sycl_accessor{other.m_allocation_size, detail::closure_hydrator::get_instance().get_sycl_handler()}
+	                     : other.m_sycl_acc),
+	      m_allocation_size(other.m_allocation_size) {}
 #else
 	local_accessor(const range<Dims>& allocation_size, handler& cgh);
 	local_accessor(const local_accessor&) = default;
@@ -619,7 +575,6 @@ class local_accessor {
   private:
 	sycl_accessor m_sycl_acc;
 	range<Dims> m_allocation_size;
-	cl::sycl::handler* const* m_eventual_sycl_cgh = nullptr;
 
 	static sycl_accessor make_placeholder_sycl_accessor() {
 		// NOCOMMIT Oops - need to bring this back (removed in USM buffers patch)
@@ -630,8 +585,6 @@ class local_accessor {
 		return sycl_accessor{};
 #endif
 	}
-
-	cl::sycl::handler* sycl_cgh() const { return m_eventual_sycl_cgh != nullptr ? *m_eventual_sycl_cgh : nullptr; }
 };
 
 

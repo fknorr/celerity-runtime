@@ -8,6 +8,7 @@
 #include <spdlog/fmt/fmt.h>
 
 #include "buffer.h"
+#include "closure_hydrator.h"
 #include "device_queue.h"
 #include "host_queue.h"
 #include "item.h"
@@ -496,13 +497,15 @@ class handler {
 
 		auto fn = [=](detail::device_queue& q, const subrange<3> execution_sr) {
 			return q.submit([&](sycl::handler& cgh) {
+				auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate_local_accessors(kernel, cgh);
+
 				if constexpr(std::is_same_v<KernelFlavor, detail::simple_kernel_flavor>) {
 					detail::invoke_sycl_parallel_for<KernelName>(cgh, detail::range_cast<Dims>(execution_sr.range), detail::make_sycl_reduction(reductions)...,
-					    detail::bind_simple_kernel(kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset)));
+					    detail::bind_simple_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset)));
 				} else if constexpr(std::is_same_v<KernelFlavor, detail::nd_range_kernel_flavor>) {
 					detail::invoke_sycl_parallel_for<KernelName>(cgh, cl::sycl::nd_range{detail::range_cast<Dims>(execution_sr.range), local_range},
 					    detail::make_sycl_reduction(reductions)...,
-					    detail::bind_nd_range_kernel(kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset),
+					    detail::bind_nd_range_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset),
 					        global_range / local_range, detail::id_cast<Dims>(execution_sr.offset) / local_range));
 				} else {
 					static_assert(detail::constexpr_false<KernelFlavor>);
