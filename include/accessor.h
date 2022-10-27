@@ -71,13 +71,22 @@ namespace detail {
 	class accessor_hydrator {
 	  public:
 		struct NOCOMMIT_info {
+			target tgt;
 			void* ptr;
-			range<3> range;
-			id<3> offset;
+			range<3> buffer_range;
+			id<3> buffer_offset;
+			subrange<3> accessor_sr;
 		};
 
+		static void enable() {
+			assert(m_instance == nullptr);
+			m_instance = std::unique_ptr<accessor_hydrator>(new accessor_hydrator());
+		}
+
+		static bool is_available() { return m_instance != nullptr; }
+
 		static accessor_hydrator& get_instance() {
-			if(m_instance == nullptr) { m_instance = std::unique_ptr<accessor_hydrator>(new accessor_hydrator()); }
+			assert(m_instance != nullptr);
 			return *m_instance;
 		}
 
@@ -321,11 +330,19 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 
 #if !defined(__SYCL_DEVICE_ONLY__) && !defined(SYCL_DEVICE_ONLY)
 		if(m_device_ptr == nullptr) {
-			if(detail::accessor_hydrator::get_instance().can_hydrate()) {
+			if(detail::accessor_hydrator::is_available() && detail::accessor_hydrator::get_instance().can_hydrate()) {
 				const auto info = detail::accessor_hydrator::get_instance().hydrate();
+
+				// NOCOMMIT Do we have tests for that?
+				if(info.tgt != target::device) {
+					throw std::runtime_error(
+					    "Calling accessor constructor with device target is only allowed in parallel_for tasks."
+					    "If you want to access this buffer from within a host task, please specialize the call using one of the *_host_task tags");
+				}
+
 				m_device_ptr = static_cast<DataT*>(info.ptr);
-				m_index_offset = detail::id_cast<Dims>(info.offset);
-				m_buffer_range = detail::range_cast<Dims>(info.range);
+				m_index_offset = detail::id_cast<Dims>(info.buffer_offset);
+				m_buffer_range = detail::range_cast<Dims>(info.buffer_range);
 			}
 		}
 #endif
@@ -334,25 +351,6 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 	template <typename Functor>
 	accessor(const ctor_internal_tag, const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) {
 		detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
-
-		// NOCOMMIT Move stuff below to hydration mechanism
-		// NOCOMMIT Can we still do this check during hydration?
-
-		// if(detail::get_handler_execution_target(cgh) != detail::execution_target::device) {
-		// 	throw std::runtime_error(
-		// 	    "Calling accessor constructor with device target is only allowed in parallel_for tasks."
-		// 	    "If you want to access this buffer from within a host task, please specialize the call using one of the *_host_task tags");
-		// }
-
-		// auto& live_cgh = dynamic_cast<detail::live_pass_device_handler&>(cgh);
-		// // It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper manually.
-		// const auto mapped_sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
-		// auto access_info = detail::runtime::get_instance().get_buffer_manager().access_device_buffer<DataT, Dims>(
-		//     live_cgh.get_memory_id(), detail::get_buffer_id(buff), Mode, detail::range_cast<3>(mapped_sr.range), detail::id_cast<3>(mapped_sr.offset));
-
-		// m_device_ptr = reinterpret_cast<DataT*>(access_info.ptr);
-		// m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
-		// m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
 	}
 
 	size_t get_linear_offset(id<Dims> index) const { return detail::get_linear_index(m_buffer_range, index - m_index_offset); }
@@ -383,29 +381,7 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 		static_assert(!std::is_same_v<Functor, range<Dims>>, "The accessor constructor overload for master-access tasks (now called 'host tasks') has "
 		                                                     "been removed with Celerity 0.2.0. Please provide a range mapper instead.");
 		detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
-
-		// NOCOMMIT Move stuff below to hydration mechanism
-		// NOCOMMIT Can we still do this check during hydration?
-
-		// if constexpr(Target == target::host_task) { // NOCOMMIT ?!
-		// 	if(detail::get_handler_execution_target(cgh) != detail::execution_target::host) {
-		// 		throw std::runtime_error(
-		// 		    "Calling accessor constructor with host_buffer target is only allowed in host tasks."
-		// 		    "If you want to access this buffer from within a parallel_for task, please specialize the call using one of the non host tags");
-		// 	}
-		// 	auto& live_cgh = dynamic_cast<detail::live_pass_host_handler&>(cgh);
-		// // It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper
-		// // manually.
-		// const auto sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
-		// auto access_info = detail::runtime::get_instance().get_buffer_manager().access_host_buffer<DataT, Dims>(
-		//     detail::get_buffer_id(buff), Mode, detail::range_cast<3>(sr.range), detail::id_cast<3>(sr.offset));
-
-		// m_mapped_subrange = sr;
-		// m_host_ptr = reinterpret_cast<DataT*>(access_info.ptr);
-		// m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
-		// m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
-		// m_virtual_buffer_range = buff.get_range();
-		// }
+		m_virtual_buffer_range = buff.get_range();
 	}
 
 	template <typename Functor, typename TagT>
@@ -423,6 +399,13 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 		static_assert(detail::constexpr_false<TagT>,
 		    "Currently it is not accepted to pass a property list to an accessor constructor. Please use the property celerity::no_init "
 		    "as a last argument in the constructor");
+	}
+
+	accessor(const accessor& other) { init_from(other); }
+
+	accessor& operator=(const accessor& other) {
+		if(this != &other) { init_from(other); }
+		return *this;
 	}
 
 	template <access_mode M = Mode, int D = Dims>
@@ -547,6 +530,32 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 	accessor(subrange<Dims> mapped_subrange, DataT* ptr, id<Dims> backing_buffer_offset, range<Dims> backing_buffer_range, range<Dims> virtual_buffer_range)
 	    : m_mapped_subrange(mapped_subrange), m_host_ptr(ptr), m_index_offset(backing_buffer_offset), m_buffer_range(backing_buffer_range),
 	      m_virtual_buffer_range(virtual_buffer_range) {}
+
+	void init_from(const accessor& other) {
+		m_mapped_subrange = other.m_mapped_subrange;
+		m_host_ptr = other.m_host_ptr;
+		m_index_offset = other.m_index_offset;
+		m_buffer_range = other.m_buffer_range;
+		m_virtual_buffer_range = other.m_virtual_buffer_range;
+
+		if(m_host_ptr == nullptr) {
+			if(detail::accessor_hydrator::is_available() && detail::accessor_hydrator::get_instance().can_hydrate()) {
+				const auto info = detail::accessor_hydrator::get_instance().hydrate();
+
+				// NOCOMMIT Do we have tests for that?
+				if(info.tgt != target::host_task) {
+					throw std::runtime_error(
+					    "Calling accessor constructor with target::host_task is only allowed in host tasks."
+					    "If you want to access this buffer from within a parallel_for task, please specialize the call using one of the non host tags.");
+				}
+
+				m_host_ptr = static_cast<DataT*>(info.ptr);
+				m_index_offset = detail::id_cast<Dims>(info.buffer_offset);
+				m_buffer_range = detail::range_cast<Dims>(info.buffer_range);
+				m_mapped_subrange = detail::subrange_cast<Dims>(info.accessor_sr);
+			}
+		}
+	}
 
 	size_t get_linear_offset(id<Dims> index) const { return detail::get_linear_index(m_buffer_range, index - m_index_offset); }
 };

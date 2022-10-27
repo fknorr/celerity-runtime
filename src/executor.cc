@@ -26,6 +26,8 @@ deadlock if #buffers > 20 though, so probably not a good idea)
 #include "mpi_support.h"
 #include "named_threads.h"
 
+#include "accessor.h" // NOCOMMIT Move hydrator somewhere else
+
 // TODO: Get rid of this. (This could potentialy even cause deadlocks on large clusters)
 constexpr size_t MAX_CONCURRENT_JOBS = 20;
 
@@ -62,6 +64,7 @@ namespace detail {
 	}
 
 	void executor::run() {
+		accessor_hydrator::enable();
 		bool done = false;
 
 		// namespace chr = std::chrono;

@@ -177,6 +177,19 @@ namespace detail {
 
 			CELERITY_TRACE("Execute live-pass, scheduling host task in thread pool");
 
+			// NOCOMMIT DRY with device execute?
+			const auto& access_map = tsk->get_buffer_access_map();
+			std::vector<accessor_hydrator::NOCOMMIT_info> access_infos;
+			access_infos.reserve(access_map.get_num_accesses());
+			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
+				const auto [bid, mode] = access_map.get_nth_access(i);
+				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+				const auto info = m_buffer_mngr.access_host_buffer(bid, mode, sr.range, sr.offset);
+				access_infos.push_back(
+				    accessor_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+			}
+
+			accessor_hydrator::get_instance().prepare(std::move(access_infos));
 			// NOCOMMIT TODO: There should be no need to pass cgid or global size from here, store inside launcher.
 			m_future = tsk->launch(m_queue, tsk->get_collective_group_id(), tsk->get_global_size(), data.sr);
 
@@ -220,11 +233,12 @@ namespace detail {
 
 			const auto& access_map = tsk->get_buffer_access_map();
 			std::vector<accessor_hydrator::NOCOMMIT_info> access_infos;
+			access_infos.reserve(access_map.get_num_accesses());
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
 				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
-				access_infos.push_back(accessor_hydrator::NOCOMMIT_info{info.ptr, info.backing_buffer_range, info.backing_buffer_offset});
+				access_infos.push_back(accessor_hydrator::NOCOMMIT_info{target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
 			}
 
 			accessor_hydrator::get_instance().prepare(std::move(access_infos));
