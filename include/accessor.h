@@ -253,16 +253,12 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 	friend bool operator!=(const accessor& lhs, const accessor& rhs) { return !(lhs == rhs); }
 
   private:
-	template <typename T, int D, access_mode M, typename... Args>
-	friend accessor<T, D, M, target::device> detail::make_device_accessor(Args&&...);
-
 	DataT* m_device_ptr;
 	sycl::id<Dims> m_index_offset;
 	sycl::range<Dims> m_buffer_range = detail::zero_range;
 
-	// NOCOMMIT These ctors (same for host) are only used for tests, right? If so, add note
-	accessor(detail::device_buffer<DataT, Dims>& buffer, id<Dims> index_offset)
-	    : m_device_ptr(buffer.get_pointer()), m_index_offset(index_offset), m_buffer_range(buffer.get_range()) {
+	// Constructor for tests, called through accessor_testspy.
+	accessor(DataT* ptr, id<Dims> index_offset, range<Dims> buffer_range) : m_device_ptr(ptr), m_index_offset(index_offset), m_buffer_range(buffer_range) {
 #if CELERITY_WORKAROUND_HIPSYCL
 		static_assert(std::is_trivially_copyable_v<accessor>);
 #else
@@ -285,12 +281,12 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 			auto& live_cgh = dynamic_cast<detail::live_pass_device_handler&>(cgh);
 			// It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper manually.
 			const auto mapped_sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
-			const auto access_info = detail::runtime::get_instance().get_buffer_manager().get_device_buffer<DataT, Dims>(
+			auto access_info = detail::runtime::get_instance().get_buffer_manager().access_device_buffer<DataT, Dims>(
 			    live_cgh.get_memory_id(), detail::get_buffer_id(buff), Mode, detail::range_cast<3>(mapped_sr.range), detail::id_cast<3>(mapped_sr.offset));
 
-			m_device_ptr = access_info.buffer.get_pointer();
-			m_index_offset = access_info.offset;
-			m_buffer_range = access_info.buffer.get_range();
+			m_device_ptr = reinterpret_cast<DataT*>(access_info.ptr);
+			m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
+			m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
 		}
 	}
 
@@ -314,6 +310,8 @@ accessor(const buffer<T, D>& buff, handler& cgh, Functor rmfn, TagT tag, propert
 
 template <typename DataT, int Dims, access_mode Mode>
 class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_base<DataT, Dims, Mode, target::host_task> {
+	friend struct detail::accessor_testspy;
+
   public:
 	template <target Target = target::host_task, typename Functor>
 	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) {
@@ -334,12 +332,13 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 				// It's difficult to figure out which stored range mapper corresponds to this constructor call, which is why we just call the raw mapper
 				// manually.
 				const auto sr = live_cgh.apply_range_mapper<Dims>(rmfn, buff.get_range());
-				auto access_info = detail::runtime::get_instance().get_buffer_manager().get_host_buffer<DataT, Dims>(
+				auto access_info = detail::runtime::get_instance().get_buffer_manager().access_host_buffer<DataT, Dims>(
 				    detail::get_buffer_id(buff), Mode, detail::range_cast<3>(sr.range), detail::id_cast<3>(sr.offset));
 
 				m_mapped_subrange = sr;
-				m_optional_buffer = &access_info.buffer;
-				m_index_offset = access_info.offset;
+				m_host_ptr = reinterpret_cast<DataT*>(access_info.ptr);
+				m_index_offset = detail::id_cast<Dims>(access_info.backing_buffer_offset);
+				m_buffer_range = detail::range_cast<Dims>(access_info.backing_buffer_range);
 				m_virtual_buffer_range = buff.get_range();
 			}
 		}
@@ -364,12 +363,12 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 
 	template <access_mode M = Mode, int D = Dims>
 	std::enable_if_t<detail::access::mode_traits::is_producer(M) && (D > 0), DataT&> operator[](id<Dims> index) const {
-		return *(get_buffer().get_pointer() + get_linear_offset(index));
+		return *(m_host_ptr + get_linear_offset(index));
 	}
 
 	template <access_mode M = Mode, int D = Dims>
 	std::enable_if_t<detail::access::mode_traits::is_pure_consumer(M) && (D > 0), DataT> operator[](id<Dims> index) const {
-		return *(get_buffer().get_pointer() + get_linear_offset(index));
+		return *(m_host_ptr + get_linear_offset(index));
 	}
 
 	template <int D = Dims>
@@ -394,15 +393,14 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 		if(m_index_offset != detail::id_cast<Dims>(id<3>{0, 0, 0})) { illegal_access = true; }
 		// We can be a bit more lenient for 1D buffers, in that the backing buffer doesn't have to have the full size.
 		// (Dereferencing the pointer outside of the requested range is UB anyways).
-		if(Dims > 1 && get_buffer().get_range() != m_virtual_buffer_range) { illegal_access = true; }
+		if(Dims > 1 && m_buffer_range != m_virtual_buffer_range) { illegal_access = true; }
 		if(illegal_access) { throw std::logic_error("Buffer cannot be accessed with expected stride"); }
-		return get_buffer().get_pointer();
+		return m_host_ptr;
 	}
 
 	friend bool operator==(const accessor& lhs, const accessor& rhs) {
-		return (lhs.m_optional_buffer == rhs.m_optional_buffer
-		           || (lhs.m_optional_buffer && rhs.m_optional_buffer && *lhs.m_optional_buffer == *rhs.m_optional_buffer))
-		       && lhs.m_index_offset == rhs.m_index_offset;
+		return lhs.m_host_ptr == rhs.m_host_ptr && lhs.m_mapped_subrange == rhs.m_mapped_subrange && lhs.m_buffer_range == rhs.m_buffer_range
+		       && lhs.m_virtual_buffer_range == rhs.m_virtual_buffer_range && lhs.m_index_offset == rhs.m_index_offset;
 	}
 
 	friend bool operator!=(const accessor& lhs, const accessor& rhs) { return !(lhs == rhs); }
@@ -420,9 +418,9 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 		(void)part;
 
 		return {
-		    get_buffer().get_pointer(),
+		    m_host_ptr,
 		    m_virtual_buffer_range,
-		    get_buffer().get_range(),
+		    m_buffer_range,
 		    m_mapped_subrange.range,
 		    m_index_offset,
 		    m_mapped_subrange.offset,
@@ -449,49 +447,44 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 		for(int d = 0; d < Dims; ++d) {
 			dimensions[d] = {/* global_size */ m_virtual_buffer_range[d],
 			    /* global_offset */ m_mapped_subrange.offset[d],
-			    /* local_size */ get_buffer().get_range()[d],
+			    /* local_size */ m_buffer_range[d],
 			    /* local_offset */ m_mapped_subrange.offset[d] - m_index_offset[d],
 			    /* extent */ m_mapped_subrange.range[d]};
 		}
 
-		return {get_buffer().get_pointer(), host_memory_layout{dimensions}};
+		return {m_host_ptr, host_memory_layout{dimensions}};
 	}
 #pragma GCC diagnostic pop
 
   private:
-	template <typename T, int D, access_mode M, typename... Args>
-	friend accessor<T, D, M, target::host_task> detail::make_host_accessor(Args&&...);
-
 	// Subange of the accessor, as set by the range mapper or requested by the user (master node host tasks only).
 	// This does not necessarily correspond to the backing buffer's range.
 	subrange<Dims> m_mapped_subrange;
 
-	mutable detail::host_buffer<DataT, Dims>* m_optional_buffer = nullptr;
+	DataT* m_host_ptr = nullptr;
 
 	// Offset of the backing buffer relative to the virtual buffer.
 	id<Dims> m_index_offset;
 
+	// Range of the backing buffer.
+	range<Dims> m_buffer_range = detail::zero_range;
+
 	// The range of the Celerity buffer as created by the user.
 	// We only need this to check whether it is safe to call get_pointer() or not.
-	range<Dims> m_virtual_buffer_range = detail::range_cast<Dims>(range<3>(0, 0, 0));
+	range<Dims> m_virtual_buffer_range = detail::zero_range;
 
 	/**
 	 * Constructor for pre-pass.
+	 * NOCOMMIT Do we need this?
 	 */
 	accessor() = default;
 
-	/**
-	 * Constructor for live-pass.
-	 */
-	accessor(subrange<Dims> mapped_subrange, detail::host_buffer<DataT, Dims>& buffer, id<Dims> backing_buffer_offset, range<Dims> virtual_buffer_range)
-	    : m_mapped_subrange(mapped_subrange), m_optional_buffer(&buffer), m_index_offset(backing_buffer_offset), m_virtual_buffer_range(virtual_buffer_range) {}
+	// Constructor for tests, called through accessor_testspy.
+	accessor(subrange<Dims> mapped_subrange, DataT* ptr, id<Dims> backing_buffer_offset, range<Dims> backing_buffer_range, range<Dims> virtual_buffer_range)
+	    : m_mapped_subrange(mapped_subrange), m_host_ptr(ptr), m_index_offset(backing_buffer_offset), m_buffer_range(backing_buffer_range),
+	      m_virtual_buffer_range(virtual_buffer_range) {}
 
-	detail::host_buffer<DataT, Dims>& get_buffer() const {
-		assert(m_optional_buffer != nullptr);
-		return *m_optional_buffer;
-	}
-
-	size_t get_linear_offset(id<Dims> index) const { return detail::get_linear_index(get_buffer().get_range(), index - m_index_offset); }
+	size_t get_linear_offset(id<Dims> index) const { return detail::get_linear_index(m_buffer_range, index - m_index_offset); }
 };
 
 
@@ -568,15 +561,6 @@ class local_accessor {
 
 
 namespace detail {
-	template <typename DataT, int Dims, access_mode Mode, typename... Args>
-	accessor<DataT, Dims, Mode, target::device> make_device_accessor(Args&&... args) {
-		return {std::forward<Args>(args)...};
-	}
-
-	template <typename DataT, int Dims, access_mode Mode, typename... Args>
-	accessor<DataT, Dims, Mode, target::host_task> make_host_accessor(Args&&... args) {
-		return {std::forward<Args>(args)...};
-	}
 
 	template <typename TagT>
 	constexpr access_mode deduce_access_mode() {

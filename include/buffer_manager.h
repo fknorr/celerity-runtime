@@ -19,6 +19,7 @@
 #include "payload.h"
 #include "ranges.h"
 #include "region_map.h"
+#include "sycl_wrappers.h"
 #include "types.h"
 #include "utils.h"
 
@@ -93,29 +94,39 @@ namespace detail {
 
 		using buffer_lifecycle_callback = std::function<void(buffer_lifecycle_event, buffer_id)>;
 
+		using device_buffer_factory = std::function<std::unique_ptr<buffer_storage>(const range<3>&, sycl::queue&)>;
+		using host_buffer_factory = std::function<std::unique_ptr<buffer_storage>(const range<3>&)>;
+
 		struct buffer_info {
 			int dims = 0; // NOCOMMIT Added for cool region map w/o thinking about it too much. Is this redundant?
 			cl::sycl::range<3> range = {1, 1, 1};
 			size_t element_size = 0;
 			bool is_host_initialized;
 			std::string debug_name = {};
+
+			device_buffer_factory construct_device;
+			host_buffer_factory construct_host;
 		};
 
 		/**
-		 * When requesting a host or device buffer through the buffer_manager, this is what is returned.
+		 * When requesting access to a host or device buffer through the buffer_manager, this is what is returned.
 		 */
-		template <typename DataT, int Dims, template <typename, int> class BufferT>
 		struct access_info {
 			/**
-			 * This is the *currently used* backing buffer for the requested virtual buffer.
+			 * This is a pointer into the *currently used* backing buffer for the requested virtual buffer.
 			 * This reference can become stale if the backing buffer needs to be resized by a subsequent access.
 			 */
-			BufferT<DataT, Dims>& buffer;
+			void* ptr;
+
+			/**
+			 * The range of the backing buffer for the requested virtual buffer.
+			 */
+			range<3> backing_buffer_range;
 
 			/**
 			 * This is the offset of the backing buffer relative to the requested virtual buffer.
 			 */
-			cl::sycl::id<Dims> offset;
+			id<3> backing_buffer_offset;
 		};
 
 		using buffer_lock_id = size_t;
@@ -131,7 +142,12 @@ namespace detail {
 				std::unique_lock lock(m_mutex);
 				bid = m_buffer_count++;
 				m_buffers.emplace(std::piecewise_construct, std::tuple{bid}, std::tuple{m_local_devices.num_memories()});
-				m_buffer_infos.emplace(bid, buffer_info{Dims, range, sizeof(DataT), is_host_initialized});
+				auto device_factory = [](const ::celerity::range<3>& r, sycl::queue& q) {
+					return std::make_unique<device_buffer_storage<DataT, Dims>>(range_cast<Dims>(r), q);
+				};
+				auto host_factory = [](const ::celerity::range<3>& r) { return std::make_unique<host_buffer_storage<DataT, Dims>>(range_cast<Dims>(r)); };
+				m_buffer_infos.emplace(
+				    bid, buffer_info{Dims, range, sizeof(DataT), is_host_initialized, {}, std::move(device_factory), std::move(host_factory)});
 				m_newest_data_location.emplace(bid, region_map<data_location>(range, data_location{}));
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
@@ -140,8 +156,8 @@ namespace detail {
 			}
 			if(is_host_initialized) {
 				// We need to access the full range for host-initialized buffers.
-				auto info = get_host_buffer<DataT, Dims>(bid, cl::sycl::access::mode::discard_write, range, cl::sycl::id<3>(0, 0, 0));
-				std::memcpy(info.buffer.get_pointer(), host_init_ptr, range.size() * sizeof(DataT));
+				auto info = access_host_buffer(bid, cl::sycl::access::mode::discard_write, range, cl::sycl::id<3>(0, 0, 0));
+				std::memcpy(info.ptr, host_init_ptr, range.size() * sizeof(DataT));
 			}
 			m_lifecycle_cb(buffer_lifecycle_event::registered, bid);
 			return bid;
@@ -202,13 +218,18 @@ namespace detail {
 		void set_buffer_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized);
 
 		template <typename DataT, int Dims>
-		access_info<DataT, Dims, device_buffer> get_device_buffer(
+		access_info access_device_buffer(
 		    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
-			std::unique_lock lock(m_mutex);
-			ZoneScopedN("get_device_buffer");
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 			assert((m_buffer_types.at(bid)->has_type<DataT, Dims>()));
 #endif
+			return access_device_buffer(mid, bid, mode, range, offset);
+		}
+
+		access_info access_device_buffer(
+		    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
+			std::unique_lock lock(m_mutex);
+			ZoneScopedN("get_device_buffer");
 			assert((range_cast<3>(offset + range) <= m_buffer_infos.at(bid).range) == cl::sycl::range<3>(true, true, true));
 
 			auto& device_queue = m_local_devices.get_close_device_queue(mid);
@@ -218,8 +239,7 @@ namespace detail {
 			backing_buffer replacement_buf;
 
 			if(!existing_buf.is_allocated()) {
-				replacement_buf =
-				    backing_buffer{std::make_unique<device_buffer_storage<DataT, Dims>>(range_cast<Dims>(range), device_queue.get_sycl_queue()), offset};
+				replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_device(range, device_queue.get_sycl_queue()), offset};
 			} else {
 				// FIXME: For large buffers we might not be able to store two copies in device memory at once.
 				// Instead, we'd first have to transfer everything to the host and free the old buffer before allocating the new one.
@@ -227,33 +247,34 @@ namespace detail {
 				// (AND that access request covers the entirety of the old buffer!)
 				const auto info = is_resize_required(existing_buf, range, offset);
 				if(info.resize_required) {
-					replacement_buf = backing_buffer{
-					    std::make_unique<device_buffer_storage<DataT, Dims>>(range_cast<Dims>(info.new_range), device_queue.get_sycl_queue()), info.new_offset};
+					replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_device(info.new_range, device_queue.get_sycl_queue()), info.new_offset};
 				}
 			}
 
 			audit_buffer_access(bid, mid, replacement_buf.is_allocated(), mode);
 
 			if(m_test_mode && replacement_buf.is_allocated()) {
-				auto& device_buf = static_cast<device_buffer_storage<DataT, Dims>*>(replacement_buf.storage.get())->get_device_buffer();
-				device_queue.get_sycl_queue()
-				    .submit(
-				        [&](cl::sycl::handler& cgh) { cgh.memset(device_buf.get_pointer(), test_mode_pattern, device_buf.get_range().size() * sizeof(DataT)); })
-				    .wait();
+				auto* ptr = replacement_buf.storage->get_pointer();
+				const auto bytes = replacement_buf.storage->get_size();
+				device_queue.get_sycl_queue().submit([&](cl::sycl::handler& cgh) { cgh.memset(ptr, test_mode_pattern, bytes); }).wait();
 			}
 
 			existing_buf = make_buffer_subrange_coherent(mid, bid, mode, std::move(existing_buf), {offset, range}, std::move(replacement_buf));
 
-			return {dynamic_cast<device_buffer_storage<DataT, Dims>*>(existing_buf.storage.get())->get_device_buffer(), id_cast<Dims>(existing_buf.offset)};
+			return {existing_buf.storage->get_pointer(), existing_buf.storage->get_range(), existing_buf.offset};
 		}
 
 		template <typename DataT, int Dims>
-		access_info<DataT, Dims, host_buffer> get_host_buffer(
-		    buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
-			std::unique_lock lock(m_mutex);
+		access_info access_host_buffer(buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 			assert((m_buffer_types.at(bid)->has_type<DataT, Dims>()));
 #endif
+			return access_host_buffer(bid, mode, range, offset);
+		}
+
+		// NOCOMMIT Move to CPP
+		access_info access_host_buffer(buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
+			std::unique_lock lock(m_mutex);
 			assert((range_cast<3>(offset + range) <= m_buffer_infos.at(bid).range) == cl::sycl::range<3>(true, true, true));
 
 			auto& existing_buf = m_buffers.at(bid).get(m_local_devices.get_host_memory_id());
@@ -261,25 +282,24 @@ namespace detail {
 			backing_buffer replacement_buf;
 
 			if(!existing_buf.is_allocated()) {
-				replacement_buf = backing_buffer{std::make_unique<host_buffer_storage<DataT, Dims>>(range_cast<Dims>(range)), offset};
+				replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_host(range), offset};
 			} else {
 				const auto info = is_resize_required(existing_buf, range, offset);
-				if(info.resize_required) {
-					replacement_buf = backing_buffer{std::make_unique<host_buffer_storage<DataT, Dims>>(range_cast<Dims>(info.new_range)), info.new_offset};
-				}
+				if(info.resize_required) { replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_host(info.new_range), info.new_offset}; }
 			}
 
 			audit_buffer_access(bid, m_local_devices.get_host_memory_id(), replacement_buf.is_allocated(), mode);
 
 			if(m_test_mode && replacement_buf.is_allocated()) {
-				auto& host_buf = static_cast<host_buffer_storage<DataT, Dims>*>(replacement_buf.storage.get())->get_host_buffer();
-				std::memset(host_buf.get_pointer(), test_mode_pattern, host_buf.get_range().size() * sizeof(DataT));
+				auto* ptr = replacement_buf.storage->get_pointer();
+				const auto size = replacement_buf.storage->get_size();
+				std::memset(ptr, test_mode_pattern, size);
 			}
 
 			existing_buf = make_buffer_subrange_coherent(
 			    m_local_devices.get_host_memory_id(), bid, mode, std::move(existing_buf), {offset, range}, std::move(replacement_buf));
 
-			return {static_cast<host_buffer_storage<DataT, Dims>*>(existing_buf.storage.get())->get_host_buffer(), id_cast<Dims>(existing_buf.offset)};
+			return {existing_buf.storage->get_pointer(), existing_buf.storage->get_range(), existing_buf.offset};
 		}
 
 		/**
@@ -375,7 +395,6 @@ namespace detail {
 				return dynamic_cast<const buffer_type_guard<DataT, Dims>*>(this) != nullptr;
 			}
 		};
-
 		template <typename DataT, int Dims>
 		struct buffer_type_guard : buffer_type_guard_base {};
 #endif

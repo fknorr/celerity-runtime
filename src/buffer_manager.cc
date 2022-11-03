@@ -49,7 +49,7 @@ namespace detail {
 			backing_buffer replacement_buf;
 			if(info.resize_required) {
 				// TODO: Do we really want to allocate host memory for this..? We could also make the buffer storage "coherent" directly.
-				replacement_buf = backing_buffer{std::unique_ptr<buffer_storage>(existing_buf.storage->make_new_of_same_type(info.new_range)), info.new_offset};
+				replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_host(info.new_range), info.new_offset};
 			}
 			existing_buf = make_buffer_subrange_coherent(
 			    m_local_devices.get_host_memory_id(), bid, access_mode::read, std::move(existing_buf), sr, std::move(replacement_buf));

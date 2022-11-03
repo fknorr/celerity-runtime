@@ -114,14 +114,11 @@ namespace detail {
 		 */
 		virtual size_t get_size() const = 0;
 
+		virtual void* get_pointer() = 0;
+
 		virtual void get_data(const subrange<3>& sr, void* out_linearized) const = 0;
 
 		virtual void set_data(const subrange<3>& sr, const void* in_linearized) = 0;
-
-		/**
-		 * Convenience function to create new buffer_storages of the same (templated) type, useful in contexts where template type information is not available.
-		 */
-		virtual buffer_storage* make_new_of_same_type(cl::sycl::range<3> range) const = 0;
 
 		/**
 		 * Copy data from the given source buffer into this buffer.
@@ -151,6 +148,8 @@ namespace detail {
 
 		size_t get_size() const override { return get_range().size() * sizeof(DataT); };
 
+		void* get_pointer() override { return m_device_buf.get_pointer(); }
+
 		device_buffer<DataT, Dims>& get_device_buffer() { return m_device_buf; }
 
 		const device_buffer<DataT, Dims>& get_device_buffer() const { return m_device_buf; }
@@ -175,10 +174,6 @@ namespace detail {
 			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
 		}
 
-		buffer_storage* make_new_of_same_type(cl::sycl::range<3> range) const override {
-			return new device_buffer_storage<DataT, Dims>(range_cast<Dims>(range), m_owning_queue);
-		}
-
 		void copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
 
 		sycl::queue& get_owning_queue() { return m_owning_queue; }
@@ -195,6 +190,8 @@ namespace detail {
 
 		size_t get_size() const override { return get_range().size() * sizeof(DataT); };
 
+		void* get_pointer() override { return m_host_buf.get_pointer(); }
+
 		void get_data(const subrange<3>& sr, void* out_linearized) const override {
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
@@ -210,8 +207,6 @@ namespace detail {
 			memcpy_strided(in_linearized, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id_cast<Dims>(cl::sycl::id<3>(0, 0, 0)),
 			    range_cast<Dims>(m_host_buf.get_range()), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
 		}
-
-		buffer_storage* make_new_of_same_type(cl::sycl::range<3> range) const override { return new host_buffer_storage<DataT, Dims>(range_cast<Dims>(range)); }
 
 		void copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
 
