@@ -171,6 +171,8 @@ namespace test_utils {
 	  public:
 		void add_side_effect(handler& cgh, const experimental::side_effect_order order) { (void)detail::add_requirement(cgh, m_id, order); }
 
+		detail::host_object_id get_id() const { return m_id; }
+
 	  private:
 		friend class mock_host_object_factory;
 		friend class ::dist_cdag_test_context;
