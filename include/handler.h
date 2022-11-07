@@ -522,9 +522,9 @@ namespace detail {
 		cl::sycl::property_list props;
 		if(!d.m_include_current_buffer_value) { props = {cl::sycl::property::reduction::initialize_to_identity{}}; }
 		if constexpr(WithExplicitIdentity) {
-			return sycl::reduction(d.m_device_buf->get_pointer(), d.m_identity, d.m_op, props);
+			return sycl::reduction(d.m_device_ptr, d.m_identity, d.m_op, props);
 		} else {
-			return sycl::reduction(d.m_device_buf->get_pointer(), d.m_op, props);
+			return sycl::reduction(d.m_device_ptr, d.m_op, props);
 		}
 #endif
 	}
@@ -532,9 +532,8 @@ namespace detail {
 	template <typename DataT, int Dims, typename BinaryOperation>
 	class reduction_descriptor<DataT, Dims, BinaryOperation, false /* WithExplicitIdentity */> {
 	  public:
-		reduction_descriptor(
-		    buffer_id bid, BinaryOperation combiner, DataT /* identity */, bool include_current_buffer_value, device_buffer<DataT, Dims>* device_buf)
-		    : m_bid(bid), m_op(combiner), m_include_current_buffer_value(include_current_buffer_value), m_device_buf(device_buf) {}
+		reduction_descriptor(buffer_id bid, BinaryOperation combiner, DataT /* identity */, bool include_current_buffer_value, DataT* device_ptr)
+		    : m_bid(bid), m_op(combiner), m_include_current_buffer_value(include_current_buffer_value), m_device_ptr(device_ptr) {}
 
 	  private:
 		friend auto make_sycl_reduction<DataT, Dims, BinaryOperation, false>(const reduction_descriptor&);
@@ -542,14 +541,14 @@ namespace detail {
 		buffer_id m_bid;
 		BinaryOperation m_op;
 		bool m_include_current_buffer_value;
-		device_buffer<DataT, Dims>* m_device_buf;
+		DataT* m_device_ptr;
 	};
 
 	template <typename DataT, int Dims, typename BinaryOperation>
 	class reduction_descriptor<DataT, Dims, BinaryOperation, true /* WithExplicitIdentity */> {
 	  public:
-		reduction_descriptor(buffer_id bid, BinaryOperation combiner, DataT identity, bool include_current_buffer_value, device_buffer<DataT, Dims>* device_buf)
-		    : m_bid(bid), m_op(combiner), m_identity(identity), m_include_current_buffer_value(include_current_buffer_value), m_device_buf(device_buf) {}
+		reduction_descriptor(buffer_id bid, BinaryOperation combiner, DataT identity, bool include_current_buffer_value, DataT* device_ptr)
+		    : m_bid(bid), m_op(combiner), m_identity(identity), m_include_current_buffer_value(include_current_buffer_value), m_device_ptr(device_ptr) {}
 
 	  private:
 		friend auto make_sycl_reduction<DataT, Dims, BinaryOperation, true>(const reduction_descriptor&);
@@ -558,7 +557,7 @@ namespace detail {
 		BinaryOperation m_op;
 		DataT m_identity{};
 		bool m_include_current_buffer_value;
-		device_buffer<DataT, Dims>* m_device_buf;
+		DataT* m_device_ptr;
 	};
 
 	template <bool WithExplicitIdentity, typename DataT, int Dims, typename BinaryOperation>
@@ -574,22 +573,23 @@ namespace detail {
 
 		auto bid = detail::get_buffer_id(vars);
 		auto include_current_buffer_value = !prop_list.has_property<celerity::property::reduction::initialize_to_identity>();
-		device_buffer<DataT, Dims>* device_buf = nullptr;
+		DataT* device_ptr = nullptr;
 
 		if(detail::is_prepass_handler(cgh)) {
 			auto rid = detail::runtime::get_instance().get_reduction_manager().create_reduction<DataT, Dims>(bid, op, identity);
 			static_cast<detail::prepass_handler&>(cgh).add_reduction(reduction_info{rid, bid, include_current_buffer_value});
 		} else {
-			include_current_buffer_value &= static_cast<detail::live_pass_handler&>(cgh).is_reduction_initializer();
+			auto& device_handler = static_cast<detail::live_pass_device_handler&>(cgh);
+			include_current_buffer_value &= device_handler.is_reduction_initializer();
 
 			auto mode = cl::sycl::access_mode::discard_write;
 			if(include_current_buffer_value) { mode = cl::sycl::access_mode::read_write; }
-			device_buf = &runtime::get_instance()
-			                  .get_buffer_manager()
-			                  .get_device_buffer<DataT, Dims>(bid, mode, range<3>{1, 1, 1}, id<3>{}) //
-			                  .buffer;
+			device_ptr = static_cast<DataT*>(runtime::get_instance()
+			                                     .get_buffer_manager()
+			                                     .access_device_buffer<DataT, Dims>(device_handler.get_memory_id(), bid, mode, range<3>{1, 1, 1}, id<3>{})
+			                                     .ptr);
 		}
-		return detail::reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>{bid, op, identity, include_current_buffer_value, device_buf};
+		return detail::reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>{bid, op, identity, include_current_buffer_value, device_ptr};
 #endif
 	}
 
