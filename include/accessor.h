@@ -283,9 +283,9 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 		m_buffer_range = other.m_buffer_range;
 
 #if !defined(__SYCL_DEVICE_ONLY__) && !defined(SYCL_DEVICE_ONLY)
-		if(m_device_ptr == nullptr) {
+		if(detail::is_embedded_closure_object_id(m_device_ptr)) {
 			if(detail::closure_hydrator::is_available() && detail::closure_hydrator::get_instance().can_hydrate()) {
-				const auto info = detail::closure_hydrator::get_instance().hydrate();
+				const auto info = detail::closure_hydrator::get_instance().hydrate(detail::extract_closure_object_id(m_device_ptr));
 
 				// NOCOMMIT Do we have tests for that?
 				if(info.tgt != target::device) {
@@ -304,7 +304,9 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 
 	template <typename Functor>
 	accessor(const ctor_internal_tag, const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) {
-		detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
+		const auto coid =
+		    detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
+		m_device_ptr = detail::embed_closure_object_id<DataT*>(coid);
 	}
 
 	size_t get_linear_offset(id<Dims> index) const { return detail::get_linear_index(m_buffer_range, index - m_index_offset); }
@@ -334,7 +336,9 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) {
 		static_assert(!std::is_same_v<Functor, range<Dims>>, "The accessor constructor overload for master-access tasks (now called 'host tasks') has "
 		                                                     "been removed with Celerity 0.2.0. Please provide a range mapper instead.");
-		detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
+		const auto coid =
+		    detail::add_requirement(cgh, detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
+		m_host_ptr = detail::embed_closure_object_id<DataT*>(coid);
 		m_virtual_buffer_range = buff.get_range();
 	}
 
@@ -492,9 +496,9 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 		m_buffer_range = other.m_buffer_range;
 		m_virtual_buffer_range = other.m_virtual_buffer_range;
 
-		if(m_host_ptr == nullptr) {
+		if(detail::is_embedded_closure_object_id(m_host_ptr)) {
 			if(detail::closure_hydrator::is_available() && detail::closure_hydrator::get_instance().can_hydrate()) {
-				const auto info = detail::closure_hydrator::get_instance().hydrate();
+				const auto info = detail::closure_hydrator::get_instance().hydrate(detail::extract_closure_object_id(m_host_ptr));
 
 				// NOCOMMIT Do we have tests for that?
 				if(info.tgt != target::host_task) {

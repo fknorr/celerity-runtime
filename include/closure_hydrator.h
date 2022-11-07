@@ -1,10 +1,46 @@
 #pragma once
 
+#include <vector>
+
 #include "ranges.h"
 #include "sycl_wrappers.h"
 #include "types.h"
 
 namespace celerity::detail {
+
+// To avoid additional register pressure, we embed closure object IDs into unhydrated
+// accessor pointers, with the assumption that a real pointer will never be in the
+// range [0, max_embedded_clsoure_id]. Embedding / extracting are currently no-ops
+// and the associated helper functions only exist for documentation purposes.
+// This number puts an effective limit on the number of closure objects (accessors
+// etc.) that can be captured into a command function.
+constexpr size_t max_embedded_closure_object_id = 128;
+
+template <typename T>
+using can_embed_closure_object_id = std::bool_constant<sizeof(closure_object_id) == sizeof(T)>;
+
+template <typename T>
+T embed_closure_object_id(const closure_object_id coid) {
+	static_assert(can_embed_closure_object_id<T>::value);
+	assert(coid < max_embedded_closure_object_id);
+	T result;
+	std::memcpy(&result, &coid, sizeof(coid));
+	return result;
+}
+
+template <typename T>
+closure_object_id extract_closure_object_id(const T value) {
+	static_assert(can_embed_closure_object_id<T>::value);
+	closure_object_id result;
+	std::memcpy(&result, &value, sizeof(value));
+	return result;
+}
+
+template <typename T>
+bool is_embedded_closure_object_id(const T value) {
+	static_assert(can_embed_closure_object_id<T>::value);
+	return extract_closure_object_id(value) < max_embedded_closure_object_id;
+}
 
 // Consider this API:
 // There is a function called hydrate (rename current) that receives the closure as well as all access infos.
@@ -35,9 +71,11 @@ class closure_hydrator {
 	}
 
 	void prepare(std::vector<NOCOMMIT_info> infos) {
-		assert(m_next_idx == m_infos.size() && "Unconsumed pointers left");
+#if defined(CELERITY_DETAIL_ENABLE_DEBUG)
+		assert(std::all_of(m_consumed_infos.cbegin(), m_consumed_infos.cend(), [](bool v) { return v; }));
+		m_consumed_infos = std::vector<bool>(infos.size(), false);
+#endif
 		m_infos = std::move(infos);
-		m_next_idx = 0;
 	}
 
 	template <typename Closure>
@@ -58,17 +96,24 @@ class closure_hydrator {
 	bool can_hydrate() const { return !m_infos.empty(); }
 
 	// NOCOMMIT Change return type
-	NOCOMMIT_info hydrate() {
+	NOCOMMIT_info hydrate(const closure_object_id coid) {
 		assert(!m_infos.empty());
-		assert(m_next_idx < m_infos.size());
-		return m_infos[m_next_idx++];
+		assert(coid < m_infos.size());
+#if defined(CELERITY_DETAIL_ENABLE_DEBUG)
+		assert(m_consumed_infos[coid] == false);
+		m_consumed_infos[coid] = true;
+#endif
+		return m_infos[coid];
 	}
 
   private:
 	inline static thread_local std::unique_ptr<closure_hydrator> m_instance;
-	size_t m_next_idx = 0;
 	std::vector<NOCOMMIT_info> m_infos;
 	sycl::handler* m_sycl_cgh = nullptr;
+
+#if defined(CELERITY_DETAIL_ENABLE_DEBUG)
+	std::vector<bool> m_consumed_infos;
+#endif
 
 	closure_hydrator() = default;
 	closure_hydrator(const closure_hydrator&) = delete;

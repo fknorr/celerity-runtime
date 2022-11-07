@@ -150,7 +150,7 @@ namespace test_utils {
 	  public:
 		template <cl::sycl::access::mode Mode, typename Functor>
 		void get_access(handler& cgh, Functor rmfn) {
-			detail::add_requirement(cgh, m_id, std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, m_size));
+			(void)detail::add_requirement(cgh, m_id, std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, m_size));
 		}
 
 		detail::buffer_id get_id() const { return m_id; }
@@ -169,7 +169,7 @@ namespace test_utils {
 
 	class mock_host_object {
 	  public:
-		void add_side_effect(handler& cgh, const experimental::side_effect_order order) { detail::add_requirement(cgh, m_id, order); }
+		void add_side_effect(handler& cgh, const experimental::side_effect_order order) { (void)detail::add_requirement(cgh, m_id, order); }
 
 	  private:
 		friend class mock_host_object_factory;

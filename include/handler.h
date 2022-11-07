@@ -34,7 +34,7 @@ namespace detail {
 
 	handler make_command_group_handler(const task_id tid, const size_t num_collective_nodes);
 	std::unique_ptr<task> into_task(handler&& cgh);
-	void add_requirement(handler& cgh, const buffer_id bid, std::unique_ptr<range_mapper_base> rm);
+	closure_object_id add_requirement(handler& cgh, const buffer_id bid, std::unique_ptr<range_mapper_base> rm);
 	void add_requirement(handler& cgh, const host_object_id hoid, const experimental::side_effect_order order);
 	void add_reduction(handler& cgh, const reduction_info& rinfo);
 
@@ -411,7 +411,7 @@ class handler {
 	// friend detail::execution_target detail::get_handler_execution_target(const handler& cgh); // NOCOMMIT For what do we use this?
 	friend handler detail::make_command_group_handler(const detail::task_id tid, const size_t num_collective_nodes);
 	friend std::unique_ptr<detail::task> detail::into_task(handler&& cgh);
-	friend void detail::add_requirement(handler& cgh, const detail::buffer_id bid, std::unique_ptr<detail::range_mapper_base> rm);
+	friend detail::closure_object_id detail::add_requirement(handler& cgh, const detail::buffer_id bid, std::unique_ptr<detail::range_mapper_base> rm);
 	friend void detail::add_requirement(handler& cgh, const detail::host_object_id hoid, const experimental::side_effect_order order);
 	friend void detail::add_reduction(handler& cgh, const detail::reduction_info& rinfo);
 
@@ -422,6 +422,7 @@ class handler {
 	std::unique_ptr<detail::command_launcher_storage_base> m_launcher; // NOCOMMIT Get rid of this again (no need to have this be a member)
 	std::unique_ptr<detail::task> m_task = nullptr;
 	size_t m_num_collective_nodes;
+	detail::closure_object_id m_next_closure_object_id = 0;
 
 	handler(detail::task_id tid, size_t num_collective_nodes) : m_tid(tid), m_num_collective_nodes(num_collective_nodes) {}
 
@@ -439,9 +440,10 @@ class handler {
 	void parallel_for_kernel_and_reductions(range<Dims> global_range, id<Dims> global_offset,
 	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_range, Kernel& kernel, Reductions&... reductions);
 
-	void add_requirement(const detail::buffer_id bid, std::unique_ptr<detail::range_mapper_base> rm) {
+	[[nodiscard]] detail::closure_object_id add_requirement(const detail::buffer_id bid, std::unique_ptr<detail::range_mapper_base> rm) {
 		assert(m_task == nullptr);
 		m_access_map.add_access(bid, std::move(rm));
+		return m_next_closure_object_id++;
 	}
 
 	void add_requirement(const detail::host_object_id hoid, const experimental::side_effect_order order) {
@@ -557,9 +559,13 @@ namespace detail {
 
 	inline std::unique_ptr<detail::task> into_task(handler&& cgh) { return std::move(cgh).into_task(); }
 
-	inline void add_requirement(handler& cgh, const buffer_id bid, std::unique_ptr<range_mapper_base> rm) { cgh.add_requirement(bid, std::move(rm)); }
+	[[nodiscard]] inline closure_object_id add_requirement(handler& cgh, const buffer_id bid, std::unique_ptr<range_mapper_base> rm) {
+		return cgh.add_requirement(bid, std::move(rm));
+	}
 
-	inline void add_requirement(handler& cgh, const host_object_id hoid, const experimental::side_effect_order order) { cgh.add_requirement(hoid, order); }
+	inline void add_requirement(handler& cgh, const host_object_id hoid, const experimental::side_effect_order order) {
+		return cgh.add_requirement(hoid, order);
+	}
 
 	inline void add_reduction(handler& cgh, const detail::reduction_info& rinfo) { cgh.add_reduction(rinfo); }
 
