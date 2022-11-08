@@ -32,7 +32,7 @@ namespace detail {
 	    reduction_manager& reduction_mngr)
 	    : m_local_nid(local_nid), m_local_devices(devices), m_active_compute_jobs_by_device(devices.num_compute_devices()), m_task_mngr(tm),
 	      m_buffer_mngr(buffer_mngr), m_reduction_mngr(reduction_mngr) {
-		m_btm = std::make_unique<buffer_transfer_manager>(num_nodes);
+		m_btm = std::make_unique<buffer_transfer_manager>(num_nodes, m_buffer_mngr, m_reduction_mngr);
 		m_metrics.initial_idle.resume();
 	}
 

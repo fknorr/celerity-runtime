@@ -27,6 +27,7 @@ set(TEST_TARGETS
   accessor_tests
   backend_tests
   buffer_manager_tests
+  buffer_transfer_manager_tests
   graph_generation_tests
   graph_gen_granularity_tests
   graph_gen_reduction_tests
