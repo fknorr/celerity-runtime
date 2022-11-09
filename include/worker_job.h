@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "buffer_transfer_manager.h"
+#include "closure_hydrator.h"
 #include "command.h"
 #include "host_queue.h"
 #include "log.h"
@@ -195,6 +196,8 @@ namespace detail {
 		node_id m_local_nid;
 		cl::sycl::event m_event;
 		bool m_submitted = false;
+
+		std::vector<closure_hydrator::NOCOMMIT_info> m_access_infos;
 
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;

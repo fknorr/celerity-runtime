@@ -192,7 +192,8 @@ namespace detail {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
 				const auto info = m_buffer_mngr.access_host_buffer(bid, mode, sr.range, sr.offset);
-				access_infos.push_back(closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+				access_infos.push_back(
+				    closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr, {}});
 			}
 
 			closure_hydrator::get_instance().prepare(std::move(access_infos));
@@ -229,40 +230,48 @@ namespace detail {
 
 	bool device_execute_job::execute(const command_pkg& pkg) {
 		if(!m_submitted) {
-			const auto data = std::get<execution_data>(pkg.data);
-			auto tsk = m_task_mngr.get_task(data.tid);
-			assert(tsk->get_execution_target() == execution_target::device);
+			// NOCOMMIT TODO This is not a good test b/c it wouldn't work for kernels without any accessors
+			if(m_access_infos.empty()) {
+				const auto data = std::get<execution_data>(pkg.data);
+				auto tsk = m_task_mngr.get_task(data.tid);
+				assert(tsk->get_execution_target() == execution_target::device);
 
-			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+				if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
 
-			CELERITY_TRACE("Execute live-pass, submit kernel to SYCL");
+				CELERITY_TRACE("Execute live-pass, submit kernel to SYCL");
 
-			const auto& access_map = tsk->get_buffer_access_map();
-			std::vector<closure_hydrator::NOCOMMIT_info> access_infos;
-			access_infos.reserve(access_map.get_num_accesses());
-			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
-				const auto [bid, mode] = access_map.get_nth_access(i);
-				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
-				try {
-					const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
-					access_infos.push_back(
-					    closure_hydrator::NOCOMMIT_info{target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
-				} catch(allocation_error e) {
-					CELERITY_CRITICAL("Encountered allocation error while trying to prepare {}", get_description(pkg));
-					std::terminate();
+				const auto& access_map = tsk->get_buffer_access_map();
+				m_access_infos.reserve(access_map.get_num_accesses());
+				for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
+					const auto [bid, mode] = access_map.get_nth_access(i);
+					const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+					try {
+						const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
+						m_access_infos.push_back(closure_hydrator::NOCOMMIT_info{
+						    target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr, std::move(info.pending_transfers)});
+					} catch(allocation_error e) {
+						CELERITY_CRITICAL("Encountered allocation error while trying to prepare {}", get_description(pkg));
+						std::terminate();
+					}
 				}
 			}
 
-			closure_hydrator::get_instance().prepare(std::move(access_infos));
-			m_event = tsk->launch(m_queue, data.sr);
+			if(std::all_of(m_access_infos.cbegin(), m_access_infos.cend(), [](auto& ai) { return ai.pending_transfers.is_done(); })) {
+				const auto data = std::get<execution_data>(pkg.data);
+				auto tsk = m_task_mngr.get_task(data.tid);
+				closure_hydrator::get_instance().prepare(std::move(m_access_infos));
+				m_event = tsk->launch(m_queue, data.sr);
 
-			{
-				const auto msg = fmt::format("{}: Job submitted to SYCL (blocked on transfers until now!)", pkg.cid);
-				TracyMessage(msg.c_str(), msg.size());
+				{
+					const auto msg = fmt::format("{}: Job submitted to SYCL (blocked on transfers until now!)", pkg.cid);
+					TracyMessage(msg.c_str(), msg.size());
+				}
+
+				m_submitted = true;
+				CELERITY_TRACE("Kernel submitted to SYCL");
 			}
 
-			m_submitted = true;
-			CELERITY_TRACE("Kernel submitted to SYCL");
+			return false;
 		}
 
 		const auto status = m_event.get_info<cl::sycl::info::event::command_execution_status>();

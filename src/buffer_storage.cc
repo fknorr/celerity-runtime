@@ -43,7 +43,7 @@ namespace detail {
 
 	// NOCOMMIT Copy pasta of host variant. Unify with above.
 	// NOCOMMIT Don't wait here - return event (needs solution for 2D/3D with multiple events!)
-	void memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<1>& source_range, const cl::sycl::id<1>& source_offset, const cl::sycl::range<1>& target_range,
 	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range) {
 		const size_t line_size = elem_size * copy_range[0];
@@ -52,17 +52,17 @@ namespace detail {
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault);
 		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2D failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-		cudaStreamSynchronize(0);
+		// cudaStreamSynchronize(0);
+		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
 #else
-		queue
-		    .memcpy(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
-		        reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size)
-		    .wait();
+		const auto evt = queue.memcpy(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
+		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size);
+		return async_event{std::make_shared<sycl_event_wrapper>(evt)};
 #endif
 	}
 
 	// TODO Optimize for contiguous copies?
-	void memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<2>& source_range, const cl::sycl::id<2>& source_offset, const cl::sycl::range<2>& target_range,
 	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range) {
 		const auto source_base_offset = get_linear_index(source_range, source_offset);
@@ -75,7 +75,8 @@ namespace detail {
 		    copy_range[0], cudaMemcpyDefault);
 		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2D failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-		cudaStreamSynchronize(0);
+		// cudaStreamSynchronize(0);
+		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
 #else
 		const size_t line_size = elem_size * copy_range[1];
 		std::vector<cl::sycl::event> wait_list;
@@ -88,11 +89,13 @@ namespace detail {
 		for(auto& e : wait_list) {
 			e.wait();
 		}
+		// NOCOMMIT FIXME: Make above async
+		return async_event{};
 #endif
 	}
 
 	// TODO Optimize for contiguous copies?
-	void memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<3>& source_range, const cl::sycl::id<3>& source_offset, const cl::sycl::range<3>& target_range,
 	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range) {
 // NOCOMMIT Move into backend-specific module
@@ -108,7 +111,8 @@ namespace detail {
 		const auto ret = cudaMemcpy3D(&parms);
 		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy3D failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-		cudaStreamSynchronize(0);
+		// cudaStreamSynchronize(0);
+		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
 #else
 		// We simply decompose this into a bunch of 2D copies. Subtract offset on the copy plane, as it will be added again during the 2D copy.
 		const auto source_base_offset =
@@ -122,6 +126,8 @@ namespace detail {
 			memcpy_strided_device(queue, source_ptr, target_ptr, elem_size, {source_range[1], source_range[2]}, {source_offset[1], source_offset[2]},
 			    {target_range[1], target_range[2]}, {target_offset[1], target_offset[2]}, {copy_range[1], copy_range[2]});
 		}
+		// NOCOMMIT FIXME: Return aggregate event
+		return async_event{};
 #endif
 	}
 

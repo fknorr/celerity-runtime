@@ -24,6 +24,86 @@
 namespace celerity {
 namespace detail {
 
+	class native_event_wrapper {
+	  public:
+		virtual ~native_event_wrapper() = default;
+		virtual bool is_done() const = 0;
+		// virtual void wait() = 0;
+	};
+
+	class sycl_event_wrapper final : public native_event_wrapper {
+	  public:
+		sycl_event_wrapper(sycl::event evt) : m_event(std::move(evt)) {}
+
+		bool is_done() const override { return m_event.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete; }
+		// void wait() override { m_event.wait(); }
+
+	  private:
+		sycl::event m_event;
+	};
+
+#if defined(__HIPSYCL__)
+	inline cudaEvent_t create_and_record_cuda_event(cudaStream_t stream = 0) {
+		// TODO: Perf considerations - we should probably have an event pool
+		cudaEvent_t result;
+		cudaEventCreateWithFlags(&result, cudaEventDisableTiming);
+		cudaEventRecord(result, stream);
+		return result;
+	}
+
+	class cuda_event_wrapper final : public native_event_wrapper {
+	  public:
+		cuda_event_wrapper(cudaEvent_t evt) : m_event(evt) {}
+		~cuda_event_wrapper() { cudaEventDestroy(m_event); }
+
+		bool is_done() const override {
+			const auto ret = cudaEventQuery(m_event);
+			assert(ret == cudaSuccess || ret == cudaErrorNotReady);
+			return ret == cudaSuccess;
+		}
+
+	  private:
+		cudaEvent_t m_event;
+	};
+#endif
+
+	// TODO: Naming: Future, Promise, ..?
+	class async_event {
+	  public:
+		async_event() = default;
+		async_event(std::shared_ptr<native_event_wrapper> native_event) { add(std::move(native_event)); }
+
+		void merge(async_event other) {
+			for(size_t i = 0; i < other.m_native_events.size(); ++i) {
+				m_done_cache.push_back(other.m_done_cache[i]);
+				m_native_events.emplace_back(std::move(other.m_native_events[i]));
+			}
+		}
+
+		void add(std::shared_ptr<native_event_wrapper> native_event) {
+			m_done_cache.push_back(false);
+			m_native_events.emplace_back(std::move(native_event));
+		}
+
+		bool is_done() const {
+			for(size_t i = 0; i < m_native_events.size(); ++i) {
+				if(!m_done_cache[i]) {
+					const bool is_done = m_native_events[i]->is_done();
+					if(is_done) {
+						m_done_cache[i] = true;
+						continue;
+					}
+					return false;
+				}
+			}
+			return true;
+		}
+
+	  private:
+		mutable std::vector<bool> m_done_cache;
+		std::vector<std::shared_ptr<native_event_wrapper>> m_native_events;
+	};
+
 	void memcpy_strided(const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const cl::sycl::range<1>& source_range,
 	    const cl::sycl::id<1>& source_offset, const cl::sycl::range<1>& target_range, const cl::sycl::id<1>& target_offset,
 	    const cl::sycl::range<1>& copy_range);
@@ -40,15 +120,15 @@ namespace detail {
 	// SYCL 2020 Provisional doesn't include any strided overloads for memcpy, so much like on the host, we have to roll our own.
 	// TODO: Review once SYCL 2020 final has been released.
 	// NOCOMMIT Copy pasta of host variant. Unify with above.
-	void memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<1>& source_range, const cl::sycl::id<1>& source_offset, const cl::sycl::range<1>& target_range,
 	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range);
 
-	void memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<2>& source_range, const cl::sycl::id<2>& source_offset, const cl::sycl::range<2>& target_range,
 	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range);
 
-	void memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<3>& source_range, const cl::sycl::id<3>& source_offset, const cl::sycl::range<3>& target_range,
 	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range);
 
@@ -141,7 +221,7 @@ namespace detail {
 		 *
 		 * TODO: Consider making this non-blocking, returning an async handle instead.
 		 */
-		virtual void copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) = 0;
+		virtual async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) = 0;
 
 		virtual ~buffer_storage() = default;
 
@@ -221,7 +301,7 @@ namespace detail {
 #endif
 		}
 
-		void copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
+		async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
 
 #if USE_NDVBUFFER
 		// FIXME: Required for more efficient D->H copies (see host_buffer_storage::copy). Find cleaner API.
@@ -264,7 +344,7 @@ namespace detail {
 			    range_cast<Dims>(m_host_buf.get_range()), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
 		}
 
-		void copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
+		async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
 
 		host_buffer<DataT, Dims>& get_host_buffer() { return m_host_buf; }
 
@@ -281,7 +361,7 @@ namespace detail {
 	}
 
 	template <typename DataT, int Dims>
-	void device_buffer_storage<DataT, Dims>::copy(
+	async_event device_buffer_storage<DataT, Dims>::copy(
 	    const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) {
 		ZoneScopedN("device_buffer_storage::copy");
 
@@ -299,7 +379,7 @@ namespace detail {
 			    {ndv::point<Dims>::make_from(source_offset), ndv::point<Dims>::make_from(source_offset + copy_range)},
 			    {ndv::point<Dims>::make_from(target_offset), ndv::point<Dims>::make_from(target_offset + copy_range)});
 #else
-			memcpy_strided_device(m_owning_queue, device_source.m_device_buf.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
+			return memcpy_strided_device(m_owning_queue, device_source.m_device_buf.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
 			    device_source.m_device_buf.get_range(), id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset),
 			    range_cast<Dims>(copy_range));
 #endif
@@ -326,10 +406,12 @@ namespace detail {
 		else {
 			assert(false);
 		}
+
+		return async_event{};
 	}
 
 	template <typename DataT, int Dims>
-	void host_buffer_storage<DataT, Dims>::copy(
+	async_event host_buffer_storage<DataT, Dims>::copy(
 	    const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) {
 		ZoneScopedN("host_buffer_storage::copy");
 
@@ -367,6 +449,8 @@ namespace detail {
 		else {
 			assert(false);
 		}
+
+		return async_event{};
 	}
 
 } // namespace detail
