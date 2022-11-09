@@ -217,6 +217,7 @@ namespace detail {
 				}
 
 				// Send local graph to rank 0
+				// FIXME: This actually deadlocks if CELERITY_LOG_LEVEL is not trace for every node!
 				if(m_local_nid != 0) {
 					const uint64_t size = graph_str.has_value() ? graph_str->size() : 0;
 					MPI_Send(&size, 1, MPI_UINT64_T, 0, mpi_support::TAG_PRINT_GRAPH, MPI_COMM_WORLD);

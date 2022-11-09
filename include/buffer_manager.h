@@ -13,6 +13,7 @@
 #include <CL/sycl.hpp>
 
 #include "access_modes.h"
+#include "backend/backend.h"
 #include "buffer_storage.h"
 #include "local_devices.h"
 #include "mpi_support.h"
@@ -123,6 +124,8 @@ namespace detail {
 			 * This is the offset of the backing buffer relative to the requested virtual buffer.
 			 */
 			id<3> backing_buffer_offset;
+
+			backend::async_event pending_transfers;
 		};
 
 		using buffer_lock_id = size_t;
@@ -204,7 +207,7 @@ namespace detail {
 		 * - Ideally we would transfer data directly out of the original buffer (at least on the host, need RDMA otherwise).
 		 * - We'd have to consider the data striding in the MPI data type we build.
 		 */
-		void get_buffer_data(buffer_id bid, const subrange<3>& sr, void* out_linearized);
+		backend::async_event get_buffer_data(buffer_id bid, const subrange<3>& sr, void* out_linearized);
 
 		/**
 		 * Updates a buffer's content with the provided @p data.
@@ -285,6 +288,8 @@ namespace detail {
 			return m_buffer_infos.at(bid).debug_name;
 		}
 
+		bool NOMERGE_warn_on_device_buffer_resize = false;
+
 	  private:
 		struct backing_buffer {
 			std::unique_ptr<buffer_storage> storage = nullptr;
@@ -320,9 +325,33 @@ namespace detail {
 			std::vector<backing_buffer> m_backing_buffers;
 		};
 
+		struct staging_buffer {
+			staging_buffer(const size_t size, device_queue& queue) : buffer(range<1>(size), queue) {}
+
+			bool is_free = false;
+			device_buffer_storage<std::byte, 1> buffer;
+		};
+
 		struct transfer {
-			unique_payload_ptr linearized;
-			subrange<3> sr;
+			transfer(staging_buffer& buf, subrange<3> sr) : unconsumed(subrange_to_grid_box(sr)), sr(sr), m_buf(buf) {}
+
+			transfer(const transfer&) = delete;
+			transfer(transfer&& other) : unconsumed(std::move(other.unconsumed)), sr(std::move(other.sr)), m_buf(other.m_buf) { other.sr = {}; }
+
+			~transfer() {
+				if(sr.range.size() != 0) {
+					// CELERITY_WARN("Marking staging buffer as free {}", (void*)m_buf.buffer.get_pointer());
+					m_buf.is_free = true;
+				}
+			}
+
+			GridRegion<3> unconsumed; // which parts of it haven't been ingested onto a target memory yet
+			subrange<3> sr;           // where this transfer fits into the virtual buffer
+
+			device_buffer_storage<std::byte, 1>& get_buffer() { return m_buf.buffer; }
+
+		  private:
+			staging_buffer& m_buf;
 		};
 
 		struct resize_info {
@@ -364,8 +393,14 @@ namespace detail {
 		mutable std::shared_mutex m_mutex;
 		std::unordered_map<buffer_id, buffer_info> m_buffer_infos;
 		std::unordered_map<buffer_id, virtual_buffer> m_buffers;
-		std::unordered_map<buffer_id, std::vector<transfer>> m_scheduled_transfers;
 		std::unordered_map<buffer_id, region_map<data_location>> m_newest_data_location;
+
+		// FIXME: Extremely crude and stupid
+		std::vector<std::unique_ptr<staging_buffer>> m_staging_buffers;
+		device_id m_next_staging_allocation_device = 0;
+		staging_buffer& get_free_staging_buffer(const size_t size);
+
+		std::unordered_map<buffer_id, std::vector<transfer>> m_scheduled_transfers; // references on m_staging_buffers
 
 		std::unordered_map<std::pair<buffer_id, memory_id>, buffer_lock_info, utils::pair_hash> m_buffer_lock_infos;
 		std::unordered_map<buffer_lock_id, std::vector<std::pair<buffer_id, memory_id>>> m_buffer_locks_by_id;
@@ -436,8 +471,8 @@ namespace detail {
 		 *	- Queued transfers are processed (if applicable).
 		 *  - The newest data locations are updated to reflect replicated data as well as newly written ranges (depending on access mode).
 		 */
-		backing_buffer make_buffer_subrange_coherent(const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, backing_buffer existing_buffer,
-		    const subrange<3>& coherent_sr, backing_buffer replacement_buffer = backing_buffer{});
+		std::pair<backing_buffer, backend::async_event> make_buffer_subrange_coherent(const memory_id mid, buffer_id bid, cl::sycl::access::mode mode,
+		    backing_buffer existing_buffer, const subrange<3>& coherent_sr, backing_buffer replacement_buffer = backing_buffer{});
 
 		/**
 		 * Checks whether access to a currently locked buffer is safe.

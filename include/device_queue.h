@@ -99,6 +99,14 @@ namespace detail {
 			m_global_mem_allocated_bytes -= alloc.size_bytes;
 		}
 
+		// FIXME: Hack for device_allocator - keep DRY
+		void free(void* ptr, const size_t size) {
+			assert(m_sycl_queue != nullptr);
+			CELERITY_DEBUG("Freeing {} bytes on device {} (memory {})", size, m_did, m_mid);
+			if(size != 0) { sycl::free(ptr, *m_sycl_queue); }
+			m_global_mem_allocated_bytes -= size;
+		}
+
 		size_t get_global_memory_total_size_bytes() const { return m_global_mem_total_size_bytes; }
 
 		size_t get_global_memory_allocated_bytes() const { return m_global_mem_allocated_bytes; }

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "buffer_transfer_manager.h"
+#include "closure_hydrator.h"
 #include "command.h"
 #include "host_queue.h"
 #include "log.h"
@@ -29,6 +30,7 @@ namespace detail {
 
 		virtual ~worker_job() = default;
 
+		bool prepare();
 		void start();
 		void update();
 
@@ -60,6 +62,9 @@ namespace detail {
 				return log_context{std::tuple_cat(std::tuple{"job", pkg.cid}, ctx)};
 			}
 		}
+
+		// NOCOMMIT TODO Get rid of this package parameter API for all virtual functions
+		virtual bool prepare(const command_pkg& pkg) { return true; }
 
 		virtual bool execute(const command_pkg& pkg) = 0;
 
@@ -122,8 +127,11 @@ namespace detail {
 	  private:
 		buffer_transfer_manager& m_btm;
 		buffer_manager& m_buffer_mngr;
+		unique_frame_ptr<buffer_transfer_manager::data_frame> m_frame;
+		backend::async_event m_frame_transfer_event;
 		std::shared_ptr<const buffer_transfer_manager::transfer_handle> m_data_handle = nullptr;
 
+		bool prepare(const command_pkg& pkg) override;
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;
 	};
@@ -182,10 +190,17 @@ namespace detail {
 		cl::sycl::event m_event;
 		bool m_submitted = false;
 
+		bool m_async_transfers_submitted = false;
+		std::vector<closure_hydrator::accessor_info> m_accessor_infos;
+		std::vector<backend::async_event> m_accessor_transfer_events;
+		std::vector<void*> m_reduction_ptrs;
+		bool m_async_transfers_done = false;
+
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 		std::vector<id<3>*> m_oob_indices_per_accessor;
 #endif
 
+		bool prepare(const command_pkg& pkg) override;
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;
 	};

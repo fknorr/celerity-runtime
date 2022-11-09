@@ -1,16 +1,14 @@
 #pragma once
 
-#include <cassert>
-#include <cstring>
-#include <memory>
-
-#include <CL/sycl.hpp>
-
 #include "backend/backend.h"
 #include "device_queue.h"
 #include "payload.h"
 #include "ranges.h"
 #include "workaround.h"
+#include <cassert>
+#include <cstring>
+
+#include <gch/small_vector.hpp>
 
 namespace celerity {
 namespace detail {
@@ -96,16 +94,25 @@ namespace detail {
 
 		virtual void* get_pointer() = 0;
 
-		virtual void get_data(const subrange<3>& sr, void* out_linearized) const = 0;
+		// TODO: This is just a mockup of what a backend-specific integration of ndvbuffer might look like
+		// TODO: Naming - this should signal two things: Buffer can be resized in-place, and supports sparse backing allocations
+		virtual bool supports_dynamic_allocation() const { return false; }
 
-		virtual void set_data(const subrange<3>& sr, const void* in_linearized) = 0;
+		virtual void allocate(const subrange<3>& sr) { assert(supports_dynamic_allocation()); }
+
+		virtual backend::async_event get_data(const subrange<3>& sr, void* out_linearized) const = 0;
+
+		virtual backend::async_event set_data(const subrange<3>& sr, const void* in_linearized) = 0;
 
 		/**
 		 * Copy data from the given source buffer into this buffer.
-		 *
-		 * TODO: Consider making this non-blocking, returning an async handle instead.
 		 */
-		virtual void copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) = 0;
+		[[nodiscard]] virtual backend::async_event copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) = 0;
+
+		// FIXME Just hacking - this assumes source has same dimensionality
+		// FIXME: Need to pass SYCL queue for copying to host... ugh
+		virtual backend::async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset,
+		    const id<3>& target_offset, const range<3>& copy_range) = 0;
 
 		virtual ~buffer_storage() = default;
 
@@ -127,37 +134,37 @@ namespace detail {
 		    : buffer_storage(range_cast<3>(range), buffer_type::device_buffer), m_owning_queue(owning_queue.get_sycl_queue()),
 		      m_device_buf(range, owning_queue) {}
 
+		sycl::queue& get_owning_queue() { return m_owning_queue; }
+
 		size_t get_size() const override { return get_range().size() * sizeof(DataT); };
 
 		void* get_pointer() override { return m_device_buf.get_pointer(); }
 
 		device_buffer<DataT, Dims>& get_device_buffer() { return m_device_buf; }
 
-		const device_buffer<DataT, Dims>& get_device_buffer() const { return m_device_buf; }
-
-		void get_data(const subrange<3>& sr, void* out_linearized) const override {
+		backend::async_event get_data(const subrange<3>& sr, void* out_linearized) const override {
 			assert(Dims > 0 || (sr.offset[0] == 0 && sr.range[0] == 1));
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 			assert_copy_is_in_range(range_cast<3>(m_device_buf.get_range()), sr.range, sr.offset, id<3>{}, sr.range);
-
-			// TODO: Ideally we'd make this non-blocking and return some sort of async handle that can be waited upon
-			backend::memcpy_strided_device(m_owning_queue, m_device_buf.get_pointer(), out_linearized, sizeof(DataT), m_device_buf.get_range(),
+			return backend::memcpy_strided_device(m_owning_queue, m_device_buf.get_pointer(), out_linearized, sizeof(DataT), m_device_buf.get_range(),
 			    id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), id<Dims>{}, range_cast<Dims>(sr.range));
 		}
 
-		void set_data(const subrange<3>& sr, const void* in_linearized) override {
+		backend::async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
 			assert(Dims > 0 || (sr.offset[0] == 0 && sr.range[0] == 1));
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 			assert_copy_is_in_range(sr.range, range_cast<3>(m_device_buf.get_range()), id<3>{}, sr.offset, sr.range);
 
-			// TODO: Ideally we'd make this non-blocking and return some sort of async handle that can be waited upon
-			backend::memcpy_strided_device(m_owning_queue, in_linearized, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id<Dims>{},
-			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
+			return backend::memcpy_strided_device(m_owning_queue, in_linearized, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range),
+			    id<Dims>{}, m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
 		}
 
-		void copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) override;
+		backend::async_event copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) override;
+
+		backend::async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset,
+		    const id<3>& target_offset, const range<3>& copy_range) override;
 
 	  private:
 		mutable sycl::queue m_owning_queue;
@@ -173,25 +180,30 @@ namespace detail {
 
 		void* get_pointer() override { return m_host_buf.get_pointer(); }
 
-		void get_data(const subrange<3>& sr, void* out_linearized) const override {
+		backend::async_event get_data(const subrange<3>& sr, void* out_linearized) const override {
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 			assert_copy_is_in_range(range_cast<3>(m_host_buf.get_range()), sr.range, sr.offset, id<3>{}, sr.range);
 
 			memcpy_strided_host(m_host_buf.get_pointer(), out_linearized, sizeof(DataT), range_cast<Dims>(m_host_buf.get_range()), id_cast<Dims>(sr.offset),
 			    range_cast<Dims>(sr.range), id<Dims>(), range_cast<Dims>(sr.range));
+			return backend::async_event{};
 		}
 
-		void set_data(const subrange<3>& sr, const void* in_linearized) override {
+		backend::async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 			assert_copy_is_in_range(sr.range, range_cast<3>(m_host_buf.get_range()), id<3>{}, sr.offset, sr.range);
 
 			memcpy_strided_host(in_linearized, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id<Dims>(),
 			    range_cast<Dims>(m_host_buf.get_range()), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
+			return backend::async_event{};
 		}
 
-		void copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) override;
+		backend::async_event copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) override;
+
+		backend::async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset,
+		    const id<3>& target_offset, const range<3>& copy_range) override;
 
 		host_buffer<DataT, Dims>& get_host_buffer() { return m_host_buf; }
 
@@ -202,12 +214,12 @@ namespace detail {
 	};
 
 	template <typename DataT, int Dims>
-	void device_buffer_storage<DataT, Dims>::copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) {
+	backend::async_event device_buffer_storage<DataT, Dims>::copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) {
 		assert_copy_is_in_range(source.get_range(), range_cast<3>(m_device_buf.get_range()), source_offset, target_offset, copy_range);
 
 		if(source.get_type() == buffer_type::device_buffer) {
 			auto& device_source = dynamic_cast<const device_buffer_storage<DataT, Dims>&>(source);
-			backend::memcpy_strided_device(m_owning_queue, device_source.m_device_buf.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
+			return backend::memcpy_strided_device(m_owning_queue, device_source.m_device_buf.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
 			    device_source.m_device_buf.get_range(), id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset),
 			    range_cast<Dims>(copy_range));
 		}
@@ -217,17 +229,29 @@ namespace detail {
 			auto& host_source = dynamic_cast<const host_buffer_storage<DataT, Dims>&>(source);
 			// TODO: No need for intermediate copy with native backend 2D/3D copy capabilities
 			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
-			host_source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
+			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
+			const auto evt1 = host_source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
+			evt1.wait();
+			const auto evt2 = set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
+			evt2.wait();
 		}
 
 		else {
 			assert(false);
 		}
+
+		return backend::async_event{};
 	}
 
 	template <typename DataT, int Dims>
-	void host_buffer_storage<DataT, Dims>::copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) {
+	backend::async_event device_buffer_storage<DataT, Dims>::copy_from_device_raw(
+	    sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range) {
+		return backend::memcpy_strided_device(m_owning_queue, source_ptr, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(source_range),
+		    id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range));
+	}
+
+	template <typename DataT, int Dims>
+	backend::async_event host_buffer_storage<DataT, Dims>::copy(const buffer_storage& source, id<3> source_offset, id<3> target_offset, range<3> copy_range) {
 		assert_copy_is_in_range(source.get_range(), range_cast<3>(m_host_buf.get_range()), source_offset, target_offset, copy_range);
 
 		// TODO: Optimize for contiguous copies - we could do a single SYCL D->H copy directly.
@@ -235,8 +259,11 @@ namespace detail {
 			// This looks more convoluted than using a vector<DataT>, but that would break if DataT == bool
 			// TODO: No need for intermediate copy with native backend 2D/3D copy capabilities
 			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
-			source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
+			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
+			const auto evt1 = source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
+			evt1.wait();
+			const auto evt2 = set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
+			evt2.wait();
 		}
 
 		else if(source.get_type() == buffer_type::host_buffer) {
@@ -248,6 +275,15 @@ namespace detail {
 		else {
 			assert(false);
 		}
+
+		return backend::async_event{};
+	}
+
+	template <typename DataT, int Dims>
+	backend::async_event host_buffer_storage<DataT, Dims>::copy_from_device_raw(
+	    sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range) {
+		return backend::memcpy_strided_device(q, source_ptr, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(source_range),
+		    id_cast<Dims>(source_offset), m_host_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range));
 	}
 
 } // namespace detail

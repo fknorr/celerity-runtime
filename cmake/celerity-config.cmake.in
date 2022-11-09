@@ -31,6 +31,9 @@ if(@CELERITY_ENABLE_CUDA_BACKEND@)
     find_dependency(CUDA REQUIRED)
   endif()
 endif()
+# TODO: Make optional
+find_dependency(CUDAToolkit REQUIRED)
+find_dependency(FOONATHAN_MEMORY REQUIRED) 
 
 if(CELERITY_SYCL_IMPL STREQUAL "hipSYCL")
   if(NOT DEFINED HIPSYCL_TARGETS AND NOT "@HIPSYCL_TARGETS@" STREQUAL "")

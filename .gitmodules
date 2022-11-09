@@ -16,3 +16,7 @@
 [submodule "vendor/mimalloc"]
 	path = vendor/mimalloc
 	url = https://github.com/microsoft/mimalloc.git
+	branch = main
+[submodule "vendor/memory"]
+	path = vendor/memory
+	url = https://github.com/foonathan/memory

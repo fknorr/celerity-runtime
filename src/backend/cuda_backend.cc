@@ -15,39 +15,59 @@
 
 namespace celerity::detail::backend_detail {
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<0>& /* source_range */,
-    const id<0>& /* source_offset */, const range<0>& /* target_range */, const id<0>& /* target_offset */, const range<0>& /* copy_range */) {
-	(void)queue;
-	const auto ret = cudaMemcpy(target_base_ptr, source_base_ptr, elem_size, cudaMemcpyDefault);
-	if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy failed");
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	cudaStreamSynchronize(0);
+inline cudaEvent_t create_and_record_cuda_event(cudaStream_t stream = 0) {
+	// TODO: Perf considerations - we should probably have an event pool
+	cudaEvent_t result;
+	CELERITY_CUDA_CHECK(cudaEventCreateWithFlags, &result, cudaEventDisableTiming);
+	CELERITY_CUDA_CHECK(cudaEventRecord, result, stream);
+	return result;
 }
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<1>& source_range,
-    const id<1>& source_offset, const range<1>& target_range, const id<1>& target_offset, const range<1>& copy_range) {
+class cuda_event_wrapper final : public native_event_wrapper {
+  public:
+	cuda_event_wrapper(cudaEvent_t evt) : m_event(evt) {}
+	~cuda_event_wrapper() override { CELERITY_CUDA_CHECK(cudaEventDestroy, m_event); }
+
+	bool is_done() const override {
+		const auto ret = cudaEventQuery(m_event);
+		assert(ret == cudaSuccess || ret == cudaErrorNotReady);
+		return ret == cudaSuccess;
+	}
+
+  private:
+	cudaEvent_t m_event;
+};
+
+backend::async_event memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+    const range<0>& /* source_range */, const id<0>& /* source_offset */, const range<0>& /* target_range */, const id<0>& /* target_offset */,
+    const range<0>& /* copy_range */) {
+	(void)queue;
+	CELERITY_CUDA_CHECK(cudaMemcpyAsync, target_base_ptr, source_base_ptr, elem_size, cudaMemcpyDefault);
+	return backend::async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
+}
+
+backend::async_event memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+    const range<1>& source_range, const id<1>& source_offset, const range<1>& target_range, const id<1>& target_offset, const range<1>& copy_range) {
 	(void)queue;
 	const size_t line_size = elem_size * copy_range[0];
-	CELERITY_CUDA_CHECK(cudaMemcpy, static_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
+	CELERITY_CUDA_CHECK(cudaMemcpyAsync, static_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
 	    static_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault);
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	CELERITY_CUDA_CHECK(cudaStreamSynchronize, 0);
+	return backend::async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
 }
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<2>& source_range,
-    const id<2>& source_offset, const range<2>& target_range, const id<2>& target_offset, const range<2>& copy_range) {
+backend::async_event memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+    const range<2>& source_range, const id<2>& source_offset, const range<2>& target_range, const id<2>& target_offset, const range<2>& copy_range) {
 	(void)queue;
 	const auto source_base_offset = get_linear_index(source_range, source_offset);
 	const auto target_base_offset = get_linear_index(target_range, target_offset);
-	CELERITY_CUDA_CHECK(cudaMemcpy2D, static_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
+	CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, static_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
 	    static_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size, copy_range[0],
 	    cudaMemcpyDefault);
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	CELERITY_CUDA_CHECK(cudaStreamSynchronize, 0);
+	return backend::async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
 }
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<3>& source_range,
-    const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset, const range<3>& copy_range) {
+backend::async_event memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+    const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset, const range<3>& copy_range) {
 	cudaMemcpy3DParms parms = {};
 	parms.srcPos = make_cudaPos(source_offset[2] * elem_size, source_offset[1], source_offset[0]);
 	parms.srcPtr = make_cudaPitchedPtr(
@@ -56,9 +76,8 @@ void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr,
 	parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
 	parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
 	parms.kind = cudaMemcpyDefault;
-	CELERITY_CUDA_CHECK(cudaMemcpy3D, &parms);
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	CELERITY_CUDA_CHECK(cudaStreamSynchronize, 0);
+	CELERITY_CUDA_CHECK(cudaMemcpy3DAsync, &parms);
+	return backend::async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
 }
 
 } // namespace celerity::detail::backend_detail

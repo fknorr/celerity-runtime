@@ -18,6 +18,22 @@ namespace detail {
 	// ----------------------------------------------------- GENERAL ------------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
+	bool worker_job::prepare() {
+		CELERITY_LOG_SET_SCOPED_CTX(m_lctx);
+
+		// if(!m_tracy_lane.is_initialized()) {
+		// 	m_tracy_lane.initialize();
+		// 	const auto desc = fmt::format("cid={}: {}", m_pkg.cid, get_description(m_pkg));
+		// 	m_tracy_lane.begin_phase("preparation", desc, tracy::Color::ColorType::Pink);
+		// 	CELERITY_DEBUG("Preparing job: {}", desc);
+		// }
+
+		// m_tracy_lane.activate();
+		const auto result = prepare(m_pkg);
+		// m_tracy_lane.deactivate();
+		return result;
+	}
+
 	void worker_job::update() {
 		CELERITY_LOG_SET_SCOPED_CTX(m_lctx);
 		assert(m_running && !m_done);
@@ -106,8 +122,11 @@ namespace detail {
 		    static_cast<size_t>(data.target));
 	}
 
-	bool push_job::execute(const command_pkg& pkg) {
-		if(m_data_handle == nullptr) {
+	inline constexpr size_t send_recv_unit_bytes = 64; // NOCOMMIT FIXME: Copy of value in buffer_transfer_manager.cc
+
+	bool push_job::prepare(const command_pkg& pkg) {
+		if(m_frame.get_pointer() == nullptr) {
+			// ZoneScopedN("push_job::prepare");
 			const auto data = std::get<push_data>(pkg.data);
 			// Getting buffer data from the buffer manager may incur a host-side buffer reallocation.
 			// If any other tasks are currently using this buffer for reading, we run into problems.
@@ -115,11 +134,26 @@ namespace detail {
 			// FIXME: Get rid of this, replace with finer grained approach.
 			if(m_buffer_mngr.is_locked(data.bid, 0 /* FIXME: Host memory id - should use host_queue::get_memory_id */)) { return false; }
 
-			CELERITY_TRACE("Submit buffer to BTM");
-			m_data_handle = m_btm.push(data.target, data.trid, data.bid, data.sr, data.rid);
-			CELERITY_TRACE("Buffer submitted to BTM");
+			const auto element_size = m_buffer_mngr.get_buffer_info(data.bid).element_size;
+			unique_frame_ptr<buffer_transfer_manager::data_frame> frame(
+			    from_payload_count, data.sr.range.size() * element_size, /* packet_size_bytes */ send_recv_unit_bytes);
+			frame->sr = data.sr;
+			frame->bid = data.bid;
+			frame->rid = data.rid;
+			frame->trid = data.trid;
+			m_frame_transfer_event = m_buffer_mngr.get_buffer_data(data.bid, data.sr, frame->data);
+			m_frame = std::move(frame);
 		}
+		return m_frame_transfer_event.is_done();
+	}
 
+	bool push_job::execute(const command_pkg& pkg) {
+		const auto data = std::get<push_data>(pkg.data);
+		if(m_data_handle == nullptr) {
+			assert(m_frame_transfer_event.is_done());
+			CELERITY_TRACE("Submit buffer to BTM");
+			m_data_handle = m_btm.push(data.target, std::move(m_frame));
+		}
 		return m_data_handle->complete;
 	}
 
@@ -196,8 +230,11 @@ namespace detail {
 		return fmt::format("DEVICE_EXECUTE {} on device {}", data.sr, m_queue.get_id());
 	}
 
-	bool device_execute_job::execute(const command_pkg& pkg) {
-		if(!m_submitted) {
+	bool device_execute_job::prepare(const command_pkg& pkg) {
+		// NOCOMMIT TODO: Rebasing this right now - not sure what the purpose is. Can prepare() be called even after it returns true once?
+		if(m_async_transfers_done) return true;
+
+		if(!m_async_transfers_submitted) {
 			const auto data = std::get<execution_data>(pkg.data);
 			auto tsk = m_task_mngr.get_task(data.tid);
 			assert(tsk->get_execution_target() == execution_target::device);
@@ -208,17 +245,20 @@ namespace detail {
 
 			const auto& access_map = tsk->get_buffer_access_map();
 			const auto& reductions = tsk->get_reductions();
-			std::vector<closure_hydrator::accessor_info> accessor_infos;
-			std::vector<void*> reduction_ptrs;
-			accessor_infos.reserve(access_map.get_num_accesses());
-			reduction_ptrs.reserve(reductions.size());
-
+			m_accessor_infos.reserve(access_map.get_num_accesses());
+			m_accessor_transfer_events.reserve(access_map.get_num_accesses());
+			m_reduction_ptrs.reserve(reductions.size());
+			// {
+			// 	const auto msg = fmt::format("Preparing buffers for {} accesses", access_map.get_num_accesses());
+			// 	TracyMessage(msg.c_str(), msg.size());
+			// 	CELERITY_TRACE(msg);
+			// }
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
 
 				try {
-					const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr);
+					auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr);
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 					auto* const oob_idx = sycl::malloc_shared<id<3>>(2, m_queue.get_sycl_queue());
 					assert(oob_idx != nullptr);
@@ -227,10 +267,11 @@ namespace detail {
 					oob_idx[0] = id<3>{size_t_max, buffer_dims > 1 ? size_t_max : 0, buffer_dims == 3 ? size_t_max : 0};
 					oob_idx[1] = id<3>{1, 1, 1};
 					m_oob_indices_per_accessor.push_back(oob_idx);
-					accessor_infos.push_back(closure_hydrator::accessor_info{info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr, oob_idx});
+					m_accessor_infos.push_back(closure_hydrator::accessor_info{info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr, oob_idx});
 #else
-					accessor_infos.push_back(closure_hydrator::accessor_info{info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+					m_accessor_infos.push_back(closure_hydrator::accessor_info{info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
 #endif
+					m_accessor_transfer_events.emplace_back(std::move(info.pending_transfers));
 				} catch(allocation_error& e) {
 					CELERITY_CRITICAL("Encountered allocation error while trying to prepare {}", get_description(pkg));
 					std::terminate();
@@ -241,12 +282,36 @@ namespace detail {
 				const auto& rd = reductions[i];
 				const auto mode = rd.init_from_buffer ? access_mode::read_write : access_mode::discard_write;
 				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), rd.bid, mode, subrange<3>{{}, range<3>{1, 1, 1}});
-				reduction_ptrs.push_back(info.ptr);
+				while(!info.pending_transfers.is_done()) {} // There is probably no point in trying to overlap this with anything
+				m_reduction_ptrs.push_back(info.ptr);
 			}
 
-			closure_hydrator::get_instance().arm(target::device, std::move(accessor_infos));
-			m_event = tsk->launch(m_queue, data.sr, reduction_ptrs, data.initialize_reductions);
+			// {
+			// 	const auto msg = fmt::format("Preparing buffers for {} accesses", access_map.get_num_accesses());
+			// 	TracyMessage(msg.c_str(), msg.size());
+			// 	CELERITY_TRACE(msg);
+			// }
 
+			m_async_transfers_submitted = true;
+		}
+
+		if(!m_async_transfers_done
+		    && std::all_of(m_accessor_transfer_events.cbegin(), m_accessor_transfer_events.cend(), [](auto& te) { return te.is_done(); })) {
+			m_async_transfers_done = true;
+			// const auto msg = fmt::format("{}: Async transfers done", pkg.cid);
+			// TracyMessage(msg.c_str(), msg.size());
+			return true;
+		}
+
+		return false;
+	}
+
+	bool device_execute_job::execute(const command_pkg& pkg) {
+		if(!m_submitted) {
+			const auto data = std::get<execution_data>(pkg.data);
+			auto tsk = m_task_mngr.get_task(data.tid);
+			closure_hydrator::get_instance().arm(target::device, std::move(m_accessor_infos));
+			m_event = tsk->launch(m_queue, data.sr, m_reduction_ptrs, data.initialize_reductions);
 			// {
 			// 	const auto msg = fmt::format("{}: Job submitted to SYCL (blocked on transfers until now!)", pkg.cid);
 			// 	TracyMessage(msg.c_str(), msg.size());
@@ -283,7 +348,8 @@ namespace detail {
 			for(const auto& reduction : tsk->get_reductions()) {
 				const auto element_size = m_buffer_mngr.get_buffer_info(reduction.bid).element_size;
 				auto operand = make_uninitialized_payload<std::byte>(element_size);
-				m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {1, 1, 1}}, operand.get_pointer());
+				const auto evt = m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {1, 1, 1}}, operand.get_pointer());
+				evt.wait();
 				m_reduction_mngr.push_overlapping_reduction_data(reduction.rid, m_local_nid, std::move(operand));
 			}
 

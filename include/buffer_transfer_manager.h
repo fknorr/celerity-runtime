@@ -35,25 +35,6 @@ namespace detail {
 			bool complete = false;
 		};
 
-		buffer_transfer_manager(const size_t num_nodes, buffer_manager& bm, reduction_manager& rm);
-
-		~buffer_transfer_manager() {
-			assert(m_incoming_transfers.empty());
-			assert(m_outgoing_transfers.empty());
-			assert(m_requests.empty());
-		}
-
-		std::shared_ptr<const transfer_handle> push(
-		    const node_id target, const transfer_id trid, const buffer_id bid, const subrange<3>& sr, const reduction_id rid);
-		std::shared_ptr<const transfer_handle> await_push(
-		    const transfer_id trid, const buffer_id bid, const GridRegion<3>& expected_region, const reduction_id rid);
-
-		/**
-		 * @brief Polls for incoming transfers and updates the status of existing ones.
-		 */
-		void poll();
-
-	  private:
 		struct data_frame {
 			using payload_type = std::byte;
 
@@ -72,6 +53,25 @@ namespace detail {
 		// unique_frame_ptr assumes that the flexible payload member begins at exactly sizeof(Frame) bytes
 		static_assert(offsetof(data_frame, data) == sizeof(data_frame));
 
+		buffer_transfer_manager(const size_t num_nodes, buffer_manager& bm, reduction_manager& rm);
+
+		~buffer_transfer_manager() {
+			assert(m_incoming_transfers.empty());
+			assert(m_outgoing_transfers.empty());
+			assert(m_requests.empty());
+		}
+
+		// TODO: Receiving data_frame is not great for encapsulation... Instead provide member function to get a frame + transfer event?
+		std::shared_ptr<const transfer_handle> push(const node_id target, unique_frame_ptr<data_frame> frame);
+		std::shared_ptr<const transfer_handle> await_push(
+		    const transfer_id trid, const buffer_id bid, const GridRegion<3>& expected_region, const reduction_id rid);
+
+		/**
+		 * @brief Polls for incoming transfers and updates the status of existing ones.
+		 */
+		void poll();
+
+	  private:
 		struct transfer_in {
 			node_id source_nid;
 			MPI_Request request;
@@ -85,14 +85,26 @@ namespace detail {
 		  public:
 			request_manager(const size_t num_nodes) : m_num_nodes(num_nodes) {}
 			request_manager(const request_manager&) = delete;
-			request_manager(request_manager&&) noexcept = default;
+
+			request_manager(request_manager&& other) noexcept
+			    : m_num_nodes(other.m_num_nodes), m_is_reduction(other.m_is_reduction), m_transfers(std::move(other.m_transfers)),
+			      m_requests(std::move(other.m_requests)), m_drainable_transfers(std::move(other.m_drainable_transfers)), m_drain_count(other.m_drain_count),
+			      m_expected_region(std::move(other.m_expected_region)), m_received_region(std::move(other.m_received_region)) {
+				other.m_is_reduction = false;
+				other.m_drain_count = 0;
+				other.m_expected_region = std::nullopt;
+				other.m_received_region = GridRegion<3>{};
+			}
 
 			request_manager& operator=(const request_manager&) = delete;
 			request_manager& operator=(request_manager&&) noexcept = default;
 
 			~request_manager() {
 #if defined(CELERITY_DEBUG)
-				assert(m_received_region == m_expected_region || (m_received_region.empty() && !m_expected_region.has_value()));
+				if(m_expected_region.has_value()) {
+					assert(m_received_region == *m_expected_region);
+					assert(m_drain_count == m_transfers.size());
+				}
 #endif
 			}
 
@@ -133,7 +145,7 @@ namespace detail {
 				m_is_reduction = t->frame->rid != 0;
 				assert(!m_is_reduction || m_transfers.size() < m_num_nodes);
 #if defined(CELERITY_DEBUG)
-				assert(m_received_region != m_expected_region || m_is_reduction);
+				assert(!m_expected_region.has_value() || m_received_region != *m_expected_region || m_is_reduction);
 				const auto box = subrange_to_grid_box(t->frame->sr);
 				assert(GridRegion<3>::intersect(m_received_region, box).empty() || m_is_reduction);
 				m_received_region = GridRegion<3>::merge(m_received_region, box);
@@ -195,7 +207,7 @@ namespace detail {
 				gch::small_vector<size_t> transfers;
 			};
 
-			size_t m_num_nodes; // Number of nodes in the system, required for reductions
+			size_t m_num_nodes{}; // Number of nodes in the system, required for reductions
 			bool m_is_reduction = false;
 			std::vector<transfer_state> m_transfers;
 			std::vector<request_state> m_requests;
@@ -203,8 +215,8 @@ namespace detail {
 			size_t m_drain_count = 0;
 
 #if defined(CELERITY_DEBUG)
-			std::optional<GridRegion<3>> m_expected_region; // This will only be set once the (first) await push job has started
-			GridRegion<3> m_received_region;
+			std::optional<GridRegion<3>> m_expected_region = std::nullopt; // This will only be set once the (first) await push job has started
+			GridRegion<3> m_received_region = {};
 #endif
 
 			void match(const size_t transfer_idx, const size_t request_idx) {
@@ -243,7 +255,11 @@ namespace detail {
 
 				while(!to_visit.empty()) {
 					const size_t t_idx = to_visit.front();
-					assert(visited_transfers.count(t_idx) == 0);
+					// If two transfers share more than one request, we may end up enqueuing them several times.
+					if(visited_transfers.count(t_idx)) {
+						to_visit.pop();
+						continue;
+					}
 					visited_transfers.insert(t_idx);
 					auto& ts = m_transfers[t_idx];
 					to_visit.pop();
@@ -264,7 +280,8 @@ namespace detail {
 						for(size_t j : rs.transfers) {
 							if(j == t_idx) continue;
 							to_visit.push(j);
-							assert(visited_transfers.count(j) == 0); // NOCOMMIT TODO: Think about this - can it happen?
+							// NOCOMMIT TODO: Think about this - can it happen? Possibly with 3 transfers that share requests?
+							assert(visited_transfers.count(j) == 0);
 						}
 					}
 				}

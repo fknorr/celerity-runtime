@@ -161,6 +161,16 @@ if(CELERITY_USE_MIMALLOC)
   fetch_content_from_submodule(mimalloc vendor/mimalloc)
 endif()
 
+# NOCOMMIT TODO Rebase: Use fetch_content_from_submodule
+FetchContent_Declare(
+  memory
+  GIT_REPOSITORY ${CMAKE_CURRENT_LIST_DIR}/vendor/memory
+  GIT_TAG 62a41ddcf
+  GIT_SHALLOW TRUE
+  GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable(memory)
+
 configure_file(include/version.h.in include/version.h @ONLY)
 
 # Add includes to library so they show up in IDEs
@@ -247,6 +257,8 @@ target_link_libraries(celerity_runtime PUBLIC
   gch::small_vector
   libenvpp::libenvpp
   ${SYCL_LIB}
+  # TODO: This seems to prevent mixing debug/release builds of celerity and user applications
+  foonathan_memory
 )
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/backend)

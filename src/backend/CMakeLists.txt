@@ -27,6 +27,10 @@ set_property(TARGET celerity_backends PROPERTY CXX_STANDARD 17)
 # We link against the RT here to get all of its transitive properties (circular linking is allowed for static libraries).
 target_link_libraries(celerity_backends PRIVATE celerity_runtime)
 add_sycl_to_target(TARGET celerity_backends SOURCES)
+target_link_libraries(celerity_backends PRIVATE
+  spdlog::spdlog
+  foonathan_memory
+)
 
 if(CELERITY_ENABLE_CUDA_BACKEND)
   target_sources(celerity_backends PRIVATE cuda_backend.cc)

@@ -33,12 +33,13 @@ namespace detail {
 		m_lifecycle_cb(buffer_lifecycle_event::unregistered, bid);
 	}
 
-	void buffer_manager::get_buffer_data(buffer_id bid, const subrange<3>& sr, void* out_linearized) {
+	backend::async_event buffer_manager::get_buffer_data(buffer_id bid, const subrange<3>& sr, void* out_linearized) {
 		std::unique_lock lock(m_mutex);
 		// assert(m_buffers.count(bid) == 1 && (m_buffers.at(bid).device_buf.is_allocated() || m_buffers.at(bid).host_buf.is_allocated())); // NOCOMMIT
 		auto data_locations = m_newest_data_location.at(bid).get_region_values(subrange_to_grid_box(sr));
 
 		// Slow path: We (may) need to obtain current data from multiple memories.
+		// FIXME: We probably run into this more frequently with multi-GPU support. In particular after a horizon.
 		if(data_locations.size() > 1) {
 			auto& existing_buf = m_buffers.at(bid).get(m_local_devices.get_host_memory_id());
 
@@ -50,8 +51,10 @@ namespace detail {
 				// TODO: Do we really want to allocate host memory for this..? We could also make the buffer storage "coherent" directly.
 				replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_host(info.new_range), info.new_offset};
 			}
-			existing_buf = make_buffer_subrange_coherent(
+			auto [coherent_buf, pending_transfers] = make_buffer_subrange_coherent(
 			    m_local_devices.get_host_memory_id(), bid, access_mode::read, std::move(existing_buf), sr, std::move(replacement_buf));
+			existing_buf = std::move(coherent_buf);
+			while(!pending_transfers.is_done()) {} // NOCOMMIT Add wait()?
 
 			data_locations = {{subrange_to_grid_box(sr), data_location{}.set(m_local_devices.get_host_memory_id())}};
 		}
@@ -59,7 +62,7 @@ namespace detail {
 		// get_buffer_data will race with pending transfers for the same subrange. In case there are pending transfers and a host buffer does not exist yet,
 		// these transfers cannot easily be flushed here as creating a host buffer requires a templated context that knows about DataT.
 		assert(std::none_of(m_scheduled_transfers[bid].begin(), m_scheduled_transfers[bid].end(),
-		    [&](const transfer& t) { return subrange_to_grid_box(sr).intersectsWith(subrange_to_grid_box(t.sr)); }));
+		    [&](const transfer& t) { return !GridRegion<3>::intersect(subrange_to_grid_box(sr), t.unconsumed).empty(); }));
 
 		if(data_locations[0].second.test(m_local_devices.get_host_memory_id())) {
 			return m_buffers.at(bid)
@@ -79,10 +82,34 @@ namespace detail {
 		return m_buffers.at(bid).get(source_mid).storage->get_data({m_buffers.at(bid).get(source_mid).get_local_offset(sr.offset), sr.range}, out_linearized);
 	}
 
+	buffer_manager::staging_buffer& buffer_manager::get_free_staging_buffer(const size_t size) {
+		for(auto& sb : m_staging_buffers) {
+			// TODO: At least do best fit...
+			if(sb->is_free && sb->buffer.get_size() >= size) {
+				sb->is_free = false;
+				// CELERITY_WARN("Returning free staging buffer {}", (void*)sb->buffer.get_pointer());
+				return *sb;
+			}
+		}
+		CELERITY_WARN("Allocating new staging buffer");
+		// FIXME: Not memory aware
+		auto& device = m_local_devices.get_device_queue(m_next_staging_allocation_device);
+		// Do at least 10 MiB
+		auto buf = std::make_unique<staging_buffer>(std::max(size, size_t(10) * 1024 * 1024), device);
+		m_staging_buffers.emplace_back(std::move(buf));
+		return *m_staging_buffers.back();
+	}
+
 	void buffer_manager::set_buffer_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized) {
 		std::unique_lock lock(m_mutex);
 		assert(m_buffer_infos.count(bid) == 1);
-		m_scheduled_transfers[bid].push_back({std::move(in_linearized), sr});
+
+		// Find free staging buffer
+		auto& staging_buf = get_free_staging_buffer(sr.range.size() * m_buffer_infos[bid].element_size);
+		auto evt = backend::memcpy_strided_device(staging_buf.buffer.get_owning_queue(), in_linearized.get_pointer(), staging_buf.buffer.get_pointer(),
+		    m_buffer_infos[bid].element_size, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()));
+		evt.wait(); // FIXME This should be async as well...
+		m_scheduled_transfers[bid].push_back(buffer_manager::transfer{staging_buf, sr});
 	}
 
 	buffer_manager::access_info buffer_manager::access_device_buffer(const memory_id mid, buffer_id bid, access_mode mode, const subrange<3>& sr) {
@@ -132,6 +159,8 @@ namespace detail {
 				if(!can_allocate(device_queue.get_memory_id(), allocation_size_bytes - (existing_buf.storage->get_range().size() * element_size))) {
 					// Final attempt: Check if we can create a new buffer with the requested size if we spill everything else to the host.
 					if(can_allocate(device_queue.get_memory_id(), sr.range.size() * element_size, existing_buf.storage->get_range().size() * element_size)) {
+						CELERITY_WARN("Spilling buffer {} on memory {}, existing size {}, to enable acecss {}\n", bid, mid,
+						    subrange<3>(existing_buf.offset, existing_buf.storage->get_range()), subrange<3>(sr.offset, sr.range));
 						spill_to_host = true;
 					} else {
 						// TODO: Same thing as above (could evict other buffers first)
@@ -180,9 +209,11 @@ namespace detail {
 			device_queue.get_sycl_queue().submit([&](cl::sycl::handler& cgh) { cgh.memset(ptr, test_mode_pattern, bytes); }).wait();
 		}
 
-		existing_buf = make_buffer_subrange_coherent(mid, bid, mode, std::move(existing_buf), {sr.offset, sr.range}, std::move(replacement_buf));
+		auto [coherent_buf, pending_transfers] =
+		    make_buffer_subrange_coherent(mid, bid, mode, std::move(existing_buf), {sr.offset, sr.range}, std::move(replacement_buf));
+		existing_buf = std::move(coherent_buf);
 
-		return {existing_buf.storage->get_pointer(), existing_buf.storage->get_range(), existing_buf.offset};
+		return {existing_buf.storage->get_pointer(), existing_buf.storage->get_range(), existing_buf.offset, std::move(pending_transfers)};
 	}
 
 	buffer_manager::access_info buffer_manager::access_host_buffer(buffer_id bid, access_mode mode, const subrange<3>& sr) {
@@ -212,10 +243,11 @@ namespace detail {
 			std::memset(ptr, test_mode_pattern, size);
 		}
 
-		existing_buf = make_buffer_subrange_coherent(
+		auto [coherent_buf, pending_transfers] = make_buffer_subrange_coherent(
 		    m_local_devices.get_host_memory_id(), bid, mode, std::move(existing_buf), {sr.offset, sr.range}, std::move(replacement_buf));
+		existing_buf = std::move(coherent_buf);
 
-		return {existing_buf.storage->get_pointer(), existing_buf.storage->get_range(), existing_buf.offset};
+		return {existing_buf.storage->get_pointer(), existing_buf.storage->get_range(), existing_buf.offset, std::move(pending_transfers)};
 	}
 
 	bool buffer_manager::try_lock(const buffer_lock_id id, const memory_id mid, const std::unordered_set<buffer_id>& buffers) {
@@ -245,8 +277,8 @@ namespace detail {
 	}
 
 	// TODO: Something we could look into is to dispatch all memory copies concurrently and wait for them in the end.
-	buffer_manager::backing_buffer buffer_manager::make_buffer_subrange_coherent(const memory_id mid, buffer_id bid, cl::sycl::access::mode mode,
-	    backing_buffer existing_buffer, const subrange<3>& coherent_sr, backing_buffer replacement_buffer) {
+	std::pair<buffer_manager::backing_buffer, backend::async_event> buffer_manager::make_buffer_subrange_coherent(const memory_id mid, buffer_id bid,
+	    cl::sycl::access::mode mode, backing_buffer existing_buffer, const subrange<3>& coherent_sr, backing_buffer replacement_buffer) {
 		backing_buffer target_buffer, previous_buffer;
 		if(replacement_buffer.is_allocated()) {
 			assert(!existing_buffer.is_allocated() || replacement_buffer.storage->get_type() == existing_buffer.storage->get_type());
@@ -258,7 +290,7 @@ namespace detail {
 			previous_buffer = {};
 		}
 
-		if(coherent_sr.range.size() == 0) { return target_buffer; }
+		if(coherent_sr.range.size() == 0) { return std::pair{std::move(target_buffer), backend::async_event{}}; }
 
 		const auto coherent_box = subrange_to_grid_box(coherent_sr);
 
@@ -280,6 +312,8 @@ namespace detail {
 		           <= target_buffer.offset + target_buffer.storage->get_range())
 		       == id(true, true, true));
 
+		backend::async_event pending_transfers;
+
 		// Check whether we have any scheduled transfers that overlap with the requested subrange, and if so, apply them.
 		// For this, we are not interested in the retain region (but we need to remember what parts will NOT have to be retained afterwards).
 		auto remaining_region_after_transfers = retain_region;
@@ -294,44 +328,73 @@ namespace detail {
 			auto& scheduled_buffer_transfers = m_scheduled_transfers[bid];
 			remaining_transfers.reserve(scheduled_buffer_transfers.size() / 2);
 			for(auto& t : scheduled_buffer_transfers) {
-				auto t_region = subrange_to_grid_box(t.sr);
-
 				// Check whether this transfer applies to the current request.
-				auto t_minus_coherent_region = GridRegion<3>::difference(t_region, coherent_box);
-				if(!t_minus_coherent_region.empty()) {
-					// Check if transfer applies partially.
-					// This might happen in certain situations, when two different commands partially overlap in their required buffer ranges.
-					// We currently handle this by only copying the part of the transfer that intersects with the requested buffer range
-					// into the buffer, leaving the transfer around for future requests.
-					//
-					// NOTE: We currently assume that one of the requests will consume the FULL transfer. Only then we discard it.
-					// This assumption is valid right now, as the graph generator will not consolidate adjacent pushes for two (or more)
-					// separate commands. This might however change in the future.
-					// NOCOMMIT With distributed vs local chunks - I think the future is now?
-					if(t_minus_coherent_region != t_region) {
-						assert(detail::access::mode_traits::is_consumer(mode));
-						auto intersection = GridRegion<3>::intersect(t_region, coherent_box);
-						remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, intersection);
-						const auto element_size = m_buffer_infos.at(bid).element_size;
-						intersection.scanByBoxes([&](const GridBox<3>& box) {
-							auto sr = grid_box_to_subrange(box);
-							// TODO can this temp buffer be avoided?
-							auto tmp = make_uninitialized_payload<std::byte>(sr.range.size() * element_size);
-							linearize_subrange(t.linearized.get_pointer(), tmp.get_pointer(), element_size, t.sr.range, {sr.offset - t.sr.offset, sr.range});
-							target_buffer.storage->set_data({target_buffer.get_local_offset(sr.offset), sr.range}, tmp.get_pointer());
-							updated_region = GridRegion<3>::merge(updated_region, box);
-						});
-					}
-					// Transfer only applies partially, or not at all - which means we have to keep it around.
+				const auto unconsumed_minus_coherent_region = GridRegion<3>::difference(t.unconsumed, coherent_box);
+
+				if(unconsumed_minus_coherent_region == t.unconsumed) {
+					// Transfer does not apply - continue.
 					remaining_transfers.emplace_back(std::move(t));
 					continue;
 				}
 
-				// Transfer applies fully.
+				// We can't be receiving something that we are going to overwrite immediately.
 				assert(detail::access::mode_traits::is_consumer(mode));
-				remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, t_region);
-				target_buffer.storage->set_data({target_buffer.get_local_offset(t.sr.offset), t.sr.range}, t.linearized.get_pointer());
-				updated_region = GridRegion<3>::merge(updated_region, t_region);
+
+				const bool is_partially_consumed = t.unconsumed != subrange_to_grid_box(t.sr);
+
+				//
+				//
+				// There was a bug. It caused me great pain.
+				//
+				//
+				// TOOD: Partial ingestion w/ multiple devices can lead to the same portion being ingested multiple times,
+				//       overriding newer data in the process. I'm still not entirely sure how it happens => Needs further investigation.
+				//       Surfaced in Cahn-Hilliard, 2D split 4x oversubscribed with 2 nodes and at least 2 GPUs each.
+				//
+				// Current workaround is to keep track of which parts of a transfer have already been ingested. This is not ideal
+				// b/c it means that we are likely to have a lot more partial transfers, which are SLOW.
+				//
+				if(!unconsumed_minus_coherent_region.empty() || is_partially_consumed) {
+					assert(detail::access::mode_traits::is_consumer(mode));
+					const auto intersection = GridRegion<3>::intersect(t.unconsumed, coherent_box);
+					remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, intersection);
+					// const auto element_size = m_buffer_infos.at(bid).element_size;
+					intersection.scanByBoxes([&](const GridBox<3>& box) {
+						// ZoneScopedN("ingest transfer (partial)");
+						const auto sr = grid_box_to_subrange(box);
+						// TODO can this temp buffer be avoided?
+						// auto tmp = make_uninitialized_payload<std::byte>(sr.range.size() * element_size);
+						// FIXME: THIS MUST BE AVOIDED AT ALL COSTS! On Marconi-100 I've seen this take ~100ms for a 16 MiB buffer ?!
+						// linearize_subrange(t.linearized.get_pointer(), tmp.get_pointer(), element_size, t.sr.range, {sr.offset - t.sr.offset, sr.range});
+						// auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(sr.offset), sr.range}, tmp.get_pointer());
+						// target_buffer.storage->copy(, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range)
+						auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range,
+						    sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
+						// auto evt = target_buffer.storage->copy(t.get_buffer(), sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
+						// evt.hack_attach_payload(std::move(tmp)); // FIXME
+						pending_transfers.merge(std::move(evt));
+						updated_region = GridRegion<3>::merge(updated_region, box);
+					});
+
+					t.unconsumed = GridRegion<3>::difference(t.unconsumed, intersection);
+
+					if(!t.unconsumed.empty()) {
+						// Transfer only applied partially - which means we have to keep it around.
+						remaining_transfers.emplace_back(std::move(t));
+					}
+					continue;
+				}
+
+				// ZoneScopedN("ingest transfer (full)");
+				// Transfer applies fully.
+				remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, t.unconsumed);
+				// auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(t.sr.offset), t.sr.range}, t.linearized.get_pointer());
+				auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range, id<3>{},
+				    target_buffer.get_local_offset(t.sr.offset), t.sr.range);
+				// auto evt = target_buffer.storage->copy(t.get_buffer(), id<3>{}, target_buffer.get_local_offset(t.sr.offset), t.sr.range);
+				// evt.hack_attach_payload(std::move(t.linearized)); // FIXME
+				pending_transfers.merge(std::move(evt));
+				updated_region = GridRegion<3>::merge(updated_region, t.unconsumed);
 			}
 			// The target buffer now has the newest data in this region.
 			{
@@ -350,16 +413,18 @@ namespace detail {
 				if(detail::access::mode_traits::is_consumer(mode)) {
 					// If we are accessing the buffer using a consumer mode, we have to retain the full previous contents, otherwise...
 					const auto box_sr = grid_box_to_subrange(box);
-					target_buffer.storage->copy(
+					auto evt = target_buffer.storage->copy(
 					    *previous_buffer.storage, previous_buffer.get_local_offset(box_sr.offset), target_buffer.get_local_offset(box_sr.offset), box_sr.range);
+					pending_transfers.merge(std::move(evt));
 				} else {
 					// ...check if there are parts of the previous buffer that we are not going to overwrite (and thus have to retain).
 					// If so, copy only those parts.
 					const auto remaining_region = GridRegion<3>::difference(box, coherent_box);
 					remaining_region.scanByBoxes([&](const GridBox<3>& small_box) {
 						const auto small_box_sr = grid_box_to_subrange(small_box);
-						target_buffer.storage->copy(*previous_buffer.storage, previous_buffer.get_local_offset(small_box_sr.offset),
+						auto evt = target_buffer.storage->copy(*previous_buffer.storage, previous_buffer.get_local_offset(small_box_sr.offset),
 						    target_buffer.get_local_offset(small_box_sr.offset), small_box_sr.range);
+						pending_transfers.merge(std::move(evt));
 					});
 				}
 			};
@@ -396,8 +461,9 @@ namespace detail {
 				assert(m_buffers.at(bid).get(source_mid).is_allocated());
 				const auto box_sr = grid_box_to_subrange(box);
 				const auto& source_buffer = m_buffers.at(bid).get(source_mid);
-				target_buffer.storage->copy(
+				auto evt = target_buffer.storage->copy(
 				    *source_buffer.storage, source_buffer.get_local_offset(box_sr.offset), target_buffer.get_local_offset(box_sr.offset), box_sr.range);
+				pending_transfers.merge(std::move(evt));
 				replicated_region = GridRegion<3>::merge(replicated_region, box);
 			}
 
@@ -413,7 +479,7 @@ namespace detail {
 
 		if(detail::access::mode_traits::is_producer(mode)) { m_newest_data_location.at(bid).update_region(coherent_box, data_location{}.set(mid)); }
 
-		return target_buffer;
+		return std::pair{std::move(target_buffer), std::move(pending_transfers)};
 	}
 
 	void buffer_manager::audit_buffer_access(const buffer_id bid, const memory_id mid, const bool requires_allocation, const access_mode mode) {
