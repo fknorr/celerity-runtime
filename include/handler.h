@@ -28,6 +28,11 @@ namespace celerity {
 
 class handler;
 
+namespace experimental {
+	template <int Dims>
+	void constrain_split(handler& cgh, const range<Dims>& constraint);
+}
+
 namespace detail {
 	class device_queue;
 	class task_manager;
@@ -414,6 +419,8 @@ class handler {
 	friend detail::closure_object_id detail::add_requirement(handler& cgh, const detail::buffer_id bid, std::unique_ptr<detail::range_mapper_base> rm);
 	friend void detail::add_requirement(handler& cgh, const detail::host_object_id hoid, const experimental::side_effect_order order);
 	friend void detail::add_reduction(handler& cgh, const detail::reduction_info& rinfo);
+	template <int Dims>
+	friend void constrain_split(handler& cgh, const range<Dims>& constraint);
 
 	detail::task_id m_tid;
 	detail::buffer_access_map m_access_map;
@@ -423,6 +430,7 @@ class handler {
 	std::unique_ptr<detail::task> m_task = nullptr;
 	size_t m_num_collective_nodes;
 	detail::closure_object_id m_next_closure_object_id = 0;
+	range<3> m_split_constraint = detail::unit_range;
 
 	handler(detail::task_id tid, size_t num_collective_nodes) : m_tid(tid), m_num_collective_nodes(num_collective_nodes) {}
 
@@ -452,6 +460,22 @@ class handler {
 	}
 
 	void add_reduction(const detail::reduction_info& rinfo) { m_reductions.push_back(rinfo); }
+
+	template <int Dims>
+	void experimental_constrain_split(const range<Dims>& constraint) {
+		assert(m_task == nullptr);
+		m_split_constraint = detail::range_cast<3>(constraint);
+	}
+
+	range<3> get_constrained_granularity(const range<3>& granularity) const {
+		range<3> result = granularity;
+		for(size_t i = 0; i < 3; ++i) {
+			const auto lcm = std::lcm(granularity[i], m_split_constraint[i]);
+			if(lcm == 0) { throw std::runtime_error("Split constraint cannot be 0"); }
+			result[i] = lcm;
+		}
+		return result;
+	}
 
 	void create_host_compute_task(detail::task_geometry geometry) {
 		assert(m_task == nullptr);
@@ -692,7 +716,8 @@ void handler::parallel_for_kernel_and_reductions(range<Dims> global_range, id<Di
 			granularity[d] = local_range[d];
 		}
 	}
-	const detail::task_geometry geometry{Dims, detail::range_cast<3>(global_range), detail::id_cast<3>(global_offset), granularity};
+	const detail::task_geometry geometry{
+	    Dims, detail::range_cast<3>(global_range), detail::id_cast<3>(global_offset), get_constrained_granularity(granularity)};
 	make_device_kernel_launcher<KernelFlavor, KernelName, Dims>(global_range, global_offset, local_range, kernel, reductions...);
 	create_device_compute_task(geometry, detail::kernel_debug_name<KernelName>());
 }
@@ -712,7 +737,7 @@ void handler::host_task(experimental::collective_tag tag, Functor kernel) {
 
 template <int Dims, typename Functor>
 void handler::host_task(range<Dims> global_range, id<Dims> global_offset, Functor kernel) {
-	const detail::task_geometry geometry{Dims, detail::range_cast<3>(global_range), detail::id_cast<3>(global_offset), {1, 1, 1}};
+	const detail::task_geometry geometry{Dims, detail::range_cast<3>(global_range), detail::id_cast<3>(global_offset), get_constrained_granularity({1, 1, 1})};
 	make_host_task_launcher<Dims, false>(kernel);
 	create_host_compute_task(geometry);
 }
@@ -743,5 +768,12 @@ auto reduction(const buffer<DataT, Dims>& vars, handler& cgh, const DataT identi
 	return detail::make_reduction<true>(vars, cgh, combiner, identity, prop_list);
 #endif
 }
+
+namespace experimental {
+	template <int Dims>
+	void constrain_split(handler& cgh, const range<Dims>& constraint) {
+		cgh.experimental_constrain_split(constraint);
+	}
+} // namespace experimental
 
 } // namespace celerity
