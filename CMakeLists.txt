@@ -167,6 +167,7 @@ add_submodule_directory(vendor/Catch2)
 
 include(FetchContent)
 set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
+set(TRACY_STATIC ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
   tracy
   GIT_REPOSITORY ${CMAKE_CURRENT_LIST_DIR}/vendor/tracy
@@ -263,9 +264,15 @@ target_link_libraries(celerity_runtime PUBLIC
 )
 
 if(MSVC)
-  target_compile_options(celerity_runtime PUBLIC /FI"${CMAKE_CURRENT_LIST_DIR}/include/tracy.h")
+  target_compile_options(celerity_runtime PUBLIC
+    $<BUILD_INTERFACE:/FI"${CMAKE_CURRENT_LIST_DIR}/include/tracy.h">
+    $<INSTALL_INTERFACE:/FI"${CMAKE_INSTALL_PREFIX}/include/celerity/tracy.h">
+  )
 else()
-  target_compile_options(celerity_runtime PUBLIC -include "${CMAKE_CURRENT_LIST_DIR}/include/tracy.h")
+  target_compile_options(celerity_runtime PUBLIC
+    $<BUILD_INTERFACE:-include "${CMAKE_CURRENT_LIST_DIR}/include/tracy.h">
+    $<INSTALL_INTERFACE:-include "${CMAKE_INSTALL_PREFIX}/include/celerity/tracy.h">
+  )
 endif()
 
 # For debug builds, we set the CELERITY_DETAIL_ENABLE_DEBUG preprocessor flag,
@@ -343,7 +350,7 @@ endif()
 # Tests
 
 enable_testing(true)
-add_subdirectory(test)
+#add_subdirectory(test)
 
 # Install
 
