@@ -30,6 +30,7 @@ namespace detail {
 
 		virtual ~worker_job() = default;
 
+		bool prepare();
 		void start();
 		void update();
 
@@ -62,6 +63,9 @@ namespace detail {
 				return log_context{std::tuple_cat(std::tuple{"job", pkg.cid}, ctx)};
 			}
 		}
+
+		// NOCOMMIT TODO Get rid of this package parameter API for all virtual functions
+		virtual bool prepare(const command_pkg& pkg) { return true; }
 
 		virtual bool execute(const command_pkg& pkg) = 0;
 
@@ -199,6 +203,7 @@ namespace detail {
 
 		std::vector<closure_hydrator::NOCOMMIT_info> m_access_infos;
 
+		bool prepare(const command_pkg& pkg) override;
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;
 	};
