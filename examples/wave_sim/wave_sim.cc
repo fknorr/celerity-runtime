@@ -7,11 +7,8 @@
 
 void setup_wave(celerity::distr_queue& queue, celerity::buffer<float, 2> u, sycl::float2 center, float amplitude, sycl::float2 sigma) {
 	queue.submit([=](celerity::handler& cgh) {
-		celerity::accessor resize_hack{u, cgh, celerity::access::neighborhood{1, 1}, celerity::read_only}; // NOCOMMIT
 		celerity::accessor dw_u{u, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
 		cgh.parallel_for<class setup_wave>(u.get_range(), [=, c = center, a = amplitude, s = sigma](celerity::item<2> item) {
-			(void)resize_hack; // NOCOMMIT Required for hydrator - FIXME
-
 			const float dx = item[1] - c.x();
 			const float dy = item[0] - c.y();
 			dw_u[item] = a * sycl::exp(-(dx * dx / (2.f * s.x() * s.x()) + dy * dy / (2.f * s.y() * s.y())));
@@ -21,13 +18,8 @@ void setup_wave(celerity::distr_queue& queue, celerity::buffer<float, 2> u, sycl
 
 void zero(celerity::distr_queue& queue, celerity::buffer<float, 2> buf) {
 	queue.submit([=](celerity::handler& cgh) {
-		celerity::accessor resize_hack{buf, cgh, celerity::access::neighborhood{1, 1}, celerity::read_only}; // NOCOMMIT
 		celerity::accessor dw_buf{buf, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
-		cgh.parallel_for<class zero>(buf.get_range(), [=](celerity::item<2> item) {
-			(void)resize_hack; // NOCOMMIT Required for hydrator - FIXME
-
-			dw_buf[item] = 0.f;
-		});
+		cgh.parallel_for<class zero>(buf.get_range(), [=](celerity::item<2> item) { dw_buf[item] = 0.f; });
 	});
 }
 
