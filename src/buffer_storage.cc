@@ -63,9 +63,10 @@ namespace detail {
 
 // NOCOMMIT Move into backend-specific module
 #if defined(__HIPSYCL__)
-		cudaMemcpy2D(reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
+		const auto ret = cudaMemcpy2D(reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size,
 		    copy_range[0], cudaMemcpyDefault);
+		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2D failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		cudaStreamSynchronize(0);
 #else
@@ -102,7 +103,8 @@ namespace detail {
 		parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
 		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
 		parms.kind = cudaMemcpyDefault;
-		cudaMemcpy3D(&parms);
+		const auto ret = cudaMemcpy3D(&parms);
+		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy3D failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		cudaStreamSynchronize(0);
 #else
