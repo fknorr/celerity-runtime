@@ -15,6 +15,9 @@ set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CELERITY_CMAKE_DIR}")
 find_package(MPI 2.0 REQUIRED)
 find_package(Threads REQUIRED)
 
+# TODO: Make optional
+find_package(CUDAToolkit REQUIRED)
+
 set(CELERITY_SYCL_IMPL "OFF" CACHE STRING "hipSYCL|ComputeCpp|DPC++")
 
 include("${CELERITY_CMAKE_DIR}/TestDPCXX.cmake")
@@ -261,6 +264,7 @@ target_link_libraries(celerity_runtime PUBLIC
   spdlog::spdlog
   ${SYCL_LIB}
   Tracy::TracyClient
+  CUDA::cuda_driver
 )
 
 if(MSVC)
@@ -350,7 +354,7 @@ endif()
 # Tests
 
 enable_testing(true)
-#add_subdirectory(test)
+add_subdirectory(test)
 
 # Install
 
