@@ -96,9 +96,9 @@ namespace detail {
 #if defined(__HIPSYCL__)
 		// NOCOMMIT TODO This needs thorough testing. I don't think current unit tests exercise strided 3D copies much (if at all)
 		cudaMemcpy3DParms parms = {0};
-		parms.srcPos = make_cudaPos(source_offset[2], source_offset[1], source_offset[0]);
+		parms.srcPos = make_cudaPos(source_offset[2] * elem_size, source_offset[1], source_offset[0]);
 		parms.srcPtr = make_cudaPitchedPtr(const_cast<void*>(source_base_ptr), source_range[2] * elem_size, source_range[2], source_range[1]);
-		parms.dstPos = make_cudaPos(target_offset[2], target_offset[1], target_offset[0]);
+		parms.dstPos = make_cudaPos(target_offset[2] * elem_size, target_offset[1], target_offset[0]);
 		parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
 		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
 		parms.kind = cudaMemcpyDefault;
