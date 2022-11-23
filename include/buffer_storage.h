@@ -240,6 +240,7 @@ namespace detail {
 			auto& host_source = dynamic_cast<const host_buffer_storage<DataT, Dims>&>(source);
 			const auto msg = fmt::format("h2d {}", copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
+			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
 			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
 			host_source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
 			set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
@@ -263,6 +264,7 @@ namespace detail {
 			const auto msg = fmt::format("d2h {}", copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
 			// This looks more convoluted than using a vector<DataT>, but that would break if DataT == bool
+			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
 			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
 			source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
 			set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
