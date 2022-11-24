@@ -18,6 +18,8 @@ endif()
 find_dependency(MPI 2.0 REQUIRED)
 
 find_dependency(Threads REQUIRED)
+# TODO: Make optional
+find_dependency(CUDAToolkit REQUIRED)
 
 if(CELERITY_SYCL_IMPL STREQUAL "hipSYCL")
   if(NOT DEFINED HIPSYCL_TARGETS AND NOT "@HIPSYCL_TARGETS@" STREQUAL "")
