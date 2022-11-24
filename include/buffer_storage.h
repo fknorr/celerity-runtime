@@ -180,8 +180,9 @@ namespace detail {
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 
 #if USE_NDVBUFFER
-			const ndv::box<Dims> box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
-			m_device_buf.copy_to(static_cast<DataT*>(out_linearized), ndv::extent<Dims>::make_from(sr.range), box, box);
+			const ndv::box<Dims> src_box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
+			const ndv::box<Dims> dst_box = {{}, ndv::point<Dims>::make_from(sr.range)};
+			m_device_buf.copy_to(static_cast<DataT*>(out_linearized), ndv::extent<Dims>::make_from(sr.range), src_box, dst_box);
 #else
 			// TODO: Ideally we'd make this non-blocking and return some sort of async handle that can be waited upon
 			memcpy_strided_device(m_owning_queue, m_device_buf.get_pointer(), out_linearized, sizeof(DataT), m_device_buf.get_range(), id_cast<Dims>(sr.offset),
@@ -193,8 +194,9 @@ namespace detail {
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 #if USE_NDVBUFFER
-			const ndv::box<Dims> box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
-			m_device_buf.copy_from(static_cast<const DataT*>(in_linearized), ndv::extent<Dims>::make_from(sr.range), box, box);
+			const ndv::box<Dims> src_box = {{}, ndv::point<Dims>::make_from(sr.range)};
+			const ndv::box<Dims> dst_box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
+			m_device_buf.copy_from(static_cast<const DataT*>(in_linearized), ndv::extent<Dims>::make_from(sr.range), src_box, dst_box);
 #else
 			// NOCOMMIT Use assert_copy_is_in_range from below?
 			assert((id_cast<Dims>(sr.offset) + range_cast<Dims>(sr.range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
