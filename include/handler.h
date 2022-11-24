@@ -561,6 +561,7 @@ class handler {
 
 		auto fn = [kernel](detail::host_queue& q, const detail::collective_group_id cgid, const range<3>& global_size, const subrange<3>& sr) {
 			return q.submit(cgid, [kernel, global_size, sr](MPI_Comm comm) {
+				(void)global_size;
 				if constexpr(Dims > 0) {
 					if constexpr(Collective) {
 						static_assert(Dims == 1);
