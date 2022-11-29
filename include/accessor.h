@@ -263,6 +263,10 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 
 	friend bool operator!=(const accessor& lhs, const accessor& rhs) { return !(lhs == rhs); }
 
+	std::conditional_t<detail::access::mode_traits::is_pure_consumer(Mode), const DataT*, DataT*> get_pointer_to(id<Dims> index) const {
+		return m_device_ptr + get_linear_offset(index);
+	}
+
   private:
 	friend class experimental::interop_handle;
 
