@@ -44,14 +44,14 @@ class buffer_transfer_manager_fixture : public test_utils::mpi_fixture {
 	buffer_id create_buffer(const size_t range_1d) {
 		const range<3> buf_range{range_1d, 1, 1};
 		const auto bid = m_buffer_mngr->register_buffer<char, 1>(range<3>{range_1d, 1, 1});
-		auto info = m_buffer_mngr->access_host_buffer<char, 1>(bid, access_mode::discard_write, buf_range, {});
+		auto info = m_buffer_mngr->begin_host_buffer_access<char, 1>(bid, access_mode::discard_write, buf_range, {});
 		std::memset(info.ptr, m_rank + 1, buf_range.size());
 		return bid;
 	}
 
 	void verify_buffer_ranges(const buffer_id bid, const std::vector<std::pair<subrange<1>, node_id>>& owned_by) {
 		for(auto& [sr, nid] : owned_by) {
-			auto info = m_buffer_mngr->access_host_buffer<char, 1>(bid, access_mode::read, range_cast<3>(sr.range), id_cast<3>(sr.offset));
+			auto info = m_buffer_mngr->begin_host_buffer_access<char, 1>(bid, access_mode::read, range_cast<3>(sr.range), id_cast<3>(sr.offset));
 			for(size_t i = 0; i < sr.range[0]; ++i) {
 				const size_t idx = sr.offset[0] + i - info.backing_buffer_offset[0];
 				REQUIRE_LOOP(static_cast<char*>(info.ptr)[idx] == static_cast<char>(nid) + 1);

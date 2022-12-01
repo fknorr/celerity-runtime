@@ -131,6 +131,9 @@ namespace detail {
 
 		using buffer_lock_id = size_t;
 
+		static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
+		using data_location = std::bitset<max_memories>;
+
 	  public:
 		buffer_manager(local_devices& devices, buffer_lifecycle_callback lifecycle_cb);
 
@@ -156,7 +159,7 @@ namespace detail {
 			}
 			if(is_host_initialized) {
 				// We need to access the full range for host-initialized buffers.
-				auto info = access_host_buffer(bid, cl::sycl::access::mode::discard_write, range, cl::sycl::id<3>(0, 0, 0));
+				auto info = begin_host_buffer_access(bid, cl::sycl::access::mode::discard_write, range, cl::sycl::id<3>(0, 0, 0));
 				std::memcpy(info.ptr, host_init_ptr, range.size() * sizeof(DataT));
 			}
 			m_lifecycle_cb(buffer_lifecycle_event::registered, bid);
@@ -218,7 +221,7 @@ namespace detail {
 		void set_buffer_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized);
 
 		template <typename DataT, int Dims>
-		access_info access_device_buffer(
+		access_info begin_device_buffer_access(
 		    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 			{
@@ -226,24 +229,26 @@ namespace detail {
 				assert((m_buffer_types.at(bid)->has_type<DataT, Dims>()));
 			}
 #endif
-			return access_device_buffer(mid, bid, mode, range, offset);
+			return begin_device_buffer_access(mid, bid, mode, range, offset);
 		}
 
-		access_info access_device_buffer(
+		access_info begin_device_buffer_access(
 		    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset);
 
 		template <typename DataT, int Dims>
-		access_info access_host_buffer(buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
+		access_info begin_host_buffer_access(buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 			{
 				std::unique_lock lock(m_mutex);
 				assert((m_buffer_types.at(bid)->has_type<DataT, Dims>()));
 			}
 #endif
-			return access_host_buffer(bid, mode, range, offset);
+			return begin_host_buffer_access(bid, mode, range, offset);
 		}
 
-		access_info access_host_buffer(buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset);
+		access_info begin_host_buffer_access(buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset);
+
+		void end_buffer_access(data_location mids, buffer_id bid, access_mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset);
 
 		/**
 		 * @brief Tries to lock the given list of @p buffers using the given lock @p id.
@@ -329,9 +334,6 @@ namespace detail {
 			cl::sycl::range<3> new_range = {1, 1, 1};
 		};
 
-		static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
-		using data_location = std::bitset<max_memories>;
-
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 		struct buffer_type_guard_base {
 			virtual ~buffer_type_guard_base(){};
@@ -396,7 +398,7 @@ namespace detail {
 			return result;
 		}
 
-		// Implementation of access_host_buffer, does not lock mutex (called by access_device_buffer).
+		// Implementation of begin_host_buffer_access, does not lock mutex (called by begin_device_buffer_access).
 		access_info access_host_buffer_impl(buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset);
 
 		/**

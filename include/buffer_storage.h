@@ -167,6 +167,7 @@ namespace detail {
 		      m_device_buf(range, owning_queue)
 #endif
 		{
+			m_device_buf.access(ndv::box<Dims>({}, ndv::extent<Dims>::make_from(range)));
 		}
 
 		~device_buffer_storage() {

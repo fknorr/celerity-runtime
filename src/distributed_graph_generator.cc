@@ -256,7 +256,9 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
 	const auto distributed_chunks = ([&] {
 		if(tsk.has_variable_split()) {
-			if(tsk.get_hint<experimental::hints::tiled_split>() != nullptr) {
+			if(tsk.get_hint<experimental::hints::replicate>() != nullptr) {
+				return std::vector<chunk<3>>(num_chunks, full_chunk);
+			} else if(tsk.get_hint<experimental::hints::tiled_split>() != nullptr) {
 				return split_2d(full_chunk, tsk.get_granularity(), num_chunks);
 			} else {
 				return split_1d(full_chunk, tsk.get_granularity(), num_chunks);
@@ -267,6 +269,9 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	})();
 	assert(distributed_chunks.size() <= num_chunks); // We may have created less than requested
 	assert(!distributed_chunks.empty());
+
+	assert(!tsk.get_hint<experimental::hints::replicate>()
+	       || (!tsk.get_hint<experimental::hints::tiled_split>() && !tsk.get_hint<experimental::hints::oversubscribe>()));
 
 	const auto* oversub_hint = tsk.get_hint<experimental::hints::oversubscribe>();
 	const size_t oversub_factor = oversub_hint != nullptr ? oversub_hint->get_factor() : 1;
@@ -295,6 +300,7 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 		// The same push commands generated for a single remote chunk also apply to the effective chunks generated on that node.
 		std::vector<chunk<3>> effective_chunks;
 		if(is_local_chunk && m_num_local_devices > 1 && tsk.has_variable_split()) {
+			// TODO don't split distributed host tasks locally
 			if(tsk.get_hint<experimental::hints::tiled_split>() != nullptr) {
 				auto per_device_chunks = split_2d(distributed_chunks[i], tsk.get_granularity(), m_num_local_devices);
 				if(oversub_factor == 1) {
@@ -325,7 +331,11 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 			execution_command* cmd = nullptr;
 			if(is_local_chunk) {
 				cmd = create_command<execution_command>(nid, tsk.get_id(), subrange{chnk});
-				cmd->set_device_id(did / oversub_factor);
+				if(tsk.get_hint<experimental::hints::replicate>()) {
+					cmd->set_device_id(device_id_gpu_replicated);
+				} else {
+					cmd->set_device_id(did / oversub_factor); // TODO we currently ignore device assignment for host tasks
+				}
 				did++;
 			}
 

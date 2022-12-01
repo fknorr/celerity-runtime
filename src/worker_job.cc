@@ -173,6 +173,8 @@ namespace detail {
 	}
 
 	bool host_execute_job::execute(const command_pkg& pkg) {
+		const buffer_manager::buffer_lock_id lock_id = pkg.cid * buffer_manager::max_memories;
+
 		if(!m_submitted) {
 			const auto data = std::get<execution_data>(pkg.data);
 
@@ -180,7 +182,7 @@ namespace detail {
 			assert(tsk->get_execution_target() == execution_target::host);
 			assert(!data.initialize_reductions); // For now, we do not support reductions in host tasks
 
-			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+			if(!m_buffer_mngr.try_lock(lock_id, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
 
 			CELERITY_TRACE("Execute live-pass, scheduling host task in thread pool");
 
@@ -191,7 +193,7 @@ namespace detail {
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
-				const auto info = m_buffer_mngr.access_host_buffer(bid, mode, sr.range, sr.offset);
+				const auto info = m_buffer_mngr.begin_host_buffer_access(bid, mode, sr.range, sr.offset);
 				access_infos.push_back(closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
 			}
 
@@ -206,7 +208,7 @@ namespace detail {
 
 		assert(m_future.valid());
 		if(m_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-			m_buffer_mngr.unlock(pkg.cid);
+			m_buffer_mngr.unlock(lock_id);
 
 			auto info = m_future.get();
 			CELERITY_TRACE("Delta time submit -> start: {}us, start -> end: {}us",
@@ -221,10 +223,25 @@ namespace detail {
 	// ---------------------------------------------------- DEVICE_EXECUTE ------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
+	device_execute_job::device_execute_job(
+	    command_pkg pkg, local_devices& devices, task_manager& tm, buffer_manager& bm, reduction_manager& rm, node_id local_nid)
+	    : worker_job(pkg), m_local_devices(devices), m_task_mngr(tm), m_buffer_mngr(bm), m_reduction_mngr(rm), m_local_nid(local_nid) {
+		assert(pkg.get_command_type() == command_type::execution);
+
+		const auto magic_device_id = std::get<execution_data>(pkg.data).did;
+		if(magic_device_id == device_id_gpu_replicated) {
+			m_device_ids.resize(m_local_devices.num_compute_devices());
+			std::iota(m_device_ids.begin(), m_device_ids.end(), device_id());
+		} else {
+			assert(magic_device_id < m_local_devices.num_compute_devices());
+			m_device_ids = {magic_device_id};
+		}
+	}
+
 	std::string device_execute_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<execution_data>(pkg.data);
 		auto tsk = m_task_mngr.get_task(data.tid);
-		return fmt::format("DEVICE_EXECUTE task {} ('{}') {} on device {}", tsk->get_id(), tsk->get_debug_name(), data.sr, m_queue.get_id());
+		return fmt::format("DEVICE_EXECUTE task {} ('{}') {} on device(s) {}", tsk->get_id(), tsk->get_debug_name(), data.sr, fmt::join(m_device_ids, ", "));
 	}
 
 	bool device_execute_job::execute(const command_pkg& pkg) {
@@ -233,35 +250,64 @@ namespace detail {
 			auto tsk = m_task_mngr.get_task(data.tid);
 			assert(tsk->get_execution_target() == execution_target::device);
 
-			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+			for(size_t i = 0; i < m_device_ids.size(); ++i) {
+				const auto mid = m_local_devices.get_memory_id(m_device_ids[i]);
+				const buffer_manager::buffer_lock_id lock_id = pkg.cid * buffer_manager::max_memories + mid;
+				if(!m_buffer_mngr.try_lock(lock_id, mid, tsk->get_buffer_access_map().get_accessed_buffers())) {
+					while(i-- > 0) {
+						const auto unlock_mid = m_local_devices.get_memory_id(m_device_ids[i]);
+						const buffer_manager::buffer_lock_id unlock_lock_id = pkg.cid * buffer_manager::max_memories + unlock_mid;
+						m_buffer_mngr.unlock(unlock_lock_id);
+					}
+					return false;
+				}
+			}
 
 			CELERITY_TRACE("Execute live-pass, submit kernel to SYCL");
 
 			const auto& access_map = tsk->get_buffer_access_map();
-			std::vector<closure_hydrator::NOCOMMIT_info> access_infos;
-			access_infos.reserve(access_map.get_num_accesses());
-			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
-				const auto [bid, mode] = access_map.get_nth_access(i);
-				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
-				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
-				access_infos.push_back(closure_hydrator::NOCOMMIT_info{target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
-			}
+			for(auto did : m_device_ids) {
+				std::vector<closure_hydrator::NOCOMMIT_info> access_infos;
+				access_infos.reserve(access_map.get_num_accesses());
+				for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
+					const auto [bid, mode] = access_map.get_nth_access(i);
+					const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+					const auto info = m_buffer_mngr.begin_device_buffer_access(m_local_devices.get_memory_id(did), bid, mode, sr.range, sr.offset);
+					access_infos.push_back(
+					    closure_hydrator::NOCOMMIT_info{target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+				}
 
-			closure_hydrator::get_instance().prepare(std::move(access_infos));
-			m_event = tsk->launch(m_queue, data.sr);
+				closure_hydrator::get_instance().prepare(std::move(access_infos));
+				m_events.push_back(tsk->launch(m_local_devices.get_device_queue(did), data.sr));
+			}
 
 			{
 				const auto msg = fmt::format("{}: Job submitted to SYCL (blocked on transfers until now!)", pkg.cid);
 				TracyMessage(msg.c_str(), msg.size());
 			}
 
+			buffer_manager::data_location mids;
+			for(auto did : m_device_ids) {
+				mids.set(m_local_devices.get_memory_id(did));
+			}
+			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
+				const auto [bid, mode] = access_map.get_nth_access(i);
+				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+				m_buffer_mngr.end_buffer_access(mids, bid, mode, sr.range, sr.offset);
+			}
+
 			m_submitted = true;
 			CELERITY_TRACE("Kernel submitted to SYCL");
 		}
 
-		const auto status = m_event.get_info<cl::sycl::info::event::command_execution_status>();
-		if(status == cl::sycl::info::event_command_status::complete) {
-			m_buffer_mngr.unlock(pkg.cid);
+		if(std::all_of(m_events.begin(), m_events.end(), [](const sycl::event& evt) {
+			   return evt.get_info<cl::sycl::info::event::command_execution_status>() == cl::sycl::info::event_command_status::complete;
+		   })) {
+			for(size_t i = 0; i < m_device_ids.size(); ++i) {
+				const auto mid = m_local_devices.get_memory_id(m_device_ids[i]);
+				const buffer_manager::buffer_lock_id lock_id = pkg.cid * buffer_manager::max_memories + mid;
+				m_buffer_mngr.unlock(lock_id);
+			}
 
 			const auto data = std::get<execution_data>(pkg.data);
 			auto tsk = m_task_mngr.get_task(data.tid);
@@ -272,14 +318,16 @@ namespace detail {
 				m_reduction_mngr.push_overlapping_reduction_data(reduction.rid, m_local_nid, std::move(operand));
 			}
 
-			if(m_queue.is_profiling_enabled()) {
-				const auto submit = std::chrono::nanoseconds(m_event.get_profiling_info<cl::sycl::info::event_profiling::command_submit>());
-				const auto start = std::chrono::nanoseconds(m_event.get_profiling_info<cl::sycl::info::event_profiling::command_start>());
-				const auto end = std::chrono::nanoseconds(m_event.get_profiling_info<cl::sycl::info::event_profiling::command_end>());
+			for(size_t i = 0; i < m_device_ids.size(); ++i) {
+				if(m_local_devices.get_device_queue(m_device_ids[i]).is_profiling_enabled()) {
+					const auto submit = std::chrono::nanoseconds(m_events[i].get_profiling_info<cl::sycl::info::event_profiling::command_submit>());
+					const auto start = std::chrono::nanoseconds(m_events[i].get_profiling_info<cl::sycl::info::event_profiling::command_start>());
+					const auto end = std::chrono::nanoseconds(m_events[i].get_profiling_info<cl::sycl::info::event_profiling::command_end>());
 
-				CELERITY_TRACE("Delta time submit -> start: {}us, start -> end: {}us",
-				    std::chrono::duration_cast<std::chrono::microseconds>(start - submit).count(),
-				    std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+					CELERITY_TRACE("Delta time submit -> start: {}us, start -> end: {}us",
+					    std::chrono::duration_cast<std::chrono::microseconds>(start - submit).count(),
+					    std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+				}
 			}
 			return true;
 		}

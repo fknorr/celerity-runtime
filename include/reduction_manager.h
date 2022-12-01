@@ -36,7 +36,7 @@ namespace detail {
 				acc = m_op(acc, *static_cast<const DataT*>(data.get_pointer()));
 			}
 
-			auto info = runtime::get_instance().get_buffer_manager().access_host_buffer(
+			auto info = runtime::get_instance().get_buffer_manager().begin_host_buffer_access(
 			    m_output_bid, cl::sycl::access::mode::discard_write, cl::sycl::range<3>{1, 1, 1}, cl::sycl::id<3>{});
 			*static_cast<DataT*>(info.ptr) = acc;
 		}

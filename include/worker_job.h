@@ -14,11 +14,11 @@
 namespace celerity {
 namespace detail {
 
-	class device_queue;
 	class executor;
 	class task_manager;
 	class reduction_manager;
 	class buffer_manager;
+	class local_devices;
 
 	class worker_job;
 
@@ -180,20 +180,18 @@ namespace detail {
 	 */
 	class device_execute_job : public worker_job {
 	  public:
-		device_execute_job(command_pkg pkg, device_queue& queue, task_manager& tm, buffer_manager& bm, reduction_manager& rm, node_id local_nid)
-		    : worker_job(pkg), m_queue(queue), m_task_mngr(tm), m_buffer_mngr(bm), m_reduction_mngr(rm), m_local_nid(local_nid) {
-			assert(pkg.get_command_type() == command_type::execution);
-		}
+		device_execute_job(command_pkg pkg, local_devices& devices, task_manager& tm, buffer_manager& bm, reduction_manager& rm, node_id local_nid);
 
-		device_id get_device_id() const { return m_queue.get_id(); }
+		const std::vector<device_id>& get_device_id() const { return m_device_ids; }
 
 	  private:
-		device_queue& m_queue;
+		std::vector<device_id> m_device_ids;
+		local_devices& m_local_devices;
 		task_manager& m_task_mngr;
 		buffer_manager& m_buffer_mngr;
 		reduction_manager& m_reduction_mngr;
 		node_id m_local_nid;
-		cl::sycl::event m_event;
+		std::vector<cl::sycl::event> m_events;
 		bool m_submitted = false;
 
 		bool execute(const command_pkg& pkg) override;

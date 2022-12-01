@@ -120,8 +120,9 @@ namespace detail {
 				}
 
 				if(isa<device_execute_job>(job_handle.job.get())) {
-					const device_id did = static_cast<device_execute_job*>(job_handle.job.get())->get_device_id();
-					m_active_compute_jobs_by_device[did]--;
+					for(const device_id did : static_cast<device_execute_job*>(job_handle.job.get())->get_device_id()) {
+						m_active_compute_jobs_by_device[did]--;
+					}
 					m_running_device_compute_jobs--;
 				} else if(const auto epoch = dynamic_cast<epoch_job*>(job_handle.job.get()); epoch && epoch->get_epoch_action() == epoch_action::shutdown) {
 					assert(m_command_queue.empty());
@@ -147,10 +148,15 @@ namespace detail {
 					auto* job = m_jobs.at(cid).job.get();
 
 					if(isa<device_execute_job>(job)) {
-						const device_id did = static_cast<device_execute_job*>(job)->get_device_id();
-						if(m_active_compute_jobs_by_device[did] >= MAX_CONCURRENT_COMPUTES_PER_DEVICE) continue;
+						const auto& device_ids = static_cast<device_execute_job*>(job)->get_device_id();
+						if(std::any_of(device_ids.begin(), device_ids.end(),
+						       [this](device_id did) { return m_active_compute_jobs_by_device[did] >= MAX_CONCURRENT_COMPUTES_PER_DEVICE; })) {
+							continue;
+						}
 
-						m_active_compute_jobs_by_device[did]++;
+						for(const device_id did : device_ids) {
+							m_active_compute_jobs_by_device[did]++;
+						}
 						m_running_device_compute_jobs++;
 					}
 
@@ -246,7 +252,7 @@ namespace detail {
 			} else {
 				const device_id did = std::get<execution_data>(frame.pkg.data).did;
 				assert(did < m_local_devices.num_compute_devices());
-				create_job<device_execute_job>(frame, m_local_devices.get_device_queue(did), m_task_mngr, m_buffer_mngr, m_reduction_mngr, m_local_nid);
+				create_job<device_execute_job>(frame, m_local_devices, m_task_mngr, m_buffer_mngr, m_reduction_mngr, m_local_nid);
 			}
 			break;
 		case command_type::data_request: create_job<data_request_job>(frame, *m_btm); break;

@@ -38,6 +38,9 @@ namespace experimental::hints {
 
 	class tiled_split : public detail::hint_base {};
 
+	// TODO we may not want to have this as a hint in the future but as a constraint, so that the user may e.g. do a GMEM atomic
+	class replicate : public detail::hint_base {};
+
 }; // namespace experimental::hints
 
 namespace detail {

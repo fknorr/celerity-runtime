@@ -85,7 +85,7 @@ namespace detail {
 		m_scheduled_transfers[bid].push_back({std::move(in_linearized), sr});
 	}
 
-	buffer_manager::access_info buffer_manager::access_device_buffer(
+	buffer_manager::access_info buffer_manager::begin_device_buffer_access(
 	    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
 		std::unique_lock lock(m_mutex);
 		ZoneScopedN("get_device_buffer");
@@ -186,7 +186,7 @@ namespace detail {
 		return {existing_buf.storage->get_pointer(), existing_buf.storage->get_range(), existing_buf.offset};
 	}
 
-	buffer_manager::access_info buffer_manager::access_host_buffer(
+	buffer_manager::access_info buffer_manager::begin_host_buffer_access(
 	    buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
 		std::unique_lock lock(m_mutex);
 		return access_host_buffer_impl(bid, mode, range, offset);
@@ -415,9 +415,16 @@ namespace detail {
 			}
 		}
 
-		if(detail::access::mode_traits::is_producer(mode)) { m_newest_data_location.at(bid).update_region(coherent_box, data_location{}.set(mid)); }
-
 		return target_buffer;
+	}
+
+	void buffer_manager::end_buffer_access(
+	    data_location mids, buffer_id bid, access_mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
+		if(detail::access::mode_traits::is_producer(mode)) {
+			const auto coherent_sr = subrange<3>(offset, range);
+			const auto coherent_box = subrange_to_grid_box(coherent_sr);
+			m_newest_data_location.at(bid).update_region(coherent_box, mids);
+		}
 	}
 
 	void buffer_manager::audit_buffer_access(const buffer_id bid, const memory_id mid, const bool requires_allocation, const access_mode mode) {

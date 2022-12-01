@@ -329,7 +329,7 @@ namespace detail {
 		// 	if(include_current_buffer_value) { mode = cl::sycl::access_mode::read_write; }
 		// 	device_ptr = static_cast<DataT*>(runtime::get_instance()
 		// 	                                     .get_buffer_manager()
-		// 	                                     .access_device_buffer<DataT, Dims>(device_handler.get_memory_id(), bid, mode, range<3>{1, 1, 1}, id<3>{})
+		// 	                                     .begin_device_buffer_access<DataT, Dims>(device_handler.get_memory_id(), bid, mode, range<3>{1, 1, 1}, id<3>{})
 		// 	                                     .ptr);
 		// }
 		// return detail::reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>{bid, op, identity, include_current_buffer_value, device_ptr};
@@ -729,14 +729,14 @@ namespace detail {
 
 	// 	template <typename CGF>
 	// 	void submit_to_sycl(CGF&& cgf) {
-	// 		m_event = m_d_queue->submit([&](cl::sycl::handler& cgh) {
+	// 		m_events = m_d_queue->submit([&](cl::sycl::handler& cgh) {
 	// 			this->m_eventual_cgh = &cgh;
 	// 			std::forward<CGF>(cgf)(cgh);
 	// 			this->m_eventual_cgh = nullptr;
 	// 		});
 	// 	}
 
-	// 	cl::sycl::event get_submission_event() const { return m_event; }
+	// 	cl::sycl::event get_submission_event() const { return m_events; }
 
 	// 	cl::sycl::handler* const* get_eventual_sycl_cgh() const { return &m_eventual_cgh; }
 
@@ -747,7 +747,7 @@ namespace detail {
 	//   private:
 	// 	device_queue* m_d_queue;
 	// 	cl::sycl::handler* m_eventual_cgh = nullptr;
-	// 	cl::sycl::event m_event;
+	// 	cl::sycl::event m_events;
 	// };
 
 
