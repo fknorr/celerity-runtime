@@ -481,8 +481,8 @@ class handler {
 
 	template <typename Hint>
 	void experimental_hint(Hint&& h) {
-		static_assert(std::is_base_of_v<detail::hint_base, Hint>, "Incompatible hint");
-		m_hints.emplace_back(std::make_unique<Hint>(std::forward<Hint>(h)));
+		static_assert(std::is_base_of_v<detail::hint_base, std::decay_t<Hint>>, "Incompatible hint");
+		m_hints.emplace_back(std::make_unique<std::decay_t<Hint>>(std::forward<Hint>(h)));
 	}
 
 	range<3> get_constrained_granularity(const range<3>& granularity) const {
