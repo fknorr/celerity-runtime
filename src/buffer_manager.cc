@@ -150,7 +150,7 @@ namespace detail {
 					ZoneScopedN("slow path: reallocate through host");
 
 					// Check if we can do the resize by going through host first (see if we'll be able to fit just the added elements of the resized buffer).
-					if(!can_allocate(device_queue.get_memory_id(), allocation_size - (range.size() * element_size))) {
+					if(!can_allocate(device_queue.get_memory_id(), allocation_size - (existing_buf.storage->get_range().size() * element_size))) {
 						// TODO: Same thing as above
 						die(allocation_size);
 					}
