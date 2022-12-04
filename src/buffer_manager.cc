@@ -423,6 +423,7 @@ namespace detail {
 		if(detail::access::mode_traits::is_producer(mode)) {
 			const auto coherent_sr = subrange<3>(offset, range);
 			const auto coherent_box = subrange_to_grid_box(coherent_sr);
+			std::unique_lock lock(m_mutex);
 			m_newest_data_location.at(bid).update_region(coherent_box, mids);
 		}
 	}

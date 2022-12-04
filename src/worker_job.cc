@@ -200,8 +200,14 @@ namespace detail {
 			closure_hydrator::get_instance().prepare(std::move(access_infos));
 			// NOCOMMIT TODO: There should be no need to pass cgid or global size from here, store inside launcher.
 			m_future = tsk->launch(m_queue, tsk->get_collective_group_id(), tsk->get_global_size(), data.sr);
-
 			assert(m_future.valid());
+
+			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
+				const auto [bid, mode] = access_map.get_nth_access(i);
+				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+				m_buffer_mngr.end_buffer_access({m_buffer_mngr.get_host_memory_id()}, bid, mode, sr.range, sr.offset);
+			}
+
 			m_submitted = true;
 			CELERITY_TRACE("Submitted host task to thread pool");
 		}
@@ -250,6 +256,7 @@ namespace detail {
 			auto tsk = m_task_mngr.get_task(data.tid);
 			assert(tsk->get_execution_target() == execution_target::device);
 
+			// lock buffer on all device memories, but (very naively) avoid deadlocks
 			for(size_t i = 0; i < m_device_ids.size(); ++i) {
 				const auto mid = m_local_devices.get_memory_id(m_device_ids[i]);
 				const buffer_manager::buffer_lock_id lock_id = pkg.cid * buffer_manager::max_memories + mid;

@@ -159,8 +159,11 @@ namespace detail {
 			}
 			if(is_host_initialized) {
 				// We need to access the full range for host-initialized buffers.
-				auto info = begin_host_buffer_access(bid, cl::sycl::access::mode::discard_write, range, cl::sycl::id<3>(0, 0, 0));
+				const cl::sycl::id<3> offset(0, 0, 0);
+				const auto mode = cl::sycl::access::mode::discard_write;
+				auto info = begin_host_buffer_access(bid, mode, range, offset);
 				std::memcpy(info.ptr, host_init_ptr, range.size() * sizeof(DataT));
+				end_buffer_access({get_host_memory_id()}, bid, mode, range, offset);
 			}
 			m_lifecycle_cb(buffer_lifecycle_event::registered, bid);
 			return bid;
@@ -219,6 +222,8 @@ namespace detail {
 		 * - H->D transfers currently work better for contiguous copies.
 		 */
 		void set_buffer_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized);
+
+		memory_id get_host_memory_id() const { return m_local_devices.get_host_memory_id(); }
 
 		template <typename DataT, int Dims>
 		access_info begin_device_buffer_access(
