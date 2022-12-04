@@ -136,8 +136,8 @@ namespace detail {
 #else
 			if(const auto info = is_resize_required(existing_buf, range, offset); info.resize_required) {
 				if(NOMERGE_warn_on_device_buffer_resize) {
-					CELERITY_WARN("Resizing buffer {} due to access {}, from {} to {}.\n.", subrange<3>(offset, range),
-						subrange<3>(existing_buf.offset, existing_buf.storage->get_range()), subrange<3>(info.new_offset, info.new_range));
+					CELERITY_WARN("Resizing buffer {} on memory {} due to access {}, from {} to {}.\n.", bid, mid, subrange<3>(offset, range),
+					    subrange<3>(existing_buf.offset, existing_buf.storage->get_range()), subrange<3>(info.new_offset, info.new_range));
 				}
 
 				assert(!existing_buf.storage->supports_dynamic_allocation());
