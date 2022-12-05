@@ -46,7 +46,8 @@ class buffer_transfer_manager_fixture : public test_utils::mpi_fixture {
 		const auto bid = m_buffer_mngr->register_buffer<char, 1>(range<3>{range_1d, 1, 1});
 		auto info = m_buffer_mngr->begin_host_buffer_access<char, 1>(bid, access_mode::discard_write, buf_range, {});
 		std::memset(info.ptr, m_rank + 1, buf_range.size());
-		m_buffer_mngr->end_buffer_access({m_buffer_mngr->get_host_memory_id()}, bid, access_mode::discard_write, buf_range, {});
+		m_buffer_mngr->end_buffer_access(
+		    buffer_manager::data_location{}.set(m_buffer_mngr->get_host_memory_id()), bid, access_mode::discard_write, buf_range, {});
 		return bid;
 	}
 
@@ -57,7 +58,8 @@ class buffer_transfer_manager_fixture : public test_utils::mpi_fixture {
 				const size_t idx = sr.offset[0] + i - info.backing_buffer_offset[0];
 				REQUIRE_LOOP(static_cast<char*>(info.ptr)[idx] == static_cast<char>(nid) + 1);
 			}
-			m_buffer_mngr->end_buffer_access({m_buffer_mngr->get_host_memory_id()}, bid, access_mode::read, range_cast<3>(sr.range), id_cast<3>(sr.offset));
+			m_buffer_mngr->end_buffer_access(buffer_manager::data_location{}.set(m_buffer_mngr->get_host_memory_id()), bid, access_mode::read,
+			    range_cast<3>(sr.range), id_cast<3>(sr.offset));
 		}
 	}
 

@@ -36,9 +36,11 @@ namespace detail {
 				acc = m_op(acc, *static_cast<const DataT*>(data.get_pointer()));
 			}
 
-			auto info = runtime::get_instance().get_buffer_manager().begin_host_buffer_access(
-			    m_output_bid, cl::sycl::access::mode::discard_write, cl::sycl::range<3>{1, 1, 1}, cl::sycl::id<3>{});
+			auto& bm = runtime::get_instance().get_buffer_manager();
+			auto info = bm.begin_host_buffer_access(m_output_bid, cl::sycl::access::mode::discard_write, cl::sycl::range<3>{1, 1, 1}, cl::sycl::id<3>{});
 			*static_cast<DataT*>(info.ptr) = acc;
+			bm.end_buffer_access(
+			    {bm.get_host_memory_id()}, m_output_bid, cl::sycl::access::mode::discard_write, cl::sycl::range<3>{1, 1, 1}, cl::sycl::id<3>{});
 		}
 
 	  private:

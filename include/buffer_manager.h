@@ -163,7 +163,7 @@ namespace detail {
 				const auto mode = cl::sycl::access::mode::discard_write;
 				auto info = begin_host_buffer_access(bid, mode, range, offset);
 				std::memcpy(info.ptr, host_init_ptr, range.size() * sizeof(DataT));
-				end_buffer_access({get_host_memory_id()}, bid, mode, range, offset);
+				end_buffer_access(data_location{}.set(get_host_memory_id()), bid, mode, range, offset);
 			}
 			m_lifecycle_cb(buffer_lifecycle_event::registered, bid);
 			return bid;

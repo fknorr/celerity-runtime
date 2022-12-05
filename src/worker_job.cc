@@ -205,7 +205,7 @@ namespace detail {
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
-				m_buffer_mngr.end_buffer_access({m_buffer_mngr.get_host_memory_id()}, bid, mode, sr.range, sr.offset);
+				m_buffer_mngr.end_buffer_access(buffer_manager::data_location{}.set(m_buffer_mngr.get_host_memory_id()), bid, mode, sr.range, sr.offset);
 			}
 
 			m_submitted = true;
