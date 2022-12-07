@@ -228,6 +228,8 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 		generate_horizon_command(tsk);
 	} else if(tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::master_node) {
 		generate_execution_commands(tsk);
+	} else if(tsk.get_type() == task_type::fence) {
+		generate_fence_command(tsk);
 	} else {
 		throw std::runtime_error("Task type NYI");
 	}
@@ -571,6 +573,142 @@ void distributed_graph_generator::generate_horizon_command(const task& tsk) {
 	// Make the horizon depend on the previous execution front
 	reduce_execution_front_to(horizon);
 }
+
+void distributed_graph_generator::generate_fence_command(const task& tsk) {
+	const auto cmd = create_command<fence_command>(m_local_nid, tsk.get_id());
+
+	// TODO  v-- never merge: copy-pasted from generate_execution_commands --v
+
+	buffer_requirements_map requirements;
+	for(auto& [bid, region] : tsk.get_buffer_capture_map()) {
+		requirements[bid][access_mode::read] = region;
+	}
+
+	std::unordered_map<buffer_id, GridRegion<3>> per_buffer_local_writes;
+	std::vector<std::tuple<buffer_id, GridRegion<3>, command_id>> local_last_writer_update_list;
+	for (size_t nid = 0; nid < m_num_nodes; ++nid) {
+		const bool is_local_chunk = nid == m_local_nid;
+
+		// We use the task id, together with the "chunk id" and the buffer id (stored separately) to match pushes against their corresponding await
+		// pushes
+		const transfer_id trid = static_cast<transfer_id>((tsk.get_id() << 32) | nid);
+		for(auto& [bid, reqs_by_mode] : requirements) {
+			auto& buffer_state = m_buffer_states.at(bid);
+			// For "true writes" (= not replicated) we have to wait with updating the last writer
+			// map until all modes have been processed, as we'll otherwise end up with a cycle in
+			// the graph if a command both writes and reads the same buffer region.
+			GridRegion<3> written_region;
+
+			std::vector<access_mode> required_modes;
+			for(const auto mode : detail::access::all_modes) {
+				if(auto req_it = reqs_by_mode.find(mode); req_it != reqs_by_mode.end()) {
+					// While uncommon, we do support chunks that don't require access to a particular buffer at all.
+					if(!req_it->second.empty()) { required_modes.push_back(mode); }
+				}
+			}
+
+			for(const auto mode : required_modes) {
+				const auto& req = reqs_by_mode.at(mode);
+				if(detail::access::mode_traits::is_consumer(mode)) {
+					if(is_local_chunk) {
+						// Store the read access for determining anti-dependencies later on
+						m_command_buffer_reads[cmd->get_cid()][bid] = GridRegion<3>::merge(m_command_buffer_reads[cmd->get_cid()][bid], req);
+
+						const auto local_sources = buffer_state.local_last_writer.get_region_values(req);
+						GridRegion<3> missing_parts;
+						for(const auto& [box, wcs] : local_sources) {
+							if(!wcs.is_fresh()) {
+								missing_parts = GridRegion<3>::merge(missing_parts, box);
+								continue;
+							}
+							// NEXT STEP: It seems like we are adding a dependency on the write access in same task.
+							// => We'll probably need an update list after all...
+							// Q: Does this even make sense? Why is the read access overlapping with the write? Check range mappers
+							m_cdag.add_dependency(cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+						}
+
+						// There is data we don't yet have locally. Generate an await push command for it.
+						if(!missing_parts.empty()) {
+							assert(m_num_nodes > 1);
+							auto ap_cmd = create_command<await_push_command>(m_local_nid, bid, trid, missing_parts);
+							m_cdag.add_dependency(cmd, ap_cmd, dependency_kind::true_dep, dependency_origin::dataflow);
+							generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, missing_parts, ap_cmd);
+							generate_epoch_dependencies(ap_cmd);
+							// Remember that we have this data now
+							buffer_state.local_last_writer.update_region(missing_parts, {ap_cmd->get_cid(), true});
+						}
+					} else {
+						const auto local_sources = buffer_state.local_last_writer.get_region_values(req);
+						for(const auto& [local_box, wcs] : local_sources) {
+							if(!wcs.is_fresh() || wcs.is_replicated()) { continue; }
+
+							// Check if we've already pushed this box
+							const auto replicated_boxes = buffer_state.replicated_regions.get_region_values(local_box);
+							for(const auto& [replicated_box, nodes] : replicated_boxes) {
+								if(nodes.test(nid)) continue;
+
+								// Generate separate PUSH command for each last writer command for now,
+								// possibly even multiple for partially already-replicated data
+								// TODO: Can we consolidate?
+								auto push_cmd = create_command<push_command>(m_local_nid, bid, 0, nid, trid, grid_box_to_subrange(replicated_box));
+								m_cdag.add_dependency(push_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+
+								// Store the read access for determining anti-dependencies later on
+								m_command_buffer_reads[push_cmd->get_cid()][bid] = replicated_box;
+
+								// Remember that we've replicated this region
+								buffer_state.replicated_regions.update_box(replicated_box, node_bitset{nodes}.set(nid));
+							}
+						}
+					}
+				}
+
+				if(is_local_chunk && detail::access::mode_traits::is_producer(mode)) {
+					generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, req, cmd);
+
+					// NOCOMMIT Remember to not create intra-task anti-dependencies onto data requests for RW accesses
+					written_region = GridRegion<3>::merge(written_region, req);
+					per_buffer_local_writes[bid] = GridRegion<3>::merge(per_buffer_local_writes[bid], req);
+				}
+			}
+
+			if(!written_region.empty()) {
+				// Even after all modes have been processed we can't do the update right away,
+				// as this could otherwise result in faulty intra-task dependencies between chunks.
+				local_last_writer_update_list.push_back(std::tuple{bid, written_region, cmd->get_cid()});
+			}
+		}
+	}
+
+	for(auto& [bid, region, cid] : local_last_writer_update_list) {
+		auto& buffer_state = m_buffer_states.at(bid);
+		buffer_state.local_last_writer.update_region(region, cid);
+		buffer_state.replicated_regions.update_region(region, node_bitset{});
+	}
+
+	for(auto& [bid, reqs_by_mode] : requirements) {
+		GridRegion<3> global_writes;
+		for(const auto mode : access::producer_modes) {
+			if(reqs_by_mode.count(mode) == 0) continue;
+			global_writes = GridRegion<3>::merge(global_writes, reqs_by_mode.at(mode));
+		}
+		const auto& local_writes = per_buffer_local_writes[bid];
+		const auto remote_writes = GridRegion<3>::difference(global_writes, local_writes);
+		auto& buffer_state = m_buffer_states.at(bid);
+
+		// TODO: We need a way of updating regions in place!
+		auto boxes_and_cids = buffer_state.local_last_writer.get_region_values(remote_writes);
+		for(auto& [box, wcs] : boxes_and_cids) {
+			if(wcs.is_fresh()) {
+				wcs.mark_as_stale();
+				buffer_state.local_last_writer.update_region(box, wcs);
+			}
+		}
+	}
+
+	process_task_side_effect_requirements(tsk);
+}
+
 
 void distributed_graph_generator::generate_epoch_dependencies(abstract_command* cmd) {
 	// No command must be re-ordered before its last preceding epoch to enforce the barrier semantics of epochs.

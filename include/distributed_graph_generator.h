@@ -109,6 +109,8 @@ class distributed_graph_generator {
 
 	void generate_horizon_command(const task& tsk);
 
+	void generate_fence_command(const task& tsk);
+
 	void generate_epoch_dependencies(abstract_command* cmd);
 
 	void prune_commands_before(const command_id epoch);

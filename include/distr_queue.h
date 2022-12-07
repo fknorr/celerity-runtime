@@ -189,16 +189,16 @@ namespace detail {
 		template <typename T, int Dims>
 		experimental::buffer_snapshot<T, Dims> extract(const experimental::buffer_subrange<T, Dims>& bsr) const {
 			auto& bm = detail::runtime::get_instance().get_buffer_manager();
-			const auto access_info = bm.get_host_buffer<T, Dims>(
+			const auto access_info = bm.begin_host_buffer_access<T, Dims>(
 			    detail::get_buffer_id(bsr.buffer), access_mode::read, detail::range_cast<3>(bsr.subrange.range), detail::id_cast<3>(bsr.subrange.offset));
 
 			// TODO this should be able to use host_buffer_storage::get_data
 			const auto allocation_window = buffer_allocation_window<T, Dims>{
-			    access_info.buffer.get_pointer(),
+			    static_cast<T*>(access_info.ptr),
 			    bsr.buffer.get_range(),
-			    access_info.buffer.get_range(),
+			    range_cast<Dims>(access_info.backing_buffer_range),
 			    bsr.subrange.range,
-			    access_info.offset,
+			    id_cast<Dims>(access_info.backing_buffer_offset),
 			    bsr.subrange.offset,
 			};
 			const auto allocation_range_3 = detail::range_cast<3>(allocation_window.get_allocation_range());
@@ -213,6 +213,9 @@ namespace detail {
 					}
 				}
 			}
+
+			bm.end_buffer_access(buffer_manager::data_location{}.set(bm.get_host_memory_id()), detail::get_buffer_id(bsr.buffer), access_mode::read,
+			    detail::range_cast<3>(bsr.subrange.range), detail::id_cast<3>(bsr.subrange.offset));
 
 			return experimental::buffer_snapshot<T, Dims>(bsr.subrange, std::move(data));
 		}
