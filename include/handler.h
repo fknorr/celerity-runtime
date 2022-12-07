@@ -429,7 +429,7 @@ class handler {
 	friend void detail::add_requirement(handler& cgh, const detail::host_object_id hoid, const experimental::side_effect_order order);
 	friend void detail::add_reduction(handler& cgh, const detail::reduction_info& rinfo);
 	template <int Dims>
-	friend void constrain_split(handler& cgh, const range<Dims>& constraint);
+	friend void experimental::constrain_split(handler& cgh, const range<Dims>& constraint);
 	template <typename Hint>
 	friend void experimental::hint(handler& cgh, Hint&& h);
 
