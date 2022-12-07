@@ -48,6 +48,12 @@ bool is_embedded_closure_object_id(const T value) {
 //
 // TODO: Make this work for reductions as well!
 // TODO: Just make everything static? No need for a singleton really?
+//
+// !!!!!!!!!!!!!
+// FIXME: Capturing a host accessor by reference into host_task does not cause it to be copied => must capture by value! We can at least try to detect this
+//       (not distinguishable from unused accessor though...)
+// !!!!!!!!!!!!!
+//
 class closure_hydrator {
   public:
 	struct NOCOMMIT_info {
