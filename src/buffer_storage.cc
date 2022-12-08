@@ -48,9 +48,9 @@ namespace detail {
 	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range) {
 		const size_t line_size = elem_size * copy_range[0];
 #if defined(__HIPSYCL__)
-		const auto ret = cudaMemcpy(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
+		const auto ret = cudaMemcpyAsync(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault);
-		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2D failed");
+		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpyAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
 		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
@@ -70,10 +70,10 @@ namespace detail {
 
 // NOCOMMIT Move into backend-specific module
 #if defined(__HIPSYCL__)
-		const auto ret = cudaMemcpy2D(reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
+		const auto ret = cudaMemcpy2DAsync(reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size,
 		    copy_range[0], cudaMemcpyDefault);
-		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2D failed");
+		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2DAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
 		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};
@@ -108,8 +108,8 @@ namespace detail {
 		parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
 		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
 		parms.kind = cudaMemcpyDefault;
-		const auto ret = cudaMemcpy3D(&parms);
-		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy3D failed");
+		const auto ret = cudaMemcpy3DAsync(&parms);
+		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy3DAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
 		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(0))};

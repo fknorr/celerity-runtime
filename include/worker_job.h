@@ -201,6 +201,7 @@ namespace detail {
 		cl::sycl::event m_event;
 		bool m_submitted = false;
 
+		bool m_async_transfers_done = false;
 		std::vector<closure_hydrator::NOCOMMIT_info> m_access_infos;
 
 		bool prepare(const command_pkg& pkg) override;
