@@ -752,7 +752,7 @@ TEST_CASE("per-device 2d oversubscribed chunks cover the same region as the corr
 	for(const auto* acmd : dctx.query().find_all(tid_a).get_raw(0)) {
 		REQUIRE_LOOP(isa<execution_command>(acmd));
 		auto& ecmd = *static_cast<const execution_command*>(acmd);
-		auto& chnk = full_chunks_by_device[ecmd.get_device_id()];
+		auto& chnk = full_chunks_by_device[std::get<on_single_device>(ecmd.get_device_assignment()).device];
 		REQUIRE_LOOP(chnk.empty());
 		chnk = subrange_to_grid_box(ecmd.get_execution_range());
 	}
@@ -761,7 +761,7 @@ TEST_CASE("per-device 2d oversubscribed chunks cover the same region as the corr
 	for(const auto* acmd : dctx.query().find_all(tid_b).get_raw(0)) {
 		REQUIRE_LOOP(isa<execution_command>(acmd));
 		auto& ecmd = *static_cast<const execution_command*>(acmd);
-		auto& chnk = full_chunks_by_device[ecmd.get_device_id()];
+		auto& chnk = full_chunks_by_device[std::get<on_single_device>(ecmd.get_device_assignment()).device];
 		REQUIRE_LOOP(!chnk.empty());
 		REQUIRE_LOOP(!GridRegion<3>::intersect(chnk, subrange_to_grid_box(ecmd.get_execution_range())).empty());
 		chnk = GridRegion<3>::difference(chnk, subrange_to_grid_box(ecmd.get_execution_range()));
@@ -770,4 +770,37 @@ TEST_CASE("per-device 2d oversubscribed chunks cover the same region as the corr
 	for(size_t i = 0; i < 4; ++i) {
 		REQUIRE_LOOP(full_chunks_by_device[i].empty());
 	}
+}
+
+TEST_CASE("limit number of devices hint") {
+	dist_cdag_test_context dctx(4, 4);
+
+	const auto tid_1 = dctx.device_compute(range<1>(128)).hint(experimental::hints::limit_num_devices(2)).submit();
+	CHECK(dctx.query().find_all(tid_1).count() == 2);
+	CHECK(dctx.query().find_all(tid_1, node_id(0)).count() == 2);
+
+	const auto tid_2 = dctx.device_compute(range<1>(128)).hint(experimental::hints::limit_num_devices(4)).submit();
+	CHECK(dctx.query().find_all(tid_2).count() == 4);
+	CHECK(dctx.query().find_all(tid_2, node_id(0)).count() == 4);
+
+	const auto tid_3 = dctx.device_compute(range<1>(128)).hint(experimental::hints::limit_num_devices(7)).submit();
+	CHECK(dctx.query().find_all(tid_3).count() == 8); // we don't do partial nodes at the moment
+	CHECK(dctx.query().find_all(tid_3, node_id(0)).count() == 4);
+	CHECK(dctx.query().find_all(tid_3, node_id(1)).count() == 4);
+
+	const auto tid_4 = dctx.device_compute(range<1>(1)).hint(experimental::hints::limit_num_devices(2)).hint(experimental::hints::replicate()).submit();
+	CHECK(dctx.query().find_all(tid_4).count() == 1);
+	CHECK(dctx.query().find_all(tid_4, node_id(0)).count() == 1);
+
+	const auto tid_5 = dctx.device_compute(range<1>(1)).hint(experimental::hints::limit_num_devices(7)).hint(experimental::hints::replicate()).submit();
+	CHECK(dctx.query().find_all(tid_5).count() == 2);
+	CHECK(dctx.query().find_all(tid_5, node_id(0)).count() == 1);
+	CHECK(dctx.query().find_all(tid_5, node_id(1)).count() == 1);
+
+	const auto tid_6 = dctx.device_compute(range<1>(1)).hint(experimental::hints::limit_num_devices(25)).hint(experimental::hints::replicate()).submit();
+	CHECK(dctx.query().find_all(tid_6).count() == 4);
+	CHECK(dctx.query().find_all(tid_6, node_id(0)).count() == 1);
+	CHECK(dctx.query().find_all(tid_6, node_id(1)).count() == 1);
+	CHECK(dctx.query().find_all(tid_6, node_id(2)).count() == 1);
+	CHECK(dctx.query().find_all(tid_6, node_id(3)).count() == 1);
 }

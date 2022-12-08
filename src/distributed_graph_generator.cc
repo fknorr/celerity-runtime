@@ -245,7 +245,8 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	// If a new epoch was completed in the CDAG before the current task, prune all predecessor commands of that epoch.
 	prune_commands_before(epoch_to_prune_before);
 
-	assert(!m_current_cmd_batch.empty() || (tsk.get_type() == task_type::master_node && m_local_nid != 0));
+	assert(!m_current_cmd_batch.empty() || (tsk.get_type() == task_type::master_node && m_local_nid != 0)
+	       || tsk.get_hint<experimental::hints::limit_num_devices>() != nullptr);
 	return std::move(m_current_cmd_batch);
 }
 
@@ -253,7 +254,14 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	// TODO: Pieced together from naive_split_transformer. We can probably do without creating all chunks and discarding everything except our own.
 	// TODO: Or - maybe - we actually want to store all chunks somewhere b/c we'll probably need them frequently for lookups later on?
 	chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
-	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
+
+	size_t num_participating_nodes = m_num_nodes;
+	size_t num_chunks = num_participating_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
+	if(const auto limit = tsk.get_hint<experimental::hints::limit_num_devices>()) {
+		num_participating_nodes = (limit->get_num_devices() + m_num_local_devices - 1) / m_num_local_devices;
+		num_chunks = std::min(num_chunks, num_participating_nodes);
+	}
+
 	const auto distributed_chunks = ([&] {
 		if(tsk.has_variable_split()) {
 			if(tsk.get_hint<experimental::hints::replicate>() != nullptr) {
@@ -280,7 +288,7 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	// We assign chunks next to each other to the same worker (if there is more chunks than workers), as this is likely to produce less
 	// transfers between tasks than a round-robin assignment (for typical stencil codes).
 	// FIXME: This only works if the number of chunks is an integer multiple of the number of workers, e.g. 3 chunks for 2 workers degrades to RR.
-	const auto chunks_per_node = std::max<size_t>(1, distributed_chunks.size() / m_num_nodes);
+	const auto chunks_per_node = std::max<size_t>(1, distributed_chunks.size() / num_participating_nodes);
 
 	// Distributed push model:
 	// - Iterate over all remote chunks and find read requirements intersecting with owned buffer regions.
@@ -291,18 +299,25 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	std::unordered_map<buffer_id, GridRegion<3>> per_buffer_local_writes;
 	std::vector<std::tuple<buffer_id, GridRegion<3>, command_id>> local_last_writer_update_list;
 	for(size_t i = 0; i < distributed_chunks.size(); ++i) {
-		const node_id nid = (i / chunks_per_node) % m_num_nodes;
+		const node_id nid = (i / chunks_per_node) % num_participating_nodes;
 		const bool is_local_chunk = nid == m_local_nid;
+
+		auto num_participating_local_devices = m_num_local_devices;
+		if(is_local_chunk && distributed_chunks.size() == 1) {
+			if(const auto limit = tsk.get_hint<experimental::hints::limit_num_devices>()) {
+				num_participating_local_devices = std::min(num_participating_local_devices, limit->get_num_devices());
+			}
+		}
 
 		// Depending on whether this is a local chunk or not we may have to process a different set of "effective" chunks:
 		// Local chunks may be split up again to create enough work for all local devices.
 		// Processing remote chunks on the other hand doesn't require knowledge of the devices available on that particular node.
 		// The same push commands generated for a single remote chunk also apply to the effective chunks generated on that node.
 		std::vector<chunk<3>> effective_chunks;
-		if(is_local_chunk && m_num_local_devices > 1 && tsk.has_variable_split()) {
+		if(is_local_chunk && num_participating_local_devices > 1 && tsk.has_variable_split()) {
 			// TODO don't split distributed host tasks locally
 			if(tsk.get_hint<experimental::hints::tiled_split>() != nullptr) {
-				auto per_device_chunks = split_2d(distributed_chunks[i], tsk.get_granularity(), m_num_local_devices);
+				auto per_device_chunks = split_2d(distributed_chunks[i], tsk.get_granularity(), num_participating_local_devices);
 				if(oversub_factor == 1) {
 					effective_chunks = per_device_chunks;
 				} else {
@@ -316,7 +331,8 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 					}
 				}
 			} else {
-				effective_chunks = split_1d(distributed_chunks[i], tsk.get_granularity(), m_num_local_devices * oversub_factor);
+				// TODO this probably will not do the right thing when oversubscription and limit_num_devices are combined
+				effective_chunks = split_1d(distributed_chunks[i], tsk.get_granularity(), num_participating_local_devices * oversub_factor);
 			}
 		} else {
 			effective_chunks.push_back(distributed_chunks[i]);
@@ -332,9 +348,9 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 			if(is_local_chunk) {
 				cmd = create_command<execution_command>(nid, tsk.get_id(), subrange{chnk});
 				if(tsk.get_hint<experimental::hints::replicate>()) {
-					cmd->set_device_id(device_id_gpu_replicated);
+					cmd->assign_devices(replicated_on_devices{num_participating_local_devices});
 				} else {
-					cmd->set_device_id(did / oversub_factor); // TODO we currently ignore device assignment for host tasks
+					cmd->assign_devices(on_single_device{did / oversub_factor}); // TODO we currently ignore device assignment for host tasks
 				}
 				did++;
 			}

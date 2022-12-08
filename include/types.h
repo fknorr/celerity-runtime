@@ -76,6 +76,14 @@ struct reduction_info {
 	bool init_from_buffer = false;
 };
 
-constexpr device_id device_id_gpu_replicated = device_id(std::numeric_limits<size_t>::max());
+struct on_single_device {
+	device_id device;
+};
+
+struct replicated_on_devices {
+	size_t num_devices;
+};
+
+using device_assignment = std::variant<on_single_device, replicated_on_devices>;
 
 } // namespace celerity::detail

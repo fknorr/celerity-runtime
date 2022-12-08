@@ -164,13 +164,13 @@ namespace detail {
 		// Sets the device this command should run on. The idea behind this is that assigning the same chunk (in split order)
 		// to the same device will likely reduce the amount of required inter-device transfers for typical kernels.
 		// NOTE: This is a temporary solution until we have better local scheduling.
-		void set_device_id(device_id id) { m_device_id = id; }
-		device_id get_device_id() const { return m_device_id; }
+		void assign_devices(device_assignment as) { m_device_assignment = as; }
+		device_assignment get_device_assignment() const { return m_device_assignment; }
 
 	  private:
 		subrange<3> m_execution_range;
 		bool m_initialize_reductions = false;
-		device_id m_device_id = 0;
+		device_assignment m_device_assignment = on_single_device{0};
 	};
 
 	// ----------------------------------------------------------------------------------------------------------------
@@ -190,7 +190,7 @@ namespace detail {
 		task_id tid;
 		subrange<3> sr;
 		bool initialize_reductions;
-		device_id did;
+		device_assignment devices;
 	};
 
 	struct push_data {

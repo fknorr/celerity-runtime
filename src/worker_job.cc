@@ -234,14 +234,13 @@ namespace detail {
 	    : worker_job(pkg), m_local_devices(devices), m_task_mngr(tm), m_buffer_mngr(bm), m_reduction_mngr(rm), m_local_nid(local_nid) {
 		assert(pkg.get_command_type() == command_type::execution);
 
-		const auto magic_device_id = std::get<execution_data>(pkg.data).did;
-		if(magic_device_id == device_id_gpu_replicated) {
-			m_device_ids.resize(m_local_devices.num_compute_devices());
-			std::iota(m_device_ids.begin(), m_device_ids.end(), device_id());
-		} else {
-			assert(magic_device_id < m_local_devices.num_compute_devices());
-			m_device_ids = {magic_device_id};
-		}
+		m_device_ids = utils::match(
+		    std::get<execution_data>(pkg.data).devices, [](on_single_device sd) { return std::vector{sd.device}; },
+		    [](replicated_on_devices rd) {
+			    std::vector<device_id> dids(rd.num_devices);
+			    std::iota(dids.begin(), dids.end(), device_id());
+			    return dids;
+		    });
 	}
 
 	std::string device_execute_job::get_description(const command_pkg& pkg) {

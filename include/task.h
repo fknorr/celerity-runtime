@@ -41,6 +41,18 @@ namespace experimental::hints {
 	// TODO we may not want to have this as a hint in the future but as a constraint, so that the user may e.g. do a GMEM atomic
 	class replicate : public detail::hint_base {};
 
+	// Soft split constraint that also works for replicated tasks.
+	// TODO this should probably be a "minimum global size per device" hint instead.
+	class limit_num_devices : public detail::hint_base {
+	  public:
+		limit_num_devices(size_t num_devices) : m_num_devices(num_devices) { assert(num_devices > 0); }
+
+		[[nodiscard]] size_t get_num_devices() const { return m_num_devices; }
+
+	  private:
+		size_t m_num_devices;
+	};
+
 }; // namespace experimental::hints
 
 namespace detail {
