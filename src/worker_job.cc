@@ -243,8 +243,14 @@ namespace detail {
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
-				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
-				access_infos.push_back(closure_hydrator::NOCOMMIT_info{target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+				try {
+					const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
+					access_infos.push_back(
+					    closure_hydrator::NOCOMMIT_info{target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+				} catch(allocation_error e) {
+					CELERITY_CRITICAL("Encountered allocation error while trying to prepare {}", get_description(pkg));
+					std::terminate();
+				}
 			}
 
 			closure_hydrator::get_instance().prepare(std::move(access_infos));
