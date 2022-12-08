@@ -150,6 +150,9 @@ namespace detail {
 
 		CELERITY_INFO(
 		    "Celerity runtime version {} running on {}. PID = {}, build type = {}", get_version_string(), get_sycl_version(), get_pid(), get_build_type());
+#if TRACY_ENABLE
+		CELERITY_WARN("Tracy integration is enabled (may incur overhead).");
+#endif
 	}
 
 	runtime::~runtime() {

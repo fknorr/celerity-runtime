@@ -171,6 +171,11 @@ add_submodule_directory(vendor/Catch2)
 include(FetchContent)
 set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
 set(TRACY_STATIC ON CACHE BOOL "" FORCE)
+set(TRACY_DELAYED_INIT ON CACHE BOOL "" FORCE)
+set(TRACY_MANUAL_LIFETIME ON CACHE BOOL "" FORCE)
+option(ENABLE_TRACY_SUPPORT "" OFF)
+# FIXME: Instead of just setting this, don't include Tracy at all when ENABLE_TRACY_SUPPORT is OFF
+set(TRACY_ENABLE ${ENABLE_TRACY_SUPPORT} CACHE BOOL "" FORCE)
 FetchContent_Declare(
   tracy
   GIT_REPOSITORY ${CMAKE_CURRENT_LIST_DIR}/vendor/tracy
@@ -340,6 +345,9 @@ if(MSVC)
   target_compile_options(celerity_runtime PRIVATE /MP /W3)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
   target_compile_options(celerity_runtime PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror=return-type -Werror=init-self)
+  if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
+    target_compile_options(celerity_runtime PUBLIC -march=native)
+  endif()
 endif()
 
 target_compile_options(celerity_runtime PUBLIC "${CELERITY_CXX_FLAGS}")
