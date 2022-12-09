@@ -23,23 +23,10 @@ namespace detail {
 	buffer_transfer_manager::buffer_transfer_manager(buffer_manager& bm, reduction_manager& rm)
 	    : m_buffer_mngr(bm), m_reduction_mngr(rm), m_send_recv_unit(make_send_recv_unit()) {}
 
-	std::shared_ptr<const buffer_transfer_manager::transfer_handle> buffer_transfer_manager::push(
-	    const node_id target, const transfer_id trid, const buffer_id bid, const subrange<3>& sr, const reduction_id rid) {
+	std::shared_ptr<const buffer_transfer_manager::transfer_handle> buffer_transfer_manager::push(const node_id target, unique_frame_ptr<data_frame> frame) {
 		auto t_handle = std::make_shared<transfer_handle>();
-		// We are blocking the caller until the buffer has been copied and submitted to MPI
-		// TODO: Investigate doing this in worker thread
-		// --> This probably needs some kind of heuristic, as for small (e.g. ghost cell) transfers the overhead of threading is way too big
-		const auto element_size = m_buffer_mngr.get_buffer_info(bid).element_size;
-
-		unique_frame_ptr<data_frame> frame(from_payload_count, sr.range.size() * element_size);
-		frame->sr = sr;
-		frame->bid = bid;
-		frame->rid = rid;
-		frame->trid = trid;
-		m_buffer_mngr.get_buffer_data(bid, sr, frame->data);
-
-		size_t frame_units = (frame.get_size_bytes() + send_recv_unit_bytes - 1) / send_recv_unit_bytes;
-		CELERITY_TRACE("Ready to send {} of buffer {} ({} * {}B) to {}", sr, bid, frame_units, send_recv_unit_bytes, target);
+		const size_t frame_units = (frame.get_size_bytes() + send_recv_unit_bytes - 1) / send_recv_unit_bytes;
+		CELERITY_TRACE("Ready to send {} of buffer {} ({} * {}B) to {}", frame->sr, frame->bid, frame_units, send_recv_unit_bytes, target);
 
 		// Start transmitting data
 		MPI_Request req;
