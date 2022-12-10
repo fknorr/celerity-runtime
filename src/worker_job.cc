@@ -25,6 +25,7 @@ namespace detail {
 			m_tracy_lane.initialize();
 			const auto desc = fmt::format("cid={}: {}", m_pkg.cid, get_description(m_pkg));
 			m_tracy_lane.begin_phase("preparation", desc, tracy::Color::ColorType::Pink);
+			CELERITY_DEBUG("Preparing job: {}", desc);
 		}
 
 		m_tracy_lane.activate();
@@ -137,6 +138,7 @@ namespace detail {
 
 	bool push_job::prepare(const command_pkg& pkg) {
 		if(m_frame.get_pointer() == nullptr) {
+			ZoneScopedN("push_job::prepare");
 			const auto data = std::get<push_data>(pkg.data);
 			// Getting buffer data from the buffer manager may incur a host-side buffer reallocation.
 			// If any other tasks are currently using this buffer for reading, we run into problems.
@@ -218,8 +220,7 @@ namespace detail {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
 				const auto info = m_buffer_mngr.access_host_buffer(bid, mode, sr.range, sr.offset);
-				access_infos.push_back(
-				    closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+				access_infos.push_back(closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
 			}
 
 			closure_hydrator::get_instance().prepare(std::move(access_infos));
@@ -266,6 +267,11 @@ namespace detail {
 			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
 
 			const auto& access_map = tsk->get_buffer_access_map();
+			{
+				const auto msg = fmt::format("Preparing buffers for {} accesses", access_map.get_num_accesses());
+				TracyMessage(msg.c_str(), msg.size());
+				CELERITY_TRACE(msg);
+			}
 			m_access_infos.reserve(access_map.get_num_accesses());
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
@@ -279,12 +285,6 @@ namespace detail {
 					CELERITY_CRITICAL("Encountered allocation error while trying to prepare {}", get_description(pkg));
 					std::terminate();
 				}
-			}
-
-			{
-				const auto msg = fmt::format("Preparing buffers for {} accesses", access_map.get_num_accesses());
-				TracyMessage(msg.c_str(), msg.size());
-				CELERITY_TRACE(msg);
 			}
 		}
 
