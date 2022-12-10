@@ -84,8 +84,9 @@ namespace detail {
 				m_done_cache.push_back(other.m_done_cache[i]);
 				m_native_events.emplace_back(std::move(other.m_native_events[i]));
 			}
-			m_attached_payloads.insert(m_attached_payloads.end(), std::make_move_iterator(other.m_attached_payloads.begin()),
-			    std::make_move_iterator(other.m_attached_payloads.end()));
+			for(auto& p : other.m_attached_payloads) {
+				m_attached_payloads.emplace_back(std::move(p));
+			}
 		}
 
 		void add(std::shared_ptr<native_event_wrapper> native_event) {
@@ -117,7 +118,8 @@ namespace detail {
 	  private:
 		mutable gch::small_vector<bool> m_done_cache;
 		gch::small_vector<std::shared_ptr<native_event_wrapper>> m_native_events;
-		gch::small_vector<unique_payload_ptr> m_attached_payloads;
+		// FIXME: For some reason (old libstdc++?) this doesn't compile as a gch::small_vector on Marconi-100...
+		std::vector<unique_payload_ptr> m_attached_payloads;
 	};
 
 	void memcpy_strided(const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const cl::sycl::range<1>& source_range,
