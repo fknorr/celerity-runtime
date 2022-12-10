@@ -219,7 +219,7 @@ namespace detail {
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
 				const auto info = m_buffer_mngr.access_host_buffer(bid, mode, sr.range, sr.offset);
 				access_infos.push_back(
-				    closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr, {}});
+				    closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
 			}
 
 			closure_hydrator::get_instance().prepare(std::move(access_infos));
@@ -271,9 +271,10 @@ namespace detail {
 				const auto [bid, mode] = access_map.get_nth_access(i);
 				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
 				try {
-					const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
-					m_access_infos.push_back(closure_hydrator::NOCOMMIT_info{
-					    target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr, std::move(info.pending_transfers)});
+					auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
+					m_access_infos.push_back(
+					    closure_hydrator::NOCOMMIT_info{target::device, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
+					m_access_transfer_events.emplace_back(std::move(info.pending_transfers));
 				} catch(allocation_error e) {
 					CELERITY_CRITICAL("Encountered allocation error while trying to prepare {}", get_description(pkg));
 					std::terminate();
@@ -287,7 +288,8 @@ namespace detail {
 			}
 		}
 
-		if(!m_async_transfers_done && std::all_of(m_access_infos.cbegin(), m_access_infos.cend(), [](auto& ai) { return ai.pending_transfers.is_done(); })) {
+		if(!m_async_transfers_done
+		    && std::all_of(m_access_transfer_events.cbegin(), m_access_transfer_events.cend(), [](auto& evt) { return evt.is_done(); })) {
 			m_async_transfers_done = true;
 			const auto msg = fmt::format("{}: Async transfers done", pkg.cid);
 			TracyMessage(msg.c_str(), msg.size());
@@ -317,7 +319,8 @@ namespace detail {
 			for(const auto& reduction : tsk->get_reductions()) {
 				const auto element_size = m_buffer_mngr.get_buffer_info(reduction.bid).element_size;
 				auto operand = make_uninitialized_payload<std::byte>(element_size);
-				m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {1, 1, 1}}, operand.get_pointer());
+				const auto evt = m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {1, 1, 1}}, operand.get_pointer());
+				evt.wait();
 				m_reduction_mngr.push_overlapping_reduction_data(reduction.rid, m_local_nid, std::move(operand));
 			}
 

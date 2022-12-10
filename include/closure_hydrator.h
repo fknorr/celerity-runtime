@@ -64,8 +64,6 @@ class closure_hydrator {
 		range<3> buffer_range;
 		id<3> buffer_offset;
 		subrange<3> accessor_sr;
-		// NOCOMMIT JUST HACKING
-		async_event pending_transfers;
 	};
 
 	static void enable() {

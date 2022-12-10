@@ -5,6 +5,7 @@
 #include <memory>
 
 #include <CL/sycl.hpp>
+#include <gch/small_vector.hpp>
 
 #define USE_NDVBUFFER 0
 
@@ -68,16 +69,23 @@ namespace detail {
 #endif
 
 	// TODO: Naming: Future, Promise, ..?
-	class async_event {
+	// FIXME: We probably want this to be copyable, right..? (Currently not possible due to payload attachment hack)
+	class [[nodiscard]] async_event {
 	  public:
 		async_event() = default;
+		async_event(const async_event&) = delete;
+		async_event(async_event&&) = default;
 		async_event(std::shared_ptr<native_event_wrapper> native_event) { add(std::move(native_event)); }
+
+		async_event& operator=(async_event&&) = default;
 
 		void merge(async_event other) {
 			for(size_t i = 0; i < other.m_native_events.size(); ++i) {
 				m_done_cache.push_back(other.m_done_cache[i]);
 				m_native_events.emplace_back(std::move(other.m_native_events[i]));
 			}
+			m_attached_payloads.insert(m_attached_payloads.end(), std::make_move_iterator(other.m_attached_payloads.begin()),
+			    std::make_move_iterator(other.m_attached_payloads.end()));
 		}
 
 		void add(std::shared_ptr<native_event_wrapper> native_event) {
@@ -99,9 +107,17 @@ namespace detail {
 			return true;
 		}
 
+		void wait() const {
+			while(!is_done()) {}
+		}
+
+		// FIXME: Workaround to extend lifetime of temporary staging copies for asynchronous transfers
+		void hack_attach_payload(unique_payload_ptr ptr) { m_attached_payloads.emplace_back(std::move(ptr)); }
+
 	  private:
-		mutable std::vector<bool> m_done_cache;
-		std::vector<std::shared_ptr<native_event_wrapper>> m_native_events;
+		mutable gch::small_vector<bool> m_done_cache;
+		gch::small_vector<std::shared_ptr<native_event_wrapper>> m_native_events;
+		gch::small_vector<unique_payload_ptr> m_attached_payloads;
 	};
 
 	void memcpy_strided(const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const cl::sycl::range<1>& source_range,
@@ -212,15 +228,14 @@ namespace detail {
 
 		virtual void allocate(const subrange<3>& sr) { assert(supports_dynamic_allocation()); }
 
-		[[nodiscard]] virtual async_event get_data(const subrange<3>& sr, void* out_linearized) const = 0;
+		virtual async_event get_data(const subrange<3>& sr, void* out_linearized) const = 0;
 
-		[[nodiscard]] virtual async_event set_data(const subrange<3>& sr, const void* in_linearized) = 0;
+		virtual async_event set_data(const subrange<3>& sr, const void* in_linearized) = 0;
 
 		/**
 		 * Copy data from the given source buffer into this buffer.
 		 */
-		[[nodiscard]] virtual async_event copy(
-		    const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) = 0;
+		virtual async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) = 0;
 
 		virtual ~buffer_storage() = default;
 
@@ -277,6 +292,7 @@ namespace detail {
 			const ndv::box<Dims> src_box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
 			const ndv::box<Dims> dst_box = {{}, ndv::point<Dims>::make_from(sr.range)};
 			m_device_buf.copy_to(static_cast<DataT*>(out_linearized), ndv::extent<Dims>::make_from(sr.range), src_box, dst_box);
+			assert(false && "Figure out how to integrate with async_event");
 #else
 			return memcpy_strided_device(m_owning_queue, m_device_buf.get_pointer(), out_linearized, sizeof(DataT), m_device_buf.get_range(),
 			    id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), id<Dims>{}, range_cast<Dims>(sr.range));
@@ -290,6 +306,7 @@ namespace detail {
 			const ndv::box<Dims> src_box = {{}, ndv::point<Dims>::make_from(sr.range)};
 			const ndv::box<Dims> dst_box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
 			m_device_buf.copy_from(static_cast<const DataT*>(in_linearized), ndv::extent<Dims>::make_from(sr.range), src_box, dst_box);
+			assert(false && "Figure out how to integrate with async_event");
 #else
 			// NOCOMMIT Use assert_copy_is_in_range from below?
 			assert((id_cast<Dims>(sr.offset) + range_cast<Dims>(sr.range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
@@ -397,8 +414,10 @@ namespace detail {
 #else
 			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
 			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
-			host_source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
+			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
+			const auto evt = host_source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
+			evt.wait();
+			return set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
 #endif
 		}
 
@@ -433,10 +452,10 @@ namespace detail {
 			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
 			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
 			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
-			auto evt1 = source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			while(!evt1.is_done()) {}
-			auto evt2 = set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
-			while(!evt2.is_done()) {}
+			const auto evt1 = source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
+			evt1.wait();
+			const auto evt2 = set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
+			evt2.wait();
 #endif
 		}
 

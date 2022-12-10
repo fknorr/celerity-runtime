@@ -206,6 +206,7 @@ namespace detail {
 
 		bool m_async_transfers_done = false;
 		std::vector<closure_hydrator::NOCOMMIT_info> m_access_infos;
+		std::vector<async_event> m_access_transfer_events;
 
 		bool prepare(const command_pkg& pkg) override;
 		bool execute(const command_pkg& pkg) override;
