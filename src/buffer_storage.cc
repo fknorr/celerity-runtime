@@ -50,7 +50,7 @@ namespace detail {
 #if defined(__HIPSYCL__)
 		const auto ret = cudaMemcpy(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault);
-		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2D failed");
+		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		cudaStreamSynchronize(0);
 #else
