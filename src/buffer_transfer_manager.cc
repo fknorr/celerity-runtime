@@ -31,14 +31,15 @@ namespace detail {
 		// --> This probably needs some kind of heuristic, as for small (e.g. ghost cell) transfers the overhead of threading is way too big
 		const auto element_size = m_buffer_mngr.get_buffer_info(bid).element_size;
 
-		unique_frame_ptr<data_frame> frame(from_payload_count, sr.range.size() * element_size);
+		unique_frame_ptr<data_frame> frame(from_payload_count, sr.range.size() * element_size, /* packet_size_bytes */ send_recv_unit_bytes);
 		frame->sr = sr;
 		frame->bid = bid;
 		frame->rid = rid;
 		frame->trid = trid;
 		m_buffer_mngr.get_buffer_data(bid, sr, frame->data);
 
-		size_t frame_units = (frame.get_size_bytes() + send_recv_unit_bytes - 1) / send_recv_unit_bytes;
+		assert(frame.get_size_bytes() % send_recv_unit_bytes == 0);
+		const size_t frame_units = frame.get_size_bytes() / send_recv_unit_bytes;
 		CELERITY_TRACE("Ready to send {} of buffer {} ({} * {}B) to {}", sr, bid, frame_units, send_recv_unit_bytes, target);
 
 		// Start transmitting data
