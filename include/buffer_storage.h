@@ -289,6 +289,7 @@ namespace detail {
 		async_event get_data(const subrange<3>& sr, void* out_linearized) const override {
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
+			assert((id_cast<Dims>(sr.offset) + range_cast<Dims>(sr.range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
 
 #if USE_NDVBUFFER
 			const ndv::box<Dims> src_box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
