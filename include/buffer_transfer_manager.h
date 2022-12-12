@@ -85,7 +85,7 @@ namespace detail {
 			request_manager(request_manager&&) = default;
 
 #if defined(CELERITY_DEBUG)
-			~request_manager() { assert(m_received_region == m_expected_region); }
+			~request_manager() { assert(m_received_region == m_expected_region || (m_received_region.empty() && !m_expected_region.has_value())); }
 #endif
 
 			std::shared_ptr<transfer_handle> request_region(GridRegion<3> region) {
