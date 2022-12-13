@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction };
+	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, fence };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -173,6 +173,11 @@ namespace detail {
 		device_assignment m_device_assignment = on_single_device{0};
 	};
 
+	class fence_command final : public task_command {
+		friend class command_graph;
+		using task_command::task_command;
+	};
+
 	// ----------------------------------------------------------------------------------------------------------------
 	// -------------------------------------------- SERIALIZED COMMANDS -----------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
@@ -222,7 +227,12 @@ namespace detail {
 		reduction_id rid;
 	};
 
-	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data>;
+	struct fence_data {
+		task_id tid;
+	};
+
+	using command_data =
+	    std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data, fence_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -237,6 +247,7 @@ namespace detail {
 				[](const horizon_data& d) { return std::optional{d.tid}; },
 				[](const epoch_data& d) { return std::optional{d.tid}; },
 				[](const execution_data& d) { return std::optional{d.tid}; },
+				[](const fence_data& d) { return std::optional{d.tid}; },
 				[](const auto&) { return std::optional<task_id>{}; }
 			);
 			// clang-format on
@@ -255,7 +266,8 @@ namespace detail {
 			    [](const push_data&) { return command_type::push; },
 			    [](const await_push_data&) { return command_type::await_push; },
 				[](const data_request_data&) { return command_type::data_request; },
-			    [](const reduction_data&) { return command_type::reduction; }
+			    [](const reduction_data&) { return command_type::reduction; },
+				[](const fence_data&) { return command_type::fence; }
 			);
 			// clang-format on
 		}

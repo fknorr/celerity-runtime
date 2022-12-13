@@ -1004,5 +1004,24 @@ namespace detail {
 		dry_run_with_nodes(nodes);
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "fences extract data from host objects", "[runtime][fence]") {
+		experimental::host_object<int> ho{1};
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			experimental::side_effect e(ho, cgh);
+			cgh.host_task(on_master_node, [=] { *e = 2; });
+		});
+		auto v2 = experimental::fence(q, ho);
+
+		q.submit([=](handler& cgh) {
+			experimental::side_effect e(ho, cgh);
+			cgh.host_task(on_master_node, [=] { *e = 3; });
+		});
+		auto v3 = experimental::fence(q, ho);
+
+		CHECK(v2.get() == 2);
+		CHECK(v3.get() == 3);
+	}
 } // namespace detail
 } // namespace celerity
