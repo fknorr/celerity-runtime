@@ -48,6 +48,7 @@ namespace detail {
 		case task_type::device_compute:
 		case task_type::master_node: generate_independent_execution_commands(tsk); break;
 		case task_type::fence: generate_fence_commands(tsk); break;
+		case task_type::gather: assert(!"gather commands NYI"); break;
 		}
 
 		for(auto& t : transformers) {

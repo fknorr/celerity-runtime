@@ -31,6 +31,7 @@ namespace detail {
 		case task_type::master_node: return "master-node host";
 		case task_type::horizon: return "horizon";
 		case task_type::fence: return "fence";
+		case task_type::gather: return "gather";
 		default: return "unknown";
 		}
 	}
@@ -77,7 +78,7 @@ namespace detail {
 		const auto execution_range = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
 
 		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.get_type()));
-		if(tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::device_compute) {
+		if(tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::gather) {
 			fmt::format_to(std::back_inserter(label), " {}", execution_range);
 		} else if(tsk.get_type() == task_type::collective) {
 			fmt::format_to(std::back_inserter(label), " in CG{}", tsk.get_collective_group_id());
