@@ -17,6 +17,7 @@ namespace detail {
 
 	using celerity::access::all;
 	using celerity::access::fixed;
+	using celerity::access::one_to_one;
 
 	TEST_CASE("task_manager does not create multiple dependencies between the same tasks", "[task_manager][task-graph]") {
 		using namespace cl::sycl::access;
@@ -686,6 +687,43 @@ namespace detail {
 			}
 			tid_before = tid;
 		}
+
+		test_utils::maybe_print_graph(tm);
+	}
+
+	TEST_CASE("task manager detects gather pattern between dependent tasks", "[task_manager][task-graph][gather]") {
+		task_manager tm{1, nullptr};
+		test_utils::mock_buffer_factory mbf(tm);
+
+		auto buf = mbf.create_buffer(range<1>(1000));
+		const auto tid_producer = test_utils::add_compute_task<class UKN(producer)>(
+		    tm, [&](handler& cgh) { buf.get_access<access_mode::discard_write>(cgh, one_to_one()); }, sycl::range<1>(1000));
+		const auto tid_consumer = test_utils::add_compute_task<class UKN(consumer)>(
+		    tm,
+		    [&](handler& cgh) {
+			    buf.get_access<access_mode::read>(cgh, fixed<1>({200, 500}));
+		    },
+		    sycl::range<1>(1000));
+
+		CHECK(!has_dependency(tm, tid_consumer, tid_producer));
+		const auto consumer_deps = tm.get_task(tid_consumer)->get_dependencies();
+		REQUIRE(std::distance(consumer_deps.begin(), consumer_deps.end()) == 1);
+
+		const auto& gather_task = *consumer_deps.begin()->node;
+		CHECK(gather_task.get_type() == task_type::gather);
+		CHECK(gather_task.get_geometry().dimensions == 1);
+		CHECK(gather_task.get_geometry().global_offset == id_cast<3>(id<1>(200)));
+		CHECK(gather_task.get_geometry().global_size == range_cast<3>(range<1>(500)));
+		CHECK(gather_task.get_buffer_access_map().get_requirements_for_access(
+		          buf.get_id(), access_mode::read, 1, subrange_cast<3>(subrange<1>(200, 500)), range_cast<3>(range<1>(500)))
+		      == subrange_to_grid_box(subrange_cast<3>(subrange<1>(200, 500))));
+		CHECK(gather_task.get_buffer_access_map().get_requirements_for_access(
+		          buf.get_id(), access_mode::discard_write, 1, subrange_cast<3>(subrange<1>(200, 500)), range_cast<3>(range<1>(500)))
+		      == subrange_to_grid_box(subrange_cast<3>(subrange<1>(200, 500))));
+
+		const auto gather_deps = gather_task.get_dependencies();
+		REQUIRE(std::distance(gather_deps.begin(), gather_deps.end()) == 1);
+		CHECK(gather_deps.begin()->node == tm.get_task(tid_producer));
 
 		test_utils::maybe_print_graph(tm);
 	}

@@ -79,6 +79,7 @@ namespace detail {
 
 			auto& tsk = register_task_internal(std::move(reservation), std::move(unique_tsk));
 			compute_dependencies(tsk);
+			infer_collective_data_requirements(tsk);
 
 			// the following deletion is intentionally redundant with the one happening when waiting for free task slots
 			// we want to free tasks earlier than just when running out of slots,
@@ -240,6 +241,8 @@ namespace detail {
 
 		// Returns a callback which blocks until any epoch task has executed, freeing new task slots
 		task_ring_buffer::wait_callback await_free_task_slot_callback();
+
+		void infer_collective_data_requirements(task& tsk);
 	};
 
 } // namespace detail
