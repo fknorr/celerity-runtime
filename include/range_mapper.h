@@ -8,6 +8,11 @@
 
 #include "ranges.h"
 
+namespace celerity::experimental {
+template <typename Functor>
+struct range_mapper_traits;
+}
+
 namespace celerity {
 
 namespace detail {
@@ -79,8 +84,6 @@ namespace detail {
 	class range_mapper_base {
 	  public:
 		explicit range_mapper_base(cl::sycl::access::mode am) : m_access_mode(am) {}
-		range_mapper_base(const range_mapper_base& other) = delete;
-		range_mapper_base(range_mapper_base&& other) = delete;
 
 		cl::sycl::access::mode get_access_mode() const { return m_access_mode; }
 
@@ -97,6 +100,16 @@ namespace detail {
 		virtual subrange<3> map_3(const chunk<3>& chnk) const = 0;
 
 		virtual ~range_mapper_base() = default;
+
+		virtual std::unique_ptr<range_mapper_base> clone_as(access_mode mode) const = 0;
+		std::unique_ptr<range_mapper_base> clone() { return clone_as(m_access_mode); }
+
+		virtual bool is_constant() const = 0;
+		virtual bool is_identity() const = 0;
+
+	  protected:
+		range_mapper_base(const range_mapper_base& other) = default;
+		range_mapper_base& operator=(const range_mapper_base& other) = default;
 
 	  private:
 		cl::sycl::access::mode m_access_mode;
@@ -120,6 +133,11 @@ namespace detail {
 		subrange<3> map_3(const chunk<2>& chnk) const override { return map<3>(chnk); }
 		subrange<3> map_3(const chunk<3>& chnk) const override { return map<3>(chnk); }
 
+		std::unique_ptr<range_mapper_base> clone_as(access_mode mode) const override { return std::make_unique<range_mapper>(m_rmfn, mode, m_buffer_size); }
+
+		bool is_constant() const override { return experimental::range_mapper_traits<Functor>::is_constant; }
+		bool is_identity() const override { return experimental::range_mapper_traits<Functor>::is_identity; }
+
 	  private:
 		Functor m_rmfn;
 		range<BufferDims> m_buffer_size;
@@ -134,6 +152,30 @@ namespace detail {
 			}
 		}
 	};
+
+	template <int KernelDims>
+	subrange<3> apply_range_mapper(range_mapper_base const* rm, const chunk<KernelDims>& chnk) {
+		switch(rm->get_buffer_dimensions()) {
+		case 1: return subrange_cast<3>(rm->map_1(chnk));
+		case 2: return subrange_cast<3>(rm->map_2(chnk));
+		case 3: return rm->map_3(chnk);
+		default: assert(false);
+		}
+		return subrange<3>{};
+	}
+
+	inline subrange<3> apply_range_mapper(range_mapper_base const* rm, const chunk<3>& chnk, int kernel_dims) {
+		switch(kernel_dims) {
+		case 0:
+			[[fallthrough]]; // cl::sycl::range is not defined for the 0d case, but since only constant range mappers are useful in the 0d-kernel case
+			                 // anyway, we require range mappers to take at least 1d subranges
+		case 1: return apply_range_mapper<1>(rm, chunk_cast<1>(chnk));
+		case 2: return apply_range_mapper<2>(rm, chunk_cast<2>(chnk));
+		case 3: return apply_range_mapper<3>(rm, chunk_cast<3>(chnk));
+		default: assert(!"Unreachable");
+		}
+	}
+
 
 } // namespace detail
 
@@ -157,7 +199,7 @@ namespace access {
 	struct [[deprecated("Explicitly-dimensioned range mappers are deprecated, remove template arguments from celerity::one_to_one")]] one_to_one
 	    : one_to_one<0>{};
 
-	one_to_one()->one_to_one<>;
+	one_to_one() -> one_to_one<>;
 
 	template <int KernelDims, int BufferDims = KernelDims>
 	struct fixed;
@@ -215,7 +257,7 @@ namespace access {
 	template <int KernelDims, int BufferDims>
 	struct [[deprecated("Explicitly-dimensioned range mappers are deprecated, remove template arguments from celerity::all")]] all : all<0, 0>{};
 
-	all()->all<>;
+	all() -> all<>;
 
 	template <int Dims>
 	struct neighborhood {
@@ -240,9 +282,9 @@ namespace access {
 		size_t m_dim0, m_dim1, m_dim2;
 	};
 
-	neighborhood(size_t)->neighborhood<1>;
-	neighborhood(size_t, size_t)->neighborhood<2>;
-	neighborhood(size_t, size_t, size_t)->neighborhood<3>;
+	neighborhood(size_t) -> neighborhood<1>;
+	neighborhood(size_t, size_t) -> neighborhood<2>;
+	neighborhood(size_t, size_t, size_t) -> neighborhood<3>;
 
 } // namespace access
 
@@ -300,3 +342,34 @@ namespace experimental::access {
 } // namespace experimental::access
 
 } // namespace celerity
+
+namespace celerity::experimental {
+
+template <typename Functor>
+struct range_mapper_traits {
+	// by supplying a cv-qualified type here a user could accidentally not select the trait specializations below
+	static_assert(!std::is_const_v<Functor> && !std::is_volatile_v<Functor>);
+
+	constexpr static bool is_constant = false;
+	constexpr static bool is_identity = false;
+};
+
+template <int Dims>
+struct range_mapper_traits<celerity::access::one_to_one<Dims>> {
+	constexpr static bool is_constant = false;
+	constexpr static bool is_identity = true;
+};
+
+template <int KernelDims, int BufferDims>
+struct range_mapper_traits<celerity::access::fixed<KernelDims, BufferDims>> {
+	constexpr static bool is_constant = true;
+	constexpr static bool is_identity = false;
+};
+
+template <int KernelDims, int BufferDims>
+struct range_mapper_traits<celerity::access::all<KernelDims, BufferDims>> {
+	constexpr static bool is_constant = true;
+	constexpr static bool is_identity = false;
+};
+
+} // namespace celerity::experimental

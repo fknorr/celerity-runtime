@@ -21,17 +21,6 @@ namespace detail {
 		return result;
 	}
 
-	template <int KernelDims>
-	subrange<3> apply_range_mapper(range_mapper_base const* rm, const chunk<KernelDims>& chnk) {
-		switch(rm->get_buffer_dimensions()) {
-		case 1: return subrange_cast<3>(rm->map_1(chnk));
-		case 2: return subrange_cast<3>(rm->map_2(chnk));
-		case 3: return rm->map_3(chnk);
-		default: assert(false);
-		}
-		return subrange<3>{};
-	}
-
 	GridRegion<3> buffer_access_map::get_requirements_for_access(
 	    buffer_id bid, cl::sycl::access::mode mode, int kernel_dims, const subrange<3>& sr, const cl::sycl::range<3>& global_size) const {
 		auto [first, last] = m_map.equal_range(bid);
@@ -42,17 +31,8 @@ namespace detail {
 			auto rm = iter->second.get();
 			if(rm->get_access_mode() != mode) continue;
 
-			chunk<3> chnk{sr.offset, sr.range, global_size};
-			subrange<3> req;
-			switch(kernel_dims) {
-			case 0:
-				[[fallthrough]]; // cl::sycl::range is not defined for the 0d case, but since only constant range mappers are useful in the 0d-kernel case
-				                 // anyway, we require range mappers to take at least 1d subranges
-			case 1: req = apply_range_mapper<1>(rm, chunk_cast<1>(chnk)); break;
-			case 2: req = apply_range_mapper<2>(rm, chunk_cast<2>(chnk)); break;
-			case 3: req = apply_range_mapper<3>(rm, chunk_cast<3>(chnk)); break;
-			default: assert(!"Unreachable");
-			}
+			const chunk<3> chnk{sr.offset, sr.range, global_size};
+			const auto req = apply_range_mapper(rm, chnk, kernel_dims);
 			result = GridRegion<3>::merge(result, subrange_to_grid_box(req));
 		}
 

@@ -23,6 +23,7 @@ namespace detail {
 		collective,     ///< host task with implicit 1d global size = #ranks and fixed split
 		master_node,    ///< zero-dimensional host task
 		horizon,        ///< task horizon
+		gather,
 	};
 
 	enum class execution_target {
@@ -69,6 +70,13 @@ namespace detail {
 		 */
 		GridRegion<3> get_requirements_for_access(
 		    buffer_id bid, cl::sycl::access::mode mode, int kernel_dims, const subrange<3>& sr, const cl::sycl::range<3>& global_size) const;
+
+		std::vector<const range_mapper_base*> get_range_mappers(buffer_id bid) const {
+			const auto range = m_map.equal_range(bid);
+			std::vector<const range_mapper_base*> rms(std::distance(range.first, range.second));
+			std::transform(range.first, range.second, rms.begin(), [](const auto& unique_ptr) { return unique_ptr.second.get(); });
+			return rms;
+		}
 
 	  private:
 		std::unordered_multimap<buffer_id, std::unique_ptr<range_mapper_base>> m_map;
@@ -139,6 +147,7 @@ namespace detail {
 			case task_type::collective:
 			case task_type::master_node: return execution_target::host;
 			case task_type::horizon: return execution_target::none;
+			case task_type::gather: return execution_target::none;
 			default: assert(!"Unhandled task type"); return execution_target::none;
 			}
 		}
@@ -178,6 +187,10 @@ namespace detail {
 
 		static std::unique_ptr<task> make_horizon_task(task_id tid) {
 			return std::unique_ptr<task>(new task(tid, task_type::horizon, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, {}));
+		}
+
+		static std::unique_ptr<task> make_gather(task_id tid, task_geometry geometry, buffer_access_map access_map) {
+			return std::unique_ptr<task>(new task(tid, task_type::gather, collective_group_id{}, geometry, nullptr, std::move(access_map), {}, {}, {}, {}));
 		}
 
 	  private:
