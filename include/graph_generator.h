@@ -112,6 +112,8 @@ namespace detail {
 
 		void process_task_side_effect_requirements(const task& tsk);
 
+		void process_task_collective_group_requirements(const task& tsk);
+
 		void generate_epoch_dependencies(abstract_command* cmd);
 
 		void generate_epoch_commands(const task& tsk);

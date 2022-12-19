@@ -75,6 +75,7 @@ namespace detail {
 		// --> So that more advanced transformations can also take data transfers into account
 		process_task_data_requirements(tsk);
 		process_task_side_effect_requirements(tsk);
+		process_task_collective_group_requirements(tsk);
 
 		// Commands without any other true-dependency must depend on the active epoch command to ensure they cannot be re-ordered before the epoch
 		for(const auto cmd : m_cdag.task_commands(tid)) {
@@ -176,16 +177,6 @@ namespace detail {
 			auto range = cl::sycl::range<1>{1};
 			const auto sr = subrange_cast<3>(subrange<1>{offset, range});
 			auto* cmd = m_cdag.create<execution_command>(nid, tsk.get_id(), sr);
-
-			// Collective host tasks have an implicit dependency on the previous task in the same collective group, which is required in order to guarantee
-			// they are executed in the same order on every node.
-			auto cgid = tsk.get_collective_group_id();
-			auto& last_collective_commands = m_node_data.at(nid).last_collective_commands;
-			if(auto prev = last_collective_commands.find(cgid); prev != last_collective_commands.end()) {
-				m_cdag.add_dependency(cmd, m_cdag.get(prev->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
-				last_collective_commands.erase(prev);
-			}
-			last_collective_commands.emplace(cgid, cmd->get_cid());
 		}
 	}
 
@@ -632,6 +623,21 @@ namespace detail {
 				// Simplification: If there are multiple chunks per node, we generate true-dependencies between them in an arbitrary order, when all we really
 				// need is mutual exclusion (i.e. a bi-directional pseudo-dependency).
 				nd.host_object_last_effects.insert_or_assign(hoid, cmd->get_cid());
+			}
+		}
+	}
+
+	void graph_generator::process_task_collective_group_requirements(const task& tsk) {
+		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective) {
+			for(const auto cmd : m_cdag.task_commands(tsk.get_id())) {
+				// Collective tasks have an implicit dependency on the previous task in the same collective group, which is required in order to guarantee
+				// they are executed in the same order on every node.
+				auto& last_collective_commands = m_node_data.at(cmd->get_nid()).last_collective_commands;
+				if(auto prev = last_collective_commands.find(cgid); prev != last_collective_commands.end()) {
+					m_cdag.add_dependency(cmd, m_cdag.get(prev->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+					last_collective_commands.erase(prev);
+				}
+				last_collective_commands.emplace(cgid, cmd->get_cid());
 			}
 		}
 	}
