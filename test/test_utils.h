@@ -264,6 +264,15 @@ namespace test_utils {
 			m_ggen = std::make_unique<detail::graph_generator>(num_nodes, *m_cdag);
 			m_gser = std::make_unique<detail::graph_serializer>(*m_cdag, m_inspector.get_cb());
 			this->m_num_nodes = num_nodes;
+
+			m_tm->register_task_callback([this](const detail::task* tsk) {
+				// the TM will invoke callbacks on implicit gathers before the consumer task, so we generate them right away
+				if(tsk->get_type() == detail::task_type::gather) {
+					detail::naive_split_transformer transformer{m_num_nodes, m_num_nodes}; // shouldn't do anything, but replicates what the scheduler does
+					m_ggen->build_task(*tsk, {&transformer});
+					m_gser->flush(tsk->get_id());
+				}
+			});
 		}
 
 		detail::task_manager& get_task_manager() { return *m_tm; }

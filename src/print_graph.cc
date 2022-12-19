@@ -131,6 +131,8 @@ namespace detail {
 			fmt::format_to(std::back_inserter(label), "<b>reduction</b> R{}<br/> {} {}", reduction.rid, bl, req);
 		} else if(const auto hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 			label += "<b>horizon</b>";
+		} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
+			label += "<b>gather</b>";
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";
@@ -144,6 +146,8 @@ namespace detail {
 			if(const auto ecmd = dynamic_cast<const execution_command*>(&cmd)) {
 				if(ecmd->is_reduction_initializer()) { reduction_init_mode = cl::sycl::access::mode::read_write; }
 				execution_range = ecmd->get_execution_range();
+			} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
+				execution_range = gcmd->get_source_range();
 			}
 
 			format_requirements(label, tsk, execution_range, reduction_init_mode, bm);
