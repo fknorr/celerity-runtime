@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, fence };
+	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, fence, gather };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -178,6 +178,17 @@ namespace detail {
 		using task_command::task_command;
 	};
 
+	class gather_command final : public task_command {
+		friend class command_graph;
+		gather_command(command_id cid, node_id nid, task_id tid, const subrange<3>& source_sr) : task_command(cid, nid, tid), m_source_sr(source_sr) {}
+
+	  public:
+		const subrange<3> get_source_range() { return m_source_sr; }
+
+	  private:
+		subrange<3> m_source_sr;
+	};
+
 	// ----------------------------------------------------------------------------------------------------------------
 	// -------------------------------------------- SERIALIZED COMMANDS -----------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
@@ -231,8 +242,13 @@ namespace detail {
 		task_id tid;
 	};
 
+	struct gather_data {
+		task_id tid;
+		subrange<3> source_sr;
+	};
+
 	using command_data =
-	    std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data, fence_data>;
+	    std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, reduction_data, fence_data, gather_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -248,6 +264,7 @@ namespace detail {
 				[](const epoch_data& d) { return std::optional{d.tid}; },
 				[](const execution_data& d) { return std::optional{d.tid}; },
 				[](const fence_data& d) { return std::optional{d.tid}; },
+				[](const gather_data& d) { return std::optional{d.tid}; },
 				[](const auto&) { return std::optional<task_id>{}; }
 			);
 			// clang-format on
@@ -268,6 +285,7 @@ namespace detail {
 				[](const data_request_data&) { return command_type::data_request; },
 			    [](const reduction_data&) { return command_type::reduction; },
 				[](const fence_data&) { return command_type::fence; }
+				[](const gather_data&) { return command_type::gather; }
 			);
 			// clang-format on
 		}

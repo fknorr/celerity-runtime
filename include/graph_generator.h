@@ -124,6 +124,8 @@ namespace detail {
 
 		void generate_fence_commands(const task& tsk);
 
+		void generate_gather_commands(const task& tsk);
+
 		void prune_commands_before(const command_id min_epoch);
 	};
 

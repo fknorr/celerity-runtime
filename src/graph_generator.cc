@@ -48,7 +48,7 @@ namespace detail {
 		case task_type::device_compute:
 		case task_type::master_node: generate_independent_execution_commands(tsk); break;
 		case task_type::fence: generate_fence_commands(tsk); break;
-		case task_type::gather: assert(!"gather commands NYI"); break;
+		case task_type::gather: generate_gather_commands(tsk); break;
 		}
 
 		for(auto& t : transformers) {
@@ -201,6 +201,23 @@ namespace detail {
 		for(size_t nid = 0; nid < m_num_nodes; ++nid) {
 			m_cdag.create<fence_command>(nid, tsk.get_id());
 		}
+	}
+
+	void graph_generator::generate_gather_commands(const task& tsk) {
+		assert(tsk.get_type() == task_type::gather);
+
+		const auto dependencies = tsk.get_dependencies();
+		assert(std::distance(dependencies.begin(), dependencies.end()) == 1); // only dependency is the producer TODO until we have more elaborate inference
+		const auto& producer = *dependencies.front().node;
+
+		// TODO assert there is no
+		m_cdag.task_commands(tsk.get_id());
+
+		// TODO things to think about:
+		// 		- how to handle strides (probably have a contiguous staging buffer where necessary)
+		//		- how to determine arguments to Allgatherv (probably by another Allgather just before, but we can detect when all sizes are the same and skip)
+		//		- how to handle oversubscription
+		for(size_t nid = 0; nid < m_num_nodes; ++nid) {}
 	}
 
 	using buffer_requirements_map = std::unordered_map<buffer_id, std::unordered_map<cl::sycl::access::mode, GridRegion<3>>>;
