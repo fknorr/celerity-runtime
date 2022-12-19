@@ -124,7 +124,7 @@ namespace experimental {
 	  private:
 		friend class collective_tag_factory;
 		detail::collective_group_id m_cgid;
-		inline static size_t next_cgid = 1;
+		inline static size_t next_cgid = detail::first_explicit_collective;
 	};
 
 	/**
