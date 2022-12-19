@@ -367,6 +367,7 @@ namespace detail {
 			consumer->remove_dependency(gather.identity_producer);
 			add_dependency(*consumer, gather_task, dependency_kind::true_dep, dependency_origin::dataflow);
 			add_dependency(gather_task, *gather.identity_producer, dependency_kind::true_dep, dependency_origin::dataflow);
+			// TODO also re-route anti-dependencies that other tasks might have on the producer due to the same write
 
 			m_buffers_last_writers.at(gather.bid).update_region(subrange_to_grid_box(gather.consumed_sr), gather_task.get_id());
 
