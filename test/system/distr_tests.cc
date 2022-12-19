@@ -343,6 +343,27 @@ namespace detail {
 		});
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit gathers produce the expected data distribution", "[gather]") {
+		distr_queue q;
+		buffer<size_t> buf(1000);
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(producer)>(range<1>(1000), [=](item<1> it) { acc[it] = it.get_linear_id(); });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task);
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				for(size_t i = 200; i < 200 + 500; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+	}
+
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "NBody gather pattern", "[gather]") {
 		constexpr size_t N = 262144;
 
