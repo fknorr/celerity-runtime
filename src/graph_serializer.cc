@@ -93,6 +93,8 @@ namespace detail {
 			pkg.data = reduction_data{rcmd->get_reduction_info().rid};
 		} else if(const auto* hcmd = dynamic_cast<horizon_command*>(cmd)) {
 			pkg.data = horizon_data{hcmd->get_tid()};
+		} else if(const auto* gcmd = dynamic_cast<gather_command*>(cmd)) {
+			pkg.data = gather_data{gcmd->get_tid(), gcmd->get_source_range()};
 		} else {
 			assert(false && "Unknown command");
 		}
