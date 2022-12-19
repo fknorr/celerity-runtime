@@ -357,5 +357,62 @@ namespace detail {
 		return true;
 	}
 
+	// --------------------------------------------------------------------------------------------------------------------
+	// ------------------------------------------------------ GATHER ------------------------------------------------------
+	// --------------------------------------------------------------------------------------------------------------------
+
+	std::string gather_job::get_description(const command_pkg& pkg) {
+		const auto data = std::get<gather_data>(pkg.data);
+		const auto& tsk = *m_task_mngr.get_task(data.tid);
+
+		const auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
+		assert(accessed_buffers.size() == 1);
+		const auto bid = *accessed_buffers.begin();
+
+		return fmt::format("gather {} of buffer {}", data.source_sr, static_cast<size_t>(bid));
+	}
+
+	bool gather_job::execute(const command_pkg& pkg) {
+		const auto data = std::get<gather_data>(pkg.data);
+		const auto& tsk = *m_task_mngr.get_task(data.tid);
+
+		const auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
+		assert(accessed_buffers.size() == 1);
+
+		if(!m_buffer_mngr.try_lock(pkg.cid, accessed_buffers)) return false;
+
+		int rank, size;
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+		MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+		const auto bid = *accessed_buffers.begin();
+		const auto buffer_info = m_buffer_mngr.get_buffer_info(bid);
+
+		int my_chunk_size = static_cast<int>(data.source_sr.range.size() * buffer_info.element_size); // TODO how to handle strides?
+		std::vector<int> chunk_sizes(size);
+		// TODO skip this bootstrapping Allgather if all sizes are equal or can be trivially computed by mimicking an equal_split
+		MPI_Allgather(&my_chunk_size, 1, MPI_INT /* TODO */, chunk_sizes.data(), 1, MPI_INT /* TODO */, MPI_COMM_WORLD);
+
+		unique_payload_ptr send_buffer;
+		if(my_chunk_size > 0) {
+			send_buffer = make_uninitialized_payload<std::byte>(my_chunk_size * buffer_info.element_size);
+			m_buffer_mngr.get_buffer_data(bid, data.source_sr, send_buffer.get_pointer());
+		}
+
+		std::vector<int> chunk_offsets(size);
+		std::exclusive_scan(chunk_sizes.begin(), chunk_sizes.end(), chunk_offsets.begin(), 0);
+
+		const auto total_gather_size = tsk.get_global_size().size();
+		auto recv_buffer = make_uninitialized_payload<std::byte>(total_gather_size * buffer_info.element_size);
+		// TODO make asynchronous?
+		MPI_Allgatherv(send_buffer.get_pointer(), static_cast<int>(my_chunk_size), MPI_BYTE, recv_buffer.get_pointer(), chunk_sizes.data(),
+		    chunk_offsets.data(), MPI_BYTE, MPI_COMM_WORLD);
+
+		m_buffer_mngr.set_buffer_data(bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(recv_buffer));
+
+		m_buffer_mngr.unlock(pkg.cid);
+		return true;
+	}
+
 } // namespace detail
 } // namespace celerity

@@ -255,6 +255,7 @@ namespace detail {
 			break;
 		case command_type::data_request: create_job<data_request_job>(frame, *m_btm); break;
 		case command_type::fence: create_job<fence_job>(frame, m_task_mngr); break;
+		case command_type::gather: create_job<gather_job>(frame, m_task_mngr, m_buffer_mngr); break;
 		default: assert(!"Unexpected command");
 		}
 		return true;
