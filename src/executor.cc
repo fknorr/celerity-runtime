@@ -159,6 +159,7 @@ namespace detail {
 				create_job<device_execute_job>(frame, m_d_queue, m_task_mngr, m_buffer_mngr, m_reduction_mngr, m_local_nid);
 			}
 			break;
+		case command_type::gather: create_job<gather_job>(frame, m_task_mngr, m_buffer_mngr); break;
 		default: assert(!"Unexpected command");
 		}
 		return true;
