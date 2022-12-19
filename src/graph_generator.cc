@@ -205,19 +205,26 @@ namespace detail {
 
 	void graph_generator::generate_gather_commands(const task& tsk) {
 		assert(tsk.get_type() == task_type::gather);
+		const auto gather_sr = subrange<3>(tsk.get_global_offset(), tsk.get_global_size());
 
 		const auto dependencies = tsk.get_dependencies();
 		assert(std::distance(dependencies.begin(), dependencies.end()) == 1); // only dependency is the producer TODO until we have more elaborate inference
-		const auto& producer = *dependencies.front().node;
+		const auto& ptsk = *dependencies.front().node;
 
-		// TODO assert there is no
-		m_cdag.task_commands(tsk.get_id());
+		// TODO assert there is no ??
+		const auto producer_cmds = m_cdag.task_commands(ptsk.get_id());
 
 		// TODO things to think about:
 		// 		- how to handle strides (probably have a contiguous staging buffer where necessary)
 		//		- how to determine arguments to Allgatherv (probably by another Allgather just before, but we can detect when all sizes are the same and skip)
 		//		- how to handle oversubscription
-		for(size_t nid = 0; nid < m_num_nodes; ++nid) {}
+		for(size_t nid = 0; nid < m_num_nodes; ++nid) {
+			subrange<3> producer_sr;
+			const auto pcmd = std::find_if(producer_cmds.begin(), producer_cmds.end(), [=](const abstract_command* cmd) { return cmd->get_nid() == nid; });
+			if(pcmd != producer_cmds.end()) { producer_sr = dynamic_cast<const execution_command&>(**pcmd).get_execution_range(); }
+			const auto source_sr = grid_box_to_subrange(GridBox<3>::intersect(subrange_to_grid_box(producer_sr), subrange_to_grid_box(gather_sr)));
+			m_cdag.create<gather_command>(nid, tsk.get_id(), source_sr); // node must participate in collective even if its own range is empty
+		}
 	}
 
 	using buffer_requirements_map = std::unordered_map<buffer_id, std::unordered_map<cl::sycl::access::mode, GridRegion<3>>>;
@@ -378,6 +385,8 @@ namespace detail {
 					// We need to add a proper requirement here because bid might itself be in pending_reduction_state
 					requirements[reduction.bid][rmode] = GridRegion<3>{{1, 1, 1}};
 				}
+			} else if(const auto gcmd = dynamic_cast<gather_command*>(cmd)) {
+				requirements = get_buffer_requirements_for_mapped_access(tsk, gcmd->get_source_range(), tsk.get_global_size());
 			} else {
 				// tasks without an execution range (e.g. fences) can still have fixed or all-accesses.
 				requirements = get_buffer_requirements_for_mapped_access(tsk, {}, {});
@@ -472,8 +481,9 @@ namespace detail {
 						// generating anti-dependencies around this requirement. This might not be valid if (multivariate) reductions ever operate on regions.
 						if(!generate_reduction) { generate_anti_dependencies(tid, bid, node_buffer_last_writer, req, cmd); }
 
-						// After this task is completed, this node and command are the last writer of this region
-						buffer_state_write_list.emplace_back(nid, bid, req);
+						// After this task is completed, this node and command are the last writer of this region.
+						// Gather tasks have replicated writes, so instead of emplacing a single-node update, we manually process gather requirements below.
+						if(tsk.get_type() != task_type::gather) { buffer_state_write_list.emplace_back(nid, bid, req); }
 						per_node_last_writer_update_list.emplace_back(nid, bid, req, cid);
 					}
 				}
@@ -551,6 +561,21 @@ namespace detail {
 				assert(std::find(pending->operand_sources.begin(), pending->operand_sources.end(), nid) == pending->operand_sources.end());
 				pending->operand_sources.push_back(nid);
 			}
+		}
+
+		// We skip updating the last writer node for gather tasks above since its writes are replicated: All participating nodes must be last-writers for the
+		// gathered subregion, but buffer_state_write_list semantics would successively replace the node id with the last generated command only.
+		if(tsk.get_type() == task_type::gather) {
+			assert(tsk.get_buffer_access_map().get_accessed_buffers().size() == 1);
+			const auto bid = *tsk.get_buffer_access_map().get_accessed_buffers().begin();
+			const auto region = tsk.get_buffer_access_map().get_requirements_for_access(bid, access_mode::discard_write, 1, {}, {});
+			assert(!region.empty());
+
+			std::vector<node_id> all_nodes(m_num_nodes);
+			std::iota(all_nodes.begin(), all_nodes.end(), node_id());
+
+			auto& state = std::get<distributed_state>(m_buffer_states.at(bid));
+			state.region_sources.update_region(region, all_nodes);
 		}
 
 		// Update per-node last writer information to take into account writes from await_pushes generated for this task.
