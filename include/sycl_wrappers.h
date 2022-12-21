@@ -15,6 +15,11 @@ namespace detail {
 	struct read_write_host_task_tag_t {};
 	struct write_only_host_task_tag_t {};
 
+	template <typename Reducer>
+	struct write_reduce_tag_t {
+		Reducer reducer;
+	};
+
 	using memory_scope_ut = std::underlying_type_t<cl::sycl::memory_scope>;
 
 } // namespace detail
@@ -32,6 +37,11 @@ inline constexpr detail::write_only_tag_t write_only;
 inline constexpr detail::read_only_host_task_tag_t read_only_host_task;
 inline constexpr detail::read_write_host_task_tag_t read_write_host_task;
 inline constexpr detail::write_only_host_task_tag_t write_only_host_task;
+
+template <typename Reducer>
+inline detail::write_reduce_tag_t<Reducer> write_reduce(Reducer reducer) {
+	return detail::write_reduce_tag_t<Reducer>{reducer};
+}
 
 using cl::sycl::property_list;
 

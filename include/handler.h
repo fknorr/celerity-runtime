@@ -297,6 +297,8 @@ namespace detail {
 
 		void add_reduction(const reduction_info& rinfo) { m_reductions.push_back(rinfo); }
 
+		void add_reduction_v2(buffer_reduction_v2 br) { m_reductions_v2.push_back(std::move(br)); }
+
 		void create_host_compute_task(task_geometry geometry) {
 			assert(m_task == nullptr);
 			if(geometry.global_size.size() == 0) {
@@ -317,8 +319,8 @@ namespace detail {
 				throw std::runtime_error{"The execution range of device tasks must have at least one item"};
 			}
 			if(!m_side_effects.empty()) { throw std::runtime_error{"Side effects cannot be used in device kernels"}; }
-			m_task =
-			    detail::task::make_device_compute(m_tid, geometry, std::move(m_cgf), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
+			m_task = detail::task::make_device_compute(
+			    m_tid, geometry, std::move(m_cgf), std::move(m_access_map), std::move(m_reductions), std::move(m_reductions_v2), std::move(debug_name));
 		}
 
 		void create_collective_task(collective_group_id cgid) {
@@ -347,6 +349,7 @@ namespace detail {
 		buffer_access_map m_access_map;
 		side_effect_map m_side_effects;
 		reduction_set m_reductions;
+		std::vector<buffer_reduction_v2> m_reductions_v2;
 		std::unique_ptr<class task> m_task = nullptr;
 		size_t m_num_collective_nodes;
 	};

@@ -65,6 +65,11 @@ namespace detail {
 	void naive_split_transformer::transform_task(const task& tsk, command_graph& cdag) {
 		if(!tsk.has_variable_split()) return;
 
+		// TODO we can't have oversubscription for tasks with V2 reductions right now because reduction-inits from multiple device_execute_jobs would race.
+		// To make this oversubscription work, we must ensure that the first job on that device reduction-inits the entire region that is touched by that
+		// reduction.
+		assert(tsk.get_reductions_v2().empty() || m_num_chunks <= m_num_workers);
+
 		auto& task_commands = cdag.task_commands(tsk.get_id());
 		assert(task_commands.size() == 1);
 

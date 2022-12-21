@@ -8,6 +8,7 @@
 #include "buffer.h"
 #include "buffer_storage.h"
 #include "handler.h"
+#include "reduction.h"
 #include "sycl_wrappers.h"
 
 namespace celerity {
@@ -221,11 +222,22 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 	friend struct detail::accessor_testspy;
 
   public:
-	template <target Target = target::device, typename Functor>
-	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) : accessor(construct<Target>(buff, cgh, rmfn)) {}
+	template <typename Functor>
+	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) : accessor(construct(buff, cgh, rmfn)) {}
 
 	template <typename Functor, typename TagT>
 	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn, TagT tag) : accessor(buff, cgh, rmfn) {}
+
+	// TODO this is not enough, we probably need an entirely separate accessor definition to enable atomic writes
+	// a) allocate local memory so we can retain assignment semantics like we have with all other accessors
+	// b) only allow operator+= / .combine() calls like with SYCL reducers (TODO isn't this basically the "alternative" SYCL reducer API?)
+	template <typename Functor, typename Reducer>
+	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn, const detail::write_reduce_tag_t<Reducer>& tag) : accessor(buff, cgh, rmfn) {
+		if(detail::is_prepass_handler(cgh)) {
+			auto& prepass_cgh = static_cast<detail::prepass_handler&>(cgh);
+			prepass_cgh.add_reduction_v2(detail::buffer_reduction_v2::bind<Reducer>(buff));
+		}
+	}
 
 	template <typename Functor, typename TagT>
 	accessor(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn, TagT tag, property::no_init no_init) : accessor(buff, cgh, rmfn) {}
@@ -329,8 +341,8 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 		// static_assert(std::is_standard_layout<accessor>::value, "accessor must have standard layout");
 	}
 
-	template <target Target, typename Functor>
-	static constructor_args construct(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn) {
+	template <typename Functor, typename Reducer>
+	static constructor_args construct(const buffer<DataT, Dims>& buff, handler& cgh, Functor rmfn, Reducer) {
 		if(detail::is_prepass_handler(cgh)) {
 			auto& prepass_cgh = dynamic_cast<detail::prepass_handler&>(cgh);
 			prepass_cgh.add_requirement(detail::get_buffer_id(buff), std::make_unique<detail::range_mapper<Dims, Functor>>(rmfn, Mode, buff.get_range()));
@@ -662,6 +674,12 @@ namespace detail {
 		return {std::forward<Args>(args)...};
 	}
 
+	template <typename>
+	struct is_write_reduce_access_tag : std::false_type {};
+
+	template <typename Reducer>
+	struct is_write_reduce_access_tag<detail::write_reduce_tag_t<Reducer>> : std::true_type {};
+
 	template <typename TagT>
 	constexpr access_mode deduce_access_mode() {
 		if constexpr(std::is_same_v<const TagT, decltype(celerity::read_only)> || //
@@ -670,8 +688,9 @@ namespace detail {
 		} else if constexpr(std::is_same_v<const TagT, decltype(celerity::read_write)> || //
 		                    std::is_same_v<const TagT, decltype(celerity::read_write_host_task)>) {
 			return access_mode::read_write;
-		} else if constexpr(std::is_same_v<const TagT, decltype(celerity::write_only)> || //
-		                    std::is_same_v<const TagT, decltype(celerity::write_only_host_task)>) {
+		} else if constexpr(std::is_same_v<const TagT, decltype(celerity::write_only)> ||           //
+		                    std::is_same_v<const TagT, decltype(celerity::write_only_host_task)> || //
+		                    is_write_reduce_access_tag<TagT>::value) {
 			return access_mode::write;
 		} else {
 			static_assert(constexpr_false<TagT>, "Invalid access tag, expecting one of celerity::{read_only,read_write,write_only}[_host_task]");
@@ -686,8 +705,9 @@ namespace detail {
 		} else if constexpr(std::is_same_v<const TagT, decltype(celerity::read_write)> || //
 		                    std::is_same_v<const TagT, decltype(celerity::read_write_host_task)>) {
 			return access_mode::discard_read_write;
-		} else if constexpr(std::is_same_v<const TagT, decltype(celerity::write_only)> || //
-		                    std::is_same_v<const TagT, decltype(celerity::write_only_host_task)>) {
+		} else if constexpr(std::is_same_v<const TagT, decltype(celerity::write_only)> ||           //
+		                    std::is_same_v<const TagT, decltype(celerity::write_only_host_task)> || //
+		                    is_write_reduce_access_tag<TagT>::value) {
 			return access_mode::discard_write;
 		} else {
 			static_assert(constexpr_false<TagT>, "Invalid access tag, expecting one of celerity::{read_only,read_write,write_only}[_host_task]");
@@ -698,7 +718,8 @@ namespace detail {
 	constexpr target deduce_access_target() {
 		if constexpr(std::is_same_v<const TagT, decltype(celerity::read_only)> ||  //
 		             std::is_same_v<const TagT, decltype(celerity::read_write)> || //
-		             std::is_same_v<const TagT, decltype(celerity::write_only)>) {
+		             std::is_same_v<const TagT, decltype(celerity::write_only)> || //
+		             is_write_reduce_access_tag<TagT>::value) {
 			return target::device;
 		} else if constexpr(std::is_same_v<const TagT, decltype(celerity::read_only_host_task)> ||  //
 		                    std::is_same_v<const TagT, decltype(celerity::read_write_host_task)> || //

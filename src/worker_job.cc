@@ -193,6 +193,11 @@ namespace detail {
 
 			if(!m_buffer_mngr.try_lock(pkg.cid, tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
 
+			for(const auto& rd : tsk->get_reductions_v2()) {
+				CELERITY_TRACE("submit reduction-init kernel to SYCL");
+				rd.submit_init_kernel(m_queue.get_sycl_queue(), m_buffer_mngr);
+			}
+
 			CELERITY_TRACE("Execute live-pass, submit kernel to SYCL");
 
 			live_pass_device_handler cgh(tsk, data.sr, data.initialize_reductions, m_queue);
