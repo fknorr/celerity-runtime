@@ -247,8 +247,8 @@ namespace detail {
 		subrange<3> source_sr;
 	};
 
-	using command_data =
-	    std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, reduction_data, fence_data, gather_data>;
+	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,
+	    fence_data, gather_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -284,7 +284,7 @@ namespace detail {
 			    [](const await_push_data&) { return command_type::await_push; },
 				[](const data_request_data&) { return command_type::data_request; },
 			    [](const reduction_data&) { return command_type::reduction; },
-				[](const fence_data&) { return command_type::fence; }
+				[](const fence_data&) { return command_type::fence; },
 				[](const gather_data&) { return command_type::gather; }
 			);
 			// clang-format on

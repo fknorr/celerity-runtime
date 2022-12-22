@@ -379,7 +379,9 @@ namespace detail {
 		const auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
 		assert(accessed_buffers.size() == 1);
 
-		if(!m_buffer_mngr.try_lock(pkg.cid, accessed_buffers)) return false;
+		const auto mid = m_buffer_mngr.get_host_memory_id();
+		const buffer_manager::buffer_lock_id lock_id = pkg.cid * buffer_manager::max_memories + mid;
+		if(!m_buffer_mngr.try_lock(lock_id, mid, accessed_buffers)) return false;
 
 		int rank, size;
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -410,7 +412,7 @@ namespace detail {
 
 		m_buffer_mngr.set_buffer_data(bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(recv_buffer));
 
-		m_buffer_mngr.unlock(pkg.cid);
+		m_buffer_mngr.unlock(lock_id);
 		return true;
 	}
 
