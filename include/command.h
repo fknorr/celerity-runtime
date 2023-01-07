@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, push, await_push, reduction, gather };
+	enum class command_type { epoch, horizon, execution, push, await_push, reduction, gather, inclusive_scan };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -154,6 +154,17 @@ namespace detail {
 		subrange<3> m_source_sr;
 	};
 
+	class inclusive_scan_command final : public task_command {
+		friend class command_graph;
+		inclusive_scan_command(command_id cid, node_id nid, task_id tid, const subrange<3>& sr) : task_command(cid, nid, tid), m_sr(sr) {}
+
+	  public:
+		const subrange<3> get_subrange() const { return m_sr; }
+
+	  private:
+		subrange<3> m_sr;
+	};
+
 	// ----------------------------------------------------------------------------------------------------------------
 	// -------------------------------------------- SERIALIZED COMMANDS -----------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
@@ -197,7 +208,13 @@ namespace detail {
 		subrange<3> source_sr;
 	};
 
-	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, reduction_data, gather_data>;
+	struct inclusive_scan_data {
+		task_id tid;
+		subrange<3> sr;
+	};
+
+	using command_data =
+	    std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, reduction_data, gather_data, inclusive_scan_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -231,7 +248,8 @@ namespace detail {
 			    [](const push_data&) { return command_type::push; },
 			    [](const await_push_data&) { return command_type::await_push; },
 			    [](const reduction_data&) { return command_type::reduction; },
-				[](const gather_data&) { return command_type::gather; }
+				[](const gather_data&) { return command_type::gather; },
+				[](const inclusive_scan_data&) { return command_type::inclusive_scan; }
 			);
 			// clang-format on
 		}

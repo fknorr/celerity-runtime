@@ -160,6 +160,7 @@ namespace detail {
 			}
 			break;
 		case command_type::gather: create_job<gather_job>(frame, m_task_mngr, m_buffer_mngr); break;
+		case command_type::inclusive_scan: create_job<inclusive_scan_job>(frame, m_d_queue, m_task_mngr, m_buffer_mngr); break;
 		default: assert(!"Unexpected command");
 		}
 		return true;

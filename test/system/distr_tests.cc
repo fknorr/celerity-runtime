@@ -364,5 +364,39 @@ namespace detail {
 		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
 	}
 
+	// TODO HACK do not trigger a gather because it's buggy for this pattern
+	struct hidden_all : celerity::access::all<0, 0> {};
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "inclusive_scan produces expected values across nodes", "[scan]") {
+		distr_queue q;
+		buffer<int> buf(1000);
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(producer)>(range<1>(1000), [=](item<1> it) {
+				const auto i = static_cast<int>(it.get_linear_id());
+				acc[it] = i * i;
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			// TODO API: Allow specifying the "scan direction" (might then, depending on the split, not involve MPI at all!)
+			cgh.inclusive_scan(buf, sycl::plus<int>());
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, hidden_all(), read_only_host_task);
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				int expected = 0;
+				for(size_t i = 0; i < 1000; ++i) {
+					expected += i * i;
+					REQUIRE_LOOP(acc[i] == expected);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+	}
+
 } // namespace detail
 } // namespace celerity

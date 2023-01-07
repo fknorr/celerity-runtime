@@ -7,6 +7,7 @@
 
 #include "grid.h"
 #include "intrusive_graph.h"
+#include "mpi_support.h"
 #include "range_mapper.h"
 #include "types.h"
 
@@ -24,12 +25,14 @@ namespace detail {
 		master_node,    ///< zero-dimensional host task
 		horizon,        ///< task horizon
 		gather,
+		inclusive_scan,
 	};
 
 	enum class execution_target {
 		none,
 		host,
 		device,
+		mixed,
 	};
 
 	enum class epoch_action {
@@ -137,7 +140,10 @@ namespace detail {
 
 		const std::string& get_debug_name() const { return m_debug_name; }
 
-		bool has_variable_split() const { return m_type == task_type::host_compute || m_type == task_type::device_compute; }
+		bool has_variable_split() const {
+			return m_type == task_type::host_compute || m_type == task_type::device_compute
+			       || m_type == task_type::inclusive_scan /* TODO remove, this should be fixed by ggen based on current data distribution */;
+		}
 
 		execution_target get_execution_target() const {
 			switch(m_type) {
@@ -148,6 +154,7 @@ namespace detail {
 			case task_type::master_node: return execution_target::host;
 			case task_type::horizon: return execution_target::none;
 			case task_type::gather: return execution_target::none;
+			case task_type::inclusive_scan: return execution_target::mixed;
 			default: assert(!"Unhandled task type"); return execution_target::none;
 			}
 		}
@@ -156,41 +163,51 @@ namespace detail {
 
 		epoch_action get_epoch_action() const { return m_epoch_action; }
 
+		MPI_Datatype get_mpi_dtype() const { return m_dtype; }
+		MPI_Op get_mpi_op() const { return m_op; }
+
 		static std::unique_ptr<task> make_epoch(task_id tid, detail::epoch_action action) {
-			return std::unique_ptr<task>(new task(tid, task_type::epoch, non_collective, task_geometry{}, nullptr, {}, {}, {}, {}, action));
+			return std::unique_ptr<task>(new task(tid, task_type::epoch, non_collective, task_geometry{}, nullptr, {}, {}, {}, {}, action, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf,
 		    buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
 			return std::unique_ptr<task>(new task(tid, task_type::host_compute, non_collective, geometry, std::move(cgf), std::move(access_map),
-			    std::move(side_effect_map), std::move(reductions), {}, {}));
+			    std::move(side_effect_map), std::move(reductions), {}, {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf,
 		    buffer_access_map access_map, reduction_set reductions, std::string debug_name) {
 			return std::unique_ptr<task>(new task(tid, task_type::device_compute, non_collective, geometry, std::move(cgf), std::move(access_map), {},
-			    std::move(reductions), std::move(debug_name), {}));
+			    std::move(reductions), std::move(debug_name), {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
 		    std::unique_ptr<command_group_storage_base> cgf, buffer_access_map access_map, side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(cl::sycl::range<1>{num_collective_nodes}), {}, {1, 1, 1}};
 			return std::unique_ptr<task>(
-			    new task(tid, task_type::collective, cgid, geometry, std::move(cgf), std::move(access_map), std::move(side_effect_map), {}, {}, {}));
+			    new task(tid, task_type::collective, cgid, geometry, std::move(cgf), std::move(access_map), std::move(side_effect_map), {}, {}, {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_master_node(
 		    task_id tid, std::unique_ptr<command_group_storage_base> cgf, buffer_access_map access_map, side_effect_map side_effect_map) {
-			return std::unique_ptr<task>(new task(
-			    tid, task_type::master_node, non_collective, task_geometry{}, std::move(cgf), std::move(access_map), std::move(side_effect_map), {}, {}, {}));
+			return std::unique_ptr<task>(new task(tid, task_type::master_node, non_collective, task_geometry{}, std::move(cgf), std::move(access_map),
+			    std::move(side_effect_map), {}, {}, {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_horizon_task(task_id tid) {
-			return std::unique_ptr<task>(new task(tid, task_type::horizon, non_collective, task_geometry{}, nullptr, {}, {}, {}, {}, {}));
+			return std::unique_ptr<task>(new task(tid, task_type::horizon, non_collective, task_geometry{}, nullptr, {}, {}, {}, {}, {}, {}, {}));
 		}
 
 		static std::unique_ptr<task> make_gather(task_id tid, task_geometry geometry, buffer_access_map access_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::gather, implicit_collective, geometry, nullptr, std::move(access_map), {}, {}, {}, {}));
+			return std::unique_ptr<task>(
+			    new task(tid, task_type::gather, implicit_collective, geometry, nullptr, std::move(access_map), {}, {}, {}, {}, {}, {}));
+		}
+
+		static std::unique_ptr<task> make_inclusive_scan(
+		    task_id tid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf, buffer_access_map access_map, MPI_Datatype dtype, MPI_Op op) {
+			return std::unique_ptr<task>(
+			    new task(tid, task_type::inclusive_scan, implicit_collective, geometry, std::move(cgf), std::move(access_map), {}, {}, {}, {}, dtype, op));
 		}
 
 	  private:
@@ -204,12 +221,15 @@ namespace detail {
 		reduction_set m_reductions;
 		std::string m_debug_name;
 		detail::epoch_action m_epoch_action;
+		MPI_Datatype m_dtype;
+		MPI_Op m_op;
 
 		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, std::unique_ptr<command_group_storage_base> cgf,
 		    buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions, std::string debug_name,
-		    detail::epoch_action epoch_action)
+		    detail::epoch_action epoch_action, MPI_Datatype dtype, MPI_Op op)
 		    : m_tid(tid), m_type(type), m_cgid(cgid), m_geometry(geometry), m_cgf(std::move(cgf)), m_access_map(std::move(access_map)),
-		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)), m_epoch_action(epoch_action) {
+		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)), m_epoch_action(epoch_action),
+		      m_dtype(dtype), m_op(op) {
 			assert(type == task_type::host_compute || type == task_type::device_compute || get_granularity().size() == 1);
 			// Only host tasks can have side effects
 			assert(this->m_side_effects.empty() || type == task_type::host_compute || type == task_type::collective || type == task_type::master_node);

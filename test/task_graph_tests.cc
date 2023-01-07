@@ -728,5 +728,19 @@ namespace detail {
 		test_utils::maybe_print_graph(tm);
 	}
 
+	TEST_CASE("task manager generates inclusive_scan tasks", "[task_manager][task-graph][scan]") {
+		task_manager tm{1, nullptr};
+		test_utils::mock_buffer_factory mbf(tm);
+
+		auto buf = mbf.create_buffer(range<1>(1000));
+		const auto tid_producer = test_utils::add_compute_task<class UKN(producer)>(
+		    tm, [&](handler& cgh) { buf.get_access<access_mode::discard_write>(cgh, one_to_one()); }, sycl::range<1>(1000));
+		const auto tid_scan = test_utils::add_inclusive_scan(tm, buf, subrange<1>(0, 1000));
+		const auto tid_consumer = test_utils::add_compute_task<class UKN(consumer)>(
+		    tm, [&](handler& cgh) { buf.get_access<access_mode::read>(cgh, one_to_one()); }, sycl::range<1>(1000));
+
+		test_utils::maybe_print_graph(tm);
+	}
+
 } // namespace detail
 } // namespace celerity

@@ -93,6 +93,14 @@ namespace detail {
 		}
 		return false;
 	}
+
+	struct handler_testspy {
+		template <typename DataT, int Dims, typename BinaryOperation>
+		static void inclusive_scan(handler& cgh, detail::buffer_id bid, const subrange<Dims>& sr, const BinaryOperation& op) {
+			cgh.inclusive_scan<DataT, Dims>(bid, sr, op);
+		}
+	};
+
 } // namespace detail
 
 namespace test_utils {
@@ -360,6 +368,13 @@ namespace test_utils {
 		return tm.submit_command_group([&](handler& cgh) {
 			cgf(cgh);
 			cgh.host_task(spec, [](auto...) {});
+		});
+	}
+
+	template <int Dims>
+	detail::task_id add_inclusive_scan(detail::task_manager& tm, const mock_buffer<Dims>& buf, const subrange<Dims>& sr) {
+		return tm.submit_command_group([&](handler& cgh) { //
+			detail::handler_testspy::inclusive_scan<int>(cgh, buf.get_id(), sr, sycl::plus<int>());
 		});
 	}
 

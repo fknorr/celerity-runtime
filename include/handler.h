@@ -96,6 +96,15 @@ namespace detail {
 		inline static constexpr bool has_local_size = true;
 		using local_size_type = range<Dims>;
 	};
+
+	template <typename DataT, int Dims, typename BinaryOperation>
+	class inclusive_scan_kernel;
+
+	template <typename DataT, int Dims, typename BinaryOperation>
+	class inclusive_scan_update_kernel;
+
+	struct handler_testspy;
+
 } // namespace detail
 
 /**
@@ -249,6 +258,16 @@ class handler {
 		host_task(global_range, {}, task);
 	}
 
+	template <typename DataT, int Dims, typename BinaryOperation>
+	void inclusive_scan(const buffer<DataT, Dims>& buf, const subrange<Dims>& sr, const BinaryOperation& op) {
+		inclusive_scan<DataT, Dims>(detail::get_buffer_id(buf), sr, op);
+	}
+
+	template <typename DataT, int Dims, typename BinaryOperation>
+	void inclusive_scan(const buffer<DataT, Dims>& buf, const BinaryOperation& op) {
+		inclusive_scan<DataT, Dims>(detail::get_buffer_id(buf), subrange<Dims>({}, buf.get_range()), op);
+	}
+
   protected:
 	friend bool detail::is_prepass_handler(const handler& cgh);
 	friend detail::execution_target detail::get_handler_execution_target(const handler& cgh);
@@ -260,6 +279,8 @@ class handler {
 	virtual const detail::task& get_task() const = 0;
 
   private:
+	friend struct detail::handler_testspy;
+
 	template <typename KernelFlavor, typename KernelName, int Dims, typename... ReductionsAndKernel, size_t... ReductionIndices>
 	void parallel_for_reductions_and_kernel(range<Dims> global_range, id<Dims> global_offset,
 	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_size, std::index_sequence<ReductionIndices...> indices,
@@ -273,6 +294,9 @@ class handler {
 	template <typename KernelFlavor, typename KernelName, int Dims, typename Kernel, typename... Reductions>
 	void parallel_for_kernel_and_reductions(range<Dims> global_range, id<Dims> global_offset,
 	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_range, Kernel& kernel, Reductions&... reductions);
+
+	template <typename DataT, int Dims, typename BinaryOperation>
+	void inclusive_scan(detail::buffer_id bid, const subrange<Dims>& sr, const BinaryOperation& op);
 };
 
 namespace detail {
@@ -329,6 +353,11 @@ namespace detail {
 		void create_master_node_task() {
 			assert(m_task == nullptr);
 			m_task = detail::task::make_master_node(m_tid, std::move(m_cgf), std::move(m_access_map), std::move(m_side_effects));
+		}
+
+		void create_inclusive_scan_task(task_geometry geometry, MPI_Datatype dtype, MPI_Op op) {
+			assert(m_task == nullptr);
+			m_task = detail::task::make_inclusive_scan(m_tid, geometry, std::move(m_cgf), std::move(m_access_map), dtype, op);
 		}
 
 		std::unique_ptr<class task> into_task() && { return std::move(m_task); }
@@ -485,8 +514,8 @@ namespace detail {
 
 	class live_pass_device_handler final : public live_pass_handler {
 	  public:
-		live_pass_device_handler(const class task* task, subrange<3> sr, bool initialize_reductions, device_queue& d_queue)
-		    : live_pass_handler(task, sr, initialize_reductions), m_d_queue(&d_queue) {}
+		live_pass_device_handler(const class task* task, subrange<3> sr, bool initialize_reductions, device_queue& d_queue, void* scan_head = nullptr)
+		    : live_pass_handler(task, sr, initialize_reductions), m_d_queue(&d_queue), m_scan_head(scan_head) {}
 
 		template <typename CGF>
 		void submit_to_sycl(CGF&& cgf) {
@@ -501,10 +530,13 @@ namespace detail {
 
 		cl::sycl::handler* const* get_eventual_sycl_cgh() const { return &m_eventual_cgh; }
 
+		void* get_scan_head() const { return m_scan_head; }
+
 	  private:
 		device_queue* m_d_queue;
 		cl::sycl::handler* m_eventual_cgh = nullptr;
 		cl::sycl::event m_event;
+		void* m_scan_head;
 	};
 
 	template <typename DataT, int Dims, typename BinaryOperation, bool WithExplicitIdentity>
@@ -653,6 +685,48 @@ void handler::host_task(range<Dims> global_range, id<Dims> global_offset, Functo
 		dynamic_cast<detail::prepass_handler&>(*this).create_host_compute_task(geometry);
 	} else {
 		dynamic_cast<detail::live_pass_host_handler&>(*this).schedule<Dims>(kernel);
+	}
+}
+
+template <typename DataT, int Dims, typename BinaryOperation>
+void handler::inclusive_scan(const detail::buffer_id bid, const subrange<Dims>& sr, const BinaryOperation& op) {
+	static_assert(Dims == 1); // TODO
+
+	if(const auto prepass_handler = dynamic_cast<detail::prepass_handler*>(this)) {
+		const detail::task_geometry geometry{Dims, detail::range_cast<3>(sr.range), detail::id_cast<3>(sr.offset), {1, 1, 1}};
+		detail::buffer_access_map access_map;
+		auto rm =
+		    std::make_unique<detail::range_mapper<Dims, celerity::access::one_to_one<>>>(celerity::access::one_to_one(), access_mode::read_write, sr.range);
+		prepass_handler->add_requirement(bid, std::move(rm));
+		// TODO
+		static_assert(std::is_same_v<DataT, int>);
+		static_assert(std::is_same_v<BinaryOperation, sycl::plus<int>>);
+		dynamic_cast<detail::prepass_handler&>(*this).create_inclusive_scan_task(geometry, /* TODO */ MPI_INT, /* TODO */ MPI_SUM);
+	} else {
+		auto& live_cgh = dynamic_cast<detail::live_pass_device_handler&>(*this);
+		const auto access_info = detail::runtime::get_instance().get_buffer_manager().get_device_buffer<DataT, Dims>(
+		    bid, access_mode::read_write, detail::range_cast<3>(sr.range), detail::id_cast<3>(sr.offset));
+		if(live_cgh.get_scan_head() == nullptr) {
+			live_cgh.submit_to_sycl([&](sycl::handler& cgh) {
+				const auto scan_offset = sr.offset - access_info.offset;
+				const auto scan_range = sr.range;
+				sycl::accessor acc(access_info.buffer, cgh, scan_range, scan_offset, sycl::read_write);
+				cgh.parallel_for<detail::inclusive_scan_kernel<DataT, Dims, BinaryOperation>>(sycl::range<1>(1), [=](sycl::item<1> it) {
+					const auto first = &acc[scan_offset];
+					const auto last = &acc[scan_offset + scan_range];
+					std::inclusive_scan(first, last, first, op); // TODO parallelize
+				});
+			});
+		} else {
+			const auto partial = *static_cast<DataT*>(live_cgh.get_scan_head());
+			live_cgh.submit_to_sycl([&](sycl::handler& cgh) {
+				const auto scan_offset = sr.offset - access_info.offset;
+				const auto scan_range = sr.range;
+				sycl::accessor acc(access_info.buffer, cgh, scan_range, scan_offset, sycl::read_write);
+				cgh.parallel_for<detail::inclusive_scan_update_kernel<DataT, Dims, BinaryOperation>>(
+				    sycl::range<Dims>(scan_range), [=](sycl::item<1> it) { acc[scan_offset + it.get_id()] = op(partial, acc[scan_offset + it.get_id()]); });
+			});
+		}
 	}
 }
 

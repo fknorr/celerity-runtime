@@ -126,6 +126,8 @@ namespace detail {
 
 		void generate_gather_commands(const task& tsk);
 
+		void generate_inclusive_scan_commands(const task& tsk);
+
 		void prune_commands_before(const command_id min_epoch);
 	};
 

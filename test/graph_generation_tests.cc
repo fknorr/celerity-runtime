@@ -823,5 +823,27 @@ namespace detail {
 		maybe_print_graphs(ctx);
 	}
 
+
+	TEST_CASE("graph generator generates inclusive_scan tasks", "[graph_generator][command-graph][scan]") {
+		const size_t num_nodes = 2;
+		test_utils::cdag_test_context ctx(num_nodes);
+		test_utils::mock_buffer_factory mbf(ctx);
+
+		auto& tm = ctx.get_task_manager();
+		auto& inspector = ctx.get_inspector();
+		auto& cdag = ctx.get_command_graph();
+
+		auto buf = mbf.create_buffer(range<1>(1000));
+		const auto tid_producer = test_utils::build_and_flush(ctx, num_nodes,
+		    test_utils::add_compute_task<class UKN(producer)>(
+		        tm, [&](handler& cgh) { buf.get_access<access_mode::discard_write>(cgh, one_to_one()); }, sycl::range<1>(1000)));
+		const auto tid_scan = test_utils::build_and_flush(ctx, num_nodes, test_utils::add_inclusive_scan(tm, buf, subrange<1>(0, 1000)));
+		const auto tid_consumer = test_utils::build_and_flush(ctx, num_nodes,
+		    test_utils::add_compute_task<class UKN(consumer)>(
+		        tm, [&](handler& cgh) { buf.get_access<access_mode::read>(cgh, one_to_one()); }, sycl::range<1>(1000)));
+
+		test_utils::maybe_print_graphs(ctx);
+	}
+
 } // namespace detail
 } // namespace celerity

@@ -288,5 +288,75 @@ namespace detail {
 		return true;
 	}
 
+	// --------------------------------------------------------------------------------------------------------------------
+	// ---------------------------------------------------- INCLUSIVE_SCAN ------------------------------------------------
+	// --------------------------------------------------------------------------------------------------------------------
+
+	std::string inclusive_scan_job::get_description(const command_pkg& pkg) {
+		const auto data = std::get<inclusive_scan_data>(pkg.data);
+		return fmt::format("INCLUSIVE_SCAN {}", data.sr);
+	}
+
+	bool inclusive_scan_job::execute(const command_pkg& pkg) {
+		const auto& data = std::get<inclusive_scan_data>(pkg.data);
+		const auto tsk = m_task_mngr.get_task(data.tid);
+
+		if(m_state == state::created) {
+			assert(tsk->get_reductions().empty());
+
+			if(!m_buffer_mngr.try_lock(pkg.cid, tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+
+			live_pass_device_handler cgh(tsk, data.sr, false /* initialize_reductions */, m_queue);
+			auto& cgf = tsk->get_command_group();
+			cgf(cgh);
+			m_event = cgh.get_submission_event();
+
+			m_state = state::scan_submitted;
+		}
+
+		if(m_state == state::scan_submitted) {
+			const auto status = m_event.get_info<cl::sycl::info::event::command_execution_status>();
+			if(status != cl::sycl::info::event_command_status::complete) return false;
+
+			const auto buffers = tsk->get_buffer_access_map().get_accessed_buffers();
+			assert(buffers.size() == 1);
+			const auto bid = *buffers.begin();
+
+			auto head = make_uninitialized_payload<std::byte>(m_buffer_mngr.get_buffer_info(bid).element_size);
+
+			// TODO depends on scan direction
+			// TODO there can by empty chunks
+			auto last = data.sr.offset;
+			last[0] += data.sr.range[0] - 1;
+			m_buffer_mngr.get_buffer_data(bid, {last, {1, 1, 1}}, head.get_pointer());
+
+			MPI_Exscan(head.get_pointer(), head.get_pointer(), 1, tsk->get_mpi_dtype(), tsk->get_mpi_op(), MPI_COMM_WORLD);
+
+			int rank;
+			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+			if(rank == 0) {
+				// "recvbuf" is indeterminate for process 0
+				*(int*)head.get_pointer() = 0;
+			}
+
+			live_pass_device_handler cgh(tsk, data.sr, false /* initialize_reductions */, m_queue, head.get_pointer());
+			auto& cgf = tsk->get_command_group();
+			cgf(cgh);
+			m_event = cgh.get_submission_event();
+
+			m_state = state::update_submitted;
+		}
+
+		if(m_state == state::update_submitted) {
+			const auto status = m_event.get_info<cl::sycl::info::event::command_execution_status>();
+			if(status != cl::sycl::info::event_command_status::complete) return false;
+
+			m_buffer_mngr.unlock(pkg.cid);
+			return true;
+		}
+
+		return false;
+	}
+
 } // namespace detail
 } // namespace celerity

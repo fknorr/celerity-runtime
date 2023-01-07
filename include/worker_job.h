@@ -198,5 +198,26 @@ namespace detail {
 		std::string get_description(const command_pkg& pkg) override;
 	};
 
+	class inclusive_scan_job : public worker_job {
+	  public:
+		inclusive_scan_job(command_pkg pkg, device_queue& queue, task_manager& tm, buffer_manager& bm)
+		    : worker_job(pkg), m_queue(queue), m_task_mngr(tm), m_buffer_mngr(bm) {
+			assert(pkg.get_command_type() == command_type::inclusive_scan);
+		}
+
+	  private:
+		enum class state { created, scan_submitted, update_submitted };
+
+		device_queue& m_queue;
+		task_manager& m_task_mngr;
+		buffer_manager& m_buffer_mngr;
+		cl::sycl::event m_event;
+		state m_state = state::created;
+
+		bool execute(const command_pkg& pkg) override;
+		std::string get_description(const command_pkg& pkg) override;
+	};
+
+
 } // namespace detail
 } // namespace celerity

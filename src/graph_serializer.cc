@@ -106,6 +106,8 @@ namespace detail {
 			frame->pkg.data = horizon_data{hcmd->get_tid()};
 		} else if(const auto* gcmd = dynamic_cast<gather_command*>(cmd)) {
 			frame->pkg.data = gather_data{gcmd->get_tid(), gcmd->get_source_range()};
+		} else if(const auto* iscmd = dynamic_cast<inclusive_scan_command*>(cmd)) {
+			frame->pkg.data = inclusive_scan_data{iscmd->get_tid(), iscmd->get_subrange()};
 		} else {
 			assert(false && "Unknown command");
 		}
