@@ -59,7 +59,6 @@ MAKE_PHANTOM_TYPE(transfer_id, size_t)
 MAKE_PHANTOM_TYPE(device_id, size_t);
 MAKE_PHANTOM_TYPE(memory_id, size_t);
 MAKE_PHANTOM_TYPE(closure_object_id, size_t);
-MAKE_PHANTOM_TYPE(instruction_id, size_t);
 
 
 // declared in this header for include-dependency reasons
@@ -76,5 +75,7 @@ struct reduction_info {
 	buffer_id bid = 0;
 	bool init_from_buffer = false;
 };
+
+inline constexpr memory_id host_memory_id = 0;
 
 } // namespace celerity::detail
