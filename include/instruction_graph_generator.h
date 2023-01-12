@@ -28,7 +28,7 @@ class instruction_graph_generator {
 	struct per_buffer_data {
 		struct per_memory_data {
 			GridRegion<3> allocation;
-			region_map<const instruction*> last_writers;
+			region_map<instruction*> last_writers;
 
 			explicit per_memory_data(const range<3>& range) : last_writers(range) {}
 		};
@@ -44,9 +44,14 @@ class instruction_graph_generator {
 		}
 	};
 
+	struct per_memory_data {
+		instruction* epoch = nullptr;
+	};
+
 	instruction_graph m_idag;
 	const task_ring_buffer& m_task_buffer;
 	size_t m_num_devices;
+	std::vector<per_memory_data> m_memories;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 
 	static memory_id next_location(const data_location& location, memory_id first);

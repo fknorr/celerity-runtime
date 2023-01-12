@@ -12,6 +12,7 @@ namespace celerity::detail {
 class task;
 
 enum class instruction_type {
+	epoch,
 	alloc_host,
 	alloc_device,
 	device_kernel,
@@ -101,11 +102,20 @@ class recv_instruction : public instruction {
 	GridRegion<3> m_region;
 };
 
+class epoch_instruction : public instruction {
+  public:
+	instruction_type get_type() const override { return instruction_type::epoch; }
+};
+
 class instruction_graph {
   public:
 	template <typename Instruction, typename... CtorParams>
 	instruction& create(CtorParams&&... ctor_args) {
 		return *m_instructions.emplace_back(std::make_unique<Instruction>(std::forward<CtorParams>(ctor_args)...));
+	}
+
+	static void add_dependency(instruction& from, instruction& to, const dependency_kind kind, const dependency_origin origin) {
+		from.add_dependency({&to, kind, origin});
 	}
 
   private:
