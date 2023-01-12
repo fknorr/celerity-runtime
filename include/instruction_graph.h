@@ -33,10 +33,14 @@ class instruction : public intrusive_graph_node<instruction> {
 
 class alloc_instruction : public instruction {
   public:
-	instruction_type get_type() const override { return m_where == host_memory_id ? instruction_type::alloc_host : instruction_type::alloc_device; }
+	explicit alloc_instruction(const buffer_id bid, const memory_id where, GridRegion<3> region) : m_bid(bid), m_memory(where), m_region(region) {}
+
+	instruction_type get_type() const override { return m_memory == host_memory_id ? instruction_type::alloc_host : instruction_type::alloc_device; }
 
   private:
-	memory_id m_where;
+	buffer_id m_bid;
+	memory_id m_memory;
+	GridRegion<3> m_region;
 };
 
 class copy_instruction : public instruction {
