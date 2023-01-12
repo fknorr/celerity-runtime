@@ -28,9 +28,23 @@ class instruction_graph_generator {
 	struct per_buffer_data {
 		struct per_memory_data {
 			GridRegion<3> allocation;
+			region_map<instruction*> last_accessors;
 			region_map<instruction*> last_writers;
 
-			explicit per_memory_data(const range<3>& range) : last_writers(range) {}
+			explicit per_memory_data(const range<3>& range) : last_accessors(range), last_writers(range) {}
+
+			void record_allocation(const GridRegion<3>& region, instruction* const instr) {
+				allocation = GridRegion<3>::merge(allocation, region);
+				// TODO this will generate antidependencies, but semantically, we want true dependencies.
+				last_accessors.update_region(region, instr);
+			}
+
+			void record_read(const GridRegion<3>& region, instruction* const instr) { last_accessors.update_region(region, instr); }
+
+			void record_write(const GridRegion<3>& region, instruction* const instr) {
+				last_accessors.update_region(region, instr);
+				last_writers.update_region(region, instr);
+			}
 		};
 
 		std::vector<per_memory_data> memories;

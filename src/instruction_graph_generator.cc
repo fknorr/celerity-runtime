@@ -124,9 +124,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		//	 we could solve this by having resize_instructions instead that "read" the entire previous and "write" the entire new allocation
 		instruction_graph::add_dependency(alloc_instr, *m_memories[memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
-		auto& metadata = m_buffers.at(bid).memories[memory];
-		metadata.allocation = GridRegion<3>::merge(metadata.allocation, region);
-		metadata.last_writers.update_region(region, &alloc_instr);
+		m_buffers.at(bid).memories[memory].record_allocation(region, &alloc_instr);
 	}
 
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
@@ -158,13 +156,14 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				for(const auto& [_, last_writer_instr] : buffer.memories[copy_from].last_writers.get_region_values(box)) {
 					instruction_graph::add_dependency(copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 				}
-				for(const auto& [_, last_writer_instr] : buffer.memories[insn.memory].last_writers.get_region_values(box)) {
+				for(const auto& [_, last_writer_instr] : buffer.memories[insn.memory].last_accessors.get_region_values(box)) {
 					instruction_graph::add_dependency(copy_instr, *last_writer_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 				}
-				instruction_graph::add_dependency(*insn.instruction, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				instruction_graph::add_dependency(copy_instr, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
 				buffer.newest_data_location.update_region(box, data_location(location).set(insn.memory));
-				m_buffers.at(bid).memories[insn.memory].last_writers.update_region(box, &copy_instr);
+				buffer.memories[copy_from].record_read(box, &copy_instr);
+				buffer.memories[insn.memory].record_write(box, &copy_instr);
 			}
 		}
 	}
@@ -210,7 +209,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 		for(const auto& [bid, region] : insn.writes) {
 			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, last_writer_instr] : buffer.memories[insn.memory].last_writers.get_region_values(region)) {
+			for(const auto& [_, last_writer_instr] : buffer.memories[insn.memory].last_accessors.get_region_values(region)) {
 				instruction_graph::add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 			}
 		}
@@ -222,7 +221,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(const auto& [bid, region] : insn.writes) {
 			assert(insn.instruction != nullptr);
 			m_buffers.at(bid).newest_data_location.update_region(region, data_location().set(insn.memory));
-			m_buffers.at(bid).memories[insn.memory].last_writers.update_region(region, insn.instruction);
+			m_buffers.at(bid).memories[insn.memory].record_write(region, insn.instruction);
 		}
 	}
 
