@@ -6,6 +6,7 @@
 #include "command.h"
 #include "command_graph.h"
 #include "grid.h"
+#include "instruction_graph.h"
 #include "task_manager.h"
 
 namespace celerity {
@@ -232,6 +233,51 @@ namespace detail {
 		}
 		result_dot += "}";
 		return result_dot;
+	}
+
+	std::string print_instruction_graph(const instruction_graph& idag) {
+		std::string dot = "digraph G{label=\"Instruction Graph\";";
+		const auto dot_back = std::back_inserter(dot);
+
+		class node_printer : public const_instruction_graph_visitor {
+		  public:
+			explicit node_printer(std::string& dot) : m_dot(dot) {}
+
+			void visit_alloc(const alloc_instruction& ainsn) override { print_node(ainsn, "alloc"); }
+			void visit_copy(const copy_instruction& cinsn) override { print_node(cinsn, "copy"); }
+			void visit_device_kernel(const device_kernel_instruction& dkinsn) override { print_node(dkinsn, "device kernel"); }
+			void visit_send(const send_instruction& sinsn) override { print_node(sinsn, "send"); }
+			void visit_recv(const recv_instruction& rinsn) override { print_node(rinsn, "recv"); }
+			void visit_epoch(const epoch_instruction& einsn) override { print_node(einsn, "epoch"); }
+
+		  private:
+			std::string& m_dot;
+
+			void print_node(const instruction& insn, std::string_view title) {
+				fmt::format_to(std::back_inserter(m_dot), "{}[shape=box label=\"{}\"];", (uintptr_t)&insn, title);
+			}
+		};
+		node_printer np(dot);
+		idag.visit(np);
+
+		class edge_printer : public const_instruction_graph_visitor {
+		  public:
+			explicit edge_printer(std::string& dot) : m_dot(dot) {}
+
+			void visit(const instruction& insn) override {
+				for(const auto& dep : insn.get_dependencies()) {
+					fmt::format_to(std::back_inserter(m_dot), "{}->{}[{}];", (uintptr_t)dep.node, (uintptr_t)&insn, dependency_style(dep));
+				}
+			}
+
+		  private:
+			std::string& m_dot;
+		};
+		edge_printer ep(dot);
+		idag.visit(ep);
+
+		dot += "}";
+		return dot;
 	}
 
 } // namespace detail

@@ -21,6 +21,8 @@ class instruction_graph_generator {
 
 	void compile(const abstract_command& cmd);
 
+	const instruction_graph& get_graph() const { return m_idag; }
+
   private:
 	static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
 	using data_location = std::bitset<max_memories>;

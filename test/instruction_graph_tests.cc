@@ -3,6 +3,7 @@
 
 #include "command_graph.h"
 #include "instruction_graph_generator.h"
+#include "print_graph.h"
 #include "task_ring_buffer.h"
 #include "test_utils.h"
 
@@ -39,4 +40,6 @@ TEST_CASE("instruction graph") {
 	iggen.compile(*producer);
 	iggen.compile(*await);
 	iggen.compile(*consumer);
+
+	fmt::print("{}\n", print_instruction_graph(iggen.get_graph()));
 }
