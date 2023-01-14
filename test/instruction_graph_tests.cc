@@ -9,37 +9,54 @@
 
 using namespace celerity;
 using namespace celerity::detail;
+using namespace celerity::test_utils;
+namespace acc = celerity::access;
+
+
+// According to Wikipedia https://en.wikipedia.org/wiki/Topological_sorting#Depth-first_search
+std::vector<abstract_command*> topsort(const command_graph& cdag) {
+	const auto commands = cdag.all_commands();
+	std::unordered_set<abstract_command*> temporary_marked;
+	std::unordered_set<abstract_command*> permanent_marked;
+	std::unordered_set<abstract_command*> unmarked(commands.begin(), commands.end());
+	std::vector<abstract_command*> sorted(unmarked.size());
+	auto sorted_front = sorted.rbegin();
+
+	const auto visit = [&](abstract_command* const cmd, auto& visit /* to allow recursion in lambda */) {
+		if(permanent_marked.count(cmd) != 0) return;
+		assert(temporary_marked.count(cmd) == 0 || !"cyclic command graph");
+		unmarked.erase(cmd);
+		temporary_marked.insert(cmd);
+		for(const auto& dep : cmd->get_dependents()) {
+			visit(dep.node, visit);
+		}
+		temporary_marked.erase(cmd);
+		permanent_marked.insert(cmd);
+		*sorted_front++ = cmd;
+	};
+
+	while(!unmarked.empty()) {
+		visit(*unmarked.begin(), visit);
+	}
+	return sorted;
+}
+
 
 TEST_CASE("instruction graph") {
-	const task_id tid_epoch(0), tid_producer(1), tid_consumer(2);
+	dist_cdag_test_context dctx(2);
 
-	task_ring_buffer trb;
-	const task_ring_buffer::wait_callback wcb = [](const task_id) { std::abort(); };
-	trb.put(trb.reserve_task_entry(wcb), task::make_epoch(tid_epoch, epoch_action::none));
+	const range<1> test_range = {256};
+	auto buf = dctx.create_buffer(test_range);
 
-	buffer_access_map am_producer;
-	am_producer.add_access(
-	    0, std::make_unique<range_mapper<1, celerity::access::one_to_one<0>>>(celerity::access::one_to_one(), access_mode::discard_write, range<1>(256)));
-	trb.put(trb.reserve_task_entry(wcb),
-	    task::make_device_compute(tid_producer, task_geometry{1, {256, 1, 1}, {}, {32, 1, 1}}, nullptr, std::move(am_producer), {}, "producer"));
-
-	buffer_access_map am_consumer;
-	am_consumer.add_access(0, std::make_unique<range_mapper<1, celerity::access::all<0, 0>>>(celerity::access::all(), access_mode::read, range<1>(256)));
-	trb.put(trb.reserve_task_entry(wcb),
-	    task::make_device_compute(tid_consumer, task_geometry{1, {256, 1, 1}, {}, {32, 1, 1}}, nullptr, std::move(am_consumer), {}, "consumer"));
-
-	command_graph cdag;
-	const auto* init = cdag.create<epoch_command>(node_id(0), tid_epoch, epoch_action::none);
-	const auto* producer = cdag.create<execution_command>(node_id(0), tid_producer, subrange<3>({}, {128, 1, 1}));
-	const auto* await = cdag.create<await_push_command>(node_id(0), buffer_id(0), transfer_id(0), subrange_to_grid_box(subrange<3>({128, 0, 0}, {256, 1, 1})));
-	const auto* consumer = cdag.create<execution_command>(node_id(0), tid_consumer, subrange<3>({}, {256, 1, 1}));
+	dctx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).submit();
+	dctx.device_compute<class UKN(consumer)>(test_range).read(buf, acc::all()).submit();
 
 	const size_t num_devices = 2;
-	instruction_graph_generator iggen(trb, num_devices);
-	iggen.register_buffer(0, range<3>(256, 1, 1));
-	iggen.compile(*producer);
-	iggen.compile(*await);
-	iggen.compile(*consumer);
+	instruction_graph_generator iggen(dctx.get_task_manager(), num_devices);
+	iggen.register_buffer(0, range<3>(256, 1, 1)); // TODO have an idag_test_context to do this
+	for(const auto cmd : topsort(dctx.get_graph_generator(1).NOCOMMIT_get_cdag())) {
+		iggen.compile(*cmd);
+	}
 
 	fmt::print("{}\n", print_instruction_graph(iggen.get_graph()));
 }

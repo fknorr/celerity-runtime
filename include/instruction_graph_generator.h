@@ -8,12 +8,11 @@
 namespace celerity::detail {
 
 class abstract_command;
-class task_ring_buffer;
-
+class task_manager;
 
 class instruction_graph_generator {
   public:
-	explicit instruction_graph_generator(const task_ring_buffer& task_buffer, size_t num_devices);
+	explicit instruction_graph_generator(const task_manager& tm, size_t num_devices);
 
 	void register_buffer(buffer_id bid, cl::sycl::range<3> range);
 
@@ -85,7 +84,7 @@ class instruction_graph_generator {
 	};
 
 	instruction_graph m_idag;
-	const task_ring_buffer& m_task_buffer;
+	const task_manager& m_tm;
 	size_t m_num_devices;
 	std::vector<per_memory_data> m_memories;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;

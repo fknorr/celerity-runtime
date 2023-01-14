@@ -17,6 +17,7 @@ class copy_instruction;
 class device_kernel_instruction;
 class send_instruction;
 class recv_instruction;
+class horizon_instruction;
 class epoch_instruction;
 
 class const_instruction_graph_visitor {
@@ -29,6 +30,7 @@ class const_instruction_graph_visitor {
 	virtual void visit_device_kernel(const device_kernel_instruction& dkinsn);
 	virtual void visit_send(const send_instruction& sinsn);
 	virtual void visit_recv(const recv_instruction& rinsn);
+	virtual void visit_horizon(const horizon_instruction& hinsn);
 	virtual void visit_epoch(const epoch_instruction& einsn);
 };
 
@@ -144,6 +146,13 @@ class recv_instruction : public instruction {
 	GridRegion<3> m_region;
 };
 
+class horizon_instruction : public instruction {
+  public:
+	using instruction::instruction;
+
+	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_horizon(*this); }
+};
+
 class epoch_instruction : public instruction {
   public:
 	using instruction::instruction;
@@ -156,6 +165,7 @@ inline void const_instruction_graph_visitor::visit_copy(const copy_instruction& 
 inline void const_instruction_graph_visitor::visit_device_kernel(const device_kernel_instruction& dkinsn) { visit(dkinsn); }
 inline void const_instruction_graph_visitor::visit_send(const send_instruction& sinsn) { visit(sinsn); }
 inline void const_instruction_graph_visitor::visit_recv(const recv_instruction& rinsn) { visit(rinsn); }
+inline void const_instruction_graph_visitor::visit_horizon(const horizon_instruction& hinsn) { visit(hinsn); }
 inline void const_instruction_graph_visitor::visit_epoch(const epoch_instruction& einsn) { visit(einsn); }
 
 class instruction_graph {

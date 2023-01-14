@@ -1,16 +1,13 @@
 #include "instruction_graph_generator.h"
 #include "access_modes.h"
 #include "command.h"
-#include "task_ring_buffer.h"
+#include "task_manager.h"
 
 namespace celerity::detail {
 
-instruction_graph_generator::instruction_graph_generator(const task_ring_buffer& task_buffer, size_t num_devices)
-    : m_task_buffer(task_buffer), m_num_devices(num_devices), m_memories(num_devices + 1) {
+instruction_graph_generator::instruction_graph_generator(const task_manager& tm, size_t num_devices)
+    : m_tm(tm), m_num_devices(num_devices), m_memories(num_devices + 1) {
 	assert(num_devices + 1 <= max_memories);
-	for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
-		m_memories[mid].epoch = &m_idag.create<epoch_instruction>(mid);
-	}
 }
 
 void instruction_graph_generator::register_buffer(buffer_id bid, cl::sycl::range<3> range) {
@@ -44,12 +41,14 @@ struct partial_instruction {
 };
 
 void instruction_graph_generator::compile(const abstract_command& cmd) {
-	std::vector<partial_instruction> cmd_insns;
+	assert(std::all_of(m_memories.begin(), m_memories.end(), [](const per_memory_data& memory) { return memory.epoch != nullptr; }) //
+	       || isa<epoch_command>(&cmd));
 
 	// 1) assign work, determine execution range and target memory of command instructions (and perform a local split where applicable)
 
+	std::vector<partial_instruction> cmd_insns;
 	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
-		const auto& tsk = *m_task_buffer.get_task(xcmd->get_tid());
+		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
 		const auto command_sr = xcmd->get_execution_range();
 		if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device /* don't split host tasks, but TODO oversubscription */) {
 			// TODO oversubscription, tiled split
@@ -90,13 +89,13 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		// This can eventually become a device memory id if we make use of CUDA-aware MPI
 		cmd_insns[0].memory = host_memory_id;
 		cmd_insns[0].writes.emplace(apcmd->get_bid(), apcmd->get_region());
-	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
+	} else if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
 		cmd_insns.resize(m_memories.size());
 		for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
 			cmd_insns[mid].memory = mid;
 		}
 	} else {
-		// TODO horizons
+		assert(!"unhandled command type");
 		std::abort();
 	}
 
@@ -172,7 +171,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	// 4) create the actual command instructions
 
 	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
-		const auto& tsk = *m_task_buffer.get_task(xcmd->get_tid());
+		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
 		for(auto& in : cmd_insns) {
 			assert(in.execution_sr.range.size() > 0);
 			assert(in.memory > 0 && in.memory - 1 < m_num_devices);
@@ -184,9 +183,14 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	} else if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
 		assert(cmd_insns.size() == 1);
 		cmd_insns.front().instruction = &m_idag.create<recv_instruction>(apcmd->get_transfer_id(), apcmd->get_bid(), apcmd->get_region());
+	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
+		for(auto& insn : cmd_insns) {
+			insn.instruction = &m_idag.create<horizon_instruction>(insn.memory);
+			// TODO reduce execution fronts
+		}
 	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			m_idag.create<epoch_instruction>(insn.memory);
+			insn.instruction = &m_idag.create<epoch_instruction>(insn.memory);
 			// TODO reduce execution fronts
 		}
 	} else {
@@ -204,7 +208,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				instruction_graph::add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 			}
 		}
-		if(insn.reads.empty()) {
+		if(insn.reads.empty() && m_memories[insn.memory].epoch != nullptr /* always true except for initial epoch command */) {
 			// if there is no transitive dependency to the last epoch (because this is a pure producer), insert an explicit one
 			instruction_graph::add_dependency(*insn.instruction, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 		}
@@ -228,7 +232,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 	}
 
-	// 7) apply epochs, where applicable
+	// 7) apply epochs if necessary
 
 	if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {

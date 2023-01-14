@@ -280,6 +280,8 @@ namespace detail {
 				print_node(m_dot, rinsn, "<b>recv</b> B{} {}", rinsn.get_buffer_id(), rinsn.get_region());
 			}
 
+			void visit_horizon(const horizon_instruction& hinsn) override { print_node(m_dot, hinsn, "<b>horizon</b>"); }
+
 			void visit_epoch(const epoch_instruction& einsn) override { print_node(m_dot, einsn, "<b>epoch</b>"); }
 
 		  private:
