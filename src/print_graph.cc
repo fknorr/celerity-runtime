@@ -235,48 +235,78 @@ namespace detail {
 		return result_dot;
 	}
 
+	template <typename... FmtArgs>
+	void print_node(std::string& dot, const instruction& insn, FmtArgs&&... fmt_args) {
+		const auto back = std::back_inserter(dot);
+		fmt::format_to(std::back_inserter(dot), "{}[shape=box label=<[M{}] ", (uintptr_t)&insn, insn.get_memory());
+		fmt::format_to(std::back_inserter(dot), std::forward<FmtArgs>(fmt_args)...);
+		fmt::format_to(std::back_inserter(dot), ">];\n");
+	}
+
 	std::string print_instruction_graph(const instruction_graph& idag) {
-		std::string dot = "digraph G{label=\"Instruction Graph\";";
+		std::string dot = "digraph G{\nlabel=\"Instruction Graph\";\n";
 		const auto dot_back = std::back_inserter(dot);
 
 		class node_printer : public const_instruction_graph_visitor {
 		  public:
 			explicit node_printer(std::string& dot) : m_dot(dot) {}
 
-			void visit_alloc(const alloc_instruction& ainsn) override { print_node(ainsn, "alloc"); }
-			void visit_copy(const copy_instruction& cinsn) override { print_node(cinsn, "copy"); }
-			void visit_device_kernel(const device_kernel_instruction& dkinsn) override { print_node(dkinsn, "device kernel"); }
-			void visit_send(const send_instruction& sinsn) override { print_node(sinsn, "send"); }
-			void visit_recv(const recv_instruction& rinsn) override { print_node(rinsn, "recv"); }
-			void visit_epoch(const epoch_instruction& einsn) override { print_node(einsn, "epoch"); }
+			void visit_alloc(const alloc_instruction& ainsn) override {
+				print_node(m_dot, ainsn, "<b>recv</b><br/>B{} {}", ainsn.get_buffer_id(), ainsn.get_region());
+			}
+
+			void visit_copy(const copy_instruction& cinsn) override {
+				const bool source_host = cinsn.get_source_memory() == host_memory_id;
+				const bool dest_host = cinsn.get_dest_memory() == host_memory_id;
+				const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
+				const auto side = cinsn.get_side() == copy_instruction::side::source ? "to" : "from";
+				print_node(m_dot, cinsn, "<b>{}</b> {} M{}<br/>B{} {}", direction, side, cinsn.get_counterpart().get_memory(), cinsn.get_buffer_id(),
+				    cinsn.get_subrange());
+			}
+
+			void visit_device_kernel(const device_kernel_instruction& dkinsn) override {
+				print_node(m_dot, dkinsn, "<b>kernel</b><br/>{}", dkinsn.get_execution_range());
+			}
+
+			void visit_send(const send_instruction& sinsn) override {
+				print_node(m_dot, sinsn, "<b>send</b><br/>B{} {}", sinsn.get_buffer_id(), sinsn.get_subrange());
+			}
+
+			void visit_recv(const recv_instruction& rinsn) override {
+				print_node(m_dot, rinsn, "<b>recv</b><br/>B{} {}", rinsn.get_buffer_id(), rinsn.get_region());
+			}
+
+			void visit_epoch(const epoch_instruction& einsn) override { print_node(m_dot, einsn, "<b>epoch</b>"); }
 
 		  private:
 			std::string& m_dot;
-
-			void print_node(const instruction& insn, std::string_view title) {
-				fmt::format_to(std::back_inserter(m_dot), "{}[shape=box label=\"{}\"];", (uintptr_t)&insn, title);
-			}
 		};
-		node_printer np(dot);
-		idag.visit(np);
+		idag.visit(node_printer(dot));
 
 		class edge_printer : public const_instruction_graph_visitor {
 		  public:
 			explicit edge_printer(std::string& dot) : m_dot(dot) {}
 
+			void visit_copy(const copy_instruction& cinsn) override {
+				visit(cinsn);
+				if(cinsn.get_side() == copy_instruction::side::source) {
+					fmt::format_to(std::back_inserter(m_dot), "{}->{}[color=gray,style=dashed,dir=both,constraint=false];\n", (uintptr_t)&cinsn,
+					    (uintptr_t)&cinsn.get_counterpart());
+				}
+			}
+
 			void visit(const instruction& insn) override {
 				for(const auto& dep : insn.get_dependencies()) {
-					fmt::format_to(std::back_inserter(m_dot), "{}->{}[{}];", (uintptr_t)dep.node, (uintptr_t)&insn, dependency_style(dep));
+					fmt::format_to(std::back_inserter(m_dot), "{}->{}[{}];\n", (uintptr_t)dep.node, (uintptr_t)&insn, dependency_style(dep));
 				}
 			}
 
 		  private:
 			std::string& m_dot;
 		};
-		edge_printer ep(dot);
-		idag.visit(ep);
+		idag.visit(edge_printer(dot));
 
-		dot += "}";
+		dot += "}\n";
 		return dot;
 	}
 

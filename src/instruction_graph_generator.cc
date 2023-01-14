@@ -8,8 +8,8 @@ namespace celerity::detail {
 instruction_graph_generator::instruction_graph_generator(const task_ring_buffer& task_buffer, size_t num_devices)
     : m_task_buffer(task_buffer), m_num_devices(num_devices), m_memories(num_devices + 1) {
 	assert(num_devices + 1 <= max_memories);
-	for(auto& mem : m_memories) {
-		mem.epoch = &m_idag.create<epoch_instruction>();
+	for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
+		m_memories[mid].epoch = &m_idag.create<epoch_instruction>(mid);
 	}
 }
 
@@ -114,17 +114,17 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 	}
 
-	for(const auto& [bid_memory, region] : unallocated_regions) {
-		const auto [bid, memory] = bid_memory;
+	for(const auto& [bid_mid, region] : unallocated_regions) {
+		const auto [bid, mid] = bid_mid;
 
 		// TODO allocate a multiple of the allocator's page size (GridRegion might not be the right parameter to alloc_instruction)
-		auto& alloc_instr = m_idag.create<alloc_instruction>(bid, memory, region);
+		auto& alloc_instr = m_idag.create<alloc_instruction>(mid, bid, region);
 
 		// TODO until we have ndvbuffers everywhere, alloc_instructions need forward and backward dependencies to reproduce buffer-locking semantics
 		//	 we could solve this by having resize_instructions instead that "read" the entire previous and "write" the entire new allocation
-		instruction_graph::add_dependency(alloc_instr, *m_memories[memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+		instruction_graph::add_dependency(alloc_instr, *m_memories[mid].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
-		m_buffers.at(bid).memories[memory].record_allocation(region, &alloc_instr);
+		m_buffers.at(bid).memories[mid].record_allocation(region, &alloc_instr);
 	}
 
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
@@ -151,19 +151,18 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				assert(copy_from != insn.memory);
 				assert(location.test(copy_from));
 
-				auto& copy_instr = m_idag.create<copy_instruction>(bid, grid_box_to_subrange(box), copy_from, insn.memory);
-
+				auto [source_instr, dest_instr] = m_idag.create_copy(copy_from, insn.memory, bid, grid_box_to_subrange(box));
 				for(const auto& [_, last_writer_instr] : buffer.memories[copy_from].last_writers.get_region_values(box)) {
-					instruction_graph::add_dependency(copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+					instruction_graph::add_dependency(source_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 				}
-				for(const auto& [_, last_writer_instr] : buffer.memories[insn.memory].last_accessors.get_region_values(box)) {
-					instruction_graph::add_dependency(copy_instr, *last_writer_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
-				}
-				instruction_graph::add_dependency(copy_instr, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				buffer.memories[copy_from].record_read(box, &source_instr);
 
+				for(const auto& [_, last_accessor_instr] : buffer.memories[insn.memory].last_accessors.get_region_values(box)) {
+					instruction_graph::add_dependency(dest_instr, *last_accessor_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+				}
+				instruction_graph::add_dependency(dest_instr, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				buffer.memories[insn.memory].record_write(box, &dest_instr);
 				buffer.newest_data_location.update_region(box, data_location(location).set(insn.memory));
-				buffer.memories[copy_from].record_read(box, &copy_instr);
-				buffer.memories[insn.memory].record_write(box, &copy_instr);
 			}
 		}
 	}
@@ -175,7 +174,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(auto& in : cmd_insns) {
 			assert(in.execution_sr.range.size() > 0);
 			assert(in.memory > 0 && in.memory - 1 < m_num_devices);
-			in.instruction = &m_idag.create<device_kernel_instruction>(tsk, device_id(in.memory - 1), in.execution_sr);
+			in.instruction = &m_idag.create<device_kernel_instruction>(device_id(in.memory - 1), tsk, in.execution_sr);
 		}
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		assert(cmd_insns.size() == 1);
@@ -185,7 +184,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		cmd_insns.front().instruction = &m_idag.create<recv_instruction>(apcmd->get_transfer_id(), apcmd->get_bid(), apcmd->get_region());
 	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			m_idag.create<epoch_instruction>();
+			m_idag.create<epoch_instruction>(insn.memory);
 			// TODO reduce execution fronts
 		}
 	} else {
