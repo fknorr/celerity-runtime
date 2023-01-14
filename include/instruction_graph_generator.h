@@ -29,23 +29,43 @@ class instruction_graph_generator {
 
 	struct per_buffer_data {
 		struct per_memory_data {
+			struct access_front {
+				gch::small_vector<instruction*> front; // sorted by pointer value to allow equality comparison
+				enum { read, write } mode;
+
+				friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.front == rhs.front && lhs.mode == rhs.mode; }
+				friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
+			};
+
 			GridRegion<3> allocation;
-			region_map<instruction*> last_accessors;
 			region_map<instruction*> last_writers;
+			region_map<access_front> access_fronts;
 
-			explicit per_memory_data(const range<3>& range) : last_accessors(range), last_writers(range) {}
+			explicit per_memory_data(const range<3>& range) : last_writers(range), access_fronts(range) {}
 
-			void record_allocation(const GridRegion<3>& region, instruction* const instr) {
+			void record_allocation(const GridRegion<3>& region, instruction* const insn) {
 				allocation = GridRegion<3>::merge(allocation, region);
 				// TODO this will generate antidependencies, but semantically, we want true dependencies.
-				last_accessors.update_region(region, instr);
+				access_fronts.update_region(region, access_front{{insn}, access_front::write});
 			}
 
-			void record_read(const GridRegion<3>& region, instruction* const instr) { last_accessors.update_region(region, instr); }
+			void record_read(const GridRegion<3>& region, instruction* const insn) {
+				for(auto& [box, record] : access_fronts.get_region_values(region)) {
+					if(record.mode == access_front::read) {
+						// sorted insert
+						const auto at = std::lower_bound(record.front.begin(), record.front.end(), insn);
+						assert(at == record.front.end() || *at != insn);
+						record.front.insert(at, insn);
+					} else {
+						record.front = {insn};
+					}
+					access_fronts.update_region(region, std::move(record));
+				}
+			}
 
-			void record_write(const GridRegion<3>& region, instruction* const instr) {
-				last_accessors.update_region(region, instr);
-				last_writers.update_region(region, instr);
+			void record_write(const GridRegion<3>& region, instruction* const insn) {
+				last_writers.update_region(region, insn);
+				access_fronts.update_region(region, access_front{{insn}, access_front::write});
 			}
 		};
 

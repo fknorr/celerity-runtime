@@ -238,9 +238,13 @@ namespace detail {
 	template <typename... FmtArgs>
 	void print_node(std::string& dot, const instruction& insn, FmtArgs&&... fmt_args) {
 		const auto back = std::back_inserter(dot);
-		fmt::format_to(std::back_inserter(dot), "{}[shape=box label=<[M{}] ", (uintptr_t)&insn, insn.get_memory());
+		fmt::format_to(std::back_inserter(dot), "I{0}[shape=box label=<I{0} on M{1}<br/>", insn.get_id(), insn.get_memory());
 		fmt::format_to(std::back_inserter(dot), std::forward<FmtArgs>(fmt_args)...);
 		fmt::format_to(std::back_inserter(dot), ">];\n");
+	}
+
+	void print_edge(std::string& dot, const instruction& from, const instruction& to, std::string_view style) {
+		fmt::format_to(std::back_inserter(dot), "I{}->I{}[{}];\n", from.get_id(), to.get_id(), style);
 	}
 
 	std::string print_instruction_graph(const instruction_graph& idag) {
@@ -252,7 +256,7 @@ namespace detail {
 			explicit node_printer(std::string& dot) : m_dot(dot) {}
 
 			void visit_alloc(const alloc_instruction& ainsn) override {
-				print_node(m_dot, ainsn, "<b>recv</b><br/>B{} {}", ainsn.get_buffer_id(), ainsn.get_region());
+				print_node(m_dot, ainsn, "<b>alloc</b> B{} {}", ainsn.get_buffer_id(), ainsn.get_region());
 			}
 
 			void visit_copy(const copy_instruction& cinsn) override {
@@ -265,15 +269,15 @@ namespace detail {
 			}
 
 			void visit_device_kernel(const device_kernel_instruction& dkinsn) override {
-				print_node(m_dot, dkinsn, "<b>kernel</b><br/>{}", dkinsn.get_execution_range());
+				print_node(m_dot, dkinsn, "<b>kernel</b> {}", dkinsn.get_execution_range());
 			}
 
 			void visit_send(const send_instruction& sinsn) override {
-				print_node(m_dot, sinsn, "<b>send</b><br/>B{} {}", sinsn.get_buffer_id(), sinsn.get_subrange());
+				print_node(m_dot, sinsn, "<b>send</b> B{} {}", sinsn.get_buffer_id(), sinsn.get_subrange());
 			}
 
 			void visit_recv(const recv_instruction& rinsn) override {
-				print_node(m_dot, rinsn, "<b>recv</b><br/>B{} {}", rinsn.get_buffer_id(), rinsn.get_region());
+				print_node(m_dot, rinsn, "<b>recv</b> B{} {}", rinsn.get_buffer_id(), rinsn.get_region());
 			}
 
 			void visit_epoch(const epoch_instruction& einsn) override { print_node(m_dot, einsn, "<b>epoch</b>"); }
@@ -290,14 +294,13 @@ namespace detail {
 			void visit_copy(const copy_instruction& cinsn) override {
 				visit(cinsn);
 				if(cinsn.get_side() == copy_instruction::side::source) {
-					fmt::format_to(std::back_inserter(m_dot), "{}->{}[color=gray,style=dashed,dir=both,constraint=false];\n", (uintptr_t)&cinsn,
-					    (uintptr_t)&cinsn.get_counterpart());
+					print_edge(m_dot, cinsn, cinsn.get_counterpart(), "color=gray,style=dashed,dir=both,constraint=false");
 				}
 			}
 
 			void visit(const instruction& insn) override {
 				for(const auto& dep : insn.get_dependencies()) {
-					fmt::format_to(std::back_inserter(m_dot), "{}->{}[{}];\n", (uintptr_t)dep.node, (uintptr_t)&insn, dependency_style(dep));
+					print_edge(m_dot, *dep.node, insn, dependency_style(dep));
 				}
 			}
 

@@ -157,8 +157,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				}
 				buffer.memories[copy_from].record_read(box, &source_instr);
 
-				for(const auto& [_, last_accessor_instr] : buffer.memories[insn.memory].last_accessors.get_region_values(box)) {
-					instruction_graph::add_dependency(dest_instr, *last_accessor_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+				for(const auto& [_, front] : buffer.memories[insn.memory].access_fronts.get_region_values(box)) {
+					for(const auto dep_instr : front.front) {
+						instruction_graph::add_dependency(dest_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+					}
 				}
 				instruction_graph::add_dependency(dest_instr, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 				buffer.memories[insn.memory].record_write(box, &dest_instr);
@@ -208,8 +210,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 		for(const auto& [bid, region] : insn.writes) {
 			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, last_writer_instr] : buffer.memories[insn.memory].last_accessors.get_region_values(region)) {
-				instruction_graph::add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+			for(const auto& [_, front] : buffer.memories[insn.memory].access_fronts.get_region_values(region)) {
+				for(const auto dep_instr : front.front) {
+					instruction_graph::add_dependency(*insn.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+				}
 			}
 		}
 	}

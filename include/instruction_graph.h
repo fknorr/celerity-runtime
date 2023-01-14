@@ -34,7 +34,7 @@ class const_instruction_graph_visitor {
 
 class instruction : public intrusive_graph_node<instruction> {
   public:
-	explicit instruction(memory_id mid) : m_mid(mid) {}
+	explicit instruction(const instruction_id id, const memory_id mid) : m_id(id), m_mid(mid) {}
 
 	instruction(const instruction&) = delete;
 	instruction& operator=(const instruction&) = delete;
@@ -42,20 +42,22 @@ class instruction : public intrusive_graph_node<instruction> {
 
 	virtual void visit(const_instruction_graph_visitor& visitor) const = 0;
 
+	instruction_id get_id() const { return m_id; }
 	memory_id get_memory() const { return m_mid; }
 
   private:
+	instruction_id m_id;
 	memory_id m_mid;
 };
 
 class alloc_instruction : public instruction {
   public:
-	explicit alloc_instruction(const memory_id mid, const buffer_id bid, GridRegion<3> region) : instruction(mid), m_bid(bid), m_region(region) {}
+	explicit alloc_instruction(const instruction_id id, const memory_id mid, const buffer_id bid, GridRegion<3> region)
+	    : instruction(id, mid), m_bid(bid), m_region(region) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_alloc(*this); }
 
 	buffer_id get_buffer_id() const { return m_bid; }
-
 	GridRegion<3> get_region() const { return m_region; }
 
   private:
@@ -67,10 +69,10 @@ class copy_instruction : public instruction {
   public:
 	enum class side { source, dest };
 
-	static std::pair<std::unique_ptr<copy_instruction>, std::unique_ptr<copy_instruction>> make_pair(
-	    const memory_id source_mid, const memory_id dest_mid, const buffer_id bid, const subrange<3> sr) {
-		std::unique_ptr<copy_instruction> source(new copy_instruction(source_mid, bid, sr, side::source));
-		std::unique_ptr<copy_instruction> dest(new copy_instruction(dest_mid, bid, sr, side::dest));
+	static std::pair<std::unique_ptr<copy_instruction>, std::unique_ptr<copy_instruction>> make_pair(const instruction_id source_id, const memory_id source_mid,
+	    const instruction_id dest_id, const memory_id dest_mid, const buffer_id bid, const subrange<3> sr) {
+		std::unique_ptr<copy_instruction> source(new copy_instruction(source_id, source_mid, bid, sr, side::source));
+		std::unique_ptr<copy_instruction> dest(new copy_instruction(dest_id, dest_mid, bid, sr, side::dest));
 		source->m_counterpart = dest.get();
 		dest->m_counterpart = source.get();
 		return std::pair(std::move(source), std::move(dest));
@@ -91,13 +93,14 @@ class copy_instruction : public instruction {
 	side m_side;
 	instruction* m_counterpart;
 
-	explicit copy_instruction(memory_id mid, buffer_id bid, subrange<3> sr, side side) : instruction(mid), m_bid(bid), m_sr(sr), m_side(side) {}
+	explicit copy_instruction(const instruction_id id, const memory_id mid, const buffer_id bid, const subrange<3>& sr, const side side)
+	    : instruction(id, mid), m_bid(bid), m_sr(sr), m_side(side) {}
 };
 
 class device_kernel_instruction : public instruction {
   public:
-	explicit device_kernel_instruction(const device_id did, const task& tsk, const subrange<3>& execution_range)
-	    : instruction(memory_id(did + 1)), m_tsk(tsk), m_execution_range(execution_range) {}
+	explicit device_kernel_instruction(const instruction_id id, const device_id did, const task& tsk, const subrange<3>& execution_range)
+	    : instruction(id, memory_id(did + 1)), m_tsk(tsk), m_execution_range(execution_range) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_device_kernel(*this); }
 
@@ -111,12 +114,12 @@ class device_kernel_instruction : public instruction {
 
 class send_instruction : public instruction {
   public:
-	explicit send_instruction(const node_id to, const buffer_id bid, const subrange<3>& sr) : instruction(host_memory_id), m_to(to), m_bid(bid), m_sr(sr) {}
+	explicit send_instruction(const instruction_id id, const node_id to, const buffer_id bid, const subrange<3>& sr)
+	    : instruction(id, host_memory_id), m_to(to), m_bid(bid), m_sr(sr) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_send(*this); }
 
 	buffer_id get_buffer_id() const { return m_bid; }
-
 	subrange<3> get_subrange() const { return m_sr; }
 
   private:
@@ -127,13 +130,12 @@ class send_instruction : public instruction {
 
 class recv_instruction : public instruction {
   public:
-	explicit recv_instruction(const transfer_id transfer, const buffer_id bid, const GridRegion<3>& region)
-	    : instruction(host_memory_id), m_transfer(transfer), m_bid(bid), m_region(region) {}
+	explicit recv_instruction(const instruction_id id, const transfer_id transfer, const buffer_id bid, const GridRegion<3>& region)
+	    : instruction(id, host_memory_id), m_transfer(transfer), m_bid(bid), m_region(region) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_recv(*this); }
 
 	buffer_id get_buffer_id() const { return m_bid; }
-
 	GridRegion<3> get_region() const { return m_region; }
 
   private:
@@ -160,7 +162,8 @@ class instruction_graph {
   public:
 	template <typename Instruction, typename... CtorParams>
 	Instruction& create(CtorParams&&... ctor_args) {
-		auto insn = std::make_unique<Instruction>(std::forward<CtorParams>(ctor_args)...);
+		const auto id = m_next_iid++;
+		auto insn = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
 		auto& ref = *insn;
 		m_instructions.emplace_back(std::move(insn));
 		return ref;
@@ -168,7 +171,9 @@ class instruction_graph {
 
 	std::pair<copy_instruction&, copy_instruction&> create_copy(
 	    const memory_id source_mid, const memory_id dest_mid, const buffer_id bid, const subrange<3> sr) {
-		auto [source, dest] = copy_instruction::make_pair(source_mid, dest_mid, bid, sr);
+		const auto source_id = m_next_iid++;
+		const auto dest_id = m_next_iid++;
+		auto [source, dest] = copy_instruction::make_pair(source_id, source_mid, dest_id, dest_mid, bid, sr);
 		auto &source_ref = *source, &dest_ref = *dest;
 		m_instructions.emplace_back(std::move(source));
 		m_instructions.emplace_back(std::move(dest));
@@ -188,6 +193,7 @@ class instruction_graph {
 	void visit(const_instruction_graph_visitor&& visitor) const { visit(/* lvalue */ visitor); }
 
   private:
+	instruction_id m_next_iid = 0;
 	// TODO split vector into epochs for cleanup phase
 	std::vector<std::unique_ptr<instruction>> m_instructions;
 };
