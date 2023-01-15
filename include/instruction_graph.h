@@ -45,11 +45,15 @@ class instruction : public intrusive_graph_node<instruction> {
 	virtual void visit(const_instruction_graph_visitor& visitor) const = 0;
 
 	instruction_id get_id() const { return m_id; }
-	memory_id get_memory() const { return m_mid; }
+	memory_id get_memory_id() const { return m_mid; }
 
   private:
 	instruction_id m_id;
 	memory_id m_mid;
+};
+
+struct instruction_id_less {
+	bool operator()(const instruction* const lhs, const instruction* const rhs) const { return lhs->get_id() < rhs->get_id(); }
 };
 
 class alloc_instruction : public instruction {
@@ -84,8 +88,8 @@ class copy_instruction : public instruction {
 
 	const buffer_id& get_buffer_id() const { return m_bid; }
 	const subrange<3>& get_subrange() const { return m_sr; }
-	memory_id get_source_memory() const { return m_side == side::source ? get_memory() : m_counterpart->get_memory(); }
-	memory_id get_dest_memory() const { return m_side == side::dest ? get_memory() : m_counterpart->get_memory(); }
+	memory_id get_source_memory() const { return m_side == side::source ? get_memory_id() : m_counterpart->get_memory_id(); }
+	memory_id get_dest_memory() const { return m_side == side::dest ? get_memory_id() : m_counterpart->get_memory_id(); }
 	side get_side() const { return m_side; }
 	instruction& get_counterpart() const { return *m_counterpart; }
 
@@ -170,28 +174,13 @@ inline void const_instruction_graph_visitor::visit_epoch(const epoch_instruction
 
 class instruction_graph {
   public:
-	template <typename Instruction, typename... CtorParams>
-	Instruction& create(CtorParams&&... ctor_args) {
-		const auto id = m_next_iid++;
-		auto insn = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
-		auto& ref = *insn;
-		m_instructions.emplace_back(std::move(insn));
-		return ref;
-	}
+	void insert(std::unique_ptr<instruction> instr) { m_instructions.push_back(std::move(instr)); }
 
-	std::pair<copy_instruction&, copy_instruction&> create_copy(
-	    const memory_id source_mid, const memory_id dest_mid, const buffer_id bid, const subrange<3> sr) {
-		const auto source_id = m_next_iid++;
-		const auto dest_id = m_next_iid++;
-		auto [source, dest] = copy_instruction::make_pair(source_id, source_mid, dest_id, dest_mid, bid, sr);
-		auto &source_ref = *source, &dest_ref = *dest;
-		m_instructions.emplace_back(std::move(source));
-		m_instructions.emplace_back(std::move(dest));
-		return {source_ref, dest_ref};
-	}
-
-	static void add_dependency(instruction& from, instruction& to, const dependency_kind kind, const dependency_origin origin) {
-		from.add_dependency({&to, kind, origin});
+	template <typename Predicate>
+	void erase_if(Predicate&& p) {
+		const auto last = std::remove_if(m_instructions.begin(), m_instructions.end(),
+		    [&p](const std::unique_ptr<instruction>& item) { return p(static_cast<const instruction*>(item.get())); });
+		m_instructions.erase(last, m_instructions.end());
 	}
 
 	void visit(const_instruction_graph_visitor& visitor) const {
@@ -203,7 +192,6 @@ class instruction_graph {
 	void visit(const_instruction_graph_visitor&& visitor) const { visit(/* lvalue */ visitor); }
 
   private:
-	instruction_id m_next_iid = 0;
 	// TODO split vector into epochs for cleanup phase
 	std::vector<std::unique_ptr<instruction>> m_instructions;
 };

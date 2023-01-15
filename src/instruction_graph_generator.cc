@@ -32,21 +32,21 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 std::vector<chunk<3>> split_1d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks);
 
 
-struct partial_instruction {
-	subrange<3> execution_sr;
-	memory_id memory = host_memory_id;
-	std::unordered_map<buffer_id, GridRegion<3>> reads;
-	std::unordered_map<buffer_id, GridRegion<3>> writes;
-	instruction* instruction = nullptr;
-};
-
 void instruction_graph_generator::compile(const abstract_command& cmd) {
-	assert(std::all_of(m_memories.begin(), m_memories.end(), [](const per_memory_data& memory) { return memory.epoch != nullptr; }) //
+	assert(std::all_of(m_memories.begin(), m_memories.end(), [](const per_memory_data& memory) { return memory.last_epoch != nullptr; }) //
 	       || isa<epoch_command>(&cmd));
+
+	struct partial_instruction {
+		subrange<3> execution_sr;
+		memory_id mid = host_memory_id;
+		std::unordered_map<buffer_id, GridRegion<3>> reads;
+		std::unordered_map<buffer_id, GridRegion<3>> writes;
+		instruction* instruction = nullptr;
+	};
+	std::vector<partial_instruction> cmd_insns;
 
 	// 1) assign work, determine execution range and target memory of command instructions (and perform a local split where applicable)
 
-	std::vector<partial_instruction> cmd_insns;
 	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
 		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
 		const auto command_sr = xcmd->get_execution_range();
@@ -56,13 +56,13 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			cmd_insns.resize(device_chunks.size());
 			for(size_t i = 0; i < device_chunks.size(); ++i) {
 				cmd_insns[i].execution_sr = subrange<3>(device_chunks[i].offset, device_chunks[i].range);
-				cmd_insns[i].memory = memory_id(i + 1); // round-robin assignment
+				cmd_insns[i].mid = memory_id(i + 1); // round-robin assignment
 			}
 		} else {
 			cmd_insns.resize(1);
 			cmd_insns[0].execution_sr = command_sr;
 			// memory_id(1) is the first device - note this may lead to load imbalance if there's multiple independent unsplittale tasks.
-			cmd_insns[0].memory = tsk.get_execution_target() == execution_target::device ? memory_id(1) : host_memory_id;
+			cmd_insns[0].mid = tsk.get_execution_target() == execution_target::device ? memory_id(1) : host_memory_id;
 		}
 
 		const auto& bam = tsk.get_buffer_access_map();
@@ -82,17 +82,17 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		cmd_insns.resize(1);
 		// This can eventually become a device memory id if we make use of CUDA-aware MPI
-		cmd_insns[0].memory = host_memory_id;
+		cmd_insns[0].mid = host_memory_id;
 		cmd_insns[0].reads.emplace(pcmd->get_bid(), subrange_to_grid_box(pcmd->get_range()));
 	} else if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
 		cmd_insns.resize(1);
 		// This can eventually become a device memory id if we make use of CUDA-aware MPI
-		cmd_insns[0].memory = host_memory_id;
+		cmd_insns[0].mid = host_memory_id;
 		cmd_insns[0].writes.emplace(apcmd->get_bid(), apcmd->get_region());
 	} else if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
 		cmd_insns.resize(m_memories.size());
 		for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
-			cmd_insns[mid].memory = mid;
+			cmd_insns[mid].mid = mid;
 		}
 	} else {
 		assert(!"unhandled command type");
@@ -105,10 +105,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	for(const auto& insn : cmd_insns) {
 		for(const auto& access : {insn.reads, insn.writes}) {
 			for(const auto& [bid, region] : access) {
-				const auto unallocated = GridRegion<3>::difference(region, m_buffers.at(bid).memories[insn.memory].allocation);
-				if(!unallocated.empty()) {
-					unallocated_regions[{bid, insn.memory}] = GridRegion<3>::merge(unallocated_regions[{bid, insn.memory}], unallocated);
-				}
+				const auto unallocated = GridRegion<3>::difference(region, m_buffers.at(bid).memories[insn.mid].allocation);
+				if(!unallocated.empty()) { unallocated_regions[{bid, insn.mid}] = GridRegion<3>::merge(unallocated_regions[{bid, insn.mid}], unallocated); }
 			}
 		}
 	}
@@ -117,11 +115,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		const auto [bid, mid] = bid_mid;
 
 		// TODO allocate a multiple of the allocator's page size (GridRegion might not be the right parameter to alloc_instruction)
-		auto& alloc_instr = m_idag.create<alloc_instruction>(mid, bid, region);
+		auto& alloc_instr = create<alloc_instruction>(mid, bid, region);
 
 		// TODO until we have ndvbuffers everywhere, alloc_instructions need forward and backward dependencies to reproduce buffer-locking semantics
 		//	 we could solve this by having resize_instructions instead that "read" the entire previous and "write" the entire new allocation
-		instruction_graph::add_dependency(alloc_instr, *m_memories[mid].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+		add_dependency(alloc_instr, *m_memories[mid].last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
 		m_buffers.at(bid).memories[mid].record_allocation(region, &alloc_instr);
 	}
@@ -132,38 +130,38 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(const auto& [bid, region] : insn.reads) {
 			auto& buffer = m_buffers.at(bid);
 			for(const auto& [box, location] : buffer.newest_data_location.get_region_values(region)) {
-				if(location.test(insn.memory)) continue;
+				if(location.test(insn.mid)) continue;
 
 				// TODO copy_from will currently create chains, ensure that if there are multiple locations, we don't use one that has been copied to
 				//  while generating this instruction (unless we can avoid a second h2d by doing a single-link (!) h2d -> d2d chain).
 				memory_id copy_from;
-				if(insn.memory == host_memory_id) {
+				if(insn.mid == host_memory_id) {
 					// device -> host
-					copy_from = next_location(location, insn.memory + 1);
+					copy_from = next_location(location, insn.mid + 1);
 				} else if(const auto device_sources = data_location(location).reset(host_memory_id); device_sources.any()) {
 					// device -> device when possible (faster than host -> device)
-					copy_from = next_location(device_sources, insn.memory + 1);
+					copy_from = next_location(device_sources, insn.mid + 1);
 				} else {
 					// host -> device
 					copy_from = host_memory_id;
 				}
-				assert(copy_from != insn.memory);
+				assert(copy_from != insn.mid);
 				assert(location.test(copy_from));
 
-				auto [source_instr, dest_instr] = m_idag.create_copy(copy_from, insn.memory, bid, grid_box_to_subrange(box));
+				auto [source_instr, dest_instr] = create_copy(copy_from, insn.mid, bid, grid_box_to_subrange(box));
 				for(const auto& [_, last_writer_instr] : buffer.memories[copy_from].last_writers.get_region_values(box)) {
-					instruction_graph::add_dependency(source_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+					add_dependency(source_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 				}
 				buffer.memories[copy_from].record_read(box, &source_instr);
 
-				for(const auto& [_, front] : buffer.memories[insn.memory].access_fronts.get_region_values(box)) {
+				for(const auto& [_, front] : buffer.memories[insn.mid].access_fronts.get_region_values(box)) {
 					for(const auto dep_instr : front.front) {
-						instruction_graph::add_dependency(dest_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+						add_dependency(dest_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 					}
 				}
-				instruction_graph::add_dependency(dest_instr, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-				buffer.memories[insn.memory].record_write(box, &dest_instr);
-				buffer.newest_data_location.update_region(box, data_location(location).set(insn.memory));
+				add_dependency(dest_instr, *m_memories[insn.mid].last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				buffer.memories[insn.mid].record_write(box, &dest_instr);
+				buffer.newest_data_location.update_region(box, data_location(location).set(insn.mid));
 			}
 		}
 	}
@@ -174,27 +172,27 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
 		for(auto& in : cmd_insns) {
 			assert(in.execution_sr.range.size() > 0);
-			assert(in.memory > 0 && in.memory - 1 < m_num_devices);
-			in.instruction = &m_idag.create<device_kernel_instruction>(device_id(in.memory - 1), tsk, in.execution_sr);
+			assert(in.mid > 0 && in.mid - 1 < m_num_devices);
+			in.instruction = &create<device_kernel_instruction>(device_id(in.mid - 1), tsk, in.execution_sr);
 		}
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		assert(cmd_insns.size() == 1);
-		cmd_insns.front().instruction = &m_idag.create<send_instruction>(pcmd->get_target(), pcmd->get_bid(), pcmd->get_range());
+		cmd_insns.front().instruction = &create<send_instruction>(pcmd->get_target(), pcmd->get_bid(), pcmd->get_range());
 	} else if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
 		assert(cmd_insns.size() == 1);
-		cmd_insns.front().instruction = &m_idag.create<recv_instruction>(apcmd->get_transfer_id(), apcmd->get_bid(), apcmd->get_region());
+		cmd_insns.front().instruction = &create<recv_instruction>(apcmd->get_transfer_id(), apcmd->get_bid(), apcmd->get_region());
 	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			insn.instruction = &m_idag.create<horizon_instruction>(insn.memory);
+			insn.instruction = &create<horizon_instruction>(insn.mid);
 			// TODO reduce execution fronts
 		}
 	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			insn.instruction = &m_idag.create<epoch_instruction>(insn.memory);
+			insn.instruction = &create<epoch_instruction>(insn.mid);
 			// TODO reduce execution fronts
 		}
 	} else {
-		// TODO horizons
+		assert(!"unhandled command type");
 		std::abort();
 	}
 
@@ -204,19 +202,15 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	for(const auto& insn : cmd_insns) {
 		for(const auto& [bid, region] : insn.reads) {
 			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, last_writer_instr] : buffer.memories[insn.memory].last_writers.get_region_values(region)) {
-				instruction_graph::add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+			for(const auto& [_, last_writer_instr] : buffer.memories[insn.mid].last_writers.get_region_values(region)) {
+				add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 			}
-		}
-		if(insn.reads.empty() && m_memories[insn.memory].epoch != nullptr /* always true except for initial epoch command */) {
-			// if there is no transitive dependency to the last epoch (because this is a pure producer), insert an explicit one
-			instruction_graph::add_dependency(*insn.instruction, *m_memories[insn.memory].epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 		}
 		for(const auto& [bid, region] : insn.writes) {
 			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, front] : buffer.memories[insn.memory].access_fronts.get_region_values(region)) {
+			for(const auto& [_, front] : buffer.memories[insn.mid].access_fronts.get_region_values(region)) {
 				for(const auto dep_instr : front.front) {
-					instruction_graph::add_dependency(*insn.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+					add_dependency(*insn.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 				}
 			}
 		}
@@ -227,20 +221,43 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	for(const auto& insn : cmd_insns) {
 		for(const auto& [bid, region] : insn.writes) {
 			assert(insn.instruction != nullptr);
-			m_buffers.at(bid).newest_data_location.update_region(region, data_location().set(insn.memory));
-			m_buffers.at(bid).memories[insn.memory].record_write(region, insn.instruction);
+			m_buffers.at(bid).newest_data_location.update_region(region, data_location().set(insn.mid));
+			m_buffers.at(bid).memories[insn.mid].record_write(region, insn.instruction);
 		}
 	}
 
-	// 7) apply epochs if necessary
+	// 7) insert epoch and horizon dependencies, apply epochs
 
-	if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
-		for(auto& insn : cmd_insns) {
-			m_memories[insn.memory].epoch = insn.instruction;
-			// TODO update last writers
-			// TODO collapse execution front
+	for(auto& insn : cmd_insns) {
+		auto& memory = m_memories[insn.mid];
+
+		if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
+			memory.collapse_execution_front_to(insn.instruction);
+
+			instruction* new_epoch = nullptr;
+			if(isa<epoch_command>(&cmd)) {
+				new_epoch = insn.instruction;
+			} else {
+				new_epoch = memory.last_horizon; // can be null
+			}
+
+			if(new_epoch) {
+				for(auto& [_, buffer] : m_buffers) {
+					buffer.memories[insn.mid].apply_epoch(new_epoch);
+				}
+				memory.last_epoch = new_epoch;
+				// TODO prune graph
+			}
+		} else {
+			// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
+			// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
+			if(memory.last_epoch != nullptr) {
+				const auto deps = insn.instruction->get_dependencies();
+				if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
+					add_dependency(*insn.instruction, *memory.last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				}
+			}
 		}
-		// TODO prune graph
 	}
 }
 

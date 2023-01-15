@@ -238,7 +238,7 @@ namespace detail {
 	template <typename... FmtArgs>
 	void print_node(std::string& dot, const instruction& insn, FmtArgs&&... fmt_args) {
 		const auto back = std::back_inserter(dot);
-		fmt::format_to(std::back_inserter(dot), "I{0}[shape=box label=<I{0} on M{1}<br/>", insn.get_id(), insn.get_memory());
+		fmt::format_to(std::back_inserter(dot), "I{0}[shape=box label=<I{0} on M{1}<br/>", insn.get_id(), insn.get_memory_id());
 		fmt::format_to(std::back_inserter(dot), std::forward<FmtArgs>(fmt_args)...);
 		fmt::format_to(std::back_inserter(dot), ">];\n");
 	}
@@ -264,7 +264,7 @@ namespace detail {
 				const bool dest_host = cinsn.get_dest_memory() == host_memory_id;
 				const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
 				const auto side = cinsn.get_side() == copy_instruction::side::source ? "to" : "from";
-				print_node(m_dot, cinsn, "<b>{}</b> {} M{}<br/>B{} {}", direction, side, cinsn.get_counterpart().get_memory(), cinsn.get_buffer_id(),
+				print_node(m_dot, cinsn, "<b>{}</b> {} M{}<br/>B{} {}", direction, side, cinsn.get_counterpart().get_memory_id(), cinsn.get_buffer_id(),
 				    cinsn.get_subrange());
 			}
 
