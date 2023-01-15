@@ -17,6 +17,13 @@ void instruction_graph_generator::register_buffer(buffer_id bid, cl::sycl::range
 
 void instruction_graph_generator::unregister_buffer(buffer_id bid) { m_buffers.erase(bid); }
 
+void instruction_graph_generator::register_host_object(host_object_id hoid) {
+	[[maybe_unused]] const auto [_, inserted] = m_host_objects.emplace(hoid, per_host_object_data());
+	assert(inserted);
+}
+
+void instruction_graph_generator::unregister_host_object(host_object_id hoid) { m_host_objects.erase(hoid); }
+
 
 memory_id instruction_graph_generator::next_location(const data_location& location, memory_id first) {
 	for(size_t i = 0; i < max_memories; ++i) {
@@ -41,6 +48,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		memory_id mid = host_memory_id;
 		std::unordered_map<buffer_id, GridRegion<3>> reads;
 		std::unordered_map<buffer_id, GridRegion<3>> writes;
+		std::unordered_set<host_object_id> side_effects;
 		instruction* instruction = nullptr;
 	};
 	std::vector<partial_instruction> cmd_insns;
@@ -78,6 +86,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				if(!b_reads.empty()) { insn.reads.emplace(bid, std::move(b_reads)); }
 				if(!b_writes.empty()) { insn.writes.emplace(bid, std::move(b_writes)); }
 			}
+		}
+
+		for(auto& [hoid, order] : tsk.get_side_effect_map()) {
+			assert(cmd_insns[0].mid == host_memory_id);
+			cmd_insns[0].side_effects.insert(hoid);
 		}
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		cmd_insns.resize(1);
@@ -171,9 +184,15 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
 		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
 		for(auto& in : cmd_insns) {
-			assert(in.execution_sr.range.size() > 0);
-			assert(in.mid > 0 && in.mid - 1 < m_num_devices);
-			in.instruction = &create<device_kernel_instruction>(device_id(in.mid - 1), tsk, in.execution_sr);
+			if(tsk.get_execution_target() == execution_target::device) {
+				assert(in.execution_sr.range.size() > 0);
+				assert(in.mid != host_memory_id && in.mid - 1 < m_num_devices);
+				in.instruction = &create<device_kernel_instruction>(device_id(in.mid - 1), tsk, in.execution_sr);
+			} else {
+				assert(tsk.get_execution_target() == execution_target::host);
+				assert(in.mid == host_memory_id);
+				in.instruction = &create<host_kernel_instruction>(tsk, in.execution_sr);
+			}
 		}
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		assert(cmd_insns.size() == 1);
@@ -214,6 +233,12 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				}
 			}
 		}
+		for(const auto hoid : insn.side_effects) {
+			assert(insn.mid == host_memory_id);
+			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
+				add_dependency(*insn.instruction, *last_side_effect, dependency_kind::true_dep, dependency_origin::dataflow);
+			}
+		}
 	}
 
 	// 6) update data locations and last writers resulting from command instructions
@@ -223,6 +248,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			assert(insn.instruction != nullptr);
 			m_buffers.at(bid).newest_data_location.update_region(region, data_location().set(insn.mid));
 			m_buffers.at(bid).memories[insn.mid].record_write(region, insn.instruction);
+		}
+		for(const auto hoid : insn.side_effects) {
+			assert(insn.mid == host_memory_id);
+			m_host_objects.at(hoid).last_side_effect = insn.instruction;
 		}
 	}
 
@@ -244,6 +273,9 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			if(new_epoch) {
 				for(auto& [_, buffer] : m_buffers) {
 					buffer.memories[insn.mid].apply_epoch(new_epoch);
+				}
+				for(auto& [_, host_object] : m_host_objects) {
+					host_object.apply_epoch(new_epoch);
 				}
 				memory.last_epoch = new_epoch;
 				// TODO prune graph

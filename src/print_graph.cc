@@ -272,6 +272,10 @@ namespace detail {
 				print_node(m_dot, dkinsn, "<b>kernel</b> {}", dkinsn.get_execution_range());
 			}
 
+			void visit_host_kernel(const host_kernel_instruction& hkinsn) override {
+				print_node(m_dot, hkinsn, "<b>host kernel</b> {}", hkinsn.get_execution_range());
+			}
+
 			void visit_send(const send_instruction& sinsn) override {
 				print_node(m_dot, sinsn, "<b>send</b> B{} {}", sinsn.get_buffer_id(), sinsn.get_subrange());
 			}
@@ -283,6 +287,8 @@ namespace detail {
 			void visit_horizon(const horizon_instruction& hinsn) override { print_node(m_dot, hinsn, "<b>horizon</b>"); }
 
 			void visit_epoch(const epoch_instruction& einsn) override { print_node(m_dot, einsn, "<b>epoch</b>"); }
+
+			void visit(const instruction& insn) override { print_node(m_dot, insn, "<b>unknown</b>"); }
 
 		  private:
 			std::string& m_dot;

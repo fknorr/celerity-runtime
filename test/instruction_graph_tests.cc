@@ -47,13 +47,17 @@ TEST_CASE("instruction graph") {
 
 	const range<1> test_range = {256};
 	auto buf = dctx.create_buffer(test_range);
+	auto ho = dctx.create_host_object();
 
 	dctx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).submit();
 	dctx.device_compute<class UKN(consumer)>(test_range).read(buf, acc::all()).submit();
+	dctx.host_task(range<1>(2)).affect(ho).submit();
+	dctx.host_task(range<1>(2)).affect(ho).submit();
 
 	const size_t num_devices = 2;
 	instruction_graph_generator iggen(dctx.get_task_manager(), num_devices);
-	iggen.register_buffer(0, range<3>(256, 1, 1)); // TODO have an idag_test_context to do this
+	iggen.register_buffer(buf.get_id(), range<3>(256, 1, 1)); // TODO have an idag_test_context to do this
+	iggen.register_host_object(ho.get_id());
 	for(const auto cmd : topsort(dctx.get_graph_generator(1).NOCOMMIT_get_cdag())) {
 		iggen.compile(*cmd);
 	}

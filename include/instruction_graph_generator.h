@@ -19,6 +19,10 @@ class instruction_graph_generator {
 
 	void unregister_buffer(buffer_id bid);
 
+	void register_host_object(host_object_id hoid);
+
+	void unregister_host_object(host_object_id hoid);
+
 	void compile(const abstract_command& cmd);
 
 	const instruction_graph& get_graph() const { return m_idag; }
@@ -70,16 +74,15 @@ class instruction_graph_generator {
 			}
 
 			void apply_epoch(instruction* const epoch) {
-				last_writers.apply_to_values([epoch](instruction* const instr) { return instr && instr->get_id() > epoch->get_id() ? instr : epoch; });
+				last_writers.apply_to_values([epoch](instruction* const instr) -> instruction* {
+					if(instr == nullptr) return nullptr;
+					return instr->get_id() > epoch->get_id() ? instr : epoch;
+				});
 				access_fronts.apply_to_values([epoch](access_front record) {
-					if(!record.front.empty()) {
-						const auto new_front_end = std::remove_if(record.front.begin(), record.front.end(), //
-						    [epoch](instruction* const instr) { return instr->get_id() < epoch->get_id(); });
-						if(new_front_end != record.front.end()) {
-							record.front.erase(new_front_end, record.front.end());
-							record.front.push_back(epoch);
-						}
-					} else {
+					const auto new_front_end = std::remove_if(record.front.begin(), record.front.end(), //
+					    [epoch](instruction* const instr) { return instr->get_id() < epoch->get_id(); });
+					if(new_front_end != record.front.end()) {
+						record.front.erase(new_front_end, record.front.end());
 						record.front.push_back(epoch);
 					}
 					assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
@@ -113,12 +116,21 @@ class instruction_graph_generator {
 		}
 	};
 
+	struct per_host_object_data {
+		instruction* last_side_effect = nullptr;
+
+		void apply_epoch(instruction* const epoch) {
+			if(last_side_effect && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
+		}
+	};
+
 	instruction_graph m_idag;
 	instruction_id m_next_iid = 0;
 	const task_manager& m_tm;
 	size_t m_num_devices;
 	std::vector<per_memory_data> m_memories;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
+	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 
 	static memory_id next_location(const data_location& location, memory_id first);
 

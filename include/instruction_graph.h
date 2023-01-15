@@ -15,6 +15,7 @@ class instruction;
 class alloc_instruction;
 class copy_instruction;
 class device_kernel_instruction;
+class host_kernel_instruction;
 class send_instruction;
 class recv_instruction;
 class horizon_instruction;
@@ -28,6 +29,7 @@ class const_instruction_graph_visitor {
 	virtual void visit_alloc(const alloc_instruction& ainsn);
 	virtual void visit_copy(const copy_instruction& cinsn);
 	virtual void visit_device_kernel(const device_kernel_instruction& dkinsn);
+	virtual void visit_host_kernel(const host_kernel_instruction& hkinsn);
 	virtual void visit_send(const send_instruction& sinsn);
 	virtual void visit_recv(const recv_instruction& rinsn);
 	virtual void visit_horizon(const horizon_instruction& hinsn);
@@ -118,6 +120,20 @@ class device_kernel_instruction : public instruction {
 	subrange<3> m_execution_range;
 };
 
+class host_kernel_instruction : public instruction {
+  public:
+	explicit host_kernel_instruction(const instruction_id id, const task& tsk, const subrange<3>& execution_range)
+	    : instruction(id, host_memory_id), m_tsk(tsk), m_execution_range(execution_range) {}
+
+	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_host_kernel(*this); }
+
+	const subrange<3>& get_execution_range() const { return m_execution_range; }
+
+  private:
+	const task& m_tsk;
+	subrange<3> m_execution_range;
+};
+
 class send_instruction : public instruction {
   public:
 	explicit send_instruction(const instruction_id id, const node_id to, const buffer_id bid, const subrange<3>& sr)
@@ -167,6 +183,7 @@ class epoch_instruction : public instruction {
 inline void const_instruction_graph_visitor::visit_alloc(const alloc_instruction& ainsn) { visit(ainsn); }
 inline void const_instruction_graph_visitor::visit_copy(const copy_instruction& cinsn) { visit(cinsn); }
 inline void const_instruction_graph_visitor::visit_device_kernel(const device_kernel_instruction& dkinsn) { visit(dkinsn); }
+inline void const_instruction_graph_visitor::visit_host_kernel(const host_kernel_instruction& hkinsn) { visit(hkinsn); }
 inline void const_instruction_graph_visitor::visit_send(const send_instruction& sinsn) { visit(sinsn); }
 inline void const_instruction_graph_visitor::visit_recv(const recv_instruction& rinsn) { visit(rinsn); }
 inline void const_instruction_graph_visitor::visit_horizon(const horizon_instruction& hinsn) { visit(hinsn); }
