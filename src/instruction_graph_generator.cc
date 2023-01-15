@@ -18,11 +18,11 @@ void instruction_graph_generator::register_buffer(buffer_id bid, cl::sycl::range
 void instruction_graph_generator::unregister_buffer(buffer_id bid) { m_buffers.erase(bid); }
 
 void instruction_graph_generator::register_host_object(host_object_id hoid) {
-	[[maybe_unused]] const auto [_, inserted] = m_host_objects.emplace(hoid, per_host_object_data());
+	[[maybe_unused]] const auto [_, inserted] = m_host_memory.host_objects.emplace(hoid, host_memory_data::per_host_object_data());
 	assert(inserted);
 }
 
-void instruction_graph_generator::unregister_host_object(host_object_id hoid) { m_host_objects.erase(hoid); }
+void instruction_graph_generator::unregister_host_object(host_object_id hoid) { m_host_memory.host_objects.erase(hoid); }
 
 
 memory_id instruction_graph_generator::next_location(const data_location& location, memory_id first) {
@@ -49,6 +49,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		std::unordered_map<buffer_id, GridRegion<3>> reads;
 		std::unordered_map<buffer_id, GridRegion<3>> writes;
 		std::unordered_set<host_object_id> side_effects;
+		collective_group_id cgid = 0;
 		instruction* instruction = nullptr;
 	};
 	std::vector<partial_instruction> cmd_insns;
@@ -88,10 +89,12 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			}
 		}
 
-		for(auto& [hoid, order] : tsk.get_side_effect_map()) {
+		for(const auto& [hoid, order] : tsk.get_side_effect_map()) {
 			assert(cmd_insns[0].mid == host_memory_id);
 			cmd_insns[0].side_effects.insert(hoid);
 		}
+
+		cmd_insns[0].cgid = tsk.get_collective_group_id();
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		cmd_insns.resize(1);
 		// This can eventually become a device memory id if we make use of CUDA-aware MPI
@@ -216,8 +219,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	}
 
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
-	// TODO side effects, collective-group serialization
 
+	// TODO this will not work correctly for oversubscription
+	//	 - read-all + write-1:1 cannot be oversubscribed at all chunks would need a global read->write barrier (how would the kernel even look like?)
+	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
 	for(const auto& insn : cmd_insns) {
 		for(const auto& [bid, region] : insn.reads) {
 			auto& buffer = m_buffers.at(bid);
@@ -235,8 +240,15 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 		for(const auto hoid : insn.side_effects) {
 			assert(insn.mid == host_memory_id);
-			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
+			if(const auto last_side_effect = m_host_memory.host_objects.at(hoid).last_side_effect) {
 				add_dependency(*insn.instruction, *last_side_effect, dependency_kind::true_dep, dependency_origin::dataflow);
+			}
+		}
+		if(insn.cgid != collective_group_id(0) /* 0 means "no collective group association" */) {
+			assert(insn.mid == host_memory_id);
+			auto& group = m_host_memory.collective_groups[insn.cgid]; // allow default-insertion since we do not register CGs explicitly
+			if(group.last_host_task) {
+				add_dependency(*insn.instruction, *group.last_host_task, dependency_kind::true_dep, dependency_origin::collective_group_serialization);
 			}
 		}
 	}
@@ -251,7 +263,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 		for(const auto hoid : insn.side_effects) {
 			assert(insn.mid == host_memory_id);
-			m_host_objects.at(hoid).last_side_effect = insn.instruction;
+			m_host_memory.host_objects.at(hoid).last_side_effect = insn.instruction;
+		}
+		if(insn.cgid != collective_group_id(0) /* 0 means "no collective group association" */) {
+			assert(insn.mid == host_memory_id);
+			m_host_memory.collective_groups.at(insn.cgid).last_host_task = insn.instruction;
 		}
 	}
 
@@ -274,11 +290,12 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				for(auto& [_, buffer] : m_buffers) {
 					buffer.memories[insn.mid].apply_epoch(new_epoch);
 				}
-				for(auto& [_, host_object] : m_host_objects) {
-					host_object.apply_epoch(new_epoch);
-				}
+				if(insn.mid == host_memory_id) { m_host_memory.apply_epoch(new_epoch); }
 				memory.last_epoch = new_epoch;
-				// TODO prune graph
+
+				// TODO prune graph. Should we re-write node dependencies?
+				//	 - pro: No accidentally following stale pointers
+				//   - con: Thread safety (but how would a consumer know which dependency edges can be followed)?
 			}
 		} else {
 			// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.

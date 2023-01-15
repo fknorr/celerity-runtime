@@ -116,11 +116,33 @@ class instruction_graph_generator {
 		}
 	};
 
-	struct per_host_object_data {
-		instruction* last_side_effect = nullptr;
+	struct host_memory_data {
+		struct per_host_object_data {
+			instruction* last_side_effect = nullptr;
+
+			void apply_epoch(instruction* const epoch) {
+				if(last_side_effect && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
+			}
+		};
+
+		struct per_collective_group_data {
+			instruction* last_host_task = nullptr;
+
+			void apply_epoch(instruction* const epoch) {
+				if(last_host_task && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
+			}
+		};
+
+		std::unordered_map<host_object_id, per_host_object_data> host_objects;
+		std::unordered_map<collective_group_id, per_collective_group_data> collective_groups;
 
 		void apply_epoch(instruction* const epoch) {
-			if(last_side_effect && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
+			for(auto& [_, host_object] : host_objects) {
+				host_object.apply_epoch(epoch);
+			}
+			for(auto& [_, collective_group] : collective_groups) {
+				collective_group.apply_epoch(epoch);
+			}
 		}
 	};
 
@@ -130,7 +152,7 @@ class instruction_graph_generator {
 	size_t m_num_devices;
 	std::vector<per_memory_data> m_memories;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
-	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
+	host_memory_data m_host_memory;
 
 	static memory_id next_location(const data_location& location, memory_id first);
 
