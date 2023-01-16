@@ -78,9 +78,9 @@ class copy_instruction : public instruction {
 	enum class side { source, dest };
 
 	static std::pair<std::unique_ptr<copy_instruction>, std::unique_ptr<copy_instruction>> make_pair(const instruction_id source_id, const memory_id source_mid,
-	    const instruction_id dest_id, const memory_id dest_mid, const buffer_id bid, const subrange<3> sr) {
-		std::unique_ptr<copy_instruction> source(new copy_instruction(source_id, source_mid, bid, sr, side::source));
-		std::unique_ptr<copy_instruction> dest(new copy_instruction(dest_id, dest_mid, bid, sr, side::dest));
+	    const instruction_id dest_id, const memory_id dest_mid, const buffer_id bid, GridRegion<3> region) {
+		std::unique_ptr<copy_instruction> source(new copy_instruction(source_id, source_mid, bid, region, side::source));
+		std::unique_ptr<copy_instruction> dest(new copy_instruction(dest_id, dest_mid, bid, std::move(region), side::dest));
 		source->m_counterpart = dest.get();
 		dest->m_counterpart = source.get();
 		return std::pair(std::move(source), std::move(dest));
@@ -89,7 +89,7 @@ class copy_instruction : public instruction {
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_copy(*this); }
 
 	const buffer_id& get_buffer_id() const { return m_bid; }
-	const subrange<3>& get_subrange() const { return m_sr; }
+	const GridRegion<3>& get_region() const { return m_region; }
 	memory_id get_source_memory() const { return m_side == side::source ? get_memory_id() : m_counterpart->get_memory_id(); }
 	memory_id get_dest_memory() const { return m_side == side::dest ? get_memory_id() : m_counterpart->get_memory_id(); }
 	side get_side() const { return m_side; }
@@ -97,12 +97,12 @@ class copy_instruction : public instruction {
 
   private:
 	buffer_id m_bid;
-	subrange<3> m_sr;
+	GridRegion<3> m_region;
 	side m_side;
 	instruction* m_counterpart;
 
-	explicit copy_instruction(const instruction_id id, const memory_id mid, const buffer_id bid, const subrange<3>& sr, const side side)
-	    : instruction(id, mid), m_bid(bid), m_sr(sr), m_side(side) {}
+	explicit copy_instruction(const instruction_id id, const memory_id mid, const buffer_id bid, GridRegion<3> region, const side side)
+	    : instruction(id, mid), m_bid(bid), m_region(region), m_side(side) {}
 };
 
 class device_kernel_instruction : public instruction {

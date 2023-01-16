@@ -91,10 +91,11 @@ class instruction_graph_generator {
 			}
 		};
 
+		range<3> range;
 		std::vector<per_memory_data> memories;
 		region_map<data_location> newest_data_location;
 
-		explicit per_buffer_data(const range<3>& range, const size_t n_memories) : newest_data_location(range) {
+		explicit per_buffer_data(const celerity::range<3>& range, const size_t n_memories) : range(range), newest_data_location(range) {
 			memories.reserve(n_memories);
 			for(size_t i = 0; i < n_memories; ++i) {
 				memories.emplace_back(range);
@@ -167,10 +168,10 @@ class instruction_graph_generator {
 	}
 
 	std::pair<copy_instruction&, copy_instruction&> create_copy(
-	    const memory_id source_mid, const memory_id dest_mid, const buffer_id bid, const subrange<3> sr) {
+	    const memory_id source_mid, const memory_id dest_mid, const buffer_id bid, GridRegion<3> region) {
 		const auto source_id = m_next_iid++;
 		const auto dest_id = m_next_iid++;
-		auto [source, dest] = copy_instruction::make_pair(source_id, source_mid, dest_id, dest_mid, bid, sr);
+		auto [source, dest] = copy_instruction::make_pair(source_id, source_mid, dest_id, dest_mid, bid, std::move(region));
 		const auto source_ptr = source.get(), dest_ptr = dest.get();
 		m_idag.insert(std::move(source));
 		m_idag.insert(std::move(dest));

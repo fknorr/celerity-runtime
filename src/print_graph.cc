@@ -265,7 +265,7 @@ namespace detail {
 				const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
 				const auto side = cinsn.get_side() == copy_instruction::side::source ? "to" : "from";
 				print_node(m_dot, cinsn, "<b>{}</b> {} M{}<br/>B{} {}", direction, side, cinsn.get_counterpart().get_memory_id(), cinsn.get_buffer_id(),
-				    cinsn.get_subrange());
+				    cinsn.get_region());
 			}
 
 			void visit_device_kernel(const device_kernel_instruction& dkinsn) override {

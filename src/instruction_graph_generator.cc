@@ -142,43 +142,109 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
 
-	for(const auto& insn : cmd_insns) {
+	std::unordered_map<std::pair<buffer_id, memory_id>, std::vector<GridRegion<3>>, utils::pair_hash> unsatisfied_reads;
+	for(size_t cmd_insn_idx = 0; cmd_insn_idx < cmd_insns.size(); ++cmd_insn_idx) {
+		auto& insn = cmd_insns[cmd_insn_idx];
 		for(const auto& [bid, region] : insn.reads) {
 			auto& buffer = m_buffers.at(bid);
+			GridRegion<3> unsatified_region;
 			for(const auto& [box, location] : buffer.newest_data_location.get_region_values(region)) {
-				if(location.test(insn.mid)) continue;
+				if(!location.test(insn.mid)) { unsatified_region = GridRegion<3>::merge(unsatified_region, box); }
+			}
+			if(!unsatified_region.empty()) { unsatisfied_reads[{bid, insn.mid}].push_back(unsatified_region); }
+		}
+	}
 
-				// TODO copy_from will currently create chains, ensure that if there are multiple locations, we don't use one that has been copied to
-				//  while generating this instruction (unless we can avoid a second h2d by doing a single-link (!) h2d -> d2d chain).
+	// transform vectors of potentially-overlapping unsatisfied regions into disjoint regions
+	for(auto& [bid_mid, regions] : unsatisfied_reads) {
+	restart:
+		for(size_t i = 0; i < regions.size(); ++i) {
+			for(size_t j = i + 1; j < regions.size(); ++j) {
+				auto intersection = GridRegion<3>::intersect(regions[i], regions[j]);
+				if(!intersection.empty()) {
+					regions[i] = GridRegion<3>::difference(regions[i], intersection);
+					regions[j] = GridRegion<3>::difference(regions[j], intersection);
+					regions.push_back(std::move(intersection));
+					// if intersections above are actually subsets, we will end up with empty regions
+					regions.erase(std::remove_if(regions.begin(), regions.end(), std::mem_fn(&GridRegion<3>::empty)), regions.end());
+					goto restart;
+				}
+			}
+		}
+	}
+
+	struct copy_template {
+		buffer_id bid;
+		memory_id from;
+		memory_id to;
+		GridRegion<3> region;
+	};
+
+	std::vector<copy_template> pending_copies;
+	for(auto& [bid_mid, disjoint_regions] : unsatisfied_reads) {
+		const auto& [bid, mid] = bid_mid;
+		auto& buffer = m_buffers.at(bid);
+		for(auto& region : disjoint_regions) {
+			const auto region_sources = buffer.newest_data_location.get_region_values(region);
+
+			// try finding a common source for the entire region first to minimize instruction / synchronization complexity down the line
+			const auto common_sources = std::accumulate(region_sources.begin(), region_sources.end(), data_location(),
+			    [](const data_location common, const std::pair<GridBox<3>, data_location>& box_sources) { return common & box_sources.second; });
+
+			if(const auto common_device_sources = data_location(common_sources).reset(host_memory_id); common_device_sources.any()) {
+				// best case: we can copy all data from a single device
+				const auto copy_from = next_location(common_device_sources, mid + 1);
+				pending_copies.push_back({bid, copy_from, mid, std::move(region)});
+				continue;
+			}
+
+			// see if we can find data exclusively on devices, or exclusively on the host
+			const auto have_all_device_sources = std::all_of(region_sources.begin(), region_sources.end(),
+			    [](const std::pair<GridBox<3>, data_location>& box_sources) { return data_location(box_sources.second).reset(host_memory_id).any(); });
+			if(!have_all_device_sources && common_sources[host_memory_id]) {
+				// prefer a single copy from the host to mixing and matching host and device sources
+				pending_copies.push_back({bid, host_memory_id, mid, std::move(region)});
+				continue;
+			}
+
+			// mix and match sources - there exists an optimal solution, but for now we just assemble source regions by picking the next device if any,
+			// or the host as a fallback.
+			std::unordered_map<memory_id, GridRegion<3>> combined_source_regions;
+			for(const auto& [box, sources] : region_sources) {
 				memory_id copy_from;
-				if(insn.mid == host_memory_id) {
-					// device -> host
-					copy_from = next_location(location, insn.mid + 1);
-				} else if(const auto device_sources = data_location(location).reset(host_memory_id); device_sources.any()) {
-					// device -> device when possible (faster than host -> device)
-					copy_from = next_location(device_sources, insn.mid + 1);
+				if(const auto device_sources = data_location(sources).reset(host_memory_id); device_sources.any()) {
+					copy_from = next_location(device_sources, mid + 1);
 				} else {
-					// host -> device
 					copy_from = host_memory_id;
 				}
-				assert(copy_from != insn.mid);
-				assert(location.test(copy_from));
-
-				auto [source_instr, dest_instr] = create_copy(copy_from, insn.mid, bid, grid_box_to_subrange(box));
-				for(const auto& [_, last_writer_instr] : buffer.memories[copy_from].last_writers.get_region_values(box)) {
-					add_dependency(source_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
-				}
-				buffer.memories[copy_from].record_read(box, &source_instr);
-
-				for(const auto& [_, front] : buffer.memories[insn.mid].access_fronts.get_region_values(box)) {
-					for(const auto dep_instr : front.front) {
-						add_dependency(dest_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
-					}
-				}
-				add_dependency(dest_instr, *m_memories[insn.mid].last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-				buffer.memories[insn.mid].record_write(box, &dest_instr);
-				buffer.newest_data_location.update_region(box, data_location(location).set(insn.mid));
+				auto& copy_region = combined_source_regions[copy_from];
+				copy_region = GridRegion<3>::merge(copy_region, box);
 			}
+			for(auto& [copy_from, copy_region] : combined_source_regions) {
+				pending_copies.push_back({bid, copy_from, mid, std::move(copy_region)});
+			}
+		}
+	}
+
+	for(auto& copy : pending_copies) {
+		assert(copy.from != copy.to);
+		auto& buffer = m_buffers.at(copy.bid);
+
+		auto [source_instr, dest_instr] = create_copy(copy.from, copy.to, copy.bid, copy.region);
+		for(const auto& [_, last_writer_instr] : buffer.memories[copy.from].last_writers.get_region_values(copy.region)) {
+			add_dependency(source_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+		}
+		buffer.memories[copy.from].record_read(copy.region, &source_instr);
+
+		for(const auto& [_, front] : buffer.memories[copy.to].access_fronts.get_region_values(copy.region)) {
+			for(const auto dep_instr : front.front) {
+				add_dependency(dest_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+			}
+		}
+		add_dependency(dest_instr, *m_memories[copy.to].last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+		buffer.memories[copy.to].record_write(copy.region, &dest_instr);
+		for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
+			buffer.newest_data_location.update_region(box, data_location(location).set(copy.to));
 		}
 	}
 
