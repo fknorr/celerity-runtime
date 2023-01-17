@@ -277,7 +277,7 @@ namespace detail {
 			}
 
 			void visit_send(const send_instruction& sinsn) override {
-				print_node(m_dot, sinsn, "<b>send</b> B{} {}", sinsn.get_buffer_id(), sinsn.get_subrange());
+				print_node(m_dot, sinsn, "<b>send</b> B{} {}", sinsn.get_buffer_id(), sinsn.get_region());
 			}
 
 			void visit_recv(const recv_instruction& rinsn) override {

@@ -113,15 +113,28 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 		cmd_insns[0].cgid = tsk.get_collective_group_id();
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
-		cmd_insns.resize(1);
-		// This can eventually become a device memory id if we make use of CUDA-aware MPI
-		cmd_insns[0].mid = host_memory_id;
-		cmd_insns[0].reads.emplace(pcmd->get_bid(), subrange_to_grid_box(pcmd->get_range()));
+		const auto bid = pcmd->get_bid();
+		auto& buffer = m_buffers.at(bid);
+		const auto push_box = subrange_to_grid_box(pcmd->get_range());
+
+		// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same command
+		// that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
+		std::unordered_map<instruction*, GridRegion<3>> writer_regions;
+		for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
+			auto& region = writer_regions[writer]; // allow default-insert
+			region = GridRegion<3>::merge(region, box);
+		}
+		for(auto& [writer, region] : writer_regions) {
+			auto& insn = cmd_insns.emplace_back();
+			insn.mid = host_memory_id;
+			insn.reads.emplace(bid, std::move(region));
+		}
 	} else if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
-		cmd_insns.resize(1);
+		// TODO buffer await-pushes and generate recvs only when data is actually requested by an instruction
+		auto& insn = cmd_insns.emplace_back();
 		// This can eventually become a device memory id if we make use of CUDA-aware MPI
-		cmd_insns[0].mid = host_memory_id;
-		cmd_insns[0].writes.emplace(apcmd->get_bid(), apcmd->get_region());
+		insn.mid = host_memory_id;
+		insn.writes.emplace(apcmd->get_bid(), apcmd->get_region());
 	} else if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
 		cmd_insns.resize(m_memories.size());
 		for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
@@ -281,8 +294,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			}
 		}
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
-		assert(cmd_insns.size() == 1);
-		cmd_insns.front().instruction = &create<send_instruction>(pcmd->get_target(), pcmd->get_bid(), pcmd->get_range());
+		for(auto& insn : cmd_insns) {
+			assert(insn.reads.size() == 1);
+			auto [bid, region] = *insn.reads.begin();
+			insn.instruction = &create<send_instruction>(pcmd->get_target(), bid, std::move(region));
+		}
 	} else if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
 		assert(cmd_insns.size() == 1);
 		cmd_insns.front().instruction = &create<recv_instruction>(apcmd->get_transfer_id(), apcmd->get_bid(), apcmd->get_region());
@@ -341,8 +357,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	for(const auto& insn : cmd_insns) {
 		for(const auto& [bid, region] : insn.writes) {
 			assert(insn.instruction != nullptr);
-			m_buffers.at(bid).newest_data_location.update_region(region, data_location().set(insn.mid));
-			m_buffers.at(bid).memories[insn.mid].record_write(region, insn.instruction);
+			auto& buffer = m_buffers.at(bid);
+			buffer.newest_data_location.update_region(region, data_location().set(insn.mid));
+			buffer.memories[insn.mid].record_write(region, insn.instruction);
+			buffer.original_writers.update_region(region, insn.instruction);
 		}
 		for(const auto hoid : insn.side_effects) {
 			assert(insn.mid == host_memory_id);
@@ -371,7 +389,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 			if(new_epoch) {
 				for(auto& [_, buffer] : m_buffers) {
-					buffer.memories[insn.mid].apply_epoch(new_epoch);
+					buffer.apply_epoch(new_epoch);
 				}
 				if(insn.mid == host_memory_id) { m_host_memory.apply_epoch(new_epoch); }
 				memory.last_epoch = new_epoch;

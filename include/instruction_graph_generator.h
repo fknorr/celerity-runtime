@@ -94,12 +94,25 @@ class instruction_graph_generator {
 		range<3> range;
 		std::vector<per_memory_data> memories;
 		region_map<data_location> newest_data_location;
+		region_map<instruction*> original_writers;
 
-		explicit per_buffer_data(const celerity::range<3>& range, const size_t n_memories) : range(range), newest_data_location(range) {
+		explicit per_buffer_data(const celerity::range<3>& range, const size_t n_memories)
+		    : range(range), newest_data_location(range), original_writers(range) {
 			memories.reserve(n_memories);
 			for(size_t i = 0; i < n_memories; ++i) {
 				memories.emplace_back(range);
 			}
+		}
+
+		void apply_epoch(instruction* const epoch) {
+			memories[epoch->get_memory_id()].apply_epoch(epoch);
+			original_writers.apply_to_values([epoch](instruction* const instr) -> instruction* {
+				if(instr != nullptr && instr->get_memory_id() == epoch->get_memory_id() && instr->get_id() < epoch->get_id()) {
+					return epoch;
+				} else {
+					return instr;
+				}
+			});
 		}
 	};
 

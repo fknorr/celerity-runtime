@@ -138,18 +138,18 @@ class host_kernel_instruction : public instruction {
 
 class send_instruction : public instruction {
   public:
-	explicit send_instruction(const instruction_id id, const node_id to, const buffer_id bid, const subrange<3>& sr)
-	    : instruction(id, host_memory_id), m_to(to), m_bid(bid), m_sr(sr) {}
+	explicit send_instruction(const instruction_id id, const node_id to, const buffer_id bid, GridRegion<3> region)
+	    : instruction(id, host_memory_id), m_to(to), m_bid(bid), m_region(std::move(region)) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_send(*this); }
 
 	buffer_id get_buffer_id() const { return m_bid; }
-	subrange<3> get_subrange() const { return m_sr; }
+	GridRegion<3> get_region() const { return m_region; }
 
   private:
 	node_id m_to;
 	buffer_id m_bid;
-	subrange<3> m_sr;
+	GridRegion<3> m_region;
 };
 
 class recv_instruction : public instruction {
