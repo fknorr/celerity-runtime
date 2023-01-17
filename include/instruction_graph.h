@@ -38,7 +38,7 @@ class const_instruction_graph_visitor {
 
 class instruction : public intrusive_graph_node<instruction> {
   public:
-	explicit instruction(const instruction_id id, const memory_id mid) : m_id(id), m_mid(mid) {}
+	explicit instruction(const instruction_id id, const memory_id mid, const std::optional<command_id> cid = std::nullopt) : m_id(id), m_mid(mid), m_cid(cid) {}
 
 	instruction(const instruction&) = delete;
 	instruction& operator=(const instruction&) = delete;
@@ -48,10 +48,12 @@ class instruction : public intrusive_graph_node<instruction> {
 
 	instruction_id get_id() const { return m_id; }
 	memory_id get_memory_id() const { return m_mid; }
+	std::optional<command_id> get_command_id() const { return m_cid; }
 
   private:
 	instruction_id m_id;
 	memory_id m_mid;
+	std::optional<command_id> m_cid;
 };
 
 struct instruction_id_less {
@@ -107,8 +109,9 @@ class copy_instruction : public instruction {
 
 class device_kernel_instruction : public instruction {
   public:
-	explicit device_kernel_instruction(const instruction_id id, const device_id did, const memory_id mid, const task& tsk, const subrange<3>& execution_range)
-	    : instruction(id, mid), m_tsk(tsk), m_device_id(did), m_execution_range(execution_range) {}
+	explicit device_kernel_instruction(
+	    const instruction_id id, const device_id did, const command_id cid, const memory_id mid, const task& tsk, const subrange<3>& execution_range)
+	    : instruction(id, mid, cid), m_tsk(tsk), m_device_id(did), m_execution_range(execution_range) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_device_kernel(*this); }
 
@@ -124,22 +127,21 @@ class device_kernel_instruction : public instruction {
 
 class host_kernel_instruction : public instruction {
   public:
-	explicit host_kernel_instruction(const instruction_id id, const task& tsk, const subrange<3>& execution_range)
-	    : instruction(id, host_memory_id), m_tsk(tsk), m_execution_range(execution_range) {}
+	explicit host_kernel_instruction(const instruction_id id, const command_id cid, const subrange<3>& execution_range)
+	    : instruction(id, host_memory_id, cid), m_execution_range(execution_range) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_host_kernel(*this); }
 
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
 
   private:
-	const task& m_tsk;
 	subrange<3> m_execution_range;
 };
 
 class send_instruction : public instruction {
   public:
-	explicit send_instruction(const instruction_id id, const node_id to, const buffer_id bid, GridRegion<3> region)
-	    : instruction(id, host_memory_id), m_to(to), m_bid(bid), m_region(std::move(region)) {}
+	explicit send_instruction(const instruction_id id, const command_id cid, const node_id to, const buffer_id bid, GridRegion<3> region)
+	    : instruction(id, host_memory_id, cid), m_to(to), m_bid(bid), m_region(std::move(region)) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_send(*this); }
 
@@ -155,6 +157,7 @@ class send_instruction : public instruction {
 
 class recv_instruction : public instruction {
   public:
+	// We don't make the effort of tracking the command ids of (pending) await-pushes
 	explicit recv_instruction(const instruction_id id, const transfer_id trid, const buffer_id bid, const GridRegion<3>& region)
 	    : instruction(id, host_memory_id), m_trid(trid), m_bid(bid), m_region(region) {}
 
@@ -172,14 +175,14 @@ class recv_instruction : public instruction {
 
 class horizon_instruction : public instruction {
   public:
-	using instruction::instruction;
+	explicit horizon_instruction(const instruction_id id, const memory_id mid, const command_id cid) : instruction(id, mid, cid) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_horizon(*this); }
 };
 
 class epoch_instruction : public instruction {
   public:
-	using instruction::instruction;
+	explicit epoch_instruction(const instruction_id id, const memory_id mid, const std::optional<command_id> cid) : instruction(id, mid, cid) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_epoch(*this); }
 };

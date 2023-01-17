@@ -35,6 +35,8 @@ namespace detail {
 	  public:
 		virtual ~abstract_command() = 0;
 
+		virtual command_type get_type() const = 0;
+
 		command_id get_cid() const { return m_cid; }
 
 		node_id get_nid() const { return m_nid; }
@@ -62,6 +64,8 @@ namespace detail {
 		push_command(command_id cid, node_id nid, buffer_id bid, reduction_id rid, node_id target, transfer_id trid, subrange<3> push_range)
 		    : abstract_command(cid, nid), m_bid(bid), m_rid(rid), m_target(target), m_trid(trid), m_push_range(push_range) {}
 
+		command_type get_type() const override { return command_type::push; }
+
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		reduction_id get_rid() const { return m_rid; }
@@ -82,6 +86,8 @@ namespace detail {
 		await_push_command(command_id cid, node_id nid, buffer_id bid, transfer_id trid, GridRegion<3> region)
 		    : abstract_command(cid, nid), m_bid(bid), m_trid(trid), m_region(region) {}
 
+		command_type get_type() const override { return command_type::await_push; }
+
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		transfer_id get_transfer_id() const { return m_trid; }
@@ -98,6 +104,8 @@ namespace detail {
 		data_request_command(command_id cid, node_id nid, buffer_id bid, node_id source, subrange<3> data_range)
 		    : abstract_command(cid, nid), m_bid(bid), m_source(source), m_data_range(data_range) {}
 
+		command_type get_type() const override { return command_type::data_request; }
+
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		node_id get_source() const { return m_source; }
@@ -112,6 +120,8 @@ namespace detail {
 	class reduction_command final : public abstract_command {
 		friend class command_graph;
 		reduction_command(command_id cid, node_id nid, const reduction_info& info) : abstract_command(cid, nid), m_info(info) {}
+
+		command_type get_type() const override { return command_type::reduction; }
 
 	  public:
 		const reduction_info& get_reduction_info() const { return m_info; }
@@ -135,6 +145,8 @@ namespace detail {
 		friend class command_graph;
 		epoch_command(const command_id& cid, const node_id& nid, const task_id& tid, epoch_action action) : task_command(cid, nid, tid), m_action(action) {}
 
+		command_type get_type() const override { return command_type::epoch; }
+
 	  public:
 		epoch_action get_epoch_action() const { return m_action; }
 
@@ -145,6 +157,8 @@ namespace detail {
 	class horizon_command final : public task_command {
 		friend class command_graph;
 		using task_command::task_command;
+
+		command_type get_type() const override { return command_type::horizon; }
 	};
 
 	class execution_command final : public task_command {
@@ -155,6 +169,8 @@ namespace detail {
 		    : task_command(cid, nid, tid), m_execution_range(execution_range) {}
 
 	  public:
+		command_type get_type() const override { return command_type::execution; }
+
 		const subrange<3>& get_execution_range() const { return m_execution_range; }
 
 		void set_is_reduction_initializer(bool is_initializer) { m_initialize_reductions = is_initializer; }

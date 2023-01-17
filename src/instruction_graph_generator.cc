@@ -9,7 +9,7 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
     : m_tm(tm), m_num_devices(num_devices), m_memories(num_devices + 1 /* TODO */) {
 	assert(num_devices + 1 <= max_memories);
 	for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
-		m_memories[mid].last_epoch = &create<epoch_instruction>(mid);
+		m_memories[mid].last_epoch = &create<epoch_instruction>(mid, std::nullopt /* command id */);
 	}
 }
 
@@ -336,26 +336,26 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			if(tsk.get_execution_target() == execution_target::device) {
 				assert(in.execution_sr.range.size() > 0);
 				assert(in.mid != host_memory_id);
-				in.instruction = &create<device_kernel_instruction>(in.did, in.mid, tsk, in.execution_sr);
+				in.instruction = &create<device_kernel_instruction>(in.did, xcmd->get_cid(), in.mid, tsk, in.execution_sr);
 			} else {
 				assert(tsk.get_execution_target() == execution_target::host);
 				assert(in.mid == host_memory_id);
-				in.instruction = &create<host_kernel_instruction>(tsk, in.execution_sr);
+				in.instruction = &create<host_kernel_instruction>(xcmd->get_cid(), in.execution_sr);
 			}
 		}
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
 			assert(insn.reads.size() == 1);
 			auto [bid, region] = *insn.reads.begin();
-			insn.instruction = &create<send_instruction>(pcmd->get_target(), bid, std::move(region));
+			insn.instruction = &create<send_instruction>(pcmd->get_cid(), pcmd->get_target(), bid, std::move(region));
 		}
 	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			insn.instruction = &create<horizon_instruction>(insn.mid);
+			insn.instruction = &create<horizon_instruction>(insn.mid, hcmd->get_cid());
 		}
 	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			insn.instruction = &create<epoch_instruction>(insn.mid);
+			insn.instruction = &create<epoch_instruction>(insn.mid, hcmd->get_cid());
 		}
 	} else {
 		assert(!"unhandled command type");

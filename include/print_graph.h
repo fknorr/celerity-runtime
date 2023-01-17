@@ -18,7 +18,7 @@ namespace detail {
 	std::string print_command_graph(const node_id local_nid, const command_graph& cdag, const task_manager& tm, const buffer_manager* bm);
 	std::string combine_command_graphs(const std::vector<std::string>& graphs);
 
-	std::string print_instruction_graph(const instruction_graph& idag);
+	std::string print_instruction_graph(const instruction_graph& idag, const command_graph& cdag, const task_manager& tm);
 
 } // namespace detail
 } // namespace celerity

@@ -35,6 +35,20 @@ namespace detail {
 		}
 	}
 
+	const char* command_type_string(const command_type ct) {
+		switch(ct) {
+		// default: return "unknown";
+		case command_type::epoch: return "epoch";
+		case command_type::horizon: return "horizon";
+		case command_type::execution: return "execution";
+		case command_type::data_request: return "data request";
+		case command_type::push: return "push";
+		case command_type::await_push: return "await push";
+		case command_type::reduction: return "reduction";
+		default: return "unknown";
+		}
+	}
+
 	std::string get_buffer_label(const buffer_manager* bm, const buffer_id bid) {
 		// if there is no buffer manager or no name defined, the name will be the buffer id.
 		// if there is a name we want "id name"
@@ -158,6 +172,21 @@ namespace detail {
 		return label;
 	}
 
+	std::string print_task_reference_label(const task_id tid, const task_manager& tm) {
+		std::string task_label;
+		fmt::format_to(std::back_inserter(task_label), "T{} ", tid);
+		if(const auto tsk = tm.find_task(tid)) {
+			if(!tsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(task_label), "\"{}\" ", tsk->get_debug_name()); }
+			task_label += "(";
+			task_label += task_type_string(tsk->get_type());
+			if(tsk->get_type() == task_type::collective) { fmt::format_to(std::back_inserter(task_label), " on CG{}", tsk->get_collective_group_id()); }
+			task_label += ")";
+		} else {
+			task_label += "(deleted)";
+		}
+		return task_label;
+	}
+
 	std::string print_command_graph(const node_id local_nid, const command_graph& cdag, const task_manager& tm, const buffer_manager* const bm) {
 		std::string main_dot;
 		std::unordered_map<task_id, std::string> task_subgraph_dot;
@@ -182,21 +211,8 @@ namespace detail {
 				const auto tid = tcmd->get_tid();
 				// Add to subgraph as well
 				if(task_subgraph_dot.count(tid) == 0) {
-					std::string task_label;
-					fmt::format_to(std::back_inserter(task_label), "T{} ", tid);
-					if(const auto tsk = tm.find_task(tid)) {
-						if(!tsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(task_label), "\"{}\" ", tsk->get_debug_name()); }
-						task_label += "(";
-						task_label += task_type_string(tsk->get_type());
-						if(tsk->get_type() == task_type::collective) {
-							fmt::format_to(std::back_inserter(task_label), " on CG{}", tsk->get_collective_group_id());
-						}
-						task_label += ")";
-					} else {
-						task_label += "(deleted)";
-					}
-					task_subgraph_dot.emplace(tid,
-					    fmt::format("subgraph cluster_{}{{label=<<font color=\"#606060\">{}</font>>;color=darkgray;", local_to_global_id(tid), task_label));
+					task_subgraph_dot.emplace(tid, fmt::format("subgraph cluster_{}{{label=<<font color=\"#606060\">{}</font>>;color=darkgray;",
+					                                   local_to_global_id(tid), print_task_reference_label(tid, tm)));
 				}
 				task_subgraph_dot[tid] += print_vertex(*cmd);
 			} else {
@@ -235,65 +251,78 @@ namespace detail {
 		return result_dot;
 	}
 
-	template <typename... FmtArgs>
-	void print_node(std::string& dot, const instruction& insn, FmtArgs&&... fmt_args) {
-		const auto back = std::back_inserter(dot);
-		fmt::format_to(std::back_inserter(dot), "I{0}[shape=box label=<I{0} on M{1}<br/>", insn.get_id(), insn.get_memory_id());
-		fmt::format_to(std::back_inserter(dot), std::forward<FmtArgs>(fmt_args)...);
-		fmt::format_to(std::back_inserter(dot), ">];");
+	std::string print_command_reference_label(const command_id cid, const command_graph& cdag, const task_manager& tm) {
+		std::string cmd_label;
+		fmt::format_to(std::back_inserter(cmd_label), "C{} ", cid);
+		if(cdag.has(cid)) {
+			const auto cmd = cdag.get(cid);
+			fmt::format_to(std::back_inserter(cmd_label), "({})", command_type_string(cmd->get_type()));
+			if(const auto tcmd = dynamic_cast<task_command*>(cmd)) { cmd_label += "<br/>from " + print_task_reference_label(tcmd->get_tid(), tm); }
+		} else {
+			cmd_label += "(deleted)";
+		}
+		return cmd_label;
 	}
 
-	void print_edge(std::string& dot, const instruction& from, const instruction& to, std::string_view style) {
-		fmt::format_to(std::back_inserter(dot), "I{}->I{}[{}];", from.get_id(), to.get_id(), style);
-	}
+	class instruction_graph_node_printer : public const_instruction_graph_visitor {
+	  public:
+		instruction_graph_node_printer(std::string& dot, const command_graph& cdag, const task_manager& tm) : m_dot(dot), m_cdag(cdag), m_tm(tm) {}
 
-	std::string print_instruction_graph(const instruction_graph& idag) {
+		void visit_alloc(const alloc_instruction& ainsn) override { print_node(ainsn, "<b>alloc</b> B{} {}", ainsn.get_buffer_id(), ainsn.get_region()); }
+
+		void visit_copy(const copy_instruction& cinsn) override {
+			const bool source_host = cinsn.get_source_memory() == host_memory_id;
+			const bool dest_host = cinsn.get_dest_memory() == host_memory_id;
+			const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
+			const auto side = cinsn.get_side() == copy_instruction::side::source ? "to" : "from";
+			print_node(
+			    cinsn, "<b>{}</b> {} M{}<br/>B{} {}", direction, side, cinsn.get_counterpart().get_memory_id(), cinsn.get_buffer_id(), cinsn.get_region());
+		}
+
+		void visit_device_kernel(const device_kernel_instruction& dkinsn) override {
+			print_node(dkinsn, "<b>kernel</b> on D{} {}", dkinsn.get_device_id(), dkinsn.get_execution_range());
+		}
+
+		void visit_host_kernel(const host_kernel_instruction& hkinsn) override { print_node(hkinsn, "<b>host kernel</b> {}", hkinsn.get_execution_range()); }
+
+		void visit_send(const send_instruction& sinsn) override {
+			print_node(sinsn, "<b>send</b> to N{}<br/>B{} {}", sinsn.get_dest_node_id(), sinsn.get_buffer_id(), sinsn.get_region());
+		}
+
+		void visit_recv(const recv_instruction& rinsn) override {
+			print_node(rinsn, "<b>recv</b> transfer {}<br/>B{} {}", rinsn.get_transfer_id(), rinsn.get_buffer_id(), rinsn.get_region());
+		}
+
+		void visit_horizon(const horizon_instruction& hinsn) override { print_node(hinsn, "<b>horizon</b>"); }
+
+		void visit_epoch(const epoch_instruction& einsn) override { print_node(einsn, "<b>epoch</b>"); }
+
+		void visit(const instruction& insn) override { print_node(insn, "<b>unknown</b>"); }
+
+		template <typename... FmtArgs>
+		void print_node(const instruction& insn, FmtArgs&&... fmt_args) {
+			const auto shape = insn.get_command_id().has_value() ? "box" : "ellipse";
+			const auto back = std::back_inserter(m_dot);
+			fmt::format_to(back, "I{0}[shape={1} label=<", insn.get_id(), shape);
+			if(insn.get_command_id().has_value()) {
+				fmt::format_to(back, "<font color=\"#606060\" point-size=\"14\">from {}<br/><br/></font>",
+				    print_command_reference_label(*insn.get_command_id(), m_cdag, m_tm));
+			}
+			fmt::format_to(back, "I{0} on M{1}<br/>", insn.get_id(), insn.get_memory_id());
+			fmt::format_to(back, std::forward<FmtArgs>(fmt_args)...);
+			fmt::format_to(back, ">];");
+		}
+
+	  private:
+		std::string& m_dot;
+		const command_graph& m_cdag;
+		const task_manager& m_tm;
+	};
+
+	std::string print_instruction_graph(const instruction_graph& idag, const command_graph& cdag, const task_manager& tm) {
 		std::string dot = "digraph G{label=\"Instruction Graph\";";
-		const auto dot_back = std::back_inserter(dot);
 
-		class node_printer : public const_instruction_graph_visitor {
-		  public:
-			explicit node_printer(std::string& dot) : m_dot(dot) {}
-
-			void visit_alloc(const alloc_instruction& ainsn) override {
-				print_node(m_dot, ainsn, "<b>alloc</b> B{} {}", ainsn.get_buffer_id(), ainsn.get_region());
-			}
-
-			void visit_copy(const copy_instruction& cinsn) override {
-				const bool source_host = cinsn.get_source_memory() == host_memory_id;
-				const bool dest_host = cinsn.get_dest_memory() == host_memory_id;
-				const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
-				const auto side = cinsn.get_side() == copy_instruction::side::source ? "to" : "from";
-				print_node(m_dot, cinsn, "<b>{}</b> {} M{}<br/>B{} {}", direction, side, cinsn.get_counterpart().get_memory_id(), cinsn.get_buffer_id(),
-				    cinsn.get_region());
-			}
-
-			void visit_device_kernel(const device_kernel_instruction& dkinsn) override {
-				print_node(m_dot, dkinsn, "<b>kernel</b> on D{} {}", dkinsn.get_device_id(), dkinsn.get_execution_range());
-			}
-
-			void visit_host_kernel(const host_kernel_instruction& hkinsn) override {
-				print_node(m_dot, hkinsn, "<b>host kernel</b> {}", hkinsn.get_execution_range());
-			}
-
-			void visit_send(const send_instruction& sinsn) override {
-				print_node(m_dot, sinsn, "<b>send</b> to N{}<br/>B{} {}", sinsn.get_dest_node_id(), sinsn.get_buffer_id(), sinsn.get_region());
-			}
-
-			void visit_recv(const recv_instruction& rinsn) override {
-				print_node(m_dot, rinsn, "<b>recv</b> via TR{}<br/>B{} {}", rinsn.get_transfer_id(), rinsn.get_buffer_id(), rinsn.get_region());
-			}
-
-			void visit_horizon(const horizon_instruction& hinsn) override { print_node(m_dot, hinsn, "<b>horizon</b>"); }
-
-			void visit_epoch(const epoch_instruction& einsn) override { print_node(m_dot, einsn, "<b>epoch</b>"); }
-
-			void visit(const instruction& insn) override { print_node(m_dot, insn, "<b>unknown</b>"); }
-
-		  private:
-			std::string& m_dot;
-		};
-		idag.visit(node_printer(dot));
+		idag.visit(instruction_graph_node_printer(dot, cdag, tm));
 
 		class edge_printer : public const_instruction_graph_visitor {
 		  public:
@@ -302,18 +331,22 @@ namespace detail {
 			void visit_copy(const copy_instruction& cinsn) override {
 				visit(cinsn);
 				if(cinsn.get_side() == copy_instruction::side::source) {
-					print_edge(m_dot, cinsn, cinsn.get_counterpart(), "color=gray,style=dashed,dir=both,constraint=false");
+					print_edge(cinsn, cinsn.get_counterpart(), "color=gray,style=dashed,dir=both,constraint=false");
 				}
 			}
 
 			void visit(const instruction& insn) override {
 				for(const auto& dep : insn.get_dependencies()) {
-					print_edge(m_dot, *dep.node, insn, dependency_style(dep));
+					print_edge(*dep.node, insn, dependency_style(dep));
 				}
 			}
 
 		  private:
 			std::string& m_dot;
+
+			void print_edge(const instruction& from, const instruction& to, std::string_view style) {
+				fmt::format_to(std::back_inserter(m_dot), "I{}->I{}[{}];", from.get_id(), to.get_id(), style);
+			}
 		};
 		idag.visit(edge_printer(dot));
 

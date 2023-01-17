@@ -11,6 +11,7 @@
 
 using namespace celerity;
 using namespace celerity::detail;
+using namespace celerity::experimental;
 
 namespace acc = celerity::access;
 
@@ -210,7 +211,7 @@ class idag_test_context {
 		if(test_utils::print_graphs) {
 			test_utils::maybe_print_graph(*m_tm);
 			CELERITY_INFO("Command graph:\n\n{}\n", m_cdag->print_graph(m_my_nid, std::numeric_limits<size_t>::max(), *m_tm, nullptr).value());
-			CELERITY_INFO("Instruction graph:\n\n{}\n", print_instruction_graph(m_iggen->get_graph()));
+			CELERITY_INFO("Instruction graph:\n\n{}\n", print_instruction_graph(m_iggen->get_graph(), *m_cdag, *m_tm));
 		}
 	}
 };
@@ -258,8 +259,8 @@ TEST_CASE("oversubscribe", "[instruction-graph]") {
 	const range<1> test_range = {256};
 	auto buf = ictx.create_buffer(test_range);
 
-	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).hint(celerity::experimental::hints::oversubscribe(2)).submit();
-	ictx.device_compute<class UKN(consumer)>(test_range).read(buf, acc::all()).hint(celerity::experimental::hints::oversubscribe(2)).submit();
+	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).hint(hints::oversubscribe(2)).submit();
+	ictx.device_compute<class UKN(consumer)>(test_range).read(buf, acc::all()).hint(hints::oversubscribe(2)).submit();
 }
 
 TEST_CASE("recv split", "[instruction-graph]") {

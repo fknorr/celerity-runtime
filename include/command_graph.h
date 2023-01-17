@@ -111,10 +111,10 @@ namespace detail {
 
 		bool has(command_id cid) const { return m_commands.count(cid) == 1; }
 
-		abstract_command* get(command_id cid) { return m_commands.at(cid).get(); }
+		abstract_command* get(command_id cid) const { return m_commands.at(cid).get(); }
 
 		template <typename T>
-		T* get(command_id cid) {
+		T* get(command_id cid) const {
 			// dynamic_cast with reference to force bad_cast to be thrown if type mismatches
 			return &dynamic_cast<T&>(*m_commands.at(cid));
 		}
