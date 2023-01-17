@@ -352,12 +352,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
 			insn.instruction = &create<horizon_instruction>(insn.mid);
-			// TODO reduce execution fronts
 		}
 	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
 			insn.instruction = &create<epoch_instruction>(insn.mid);
-			// TODO reduce execution fronts
 		}
 	} else {
 		assert(!"unhandled command type");
@@ -428,10 +426,13 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			memory.collapse_execution_front_to(insn.instruction);
 
 			instruction* new_epoch = nullptr;
+			instruction* new_last_horizon = nullptr;
 			if(isa<epoch_command>(&cmd)) {
 				new_epoch = insn.instruction;
+				new_last_horizon = nullptr;
 			} else {
 				new_epoch = memory.last_horizon; // can be null
+				new_last_horizon = insn.instruction;
 			}
 
 			if(new_epoch) {
@@ -445,6 +446,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				//	 - pro: No accidentally following stale pointers
 				//   - con: Thread safety (but how would a consumer know which dependency edges can be followed)?
 			}
+			memory.last_horizon = new_last_horizon;
 		} else {
 			// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
 			// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
