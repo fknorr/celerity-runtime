@@ -37,6 +37,7 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 
 // TODO HACK we're just pulling in the splitting logic from distributed_graph_generator here
 std::vector<chunk<3>> split_1d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks);
+std::vector<chunk<3>> split_2d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks);
 
 
 void instruction_graph_generator::compile(const abstract_command& cmd) {
@@ -45,6 +46,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 	struct partial_instruction {
 		subrange<3> execution_sr;
+		device_id did = -1;
 		memory_id mid = host_memory_id;
 		std::unordered_map<buffer_id, GridRegion<3>> reads;
 		std::unordered_map<buffer_id, GridRegion<3>> writes;
@@ -59,19 +61,34 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
 		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
 		const auto command_sr = xcmd->get_execution_range();
-		if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device /* don't split host tasks, but TODO oversubscription */) {
-			// TODO oversubscription, tiled split
-			const auto device_chunks = split_1d(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_num_devices);
-			cmd_insns.resize(device_chunks.size());
-			for(size_t i = 0; i < device_chunks.size(); ++i) {
-				cmd_insns[i].execution_sr = subrange<3>(device_chunks[i].offset, device_chunks[i].range);
-				cmd_insns[i].mid = memory_id(i + 1); // round-robin assignment
+		if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device) {
+			const auto split = tsk.get_hint<experimental::hints::tiled_split>() ? split_2d : split_1d;
+			const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>();
+			const auto num_sub_chunks_per_device = oversubscribe ? oversubscribe->get_factor() : 1;
+
+			const auto device_chunks = split(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_num_devices);
+			for(device_id did = 0; did < m_num_devices && did < device_chunks.size(); ++did) {
+				// subdivide recursively so that in case of a 2D split, we still produce 2D tiles instead of a row-subset
+				const auto this_device_sub_chunks = split(device_chunks[did], tsk.get_granularity(), num_sub_chunks_per_device);
+				for(const auto& sub_chunk : this_device_sub_chunks) {
+					auto& insn = cmd_insns.emplace_back();
+					insn.execution_sr = subrange<3>(sub_chunk.offset, sub_chunk.range);
+					insn.did = did;
+					insn.mid = device_to_memory_id(did);
+				}
 			}
 		} else {
-			cmd_insns.resize(1);
-			cmd_insns[0].execution_sr = command_sr;
-			// memory_id(1) is the first device - note this may lead to load imbalance if there's multiple independent unsplittale tasks.
-			cmd_insns[0].mid = tsk.get_execution_target() == execution_target::device ? memory_id(1) : host_memory_id;
+			// TODO oversubscribe distributed host tasks
+			auto& insn = cmd_insns.emplace_back();
+			insn.execution_sr = command_sr;
+			if(tsk.get_execution_target() == execution_target::device) {
+				// Assign work to the first device - note this may lead to load imbalance if there's multiple independent unsplittable tasks.
+				//   - but at the same time, keeping work on one device minimizes data transfers => this can only truly be solved through profiling.
+				insn.did = 0;
+				insn.mid = device_to_memory_id(insn.did);
+			} else {
+				insn.mid = host_memory_id;
+			}
 		}
 
 		const auto& bam = tsk.get_buffer_access_map();
@@ -255,8 +272,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(auto& in : cmd_insns) {
 			if(tsk.get_execution_target() == execution_target::device) {
 				assert(in.execution_sr.range.size() > 0);
-				assert(in.mid != host_memory_id && in.mid - 1 < m_num_devices);
-				in.instruction = &create<device_kernel_instruction>(device_id(in.mid - 1), tsk, in.execution_sr);
+				assert(in.mid != host_memory_id);
+				in.instruction = &create<device_kernel_instruction>(in.did, in.mid, tsk, in.execution_sr);
 			} else {
 				assert(tsk.get_execution_target() == execution_target::host);
 				assert(in.mid == host_memory_id);

@@ -65,3 +65,19 @@ TEST_CASE("instruction graph") {
 
 	fmt::print("{}\n", print_instruction_graph(iggen.get_graph()));
 }
+
+
+TEST_CASE("oversubscribe", "[instruction-graph]") {
+	dist_cdag_test_context dctx(2);
+
+	const range<1> test_range = {256};
+	auto buf = dctx.create_buffer(test_range);
+	dctx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).hint(celerity::experimental::hints::oversubscribe(2)).submit();
+	dctx.device_compute<class UKN(consumer)>(test_range).read(buf, acc::all()).hint(celerity::experimental::hints::oversubscribe(2)).submit();
+	instruction_graph_generator iggen(dctx.get_task_manager(), 2);
+	iggen.register_buffer(buf.get_id(), range<3>(256, 1, 1)); // TODO have an idag_test_context to do this
+	for(const auto cmd : topsort(dctx.get_graph_generator(0).NOCOMMIT_get_cdag())) {
+		iggen.compile(*cmd);
+	}
+	fmt::print("{}\n", print_instruction_graph(iggen.get_graph()));
+}

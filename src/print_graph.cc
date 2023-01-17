@@ -269,7 +269,7 @@ namespace detail {
 			}
 
 			void visit_device_kernel(const device_kernel_instruction& dkinsn) override {
-				print_node(m_dot, dkinsn, "<b>kernel</b> {}", dkinsn.get_execution_range());
+				print_node(m_dot, dkinsn, "<b>kernel</b> on D{} {}", dkinsn.get_device_id(), dkinsn.get_execution_range());
 			}
 
 			void visit_host_kernel(const host_kernel_instruction& hkinsn) override {

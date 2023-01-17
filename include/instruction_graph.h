@@ -107,12 +107,14 @@ class copy_instruction : public instruction {
 
 class device_kernel_instruction : public instruction {
   public:
-	explicit device_kernel_instruction(const instruction_id id, const device_id did, const task& tsk, const subrange<3>& execution_range)
-	    : instruction(id, memory_id(did + 1)), m_tsk(tsk), m_execution_range(execution_range) {}
+	explicit device_kernel_instruction(const instruction_id id, const device_id did, const memory_id mid, const task& tsk, const subrange<3>& execution_range)
+	    : instruction(id, mid), m_tsk(tsk), m_device_id(did), m_execution_range(execution_range) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_device_kernel(*this); }
 
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
+
+	device_id get_device_id() const { return m_device_id; }
 
   private:
 	const task& m_tsk;

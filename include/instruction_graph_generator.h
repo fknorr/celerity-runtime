@@ -184,6 +184,10 @@ class instruction_graph_generator {
 		from.add_dependency({&to, kind, origin});
 		if(kind == dependency_kind::true_dep) { m_memories[to.get_memory_id()].execution_front.erase(&to); }
 	}
+
+	// This mapping will differ for architectures that share memory between host and device or between devices.
+	// TODO we want a class like detail::local_devices to do the conversion, but without the runtime dependency (i.e. host_queue).
+	memory_id device_to_memory_id(const device_id did) const { return did + 1; }
 };
 
 } // namespace celerity::detail

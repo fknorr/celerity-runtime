@@ -14,7 +14,7 @@ namespace celerity::detail {
 
 distributed_graph_generator::distributed_graph_generator(
     const size_t num_nodes, const size_t num_local_devices, const node_id local_nid, command_graph& cdag, const task_manager& tm)
-    : m_num_nodes(num_nodes), m_num_local_devices(num_local_devices), m_local_nid(local_nid), m_cdag(cdag), m_task_mngr(tm) {
+    : m_num_nodes(num_nodes), m_num_local_devices(1), m_local_nid(local_nid), m_cdag(cdag), m_task_mngr(tm) {
 	if(m_num_nodes > max_num_nodes) {
 		throw std::runtime_error(fmt::format("Number of nodes requested ({}) exceeds compile-time maximum of {}", m_num_nodes, max_num_nodes));
 	}
@@ -268,8 +268,9 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	assert(distributed_chunks.size() <= num_chunks); // We may have created less than requested
 	assert(!distributed_chunks.empty());
 
-	const auto* oversub_hint = tsk.get_hint<experimental::hints::oversubscribe>();
-	const size_t oversub_factor = oversub_hint != nullptr ? oversub_hint->get_factor() : 1;
+	const size_t oversub_factor = 1; // TODO this is now handled by instruction_graph_generator, get rid of oversubscription and device assigment here
+	// const auto* oversub_hint = tsk.get_hint<experimental::hints::oversubscribe>();
+	// const size_t oversub_factor = oversub_hint != nullptr ? oversub_hint->get_factor() : 1;
 
 	// Assign each chunk to a node
 	// We assign chunks next to each other to the same worker (if there is more chunks than workers), as this is likely to produce less
