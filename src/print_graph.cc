@@ -277,11 +277,11 @@ namespace detail {
 			}
 
 			void visit_send(const send_instruction& sinsn) override {
-				print_node(m_dot, sinsn, "<b>send</b> B{} {}", sinsn.get_buffer_id(), sinsn.get_region());
+				print_node(m_dot, sinsn, "<b>send</b> to N{}<br/>B{} {}", sinsn.get_dest_node_id(), sinsn.get_buffer_id(), sinsn.get_region());
 			}
 
 			void visit_recv(const recv_instruction& rinsn) override {
-				print_node(m_dot, rinsn, "<b>recv</b> B{} {}", rinsn.get_buffer_id(), rinsn.get_region());
+				print_node(m_dot, rinsn, "<b>recv</b> via TR{}<br/>B{} {}", rinsn.get_transfer_id(), rinsn.get_buffer_id(), rinsn.get_region());
 			}
 
 			void visit_horizon(const horizon_instruction& hinsn) override { print_node(m_dot, hinsn, "<b>horizon</b>"); }

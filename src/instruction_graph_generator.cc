@@ -44,6 +44,23 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	assert(std::all_of(m_memories.begin(), m_memories.end(), [](const per_memory_data& memory) { return memory.last_epoch != nullptr; }) //
 	       || isa<epoch_command>(&cmd));
 
+	// We do not generate instructions for await-push commands immediately upon receiving them; instead, we buffer them and generate recv-instructions
+	// as soon as data is to be read by another instruction. This way, we can split the recv instructions and avoid unnecessary synchronization points
+	// between chunks that can otherwise profit from a transfer-compute overlap.
+	if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
+		auto& buffer = m_buffers.at(apcmd->get_bid());
+		auto region = apcmd->get_region();
+
+#ifndef NDEBUG
+		for(const auto& [box, trid] : buffer.pending_await_pushes.get_region_values(region)) {
+			assert(trid == transfer_id() && "received an await-push command into a previously await-pushed region without an intermediate read");
+		}
+#endif
+		buffer.newest_data_location.update_region(region, data_location()); // not present anywhere locally
+		buffer.pending_await_pushes.update_region(region, apcmd->get_transfer_id());
+		return;
+	}
+
 	struct partial_instruction {
 		subrange<3> execution_sr;
 		device_id did = -1;
@@ -129,12 +146,6 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			insn.mid = host_memory_id;
 			insn.reads.emplace(bid, std::move(region));
 		}
-	} else if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
-		// TODO buffer await-pushes and generate recvs only when data is actually requested by an instruction
-		auto& insn = cmd_insns.emplace_back();
-		// This can eventually become a device memory id if we make use of CUDA-aware MPI
-		insn.mid = host_memory_id;
-		insn.writes.emplace(apcmd->get_bid(), apcmd->get_region());
 	} else if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
 		cmd_insns.resize(m_memories.size());
 		for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
@@ -163,8 +174,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		// TODO allocate a multiple of the allocator's page size (GridRegion might not be the right parameter to alloc_instruction)
 		auto& alloc_instr = create<alloc_instruction>(mid, bid, region);
 
-		// TODO until we have ndvbuffers everywhere, alloc_instructions need forward and backward dependencies to reproduce buffer-locking semantics
-		//	 we could solve this by having resize_instructions instead that "read" the entire previous and "write" the entire new allocation
+		// TODO until we have ndvbuffers everywhere, alloc_instructions need forward and backward dependencies to reproduce buffer-locking semantics.
+		//	 We could solve this by having resize_instructions instead that "read" the entire previous and "write" the entire new allocation
 		add_dependency(alloc_instr, *m_memories[mid].last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
 		m_buffers.at(bid).memories[mid].record_allocation(region, &alloc_instr);
@@ -203,6 +214,40 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 	}
 
+	// First, see if there are pending await-pushes for any of the unsatisfied read regions.
+	for(auto& [bid_mid, disjoint_regions] : unsatisfied_reads) {
+		const auto& [bid, mid] = bid_mid;
+		auto& buffer = m_buffers.at(bid);
+		for(auto& region : disjoint_regions) {
+			// merge regions per transfer id to generate at most one instruction per pending await-push command
+			std::unordered_map<transfer_id, GridRegion<3>> transfer_regions;
+			for(auto& [box, trid] : buffer.pending_await_pushes.get_region_values(region)) {
+				if(trid != transfer_id()) {
+					auto& tr_region = transfer_regions[trid]; // allow default-insert
+					tr_region = GridRegion<3>::merge(tr_region, box);
+				}
+			}
+			for(auto& [trid, tr_region] : transfer_regions) {
+				const auto tr_insn = &create<recv_instruction>(trid, bid, tr_region);
+				auto& memory = m_memories[host_memory_id];
+				auto& buffer_memory = buffer.memories[host_memory_id];
+
+				// TODO the dependency logic here is duplicated from copy-instruction generation
+				for(const auto& [_, front] : buffer_memory.access_fronts.get_region_values(tr_region)) {
+					for(const auto dep_instr : front.front) {
+						add_dependency(*tr_insn, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+					}
+				}
+				add_dependency(*tr_insn, *memory.last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				buffer_memory.record_write(tr_region, tr_insn);
+
+				buffer.original_writers.update_region(tr_region, tr_insn);
+				buffer.newest_data_location.update_region(tr_region, data_location(host_memory_id));
+				buffer.pending_await_pushes.update_region(tr_region, transfer_id());
+			}
+		}
+	}
+
 	struct copy_template {
 		buffer_id bid;
 		memory_id from;
@@ -216,6 +261,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		auto& buffer = m_buffers.at(bid);
 		for(auto& region : disjoint_regions) {
 			const auto region_sources = buffer.newest_data_location.get_region_values(region);
+#ifndef NDEBUG
+			for(const auto& [box, sources] : region_sources) {
+				assert(sources.any() || "trying to read data that is neither found locally nor has been await-pushed before");
+			}
+#endif
 
 			// try finding a common source for the entire region first to minimize instruction / synchronization complexity down the line
 			const auto common_sources = std::accumulate(region_sources.begin(), region_sources.end(), data_location(),
@@ -299,9 +349,6 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			auto [bid, region] = *insn.reads.begin();
 			insn.instruction = &create<send_instruction>(pcmd->get_target(), bid, std::move(region));
 		}
-	} else if(const auto* apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
-		assert(cmd_insns.size() == 1);
-		cmd_insns.front().instruction = &create<recv_instruction>(apcmd->get_transfer_id(), apcmd->get_bid(), apcmd->get_region());
 	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
 			insn.instruction = &create<horizon_instruction>(insn.mid);

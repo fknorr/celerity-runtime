@@ -143,6 +143,7 @@ class send_instruction : public instruction {
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_send(*this); }
 
+	node_id get_dest_node_id() const { return m_to; }
 	buffer_id get_buffer_id() const { return m_bid; }
 	GridRegion<3> get_region() const { return m_region; }
 
@@ -154,16 +155,17 @@ class send_instruction : public instruction {
 
 class recv_instruction : public instruction {
   public:
-	explicit recv_instruction(const instruction_id id, const transfer_id transfer, const buffer_id bid, const GridRegion<3>& region)
-	    : instruction(id, host_memory_id), m_transfer(transfer), m_bid(bid), m_region(region) {}
+	explicit recv_instruction(const instruction_id id, const transfer_id trid, const buffer_id bid, const GridRegion<3>& region)
+	    : instruction(id, host_memory_id), m_trid(trid), m_bid(bid), m_region(region) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_recv(*this); }
 
+	transfer_id get_transfer_id() const { return m_trid; }
 	buffer_id get_buffer_id() const { return m_bid; }
 	GridRegion<3> get_region() const { return m_region; }
 
   private:
-	transfer_id m_transfer;
+	transfer_id m_trid;
 	buffer_id m_bid;
 	GridRegion<3> m_region;
 };

@@ -81,3 +81,21 @@ TEST_CASE("oversubscribe", "[instruction-graph]") {
 	}
 	fmt::print("{}\n", print_instruction_graph(iggen.get_graph()));
 }
+
+TEST_CASE("recv split", "[instruction-graph]") {
+	dist_cdag_test_context dctx(2);
+
+	const auto reverse_one_to_one = [](chunk<1> ck) -> subrange<1> { return {ck.global_size[0] - ck.range[0] - ck.offset[0], ck.range[0]}; };
+
+	const range<1> test_range = {256};
+	auto buf = dctx.create_buffer(test_range);
+	dctx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).submit();
+	dctx.device_compute<class UKN(consumer)>(test_range).read(buf, reverse_one_to_one).submit();
+
+	instruction_graph_generator iggen(dctx.get_task_manager(), 2);
+	iggen.register_buffer(buf.get_id(), range<3>(256, 1, 1)); // TODO have an idag_test_context to do this
+	for(const auto cmd : topsort(dctx.get_graph_generator(0).NOCOMMIT_get_cdag())) {
+		iggen.compile(*cmd);
+	}
+	fmt::print("{}\n", print_instruction_graph(iggen.get_graph()));
+}

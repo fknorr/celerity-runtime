@@ -95,9 +95,10 @@ class instruction_graph_generator {
 		std::vector<per_memory_data> memories;
 		region_map<data_location> newest_data_location;
 		region_map<instruction*> original_writers;
+		region_map<transfer_id> pending_await_pushes;
 
 		explicit per_buffer_data(const celerity::range<3>& range, const size_t n_memories)
-		    : range(range), newest_data_location(range), original_writers(range) {
+		    : range(range), newest_data_location(range), original_writers(range), pending_await_pushes(range) {
 			memories.reserve(n_memories);
 			for(size_t i = 0; i < n_memories; ++i) {
 				memories.emplace_back(range);
