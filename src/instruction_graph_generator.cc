@@ -6,8 +6,11 @@
 namespace celerity::detail {
 
 instruction_graph_generator::instruction_graph_generator(const task_manager& tm, size_t num_devices)
-    : m_tm(tm), m_num_devices(num_devices), m_memories(num_devices + 1) {
+    : m_tm(tm), m_num_devices(num_devices), m_memories(num_devices + 1 /* TODO */) {
 	assert(num_devices + 1 <= max_memories);
+	for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
+		m_memories[mid].last_epoch = &create<epoch_instruction>(mid);
+	}
 }
 
 void instruction_graph_generator::register_buffer(buffer_id bid, cl::sycl::range<3> range) {
@@ -41,9 +44,6 @@ std::vector<chunk<3>> split_2d(const chunk<3>& full_chunk, const range<3>& granu
 
 
 void instruction_graph_generator::compile(const abstract_command& cmd) {
-	assert(std::all_of(m_memories.begin(), m_memories.end(), [](const per_memory_data& memory) { return memory.last_epoch != nullptr; }) //
-	       || isa<epoch_command>(&cmd));
-
 	// We do not generate instructions for await-push commands immediately upon receiving them; instead, we buffer them and generate recv-instructions
 	// as soon as data is to be read by another instruction. This way, we can split the recv instructions and avoid unnecessary synchronization points
 	// between chunks that can otherwise profit from a transfer-compute overlap.
@@ -95,7 +95,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				}
 			}
 		} else {
-			// TODO oversubscribe distributed host tasks
+			// TODO oversubscribe distributed host tasks (but not if they have side effects)
 			auto& insn = cmd_insns.emplace_back();
 			insn.execution_sr = command_sr;
 			if(tsk.get_execution_target() == execution_target::device) {
@@ -365,7 +365,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
 	// TODO this will not work correctly for oversubscription
-	//	 - read-all + write-1:1 cannot be oversubscribed at all chunks would need a global read->write barrier (how would the kernel even look like?)
+	//	 - read-all + write-1:1 cannot be oversubscribed at all, chunks would need a global read->write barrier (how would the kernel even look like?)
 	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
 	for(const auto& insn : cmd_insns) {
 		for(const auto& [bid, region] : insn.reads) {
@@ -450,11 +450,9 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		} else {
 			// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
 			// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
-			if(memory.last_epoch != nullptr) {
-				const auto deps = insn.instruction->get_dependencies();
-				if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
-					add_dependency(*insn.instruction, *memory.last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-				}
+			const auto deps = insn.instruction->get_dependencies();
+			if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
+				add_dependency(*insn.instruction, *memory.last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 			}
 		}
 	}

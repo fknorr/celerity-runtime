@@ -44,6 +44,7 @@
 #define REQUIRE_LOOP(...) CELERITY_DETAIL_REQUIRE_LOOP(__VA_ARGS__)
 
 class dist_cdag_test_context; // Forward decl b/c we want to be mock_buffer's friend
+class idag_test_context;      // Forward decl b/c we want to be mock_buffer's friend
 
 namespace celerity {
 namespace detail {
@@ -160,6 +161,7 @@ namespace test_utils {
 	  private:
 		friend class mock_buffer_factory;
 		friend class ::dist_cdag_test_context;
+		friend class ::idag_test_context;
 
 		detail::buffer_id m_id;
 		cl::sycl::range<Dims> m_size;
@@ -176,6 +178,7 @@ namespace test_utils {
 	  private:
 		friend class mock_host_object_factory;
 		friend class ::dist_cdag_test_context;
+		friend class ::idag_test_context;
 
 		detail::host_object_id m_id;
 

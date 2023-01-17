@@ -240,15 +240,15 @@ namespace detail {
 		const auto back = std::back_inserter(dot);
 		fmt::format_to(std::back_inserter(dot), "I{0}[shape=box label=<I{0} on M{1}<br/>", insn.get_id(), insn.get_memory_id());
 		fmt::format_to(std::back_inserter(dot), std::forward<FmtArgs>(fmt_args)...);
-		fmt::format_to(std::back_inserter(dot), ">];\n");
+		fmt::format_to(std::back_inserter(dot), ">];");
 	}
 
 	void print_edge(std::string& dot, const instruction& from, const instruction& to, std::string_view style) {
-		fmt::format_to(std::back_inserter(dot), "I{}->I{}[{}];\n", from.get_id(), to.get_id(), style);
+		fmt::format_to(std::back_inserter(dot), "I{}->I{}[{}];", from.get_id(), to.get_id(), style);
 	}
 
 	std::string print_instruction_graph(const instruction_graph& idag) {
-		std::string dot = "digraph G{\nlabel=\"Instruction Graph\";\n";
+		std::string dot = "digraph G{label=\"Instruction Graph\";";
 		const auto dot_back = std::back_inserter(dot);
 
 		class node_printer : public const_instruction_graph_visitor {
@@ -317,7 +317,7 @@ namespace detail {
 		};
 		idag.visit(edge_printer(dot));
 
-		dot += "}\n";
+		dot += "}";
 		return dot;
 	}
 
