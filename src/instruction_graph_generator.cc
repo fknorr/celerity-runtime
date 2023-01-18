@@ -5,12 +5,9 @@
 
 namespace celerity::detail {
 
-instruction_graph_generator::instruction_graph_generator(const task_manager& tm, size_t num_devices)
-    : m_tm(tm), m_num_devices(num_devices), m_memories(num_devices + 1 /* TODO */) {
+instruction_graph_generator::instruction_graph_generator(const task_manager& tm, size_t num_devices) : m_tm(tm), m_num_devices(num_devices) {
 	assert(num_devices + 1 <= max_memories);
-	for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
-		m_memories[mid].last_epoch = &create<epoch_instruction>(mid, std::nullopt /* command id */);
-	}
+	m_last_epoch = &create<epoch_instruction>(command_id(0 /* or so we assume */));
 }
 
 void instruction_graph_generator::register_buffer(buffer_id bid, cl::sycl::range<3> range) {
@@ -21,11 +18,11 @@ void instruction_graph_generator::register_buffer(buffer_id bid, cl::sycl::range
 void instruction_graph_generator::unregister_buffer(buffer_id bid) { m_buffers.erase(bid); }
 
 void instruction_graph_generator::register_host_object(host_object_id hoid) {
-	[[maybe_unused]] const auto [_, inserted] = m_host_memory.host_objects.emplace(hoid, host_memory_data::per_host_object_data());
+	[[maybe_unused]] const auto [_, inserted] = m_host_objects.emplace(hoid, per_host_object_data());
 	assert(inserted);
 }
 
-void instruction_graph_generator::unregister_host_object(host_object_id hoid) { m_host_memory.host_objects.erase(hoid); }
+void instruction_graph_generator::unregister_host_object(host_object_id hoid) { m_host_objects.erase(hoid); }
 
 
 memory_id instruction_graph_generator::next_location(const data_location& location, memory_id first) {
@@ -35,35 +32,6 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 	}
 	assert(!"data is requested to be read, but not located in any memory");
 	std::abort();
-}
-
-
-void instruction_graph_generator::walk_transitive_copy_dependencies(instruction* const in, copy_instruction* const root_dest, int max_hops) {
-	assert(root_dest->get_side() == copy_instruction::side::dest);
-
-	// normally recursion will terminate upon reaching the deletion-epoch, but with a user-controllable horizon step size this will have worst-case exponential
-	// complexity, so we force eventual termination after 10 hops (the default parameter to this function).
-	if(max_hops <= 0) return;
-
-	for(auto& dep : in->get_dependencies()) {
-		if(dep.kind == dependency_kind::true_dep) {
-			if(const auto copy_in = dynamic_cast<copy_instruction*>(dep.node)) {
-				assert(copy_in->get_side() == copy_instruction::side::dest); // a copy source should never be a true dependency to a non-horizon/epoch
-				const auto copy_source = &copy_in->get_counterpart();
-				if(copy_source->get_memory_id() == root_dest->get_memory_id()) {
-					// found: the "root" has a transitive, implicit dependency on this copy-source
-					add_dependency(*root_dest, *copy_source, dependency_kind::true_dep, dependency_origin::transitive_dataflow);
-				} else {
-					// if the copy was not made from "root" memory, keep following its source to find dependencies across multiple devices
-					walk_transitive_copy_dependencies(copy_source, root_dest, max_hops - 1);
-				}
-			} else if(const auto kernel_in = dynamic_cast<kernel_instruction*>(dep.node)) {
-				// kernels will also carry data dependencies (but no other instruction except copies)
-				walk_transitive_copy_dependencies(kernel_in, root_dest, max_hops - 1);
-			}
-		}
-	}
-	// recursion will eventually stop at horizons / epochs
 }
 
 
@@ -174,10 +142,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			insn.rw_map.emplace(bid, reads_writes{std::move(region), {}});
 		}
 	} else if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
-		cmd_insns.resize(m_memories.size());
-		for(memory_id mid = 0; mid < m_memories.size(); ++mid) {
-			cmd_insns[mid].mid = mid;
-		}
+		cmd_insns.emplace_back();
 	} else {
 		assert(!"unhandled command type");
 		std::abort();
@@ -199,11 +164,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		const auto [bid, mid] = bid_mid;
 
 		// TODO allocate a multiple of the allocator's page size (GridRegion might not be the right parameter to alloc_instruction)
-		auto& alloc_instr = create<alloc_instruction>(mid, bid, region);
+		auto& alloc_instr = create<alloc_instruction>(bid, mid, region);
 
 		// TODO until we have ndvbuffers everywhere, alloc_instructions need forward and backward dependencies to reproduce buffer-locking semantics.
 		//	 We could solve this by having resize_instructions instead that "read" the entire previous and "write" the entire new allocation
-		add_dependency(alloc_instr, *m_memories[mid].last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+		add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
 		m_buffers.at(bid).memories[mid].record_allocation(region, &alloc_instr);
 	}
@@ -256,7 +221,6 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			}
 			for(auto& [trid, tr_region] : transfer_regions) {
 				const auto tr_insn = &create<recv_instruction>(trid, bid, tr_region);
-				auto& memory = m_memories[host_memory_id];
 				auto& buffer_memory = buffer.memories[host_memory_id];
 
 				// TODO the dependency logic here is duplicated from copy-instruction generation
@@ -265,7 +229,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 						add_dependency(*tr_insn, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 					}
 				}
-				add_dependency(*tr_insn, *memory.last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				add_dependency(*tr_insn, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 				buffer_memory.record_write(tr_region, tr_insn);
 
 				buffer.original_writers.update_region(tr_region, tr_insn);
@@ -337,24 +301,21 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		assert(copy.from != copy.to);
 		auto& buffer = m_buffers.at(copy.bid);
 
-		auto [source_instr, dest_instr] = create_copy(copy.from, copy.to, copy.bid, copy.region);
+		const auto copy_in = &create<copy_instruction>(copy.bid, copy.region, copy.from, copy.to);
 		for(const auto& [_, last_writer_instr] : buffer.memories[copy.from].last_writers.get_region_values(copy.region)) {
-			add_dependency(source_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+			add_dependency(*copy_in, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 		}
-		buffer.memories[copy.from].record_read(copy.region, &source_instr);
+		buffer.memories[copy.from].record_read(copy.region, copy_in);
 
 		for(const auto& [_, front] : buffer.memories[copy.to].access_fronts.get_region_values(copy.region)) {
 			for(const auto dep_instr : front.front) {
-				add_dependency(dest_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+				add_dependency(*copy_in, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 			}
 		}
-		add_dependency(dest_instr, *m_memories[copy.to].last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-		buffer.memories[copy.to].record_write(copy.region, &dest_instr);
+		buffer.memories[copy.to].record_write(copy.region, copy_in);
 		for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
 			buffer.newest_data_location.update_region(box, data_location(location).set(copy.to));
 		}
-
-		walk_transitive_copy_dependencies(&source_instr, &dest_instr);
 	}
 
 	// 4) create the actual command instructions
@@ -365,7 +326,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			if(tsk.get_execution_target() == execution_target::device) {
 				assert(in.execution_sr.range.size() > 0);
 				assert(in.mid != host_memory_id);
-				in.instruction = &create<device_kernel_instruction>(in.mid, in.did, xcmd->get_cid(), in.execution_sr, in.rw_map);
+				in.instruction = &create<device_kernel_instruction>(in.did, xcmd->get_cid(), in.execution_sr, in.rw_map);
 			} else {
 				assert(tsk.get_execution_target() == execution_target::host);
 				assert(in.mid == host_memory_id);
@@ -381,11 +342,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			insn.instruction = &create<horizon_instruction>(insn.mid, hcmd->get_cid());
+			insn.instruction = &create<horizon_instruction>(hcmd->get_cid());
 		}
 	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			insn.instruction = &create<epoch_instruction>(insn.mid, hcmd->get_cid());
+			insn.instruction = &create<epoch_instruction>(hcmd->get_cid());
 		}
 	} else {
 		assert(!"unhandled command type");
@@ -414,13 +375,13 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 		for(const auto& [hoid, order] : insn.se_map) {
 			assert(insn.mid == host_memory_id);
-			if(const auto last_side_effect = m_host_memory.host_objects.at(hoid).last_side_effect) {
+			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
 				add_dependency(*insn.instruction, *last_side_effect, dependency_kind::true_dep, dependency_origin::dataflow);
 			}
 		}
 		if(insn.cgid != collective_group_id(0) /* 0 means "no collective group association" */) {
 			assert(insn.mid == host_memory_id);
-			auto& group = m_host_memory.collective_groups[insn.cgid]; // allow default-insertion since we do not register CGs explicitly
+			auto& group = m_collective_groups[insn.cgid]; // allow default-insertion since we do not register CGs explicitly
 			if(group.last_host_task) {
 				add_dependency(*insn.instruction, *group.last_host_task, dependency_kind::true_dep, dependency_origin::collective_group_serialization);
 			}
@@ -439,50 +400,35 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		}
 		for(const auto& [hoid, order] : insn.se_map) {
 			assert(insn.mid == host_memory_id);
-			m_host_memory.host_objects.at(hoid).last_side_effect = insn.instruction;
+			m_host_objects.at(hoid).last_side_effect = insn.instruction;
 		}
 		if(insn.cgid != collective_group_id(0) /* 0 means "no collective group association" */) {
 			assert(insn.mid == host_memory_id);
-			m_host_memory.collective_groups.at(insn.cgid).last_host_task = insn.instruction;
+			m_collective_groups.at(insn.cgid).last_host_task = insn.instruction;
 		}
 	}
 
 	// 7) insert epoch and horizon dependencies, apply epochs
 
 	for(auto& insn : cmd_insns) {
-		auto& memory = m_memories[insn.mid];
-
 		if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
-			memory.collapse_execution_front_to(insn.instruction);
+			collapse_execution_front_to(insn.instruction);
 
 			instruction* new_epoch = nullptr;
 			instruction* new_last_horizon = nullptr;
 			if(isa<epoch_command>(&cmd)) {
-				new_epoch = insn.instruction;
-				new_last_horizon = nullptr;
+				apply_epoch(insn.instruction);
+				m_last_horizon = nullptr;
 			} else {
-				new_epoch = memory.last_horizon; // can be null
-				new_last_horizon = insn.instruction;
+				if(m_last_horizon) { apply_epoch(m_last_horizon); }
+				m_last_horizon = insn.instruction;
 			}
-
-			if(new_epoch) {
-				for(auto& [_, buffer] : m_buffers) {
-					buffer.apply_epoch(new_epoch);
-				}
-				if(insn.mid == host_memory_id) { m_host_memory.apply_epoch(new_epoch); }
-				memory.last_epoch = new_epoch;
-
-				// TODO prune graph. Should we re-write node dependencies?
-				//	 - pro: No accidentally following stale pointers
-				//   - con: Thread safety (but how would a consumer know which dependency edges can be followed)?
-			}
-			memory.last_horizon = new_last_horizon;
 		} else {
 			// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
 			// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
 			const auto deps = insn.instruction->get_dependencies();
 			if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
-				add_dependency(*insn.instruction, *memory.last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+				add_dependency(*insn.instruction, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 			}
 		}
 	}

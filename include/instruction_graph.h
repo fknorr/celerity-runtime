@@ -39,7 +39,7 @@ class const_instruction_graph_visitor {
 
 class instruction : public intrusive_graph_node<instruction> {
   public:
-	explicit instruction(const instruction_id id, const memory_id mid, const std::optional<command_id> cid = std::nullopt) : m_id(id), m_mid(mid), m_cid(cid) {}
+	explicit instruction(const instruction_id id, const std::optional<command_id> cid = std::nullopt) : m_id(id), m_cid(cid) {}
 
 	instruction(const instruction&) = delete;
 	instruction& operator=(const instruction&) = delete;
@@ -48,12 +48,10 @@ class instruction : public intrusive_graph_node<instruction> {
 	virtual void visit(const_instruction_graph_visitor& visitor) const = 0;
 
 	instruction_id get_id() const { return m_id; }
-	memory_id get_memory_id() const { return m_mid; }
 	std::optional<command_id> get_command_id() const { return m_cid; }
 
   private:
 	instruction_id m_id;
-	memory_id m_mid;
 	std::optional<command_id> m_cid;
 };
 
@@ -63,49 +61,38 @@ struct instruction_id_less {
 
 class alloc_instruction final : public instruction {
   public:
-	explicit alloc_instruction(const instruction_id id, const memory_id mid, const buffer_id bid, GridRegion<3> region)
-	    : instruction(id, mid), m_bid(bid), m_region(region) {}
+	explicit alloc_instruction(const instruction_id id, const buffer_id bid, const memory_id mid, GridRegion<3> region)
+	    : instruction(id), m_bid(bid), m_mid(mid), m_region(std::move(region)) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_alloc(*this); }
 
 	buffer_id get_buffer_id() const { return m_bid; }
+	memory_id get_memory_id() const { return m_mid; }
 	GridRegion<3> get_region() const { return m_region; }
 
   private:
 	buffer_id m_bid;
+	memory_id m_mid;
 	GridRegion<3> m_region;
 };
 
 class copy_instruction final : public instruction {
   public:
-	enum class side { source, dest };
-
-	static std::pair<std::unique_ptr<copy_instruction>, std::unique_ptr<copy_instruction>> make_pair(const instruction_id source_id, const memory_id source_mid,
-	    const instruction_id dest_id, const memory_id dest_mid, const buffer_id bid, GridRegion<3> region) {
-		std::unique_ptr<copy_instruction> source(new copy_instruction(source_id, source_mid, bid, region, side::source));
-		std::unique_ptr<copy_instruction> dest(new copy_instruction(dest_id, dest_mid, bid, std::move(region), side::dest));
-		source->m_counterpart = dest.get();
-		dest->m_counterpart = source.get();
-		return std::pair(std::move(source), std::move(dest));
-	}
+	explicit copy_instruction(const instruction_id id, const buffer_id bid, GridRegion<3> region, const memory_id from_mid, const memory_id to_mid)
+	    : instruction(id), m_bid(bid), m_region(std::move(region)), m_from_mid(from_mid), m_to_mid(to_mid) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_copy(*this); }
 
 	const buffer_id& get_buffer_id() const { return m_bid; }
 	const GridRegion<3>& get_region() const { return m_region; }
-	memory_id get_source_memory_id() const { return m_side == side::source ? get_memory_id() : m_counterpart->get_memory_id(); }
-	memory_id get_dest_memory_id() const { return m_side == side::dest ? get_memory_id() : m_counterpart->get_memory_id(); }
-	side get_side() const { return m_side; }
-	copy_instruction& get_counterpart() const { return *m_counterpart; }
+	memory_id get_source_memory_id() const { return m_from_mid; }
+	memory_id get_dest_memory_id() const { return m_to_mid; }
 
   private:
 	buffer_id m_bid;
 	GridRegion<3> m_region;
-	side m_side;
-	copy_instruction* m_counterpart;
-
-	explicit copy_instruction(const instruction_id id, const memory_id mid, const buffer_id bid, GridRegion<3> region, const side side)
-	    : instruction(id, mid), m_bid(bid), m_region(region), m_side(side) {}
+	memory_id m_from_mid;
+	memory_id m_to_mid;
 };
 
 
@@ -121,9 +108,8 @@ using buffer_read_write_map = std::unordered_map<buffer_id, reads_writes>;
 
 class kernel_instruction : public instruction {
   public:
-	explicit kernel_instruction(
-	    const instruction_id id, const memory_id mid, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map)
-	    : instruction(id, mid, cid), m_execution_range(execution_range), m_rw_map(std::move(rw_map)) {}
+	explicit kernel_instruction(const instruction_id id, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map)
+	    : instruction(id, cid), m_execution_range(execution_range), m_rw_map(std::move(rw_map)) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_kernel(*this); }
 
@@ -138,9 +124,9 @@ class kernel_instruction : public instruction {
 
 class device_kernel_instruction final : public kernel_instruction {
   public:
-	explicit device_kernel_instruction(const instruction_id id, const memory_id mid, const device_id did, const command_id cid,
-	    const subrange<3>& execution_range, buffer_read_write_map rw_map)
-	    : kernel_instruction(id, mid, cid, execution_range, std::move(rw_map)), m_device_id(did) {}
+	explicit device_kernel_instruction(
+	    const instruction_id id, const device_id did, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map)
+	    : kernel_instruction(id, cid, execution_range, std::move(rw_map)), m_device_id(did) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_device_kernel(*this); }
 
@@ -148,14 +134,13 @@ class device_kernel_instruction final : public kernel_instruction {
 
   private:
 	device_id m_device_id;
-	subrange<3> m_execution_range;
 };
 
 class host_kernel_instruction final : public kernel_instruction {
   public:
 	explicit host_kernel_instruction(const instruction_id id, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map,
 	    side_effect_map se_map, collective_group_id cgid)
-	    : kernel_instruction(id, host_memory_id, cid, execution_range, std::move(rw_map)), m_se_map(std::move(se_map)), m_cgid(cgid) {}
+	    : kernel_instruction(id, cid, execution_range, std::move(rw_map)), m_se_map(std::move(se_map)), m_cgid(cgid) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_host_kernel(*this); }
 
@@ -170,17 +155,17 @@ class host_kernel_instruction final : public kernel_instruction {
 
 class send_instruction final : public instruction {
   public:
-	explicit send_instruction(const instruction_id id, const command_id cid, const node_id to, const buffer_id bid, GridRegion<3> region)
-	    : instruction(id, host_memory_id, cid), m_to(to), m_bid(bid), m_region(std::move(region)) {}
+	explicit send_instruction(const instruction_id id, const command_id cid, const node_id to_nid, const buffer_id bid, GridRegion<3> region)
+	    : instruction(id, cid), m_to_nid(to_nid), m_bid(bid), m_region(std::move(region)) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_send(*this); }
 
-	node_id get_dest_node_id() const { return m_to; }
+	node_id get_dest_node_id() const { return m_to_nid; }
 	buffer_id get_buffer_id() const { return m_bid; }
 	GridRegion<3> get_region() const { return m_region; }
 
   private:
-	node_id m_to;
+	node_id m_to_nid;
 	buffer_id m_bid;
 	GridRegion<3> m_region;
 };
@@ -188,8 +173,8 @@ class send_instruction final : public instruction {
 class recv_instruction final : public instruction {
   public:
 	// We don't make the effort of tracking the command ids of (pending) await-pushes
-	explicit recv_instruction(const instruction_id id, const transfer_id trid, const buffer_id bid, const GridRegion<3>& region)
-	    : instruction(id, host_memory_id), m_trid(trid), m_bid(bid), m_region(region) {}
+	explicit recv_instruction(const instruction_id id, const transfer_id trid, const buffer_id bid, GridRegion<3> region)
+	    : instruction(id), m_trid(trid), m_bid(bid), m_region(region) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_recv(*this); }
 
@@ -205,14 +190,14 @@ class recv_instruction final : public instruction {
 
 class horizon_instruction final : public instruction {
   public:
-	explicit horizon_instruction(const instruction_id id, const memory_id mid, const command_id cid) : instruction(id, mid, cid) {}
+	explicit horizon_instruction(const instruction_id id, const command_id cid) : instruction(id, cid) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_horizon(*this); }
 };
 
 class epoch_instruction final : public instruction {
   public:
-	explicit epoch_instruction(const instruction_id id, const memory_id mid, const std::optional<command_id> cid) : instruction(id, mid, cid) {}
+	explicit epoch_instruction(const instruction_id id, const command_id cid) : instruction(id, cid) {}
 
 	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_epoch(*this); }
 };

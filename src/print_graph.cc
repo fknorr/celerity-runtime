@@ -269,15 +269,16 @@ namespace detail {
 	  public:
 		instruction_graph_node_printer(std::string& dot, const command_graph& cdag, const task_manager& tm) : m_dot(dot), m_cdag(cdag), m_tm(tm) {}
 
-		void visit_alloc(const alloc_instruction& ainsn) override { print_node(ainsn, "<b>alloc</b> B{} {}", ainsn.get_buffer_id(), ainsn.get_region()); }
+		void visit_alloc(const alloc_instruction& ainsn) override {
+			print_node(ainsn, "<b>alloc</b> on M{}<br/>B{} {}", ainsn.get_memory_id(), ainsn.get_buffer_id(), ainsn.get_region());
+		}
 
 		void visit_copy(const copy_instruction& cinsn) override {
 			const bool source_host = cinsn.get_source_memory_id() == host_memory_id;
 			const bool dest_host = cinsn.get_dest_memory_id() == host_memory_id;
 			const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
-			const auto side = cinsn.get_side() == copy_instruction::side::source ? "to" : "from";
-			print_node(
-			    cinsn, "<b>{}</b> {} M{}<br/>B{} {}", direction, side, cinsn.get_counterpart().get_memory_id(), cinsn.get_buffer_id(), cinsn.get_region());
+			print_node(cinsn, "<b>{}</b> from M{} to M{}<br/>B{} {}", direction, cinsn.get_source_memory_id(), cinsn.get_dest_memory_id(),
+			    cinsn.get_buffer_id(), cinsn.get_region());
 		}
 
 		void visit_device_kernel(const device_kernel_instruction& dkinsn) override {
@@ -325,7 +326,7 @@ namespace detail {
 				fmt::format_to(back, "<font color=\"#606060\" point-size=\"14\">from {}<br/><br/></font>",
 				    print_command_reference_label(*insn.get_command_id(), m_cdag, m_tm));
 			}
-			fmt::format_to(back, "I{0} on M{1}<br/>", insn.get_id(), insn.get_memory_id());
+			fmt::format_to(back, "I{0}<br/>", insn.get_id());
 		}
 
 		void end_node() { fmt::format_to(std::back_inserter(m_dot), ">];"); }
@@ -372,13 +373,6 @@ namespace detail {
 		class edge_printer : public const_instruction_graph_visitor {
 		  public:
 			explicit edge_printer(std::string& dot) : m_dot(dot) {}
-
-			void visit_copy(const copy_instruction& cinsn) override {
-				visit(cinsn);
-				if(cinsn.get_side() == copy_instruction::side::source) {
-					print_edge(cinsn, cinsn.get_counterpart(), "color=gray,style=dashed,constraint=false");
-				}
-			}
 
 			void visit(const instruction& insn) override {
 				for(const auto& dep : insn.get_dependencies()) {

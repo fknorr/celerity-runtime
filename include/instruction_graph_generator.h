@@ -106,9 +106,11 @@ class instruction_graph_generator {
 		}
 
 		void apply_epoch(instruction* const epoch) {
-			memories[epoch->get_memory_id()].apply_epoch(epoch);
+			for(auto& memory : memories) {
+				memory.apply_epoch(epoch);
+			}
 			original_writers.apply_to_values([epoch](instruction* const instr) -> instruction* {
-				if(instr != nullptr && instr->get_memory_id() == epoch->get_memory_id() && instr->get_id() < epoch->get_id()) {
+				if(instr != nullptr && instr->get_id() < epoch->get_id()) {
 					return epoch;
 				} else {
 					return instr;
@@ -117,47 +119,19 @@ class instruction_graph_generator {
 		}
 	};
 
-	struct per_memory_data {
-		instruction* last_horizon = nullptr;
-		instruction* last_epoch = nullptr;
-		std::unordered_set<instruction*> execution_front;
+	struct per_host_object_data {
+		instruction* last_side_effect = nullptr;
 
-		void collapse_execution_front_to(instruction* const horizon) {
-			for(const auto insn : execution_front) {
-				if(insn != horizon) { horizon->add_dependency({insn, dependency_kind::true_dep, dependency_origin::execution_front}); }
-			}
-			execution_front.clear();
-			execution_front.insert(horizon);
+		void apply_epoch(instruction* const epoch) {
+			if(last_side_effect && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
 		}
 	};
 
-	struct host_memory_data {
-		struct per_host_object_data {
-			instruction* last_side_effect = nullptr;
-
-			void apply_epoch(instruction* const epoch) {
-				if(last_side_effect && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
-			}
-		};
-
-		struct per_collective_group_data {
-			instruction* last_host_task = nullptr;
-
-			void apply_epoch(instruction* const epoch) {
-				if(last_host_task && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
-			}
-		};
-
-		std::unordered_map<host_object_id, per_host_object_data> host_objects;
-		std::unordered_map<collective_group_id, per_collective_group_data> collective_groups;
+	struct per_collective_group_data {
+		instruction* last_host_task = nullptr;
 
 		void apply_epoch(instruction* const epoch) {
-			for(auto& [_, host_object] : host_objects) {
-				host_object.apply_epoch(epoch);
-			}
-			for(auto& [_, collective_group] : collective_groups) {
-				collective_group.apply_epoch(epoch);
-			}
+			if(last_host_task && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
 		}
 	};
 
@@ -165,9 +139,12 @@ class instruction_graph_generator {
 	instruction_id m_next_iid = 0;
 	const task_manager& m_tm;
 	size_t m_num_devices;
-	std::vector<per_memory_data> m_memories;
+	instruction* m_last_horizon = nullptr;
+	instruction* m_last_epoch = nullptr;
+	std::unordered_set<instruction*> m_execution_front;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
-	host_memory_data m_host_memory;
+	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
+	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;
 
 	static memory_id next_location(const data_location& location, memory_id first);
 
@@ -177,36 +154,43 @@ class instruction_graph_generator {
 		auto insn = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
 		const auto ptr = insn.get();
 		m_idag.insert(std::move(insn));
-		m_memories[ptr->get_memory_id()].execution_front.insert(ptr);
+		m_execution_front.insert(ptr);
 		return *ptr;
-	}
-
-	std::pair<copy_instruction&, copy_instruction&> create_copy(
-	    const memory_id source_mid, const memory_id dest_mid, const buffer_id bid, GridRegion<3> region) {
-		const auto source_id = m_next_iid++;
-		const auto dest_id = m_next_iid++;
-		auto [source, dest] = copy_instruction::make_pair(source_id, source_mid, dest_id, dest_mid, bid, std::move(region));
-		const auto source_ptr = source.get(), dest_ptr = dest.get();
-		m_idag.insert(std::move(source));
-		m_idag.insert(std::move(dest));
-		m_memories[source_ptr->get_memory_id()].execution_front.insert(source_ptr);
-		m_memories[dest_ptr->get_memory_id()].execution_front.insert(dest_ptr);
-		return {*source_ptr, *dest_ptr};
 	}
 
 	void add_dependency(instruction& from, instruction& to, const dependency_kind kind, const dependency_origin origin) {
 		from.add_dependency({&to, kind, origin});
-		if(kind == dependency_kind::true_dep) { m_memories[to.get_memory_id()].execution_front.erase(&to); }
+		if(kind == dependency_kind::true_dep) { m_execution_front.erase(&to); }
 	}
 
 	// This mapping will differ for architectures that share memory between host and device or between devices.
 	// TODO we want a class like detail::local_devices to do the conversion, but without the runtime dependency (i.e. host_queue).
 	memory_id device_to_memory_id(const device_id did) const { return did + 1; }
 
-	/// Starting from the destination side (root_dest) of a newly inserted copy instruction pair, walk all true dependencies to preceding kernels and edges from
-	/// copy-destinations to copy-sources to discover implicit dataflow dependencies from copy-destinations to copy-sources on the same node. This reduces
-	/// apparent concurrency on each memory to improve scheduling.
-	void walk_transitive_copy_dependencies(instruction* const in, copy_instruction* const root_dest, int max_hops = 10);
+	void apply_epoch(instruction* const epoch) {
+		for(auto& [_, buffer] : m_buffers) {
+			buffer.apply_epoch(epoch);
+		}
+		for(auto& [_, host_object] : m_host_objects) {
+			host_object.apply_epoch(epoch);
+		}
+		for(auto& [_, collective_group] : m_collective_groups) {
+			collective_group.apply_epoch(epoch);
+		}
+		m_last_epoch = epoch;
+
+		// TODO prune graph. Should we re-write node dependencies?
+		//	 - pro: No accidentally following stale pointers
+		//   - con: Thread safety (but how would a consumer know which dependency edges can be followed)?
+	}
+
+	void collapse_execution_front_to(instruction* const horizon) {
+		for(const auto insn : m_execution_front) {
+			if(insn != horizon) { horizon->add_dependency({insn, dependency_kind::true_dep, dependency_origin::execution_front}); }
+		}
+		m_execution_front.clear();
+		m_execution_front.insert(horizon);
+	}
 };
 
 } // namespace celerity::detail
