@@ -280,10 +280,22 @@ namespace detail {
 		}
 
 		void visit_device_kernel(const device_kernel_instruction& dkinsn) override {
-			print_node(dkinsn, "<b>kernel</b> on D{} {}", dkinsn.get_device_id(), dkinsn.get_execution_range());
+			const auto back = std::back_inserter(m_dot);
+			begin_node(dkinsn);
+			fmt::format_to(back, "<b>kernel</b> on D{} {}", dkinsn.get_device_id(), dkinsn.get_execution_range());
+			print_buffer_read_write_map(dkinsn.get_buffer_read_write_map());
+			end_node();
 		}
 
-		void visit_host_kernel(const host_kernel_instruction& hkinsn) override { print_node(hkinsn, "<b>host kernel</b> {}", hkinsn.get_execution_range()); }
+		void visit_host_kernel(const host_kernel_instruction& hkinsn) override {
+			const auto back = std::back_inserter(m_dot);
+			begin_node(hkinsn);
+			fmt::format_to(back, "<b>host kernel</b> {}", hkinsn.get_execution_range());
+			if(hkinsn.get_collective_group_id()) { fmt::format_to(back, " (collective CG{})", hkinsn.get_collective_group_id()); }
+			print_buffer_read_write_map(hkinsn.get_buffer_read_write_map());
+			print_side_effect_map(hkinsn.get_side_effect_map());
+			end_node();
+		}
 
 		void visit_send(const send_instruction& sinsn) override {
 			print_node(sinsn, "<b>send</b> to N{}<br/>B{} {}", sinsn.get_dest_node_id(), sinsn.get_buffer_id(), sinsn.get_region());
@@ -299,8 +311,12 @@ namespace detail {
 
 		void visit(const instruction& insn) override { print_node(insn, "<b>unknown</b>"); }
 
-		template <typename... FmtArgs>
-		void print_node(const instruction& insn, FmtArgs&&... fmt_args) {
+	  private:
+		std::string& m_dot;
+		const command_graph& m_cdag;
+		const task_manager& m_tm;
+
+		void begin_node(const instruction& insn) {
 			const auto shape = insn.get_command_id().has_value() ? "box" : "ellipse";
 			const auto back = std::back_inserter(m_dot);
 			fmt::format_to(back, "I{0}[shape={1} label=<", insn.get_id(), shape);
@@ -309,14 +325,42 @@ namespace detail {
 				    print_command_reference_label(*insn.get_command_id(), m_cdag, m_tm));
 			}
 			fmt::format_to(back, "I{0} on M{1}<br/>", insn.get_id(), insn.get_memory_id());
-			fmt::format_to(back, std::forward<FmtArgs>(fmt_args)...);
-			fmt::format_to(back, ">];");
 		}
 
-	  private:
-		std::string& m_dot;
-		const command_graph& m_cdag;
-		const task_manager& m_tm;
+		void end_node() { fmt::format_to(std::back_inserter(m_dot), ">];"); }
+
+		template <typename... FmtArgs>
+		void print_node(const instruction& insn, FmtArgs&&... fmt_args) {
+			begin_node(insn);
+			fmt::format_to(std::back_inserter(m_dot), std::forward<FmtArgs>(fmt_args)...);
+			end_node();
+		}
+
+		void print_buffer_read_write_map(const buffer_read_write_map& rw_map) {
+			const auto back = std::back_inserter(m_dot);
+			for(const auto& [bid, rw] : rw_map) {
+				if(const auto read_only = GridRegion<3>::difference(rw.reads, rw.writes); !read_only.empty()) {
+					fmt::format_to(back, "<br/><i>read</i> B{} {}", bid, read_only);
+				}
+			}
+			for(const auto& [bid, rw] : rw_map) {
+				if(const auto read_write = GridRegion<3>::intersect(rw.reads, rw.writes); !read_write.empty()) {
+					fmt::format_to(back, "<br/><i>read-write</i> B{} {}", bid, read_write);
+				}
+			}
+			for(const auto& [bid, rw] : rw_map) {
+				if(const auto write_only = GridRegion<3>::difference(rw.writes, rw.reads); !write_only.empty()) {
+					fmt::format_to(back, "<br/><i>write</i> B{} {}", bid, write_only);
+				}
+			}
+		}
+
+		void print_side_effect_map(const side_effect_map& se_map) {
+			const auto back = std::back_inserter(m_dot);
+			for(const auto& [hoid, order] : se_map) {
+				fmt::format_to(back, "<br/><i>affect</i> H{}", hoid);
+			}
+		}
 	};
 
 	std::string print_instruction_graph(const instruction_graph& idag, const command_graph& cdag, const task_manager& tm) {

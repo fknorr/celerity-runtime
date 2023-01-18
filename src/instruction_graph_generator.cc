@@ -65,9 +65,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		subrange<3> execution_sr;
 		device_id did = -1;
 		memory_id mid = host_memory_id;
-		std::unordered_map<buffer_id, GridRegion<3>> reads;
-		std::unordered_map<buffer_id, GridRegion<3>> writes;
-		std::unordered_set<host_object_id> side_effects;
+		buffer_read_write_map rw_map;
+		side_effect_map se_map;
 		collective_group_id cgid = 0;
 		instruction* instruction = nullptr;
 	};
@@ -111,21 +110,20 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		const auto& bam = tsk.get_buffer_access_map();
 		for(const auto bid : bam.get_accessed_buffers()) {
 			for(auto& insn : cmd_insns) {
-				GridRegion<3> b_reads;
-				GridRegion<3> b_writes;
+				reads_writes rw;
 				for(const auto mode : bam.get_access_modes(bid)) {
 					const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
-					if(access::mode_traits::is_consumer(mode)) { b_reads = GridRegion<3>::merge(b_reads, req); }
-					if(access::mode_traits::is_producer(mode)) { b_writes = GridRegion<3>::merge(b_writes, req); }
+					if(access::mode_traits::is_consumer(mode)) { rw.reads = GridRegion<3>::merge(rw.reads, req); }
+					if(access::mode_traits::is_producer(mode)) { rw.writes = GridRegion<3>::merge(rw.writes, req); }
 				}
-				if(!b_reads.empty()) { insn.reads.emplace(bid, std::move(b_reads)); }
-				if(!b_writes.empty()) { insn.writes.emplace(bid, std::move(b_writes)); }
+				if(!rw.empty()) { insn.rw_map.emplace(bid, std::move(rw)); }
 			}
 		}
 
-		for(const auto& [hoid, order] : tsk.get_side_effect_map()) {
+		if(!tsk.get_side_effect_map().empty()) {
+			assert(cmd_insns.size() == 1); // split instructions for host tasks with side effects would race
 			assert(cmd_insns[0].mid == host_memory_id);
-			cmd_insns[0].side_effects.insert(hoid);
+			cmd_insns[0].se_map = tsk.get_side_effect_map();
 		}
 
 		cmd_insns[0].cgid = tsk.get_collective_group_id();
@@ -144,7 +142,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(auto& [writer, region] : writer_regions) {
 			auto& insn = cmd_insns.emplace_back();
 			insn.mid = host_memory_id;
-			insn.reads.emplace(bid, std::move(region));
+			insn.rw_map.emplace(bid, reads_writes{std::move(region), {}});
 		}
 	} else if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
 		cmd_insns.resize(m_memories.size());
@@ -160,8 +158,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 	std::unordered_map<std::pair<buffer_id, memory_id>, GridRegion<3>, utils::pair_hash> unallocated_regions;
 	for(const auto& insn : cmd_insns) {
-		for(const auto& access : {insn.reads, insn.writes}) {
-			for(const auto& [bid, region] : access) {
+		for(const auto& [bid, rw] : insn.rw_map) {
+			for(const auto& region : {rw.reads, rw.writes}) {
 				const auto unallocated = GridRegion<3>::difference(region, m_buffers.at(bid).memories[insn.mid].allocation);
 				if(!unallocated.empty()) { unallocated_regions[{bid, insn.mid}] = GridRegion<3>::merge(unallocated_regions[{bid, insn.mid}], unallocated); }
 			}
@@ -186,10 +184,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	std::unordered_map<std::pair<buffer_id, memory_id>, std::vector<GridRegion<3>>, utils::pair_hash> unsatisfied_reads;
 	for(size_t cmd_insn_idx = 0; cmd_insn_idx < cmd_insns.size(); ++cmd_insn_idx) {
 		auto& insn = cmd_insns[cmd_insn_idx];
-		for(const auto& [bid, region] : insn.reads) {
+		for(const auto& [bid, rw] : insn.rw_map) {
 			auto& buffer = m_buffers.at(bid);
 			GridRegion<3> unsatified_region;
-			for(const auto& [box, location] : buffer.newest_data_location.get_region_values(region)) {
+			for(const auto& [box, location] : buffer.newest_data_location.get_region_values(rw.reads)) {
 				if(!location.test(insn.mid)) { unsatified_region = GridRegion<3>::merge(unsatified_region, box); }
 			}
 			if(!unsatified_region.empty()) { unsatisfied_reads[{bid, insn.mid}].push_back(unsatified_region); }
@@ -336,18 +334,19 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			if(tsk.get_execution_target() == execution_target::device) {
 				assert(in.execution_sr.range.size() > 0);
 				assert(in.mid != host_memory_id);
-				in.instruction = &create<device_kernel_instruction>(in.did, xcmd->get_cid(), in.mid, tsk, in.execution_sr);
+				in.instruction = &create<device_kernel_instruction>(in.mid, in.did, xcmd->get_cid(), in.execution_sr, in.rw_map);
 			} else {
 				assert(tsk.get_execution_target() == execution_target::host);
 				assert(in.mid == host_memory_id);
-				in.instruction = &create<host_kernel_instruction>(xcmd->get_cid(), in.execution_sr);
+				in.instruction = &create<host_kernel_instruction>(xcmd->get_cid(), in.execution_sr, in.rw_map, in.se_map, in.cgid);
 			}
 		}
 	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
-			assert(insn.reads.size() == 1);
-			auto [bid, region] = *insn.reads.begin();
-			insn.instruction = &create<send_instruction>(pcmd->get_cid(), pcmd->get_target(), bid, std::move(region));
+			assert(insn.rw_map.size() == 1);
+			auto [bid, rw] = *insn.rw_map.begin();
+			assert(!rw.reads.empty());
+			insn.instruction = &create<send_instruction>(pcmd->get_cid(), pcmd->get_target(), bid, rw.reads);
 		}
 	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 		for(auto& insn : cmd_insns) {
@@ -368,21 +367,21 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	//	 - read-all + write-1:1 cannot be oversubscribed at all, chunks would need a global read->write barrier (how would the kernel even look like?)
 	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
 	for(const auto& insn : cmd_insns) {
-		for(const auto& [bid, region] : insn.reads) {
+		for(const auto& [bid, rw] : insn.rw_map) {
 			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, last_writer_instr] : buffer.memories[insn.mid].last_writers.get_region_values(region)) {
+			for(const auto& [_, last_writer_instr] : buffer.memories[insn.mid].last_writers.get_region_values(rw.reads)) {
 				add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 			}
 		}
-		for(const auto& [bid, region] : insn.writes) {
+		for(const auto& [bid, rw] : insn.rw_map) {
 			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, front] : buffer.memories[insn.mid].access_fronts.get_region_values(region)) {
+			for(const auto& [_, front] : buffer.memories[insn.mid].access_fronts.get_region_values(rw.writes)) {
 				for(const auto dep_instr : front.front) {
 					add_dependency(*insn.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 				}
 			}
 		}
-		for(const auto hoid : insn.side_effects) {
+		for(const auto& [hoid, order] : insn.se_map) {
 			assert(insn.mid == host_memory_id);
 			if(const auto last_side_effect = m_host_memory.host_objects.at(hoid).last_side_effect) {
 				add_dependency(*insn.instruction, *last_side_effect, dependency_kind::true_dep, dependency_origin::dataflow);
@@ -400,14 +399,14 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	// 6) update data locations and last writers resulting from command instructions
 
 	for(const auto& insn : cmd_insns) {
-		for(const auto& [bid, region] : insn.writes) {
+		for(const auto& [bid, rw] : insn.rw_map) {
 			assert(insn.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
-			buffer.newest_data_location.update_region(region, data_location().set(insn.mid));
-			buffer.memories[insn.mid].record_write(region, insn.instruction);
-			buffer.original_writers.update_region(region, insn.instruction);
+			buffer.newest_data_location.update_region(rw.writes, data_location().set(insn.mid));
+			buffer.memories[insn.mid].record_write(rw.writes, insn.instruction);
+			buffer.original_writers.update_region(rw.writes, insn.instruction);
 		}
-		for(const auto hoid : insn.side_effects) {
+		for(const auto& [hoid, order] : insn.se_map) {
 			assert(insn.mid == host_memory_id);
 			m_host_memory.host_objects.at(hoid).last_side_effect = insn.instruction;
 		}
