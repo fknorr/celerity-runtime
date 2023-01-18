@@ -38,6 +38,35 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 }
 
 
+void instruction_graph_generator::walk_transitive_copy_dependencies(instruction* const in, copy_instruction* const root_dest, int max_hops) {
+	assert(root_dest->get_side() == copy_instruction::side::dest);
+
+	// normally recursion will terminate upon reaching the deletion-epoch, but with a user-controllable horizon step size this will have worst-case exponential
+	// complexity, so we force eventual termination after 10 hops (the default parameter to this function).
+	if(max_hops <= 0) return;
+
+	for(auto& dep : in->get_dependencies()) {
+		if(dep.kind == dependency_kind::true_dep) {
+			if(const auto copy_in = dynamic_cast<copy_instruction*>(dep.node)) {
+				assert(copy_in->get_side() == copy_instruction::side::dest); // a copy source should never be a true dependency to a non-horizon/epoch
+				const auto copy_source = &copy_in->get_counterpart();
+				if(copy_source->get_memory_id() == root_dest->get_memory_id()) {
+					// found: the "root" has a transitive, implicit dependency on this copy-source
+					add_dependency(*root_dest, *copy_source, dependency_kind::true_dep, dependency_origin::transitive_dataflow);
+				} else {
+					// if the copy was not made from "root" memory, keep following its source to find dependencies across multiple devices
+					walk_transitive_copy_dependencies(copy_source, root_dest, max_hops - 1);
+				}
+			} else if(const auto kernel_in = dynamic_cast<kernel_instruction*>(dep.node)) {
+				// kernels will also carry data dependencies (but no other instruction except copies)
+				walk_transitive_copy_dependencies(kernel_in, root_dest, max_hops - 1);
+			}
+		}
+	}
+	// recursion will eventually stop at horizons / epochs
+}
+
+
 // TODO HACK we're just pulling in the splitting logic from distributed_graph_generator here
 std::vector<chunk<3>> split_1d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks);
 std::vector<chunk<3>> split_2d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks);
@@ -324,6 +353,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
 			buffer.newest_data_location.update_region(box, data_location(location).set(copy.to));
 		}
+
+		walk_transitive_copy_dependencies(&source_instr, &dest_instr);
 	}
 
 	// 4) create the actual command instructions

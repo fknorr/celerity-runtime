@@ -202,6 +202,11 @@ class instruction_graph_generator {
 	// This mapping will differ for architectures that share memory between host and device or between devices.
 	// TODO we want a class like detail::local_devices to do the conversion, but without the runtime dependency (i.e. host_queue).
 	memory_id device_to_memory_id(const device_id did) const { return did + 1; }
+
+	/// Starting from the destination side (root_dest) of a newly inserted copy instruction pair, walk all true dependencies to preceding kernels and edges from
+	/// copy-destinations to copy-sources to discover implicit dataflow dependencies from copy-destinations to copy-sources on the same node. This reduces
+	/// apparent concurrency on each memory to improve scheduling.
+	void walk_transitive_copy_dependencies(instruction* const in, copy_instruction* const root_dest, int max_hops = 10);
 };
 
 } // namespace celerity::detail

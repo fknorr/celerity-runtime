@@ -93,16 +93,16 @@ class copy_instruction final : public instruction {
 
 	const buffer_id& get_buffer_id() const { return m_bid; }
 	const GridRegion<3>& get_region() const { return m_region; }
-	memory_id get_source_memory() const { return m_side == side::source ? get_memory_id() : m_counterpart->get_memory_id(); }
-	memory_id get_dest_memory() const { return m_side == side::dest ? get_memory_id() : m_counterpart->get_memory_id(); }
+	memory_id get_source_memory_id() const { return m_side == side::source ? get_memory_id() : m_counterpart->get_memory_id(); }
+	memory_id get_dest_memory_id() const { return m_side == side::dest ? get_memory_id() : m_counterpart->get_memory_id(); }
 	side get_side() const { return m_side; }
-	instruction& get_counterpart() const { return *m_counterpart; }
+	copy_instruction& get_counterpart() const { return *m_counterpart; }
 
   private:
 	buffer_id m_bid;
 	GridRegion<3> m_region;
 	side m_side;
-	instruction* m_counterpart;
+	copy_instruction* m_counterpart;
 
 	explicit copy_instruction(const instruction_id id, const memory_id mid, const buffer_id bid, GridRegion<3> region, const side side)
 	    : instruction(id, mid), m_bid(bid), m_region(region), m_side(side) {}

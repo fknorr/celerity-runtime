@@ -19,6 +19,7 @@ namespace detail {
 		case dependency_origin::collective_group_serialization: return "color=blue";
 		case dependency_origin::execution_front: return "color=orange";
 		case dependency_origin::last_epoch: return "color=orchid";
+		case dependency_origin::transitive_dataflow: return "color=darkgray";
 		default: return "";
 		}
 	}
@@ -271,8 +272,8 @@ namespace detail {
 		void visit_alloc(const alloc_instruction& ainsn) override { print_node(ainsn, "<b>alloc</b> B{} {}", ainsn.get_buffer_id(), ainsn.get_region()); }
 
 		void visit_copy(const copy_instruction& cinsn) override {
-			const bool source_host = cinsn.get_source_memory() == host_memory_id;
-			const bool dest_host = cinsn.get_dest_memory() == host_memory_id;
+			const bool source_host = cinsn.get_source_memory_id() == host_memory_id;
+			const bool dest_host = cinsn.get_dest_memory_id() == host_memory_id;
 			const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
 			const auto side = cinsn.get_side() == copy_instruction::side::source ? "to" : "from";
 			print_node(
@@ -375,7 +376,7 @@ namespace detail {
 			void visit_copy(const copy_instruction& cinsn) override {
 				visit(cinsn);
 				if(cinsn.get_side() == copy_instruction::side::source) {
-					print_edge(cinsn, cinsn.get_counterpart(), "color=gray,style=dashed,dir=both,constraint=false");
+					print_edge(cinsn, cinsn.get_counterpart(), "color=gray,style=dashed,constraint=false");
 				}
 			}
 

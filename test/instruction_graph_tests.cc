@@ -273,3 +273,16 @@ TEST_CASE("recv split", "[instruction-graph]") {
 	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).submit();
 	ictx.device_compute<class UKN(consumer)>(test_range).read(buf, reverse_one_to_one).submit();
 }
+
+TEST_CASE("transitive copy dependencies", "[instruction-graph]") {
+	idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
+
+	const auto reverse_one_to_one = [](chunk<1> ck) -> subrange<1> { return {ck.global_size[0] - ck.range[0] - ck.offset[0], ck.range[0]}; };
+
+	const range<1> test_range = {256};
+	auto buf1 = ictx.create_buffer(test_range);
+	auto buf2 = ictx.create_buffer(test_range);
+	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute<class UKN(gather)>(test_range).read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
+	ictx.device_compute<class UKN(consumer)>(test_range).read(buf2, reverse_one_to_one).submit();
+}
