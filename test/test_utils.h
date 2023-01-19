@@ -267,7 +267,7 @@ namespace test_utils {
 				if(tsk->get_type() == detail::task_type::gather) {
 					detail::naive_split_transformer transformer{m_num_nodes, m_num_nodes}; // shouldn't do anything, but replicates what the scheduler does
 					m_ggen->build_task(*tsk, {&transformer});
-					m_gser->flush(tsk->get_id());
+					// m_gser->flush(tsk->get_id()); // NOCOMMIT
 				}
 			});
 		}

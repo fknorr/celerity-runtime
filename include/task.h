@@ -126,10 +126,11 @@ namespace detail {
 
 		GridBox<3> get_requirements_for_nth_access(const size_t n, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
 
-		std::vector<const range_mapper_base*> get_range_mappers(buffer_id bid) const {
-			const auto range = m_map.equal_range(bid);
-			std::vector<const range_mapper_base*> rms(std::distance(range.first, range.second));
-			std::transform(range.first, range.second, rms.begin(), [](const auto& unique_ptr) { return unique_ptr.second.get(); });
+		std::vector<const range_mapper_base*> get_range_mappers(const buffer_id bid) const {
+			std::vector<const range_mapper_base*> rms;
+			for(const auto& [a_bid, a_rm] : m_accesses) {
+				if(a_bid == bid) { rms.push_back(a_rm.get()); }
+			}
 			return rms;
 		}
 

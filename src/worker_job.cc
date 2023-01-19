@@ -360,7 +360,7 @@ namespace detail {
 		const auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
 		assert(accessed_buffers.size() == 1);
 
-		if(!m_buffer_mngr.try_lock(pkg.cid, accessed_buffers)) return false;
+		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, accessed_buffers)) return false;
 
 		int rank, size;
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);

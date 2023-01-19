@@ -96,6 +96,8 @@ class distributed_graph_generator {
 
 	void generate_execution_commands(const task& tsk);
 
+	void generate_gather_commands(const task& tsk);
+
 	void generate_anti_dependencies(
 	    task_id tid, buffer_id bid, const region_map_t<write_command_state>& last_writers_map, const GridRegion<3>& write_req, abstract_command* write_cmd);
 

@@ -70,6 +70,8 @@ enum class side_effect_order { sequential };
 
 namespace celerity::detail {
 
+constexpr memory_id host_memory_id = 0;
+
 inline constexpr collective_group_id non_collective(0);
 inline constexpr collective_group_id implicit_collective(1);
 inline constexpr collective_group_id first_explicit_collective(2);

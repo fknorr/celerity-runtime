@@ -362,6 +362,7 @@ namespace detail {
 		});
 
 		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "NBody gather pattern", "[gather]") {

@@ -377,6 +377,15 @@ class dist_cdag_test_context {
 			m_cdags.emplace_back(std::make_unique<command_graph>());
 			m_dggens.emplace_back(std::make_unique<distributed_graph_generator>(num_nodes, devices_per_node, nid, *m_cdags[nid], *m_tm));
 		}
+
+		m_tm->register_task_callback([this](const task* tsk) {
+			// the TM will invoke callbacks on implicit gathers before the consumer task, so we generate them right away
+			if(tsk->get_type() == task_type::gather) {
+				for(auto& dggen : m_dggens) {
+					dggen->build_task(*tsk);
+				}
+			}
+		});
 	}
 
 	~dist_cdag_test_context() { maybe_print_graphs(); }
@@ -770,4 +779,13 @@ TEST_CASE("per-device 2d oversubscribed chunks cover the same region as the corr
 	for(size_t i = 0; i < 4; ++i) {
 		REQUIRE_LOOP(full_chunks_by_device[i].empty());
 	}
+}
+
+TEST_CASE("graph generator generates push-/await-push-free gather commands") {
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(range<1>(1000));
+
+	// Allgather access pattern - see task_graph_tests "task manager detects gather pattern between dependent tasks"
+	const auto tid_producer = dctx.device_compute<class UKN(producer)>(sycl::range<1>(1000)).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed<1>({200, 500})).submit();
 }
