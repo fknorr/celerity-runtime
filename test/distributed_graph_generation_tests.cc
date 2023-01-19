@@ -6,6 +6,7 @@
 #include <type_traits>
 #include <unordered_set>
 
+#include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
 
@@ -781,11 +782,16 @@ TEST_CASE("per-device 2d oversubscribed chunks cover the same region as the corr
 	}
 }
 
-TEST_CASE("graph generator generates push-/await-push-free gather commands") {
+TEMPLATE_TEST_CASE_SIG(
+    "graph generator generates push-/await-push-free gather commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+	const subrange<Dims> consumer_subrange{id_cast<Dims>(id<3>(110, 120, 130)), range_cast<Dims>(range<3>(400, 500, 600))};
+
 	dist_cdag_test_context dctx(4, 2);
-	auto buf = dctx.create_buffer(range<1>(1000));
+	auto buf = dctx.create_buffer(producer_range);
 
 	// Allgather access pattern - see task_graph_tests "task manager detects gather pattern between dependent tasks"
-	const auto tid_producer = dctx.device_compute<class UKN(producer)>(sycl::range<1>(1000)).discard_write(buf, acc::one_to_one()).submit();
-	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed<1>({200, 500})).submit();
+	const auto tid_producer =
+	    dctx.device_compute<class UKN(producer)>(producer_range).discard_write(buf, acc::one_to_one()).hint(experimental::hints::tiled_split()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
 }

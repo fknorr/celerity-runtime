@@ -363,7 +363,7 @@ namespace detail {
 			auto& gather_task = *gather_task_ptr;
 			m_task_buffer.put(std::move(gather_reserve), std::move(gather_task_ptr));
 
-			// TODO investigate if this has any consequence for PCPL and horizon generation
+			// TODO investigate if this has any consequence on TDAG pseudo-critical path length and horizon generation
 			consumer->remove_dependency(gather.identity_producer);
 			add_dependency(*consumer, gather_task, dependency_kind::true_dep, dependency_origin::dataflow);
 			add_dependency(gather_task, *gather.identity_producer, dependency_kind::true_dep, dependency_origin::dataflow);
