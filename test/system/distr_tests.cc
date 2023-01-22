@@ -343,5 +343,31 @@ namespace detail {
 		});
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "NBody gather pattern", "[gather]") {
+		constexpr size_t N = 262144;
+
+		distr_queue q;
+
+		std::vector<float> host(N, 0.0f);
+		buffer<float> buf(host.data(), N);
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), read_write);
+			cgh.parallel_for<class UKN(add)>(range<1>(N), [=](item<1> it) { acc[it] += it.get_id(); });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc{buf, cgh, celerity::access::all{}, read_only_host_task};
+			cgh.host_task(celerity::on_master_node, [=] {
+				for(size_t i = 0; i < N; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
+
 } // namespace detail
 } // namespace celerity
