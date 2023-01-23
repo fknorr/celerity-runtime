@@ -215,13 +215,13 @@ namespace detail {
 
 	class gather_job : public worker_job {
 	  public:
-		gather_job(command_pkg pkg, task_manager& tm, buffer_manager& bm) : worker_job(pkg), m_task_mngr(tm), m_buffer_mngr(bm) {
-			assert(pkg.get_command_type() == command_type::gather);
-		}
+		gather_job(command_pkg pkg, task_manager& tm, buffer_manager& bm);
 
 	  private:
 		task_manager& m_task_mngr;
 		buffer_manager& m_buffer_mngr;
+
+		buffer_id m_bid;
 
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;
