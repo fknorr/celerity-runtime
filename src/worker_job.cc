@@ -368,6 +368,9 @@ namespace detail {
 
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(m_bid);
 
+		assert(data.source_sr.range[1] == buffer_info.range[1] && data.source_sr.range[2] == buffer_info.range[2]
+		       && "gather_job can't deal with gathers from strided inputs yet");
+
 		// TODO how can we work around the INT_MAX size restriction? Larger data types only work if the split is aligned conveniently
 		const auto send_chunk_byte_size = data.source_sr.range.size() * buffer_info.element_size;
 		assert(send_chunk_byte_size <= INT_MAX);

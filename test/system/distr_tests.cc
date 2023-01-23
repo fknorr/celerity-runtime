@@ -419,5 +419,38 @@ namespace detail {
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "Gather from a strided non-dim0 split", "[gather]") {
+		constexpr size_t grid_size = 256;
+		const range<2> range = {grid_size, grid_size};
+
+		distr_queue q;
+		celerity::buffer<int, 2> buf_a(range);
+		celerity::buffer<int, 2> buf_b(range);
+
+		q.submit([=](handler& cgh) {
+			accessor a(buf_a, cgh, celerity::access::one_to_one(), write_only, no_init);
+			experimental::hint(cgh, experimental::hints::tiled_split()); // requires num_nodes >= 4
+			cgh.parallel_for<class UKN(producer)>(range, [=](celerity::item<2> it) { a[it] = it.get_linear_id(); });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor a(buf_a, cgh, celerity::access::all(), read_only); // overgenerous read to trigger a Gather
+			accessor b(buf_b, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(producer)>(range, [=](celerity::item<2> it) { b[it] = a[it]; });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor b{buf_b, cgh, celerity::access::all{}, read_only_host_task};
+			cgh.host_task(celerity::on_master_node, [=] {
+				for(int i = 0; size_t(i) < range.size(); ++i) {
+					REQUIRE_LOOP(b.get_pointer()[i] == i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
+
 } // namespace detail
 } // namespace celerity
