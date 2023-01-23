@@ -366,23 +366,51 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "NBody gather pattern", "[gather]") {
-		constexpr size_t N = 262144;
+		constexpr size_t n_bodies = 262144;
+		constexpr size_t block_size = 256;
+		constexpr size_t n_iter = 3;
+
+		std::vector<sycl::float4> posHost(n_bodies);
+		std::vector<sycl::float4> velHost(n_bodies);
+		for(size_t i = 0; i < n_bodies; ++i) {
+			posHost[i] = sycl::float4(i, i, i, i);
+			velHost[i] = sycl::float4(0, 0, 0, 0);
+		}
 
 		distr_queue q;
+		buffer<sycl::float4> posBuff(posHost.data(), n_bodies);
+		buffer<sycl::float4> velBuff(velHost.data(), n_bodies);
 
-		std::vector<float> host(N, 0.0f);
-		buffer<float> buf(host.data(), N);
+		for(size_t i = 0; i < n_iter; ++i) {
+			q.submit([=](handler& cgh) {
+				accessor readPos(posBuff, cgh, celerity::access::all(), read_only);
+				accessor rwVel(velBuff, cgh, celerity::access::one_to_one(), read_write);
+				cgh.parallel_for<class UKN(body_force)>(
+				    nd_range<1>(n_bodies, block_size), [=](nd_item<1> it) { rwVel[it.get_global_id()] += readPos[it.get_global_id()]; });
+			});
+
+			q.submit([=](handler& cgh) {
+				accessor readVel(velBuff, cgh, celerity::access::one_to_one(), read_only);
+				accessor rwPos(posBuff, cgh, celerity::access::one_to_one(), read_write);
+				cgh.parallel_for<class UKN(body_pos_update)>(range<1>(n_bodies), [=](item<1> it) { rwPos[it.get_id()] += readVel[it.get_id()]; });
+			});
+		}
 
 		q.submit([=](handler& cgh) {
-			accessor acc(buf, cgh, celerity::access::one_to_one(), read_write);
-			cgh.parallel_for<class UKN(add)>(range<1>(N), [=](item<1> it) { acc[it] += it.get_id(); });
-		});
-
-		q.submit([=](handler& cgh) {
-			accessor acc{buf, cgh, celerity::access::all{}, read_only_host_task};
+			accessor readPos{posBuff, cgh, celerity::access::all{}, read_only_host_task};
+			accessor readVel{velBuff, cgh, celerity::access::all{}, read_only_host_task};
 			cgh.host_task(celerity::on_master_node, [=] {
-				for(size_t i = 0; i < N; ++i) {
-					REQUIRE_LOOP(acc[i] == i);
+				for(size_t i = 0; i < n_bodies; ++i) {
+					float vel = 0;
+					float pos = i;
+					for(size_t j = 0; j < n_iter; ++j) {
+						vel += pos;
+						pos += vel;
+					}
+					for(size_t j = 0; j < 4; ++j) {
+						REQUIRE_LOOP(readVel[i][j] == vel);
+						REQUIRE_LOOP(readPos[i][j] == pos);
+					}
 				}
 			});
 		});
