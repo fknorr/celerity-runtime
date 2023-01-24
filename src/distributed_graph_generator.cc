@@ -251,6 +251,7 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	return std::move(m_current_cmd_batch);
 }
 
+
 void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	// TODO: Pieced together from naive_split_transformer. We can probably do without creating all chunks and discarding everything except our own.
 	// TODO: Or - maybe - we actually want to store all chunks somewhere b/c we'll probably need them frequently for lookups later on?
@@ -460,7 +461,7 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	process_task_side_effect_requirements(tsk);
 }
 
-void distributed_graph_generator::generate_gather_commands(const task& tsk) {
+void distributed_graph_generator::generate_gather_commands(const task& tsk) noexcept {
 	assert(tsk.get_type() == task_type::gather);
 
 	const auto dependencies = tsk.get_dependencies();
@@ -475,29 +476,46 @@ void distributed_graph_generator::generate_gather_commands(const task& tsk) {
 	    bid, access_mode::discard_write, tsk.get_dimensions(), {/* must be a fixed or all range mapper */}, tsk.get_global_size());
 	assert(!global_output_region.empty()); // why would we have generated a gather task with an empty output range in the first place?
 
-	GridRegion<3> local_input_region;
-	const auto producer_cmds = m_cdag.task_commands(ptsk.get_id());
-	for(const auto pcmd : producer_cmds) {
-		const auto psr = dynamic_cast<const execution_command&>(*pcmd).get_execution_range();
+	// TODO copy-pasted from generate_execution_commands
+	std::vector<chunk<3>> producer_chunks;
+	chunk<3> full_chunk{ptsk.get_global_offset(), ptsk.get_global_size(), ptsk.get_global_size()};
+	if(ptsk.has_variable_split()) {
+		if(ptsk.get_hint<experimental::hints::tiled_split>() != nullptr) {
+			producer_chunks = split_2d(full_chunk, ptsk.get_granularity(), m_num_nodes);
+		} else {
+			producer_chunks = split_1d(full_chunk, ptsk.get_granularity(), m_num_nodes);
+		}
+	} else {
+		producer_chunks = {full_chunk};
+	}
+	assert(producer_chunks.size() <= m_num_nodes);
+	producer_chunks.resize(m_num_nodes); // fill with empty chunks
+
+	std::vector<subrange<3>> source_srs(producer_chunks.size());
+	for(size_t i = 0; i < m_num_nodes; ++i) {
+		GridRegion<3> producer_region;
 		for(const auto mode : ptsk.get_buffer_access_map().get_access_modes(bid)) {
 			if(access::mode_traits::is_producer(mode)) {
-				const auto produced_region = ptsk.get_buffer_access_map().get_mode_requirements(bid, mode, ptsk.get_dimensions(), psr, ptsk.get_global_size());
-				local_input_region = GridRegion<3>::merge(local_input_region, GridRegion<3>::intersect(produced_region, global_output_region));
+				producer_region = GridRegion<3>::merge(producer_region,
+				    ptsk.get_buffer_access_map().get_mode_requirements(bid, mode, ptsk.get_dimensions(), producer_chunks[i], ptsk.get_global_size()));
 			}
 		}
+		const auto consumer_region = subrange_to_grid_box(subrange<3>{tsk.get_global_offset(), tsk.get_global_size()});
+		const auto gather_region = GridRegion<3>::intersect(producer_region, consumer_region);
+		// the merged producer region cannot have disjoint boxes if the output range mappers are isomorphic to one_to_one
+		source_srs[i] = grid_box_to_subrange(gather_region.getSingle());
 	}
-	// the merged input region cannot have disjoint boxes if the output range mappers are isomorphic to one_to_one
-	const auto local_input_sr = grid_box_to_subrange(local_input_region.getSingle());
 
-	const auto cmd = create_command<gather_command>(m_local_nid, tsk.get_id(), local_input_sr);
+	const auto local_input_sr = source_srs[m_local_nid];
+	const auto cmd = create_command<gather_command>(m_local_nid, tsk.get_id(), std::move(source_srs));
 
 	auto& buffer_state = m_buffer_states.at(bid);
 
-	if(!local_input_region.empty()) {
+	if(local_input_sr.range.size() > 0) {
 		// Store the read access for determining anti-dependencies later on
-		m_command_buffer_reads[cmd->get_cid()][bid] = local_input_region;
+		m_command_buffer_reads[cmd->get_cid()][bid] = subrange_to_grid_box(local_input_sr);
 
-		for(const auto& [box, wcs] : buffer_state.local_last_writer.get_region_values(local_input_region)) {
+		for(const auto& [box, wcs] : buffer_state.local_last_writer.get_region_values(subrange_to_grid_box(local_input_sr))) {
 			assert(wcs.is_fresh());
 			m_cdag.add_dependency(cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
 		}

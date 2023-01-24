@@ -191,7 +191,10 @@ namespace detail {
 
 		const std::string& get_debug_name() const { return m_debug_name; }
 
-		bool has_variable_split() const { return m_type == task_type::host_compute || m_type == task_type::device_compute; }
+		bool has_variable_split() const {
+			return (m_type == task_type::host_compute || m_type == task_type::device_compute)
+			       && (m_geometry.global_size.size() > m_geometry.granularity.size());
+		}
 
 		execution_target get_execution_target() const {
 			switch(m_type) {

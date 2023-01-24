@@ -253,7 +253,7 @@ namespace detail {
 			}
 			break;
 		case command_type::data_request: create_job<data_request_job>(pkg, *m_btm); break;
-		case command_type::gather: create_job<gather_job>(pkg, m_task_mngr, m_buffer_mngr); break;
+		case command_type::gather: create_job<gather_job>(pkg, m_task_mngr, m_buffer_mngr, m_local_nid); break;
 		default: assert(!"Unexpected command");
 		}
 		return true;

@@ -153,7 +153,8 @@ namespace detail {
 				if(ecmd->is_reduction_initializer()) { reduction_init_mode = cl::sycl::access::mode::read_write; }
 				execution_range = ecmd->get_execution_range();
 			} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
-				execution_range = gcmd->get_source_range();
+				const auto& geometry = tm.get_task(gcmd->get_tid())->get_geometry();
+				execution_range = {geometry.global_offset, geometry.global_size};
 			}
 
 			format_requirements(label, tsk, execution_range, reduction_init_mode, bm);

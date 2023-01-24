@@ -32,7 +32,7 @@ namespace detail {
 
 		bool prepare();
 		void start();
-		void update();
+		void update() noexcept;
 
 		bool is_running() const { return m_running; }
 		bool is_done() const { return m_done; }
@@ -215,12 +215,13 @@ namespace detail {
 
 	class gather_job : public worker_job {
 	  public:
-		gather_job(command_pkg pkg, task_manager& tm, buffer_manager& bm);
+		gather_job(command_pkg pkg, task_manager& tm, buffer_manager& bm, node_id local_nid);
 
 	  private:
 		task_manager& m_task_mngr;
 		buffer_manager& m_buffer_mngr;
 
+		node_id m_local_nid;
 		buffer_id m_bid;
 
 		bool execute(const command_pkg& pkg) override;

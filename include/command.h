@@ -175,13 +175,13 @@ namespace detail {
 
 	class gather_command final : public task_command {
 		friend class command_graph;
-		gather_command(command_id cid, node_id nid, task_id tid, const subrange<3>& source_sr) : task_command(cid, nid, tid), m_source_sr(source_sr) {}
+		gather_command(command_id cid, node_id nid, task_id tid, std::vector<subrange<3>> srs) : task_command(cid, nid, tid), m_source_srs(srs) {}
 
 	  public:
-		const subrange<3> get_source_range() const { return m_source_sr; }
+		const std::vector<subrange<3>>& get_source_ranges() const { return m_source_srs; }
 
 	  private:
-		subrange<3> m_source_sr;
+		std::vector<subrange<3>> m_source_srs;
 	};
 
 	// ----------------------------------------------------------------------------------------------------------------
@@ -235,7 +235,7 @@ namespace detail {
 
 	struct gather_data {
 		task_id tid;
-		subrange<3> source_sr;
+		std::vector<subrange<3>> source_srs;
 	};
 
 	using command_data =
