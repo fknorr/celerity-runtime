@@ -349,6 +349,7 @@ class command_query {
 		if(isa<push_command>(cmd)) return command_type::push;
 		if(isa<await_push_command>(cmd)) return command_type::await_push;
 		if(isa<reduction_command>(cmd)) return command_type::reduction;
+		if(isa<gather_command>(cmd)) return command_type::gather;
 		throw query_exception("Unknown command type");
 	}
 
@@ -361,6 +362,7 @@ class command_query {
 		case command_type::push: return "push";
 		case command_type::await_push: return "await_push";
 		case command_type::reduction: return "reduction";
+		case command_type::gather: return "gather";
 		default: return "<unknown>";
 		}
 	}

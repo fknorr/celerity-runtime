@@ -78,8 +78,9 @@ namespace detail {
 			if(m_queue) m_queue->require_collective_group(unique_tsk->get_collective_group_id());
 
 			auto& tsk = register_task_internal(std::move(reservation), std::move(unique_tsk));
-			compute_dependencies(tsk);
+
 			infer_collective_data_requirements(tsk);
+			compute_dependencies(tsk);
 
 			// the following deletion is intentionally redundant with the one happening when waiting for free task slots
 			// we want to free tasks earlier than just when running out of slots,

@@ -198,9 +198,9 @@ namespace data {
 		point_type max;
 
 	public:
-		GridBox() {}
+	  GridBox() : min(0), max(0) {}
 
-		GridBox(coordinate_type N)
+	  GridBox(coordinate_type N)
 			: min(0), max(N) {}
 
 		GridBox(coordinate_type A, coordinate_type B)
@@ -591,6 +591,8 @@ namespace data {
 			default: throw std::range_error("region contains more than a single box");
 			}
 		}
+
+		bool hasMultipleBoxes() const { return regions.size() > 1; }
 
 		/**
 		 * An operator to load an instance of this range from the given archive.

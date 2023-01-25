@@ -283,13 +283,26 @@ namespace detail {
 		};
 	}
 
+	static std::unique_ptr<range_mapper_base> make_one_to_one(const int buffer_dims, const range<3>& buffer_size, const access_mode mode) {
+		const auto make = [&](const auto buffer_dims_const) {
+			return std::make_unique<range_mapper<buffer_dims_const.value, celerity::access::one_to_one<0>>>(
+			    celerity::access::one_to_one<0>(), mode, range_cast<buffer_dims_const.value>(buffer_size));
+		};
+		switch(buffer_dims) {
+		case 1: return make(std::integral_constant<int, 1>());
+		case 2: return make(std::integral_constant<int, 2>());
+		case 3: return make(std::integral_constant<int, 3>());
+		default: assert(false); abort();
+		}
+	}
+
 	void task_manager::infer_collective_data_requirements(task& tsk) {
 		struct gather_dependency {
 			buffer_id bid;
 			subrange<3> consumed_sr;
 			const range_mapper_base* constant_consumer_rm; // not redundant with consumed_sr because RM is dimensionality-erased
-			task* identity_producer;
-			const range_mapper_base* identity_producer_rm;
+			task* full_producer;
+			const range_mapper_base* full_producer_rm;
 		};
 		std::vector<gather_dependency> pending_gathers;
 
@@ -310,52 +323,48 @@ namespace detail {
 			const auto& consumer_geometry = consumer->get_geometry();
 			const chunk<3> consumer_chunk{consumer_geometry.global_offset, consumer_geometry.global_size, consumer_geometry.global_size};
 			const auto consumed_sr = apply_range_mapper(consumer_rm, consumer_chunk, consumer_geometry.dimensions);
+			const auto consumed_box = subrange_to_grid_box(consumed_sr);
 
-			task* part_producer = nullptr;
-			task* identity_producer = nullptr;
-			const range_mapper_base* identity_producer_rm = nullptr;
-			for(const auto& dep : consumer->get_dependencies()) {
-				// Don't get confused by epoch serialization dependencies or similar
-				if(dep.kind != dependency_kind::true_dep || dep.origin != dependency_origin::dataflow) continue;
-
-				for(const auto* rm : dep.node->get_buffer_access_map().get_range_mappers(bid)) {
-					if(!detail::access::mode_traits::is_producer(rm->get_access_mode())) continue;
-
-					task* const buffer_producer = dep.node;
-					const auto& producer_geometry = buffer_producer->get_geometry();
-					const chunk<3> producer_chunk{producer_geometry.global_offset, producer_geometry.global_size, producer_geometry.global_size};
-					const auto produced_sr = apply_range_mapper(rm, producer_chunk, producer_geometry.dimensions);
-
-					// There can be redundant true-dependencies in the graph, so we skip the buffer if we see multiple producers for our subrange
-					const auto producer_box = subrange_to_grid_box(produced_sr);
-					const auto consumer_box = subrange_to_grid_box(consumed_sr);
-					if(producer_box.intersectsWith(consumer_box) && part_producer == nullptr) { part_producer = buffer_producer; }
-
-					// TODO also require that producer is splittable
-					if(part_producer == buffer_producer && rm->is_identity()) {
-						assert(identity_producer == nullptr);
-						identity_producer = part_producer;
-						identity_producer_rm = rm;
-					}
+			task* full_producer = nullptr;
+			for(auto& [box, tid] : m_buffers_last_writers.at(bid).get_region_values(consumed_box)) {
+				if(box == consumed_box && tid.has_value()) {
+					assert(full_producer == nullptr);
+					full_producer = m_task_buffer.get_task(*tid);
 				}
 			}
+			if(full_producer == nullptr || !full_producer->has_variable_split()) continue;
 
-			if(identity_producer == nullptr) continue;
+			const auto& producer_geometry = full_producer->get_geometry();
+			const chunk<3> producer_chunk{producer_geometry.global_offset, producer_geometry.global_size, producer_geometry.global_size};
 
-			// We stage our changes in this vector to avoid working on a partially-modified TDAG later in subsequent iterations of the loop
-			pending_gathers.push_back({bid, consumed_sr, consumer_rm, identity_producer, identity_producer_rm});
+			const range_mapper_base* full_producer_rm = nullptr;
+			size_t num_producer_rms = 0;
+			for(const auto* prm : full_producer->get_buffer_access_map().get_range_mappers(bid)) {
+				if(!detail::access::mode_traits::is_producer(prm->get_access_mode())) continue;
+
+				const auto produced_sr = apply_range_mapper(prm, producer_chunk, producer_geometry.dimensions);
+				const auto produced_box = subrange_to_grid_box(produced_sr);
+				if(produced_box.intersectsWith(consumed_box)) { num_producer_rms += 1; }
+				if(produced_box.covers(consumed_box)) { full_producer_rm = prm; }
+			}
+
+			if(num_producer_rms == 1 && full_producer_rm != nullptr) {
+				// We stage our changes in this vector to avoid working on a partially-modified TDAG later in subsequent iterations of the loop
+				pending_gathers.push_back({bid, consumed_sr, consumer_rm, full_producer, full_producer_rm});
+			}
 		}
 
 		for(const auto& gather : pending_gathers) {
-			task* const consumer = &tsk;
+			const auto consumer = &tsk;
 
-			const auto& producer_geometry = gather.identity_producer->get_geometry();
+			const auto& producer_geometry = gather.full_producer->get_geometry();
 			const auto buffer_dimensions = producer_geometry.dimensions; // since we require a one-to-one access
 			const task_geometry geometry{buffer_dimensions, gather.consumed_sr.range, gather.consumed_sr.offset};
 
-			// TODO is it enough to define the gather through buffer requirements only? Do we need to specify a task geometry?
 			buffer_access_map access_map;
-			access_map.add_access(gather.bid, gather.identity_producer_rm->clone_as(access_mode::read));
+			// we know the one-to-one input will be in range
+			const range<3> any_buffer_range{std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max()};
+			access_map.add_access(gather.bid, make_one_to_one(buffer_dimensions, any_buffer_range, access_mode::read));
 			access_map.add_access(gather.bid, gather.constant_consumer_rm->clone_as(access_mode::discard_write));
 
 			auto gather_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
@@ -363,16 +372,8 @@ namespace detail {
 			auto& gather_task = *gather_task_ptr;
 			m_task_buffer.put(std::move(gather_reserve), std::move(gather_task_ptr));
 
-			// TODO investigate if this has any consequence on TDAG pseudo-critical path length and horizon generation
-			consumer->remove_dependency(gather.identity_producer);
-			add_dependency(*consumer, gather_task, dependency_kind::true_dep, dependency_origin::dataflow);
-			add_dependency(gather_task, *gather.identity_producer, dependency_kind::true_dep, dependency_origin::dataflow);
-			// TODO also re-route anti-dependencies that other tasks might have on the producer due to the same write
-
-			m_buffers_last_writers.at(gather.bid).update_region(subrange_to_grid_box(gather.consumed_sr), gather_task.get_id());
-
+			compute_dependencies(gather_task);
 			invoke_callbacks(&gather_task);
-			// We never want to generate additional horizons for nodes inserted in a graph transformation like this
 		}
 	}
 } // namespace detail
