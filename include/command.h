@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather };
+	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, broadcast };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -186,6 +186,21 @@ namespace detail {
 	  private:
 		std::vector<subrange<3>> m_source_srs;
 		std::optional<node_id> m_single_dest_nid;
+	};
+
+	class broadcast_command final : public task_command {
+		friend class command_graph;
+		broadcast_command(command_id cid, node_id nid, task_id tid, const node_id source_nid, const subrange<3>& sr)
+		    : task_command(cid, nid, tid), m_source_nid(source_nid), m_sr(sr) {}
+
+	  public:
+		const subrange<3>& get_range() const { return m_sr; }
+
+		node_id get_source() const { return m_source_nid; }
+
+	  private:
+		node_id m_source_nid;
+		subrange<3> m_sr;
 	};
 
 	// ----------------------------------------------------------------------------------------------------------------

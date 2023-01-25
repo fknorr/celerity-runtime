@@ -32,6 +32,7 @@ namespace detail {
 		case task_type::horizon: return "horizon";
 		case task_type::gather: return "gather";
 		case task_type::allgather: return "allgather";
+		case task_type::broadcast: return "broadcast";
 		default: return "unknown";
 		}
 	}
@@ -79,7 +80,7 @@ namespace detail {
 
 		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.get_type()));
 		if(tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::gather
-		    || tsk.get_type() == task_type::allgather) {
+		    || tsk.get_type() == task_type::allgather || tsk.get_type() == task_type::broadcast) {
 			fmt::format_to(std::back_inserter(label), " {}", execution_range);
 		} else if(tsk.get_type() == task_type::collective) {
 			fmt::format_to(std::back_inserter(label), " in CG{}", tsk.get_collective_group_id());
@@ -138,6 +139,8 @@ namespace detail {
 			label += "<b>horizon</b>";
 		} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
 			label += gcmd->get_single_destination() ? "<b>gather</b>" : "<b>allgather</b>";
+		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
+			label += "<b>broadcast</b>";
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";

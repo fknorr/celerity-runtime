@@ -283,10 +283,11 @@ namespace detail {
 		};
 	}
 
-	static std::unique_ptr<range_mapper_base> make_one_to_one(const int buffer_dims, const range<3>& buffer_size, const access_mode mode) {
+	template <typename Functor>
+	static std::unique_ptr<range_mapper_base> make_range_mapper(
+	    const Functor& rmfn, const int buffer_dims, const range<3>& buffer_size, const access_mode mode) {
 		const auto make = [&](const auto buffer_dims_const) {
-			return std::make_unique<range_mapper<buffer_dims_const.value, celerity::access::one_to_one<0>>>(
-			    celerity::access::one_to_one<0>(), mode, range_cast<buffer_dims_const.value>(buffer_size));
+			return std::make_unique<range_mapper<buffer_dims_const.value, Functor>>(rmfn, mode, range_cast<buffer_dims_const.value>(buffer_size));
 		};
 		switch(buffer_dims) {
 		case 1: return make(std::integral_constant<int, 1>());
@@ -297,14 +298,14 @@ namespace detail {
 	}
 
 	void task_manager::infer_collective_data_requirements(task& tsk) {
-		struct gather_dependency {
+		struct collective_dependency {
 			buffer_id bid;
 			subrange<3> consumed_sr;
 			const range_mapper_base* constant_consumer_rm; // not redundant with consumed_sr because RM is dimensionality-erased
 			task* full_producer;
 			const range_mapper_base* full_producer_rm;
 		};
-		std::vector<gather_dependency> pending_gathers;
+		std::vector<collective_dependency> pending_collectives;
 
 		task* const consumer = &tsk;
 
@@ -333,7 +334,12 @@ namespace detail {
 					full_producer = m_task_buffer.get_task(*tid);
 				}
 			}
-			if(full_producer == nullptr || !full_producer->has_variable_split()) continue;
+			if(full_producer == nullptr) continue;
+
+			if(!consumer->has_variable_split() && !full_producer->has_variable_split()) {
+				// data will already be available locally or will generate a single push-await pair - don't use collectives
+				continue;
+			}
 
 			const auto& producer_geometry = full_producer->get_geometry();
 			const chunk<3> producer_chunk{producer_geometry.global_offset, producer_geometry.global_size, producer_geometry.global_size};
@@ -348,32 +354,35 @@ namespace detail {
 				if(produced_box.intersectsWith(consumed_box)) { num_producer_rms += 1; }
 				if(produced_box.covers(consumed_box)) { full_producer_rm = prm; }
 			}
+			if(num_producer_rms != 1 || full_producer_rm == nullptr) continue;
 
-			if(num_producer_rms == 1 && full_producer_rm != nullptr) {
-				// We stage our changes in this vector to avoid working on a partially-modified TDAG later in subsequent iterations of the loop
-				pending_gathers.push_back({bid, consumed_sr, consumer_rm, full_producer, full_producer_rm});
-			}
+			// We stage our changes in this vector to avoid working on a partially-modified TDAG later in subsequent iterations of the loop
+			pending_collectives.push_back({bid, consumed_sr, consumer_rm, full_producer, full_producer_rm});
 		}
 
-		for(const auto& gather : pending_gathers) {
-			const auto& producer_geometry = gather.full_producer->get_geometry();
+		for(const auto& collective : pending_collectives) {
+			const auto& producer_geometry = collective.full_producer->get_geometry();
 			const auto buffer_dimensions = producer_geometry.dimensions; // since we require a one-to-one access
-			const task_geometry geometry{buffer_dimensions, gather.consumed_sr.range, gather.consumed_sr.offset};
+			const task_geometry geometry{buffer_dimensions, collective.consumed_sr.range, collective.consumed_sr.offset};
 
 			buffer_access_map access_map;
 			// we know the one-to-one input will be in range
 			const range<3> any_buffer_range{std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max()};
-			access_map.add_access(gather.bid, make_one_to_one(buffer_dimensions, any_buffer_range, access_mode::read));
-			access_map.add_access(gather.bid, gather.constant_consumer_rm->clone_as(access_mode::discard_write));
+			auto source_rm = collective.full_producer->has_variable_split()
+			                     ? make_range_mapper(celerity::access::one_to_one(), buffer_dimensions, any_buffer_range, access_mode::read)
+			                     : make_range_mapper(celerity::access::fixed(collective.consumed_sr), buffer_dimensions, any_buffer_range, access_mode::read);
+			access_map.add_access(collective.bid, std::move(source_rm));
+			access_map.add_access(collective.bid, collective.constant_consumer_rm->clone_as(access_mode::discard_write));
 
-			auto gather_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
-			const auto make_task = consumer->has_variable_split() ? task::make_allgather : task::make_gather;
-			auto gather_task_ptr = make_task(gather_reserve.get_tid(), geometry, std::move(access_map));
-			auto& gather_task = *gather_task_ptr;
-			m_task_buffer.put(std::move(gather_reserve), std::move(gather_task_ptr));
+			auto collective_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
+			const auto make_task = collective.full_producer->has_variable_split() ? (consumer->has_variable_split() ? task::make_allgather : task::make_gather)
+			                                                                      : task::make_broadcast;
+			auto collective_task_ptr = make_task(collective_reserve.get_tid(), geometry, std::move(access_map));
+			auto& collective_task = *collective_task_ptr;
+			m_task_buffer.put(std::move(collective_reserve), std::move(collective_task_ptr));
 
-			compute_dependencies(gather_task);
-			invoke_callbacks(&gather_task);
+			compute_dependencies(collective_task);
+			invoke_callbacks(&collective_task);
 		}
 	}
 } // namespace detail

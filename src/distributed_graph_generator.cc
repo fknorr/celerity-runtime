@@ -230,6 +230,8 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 		generate_execution_commands(tsk);
 	} else if(tsk.get_type() == task_type::gather || tsk.get_type() == task_type::allgather) {
 		generate_gather_commands(tsk);
+	} else if(tsk.get_type() == task_type::broadcast) {
+		generate_broadcast_commands(tsk);
 	} else {
 		throw std::runtime_error("Task type NYI");
 	}
@@ -534,6 +536,46 @@ void distributed_graph_generator::generate_gather_commands(const task& tsk) noex
 	const auto is_replicated = true;
 	buffer_state.local_last_writer.update_region(global_output_region, write_command_state(cmd->get_cid(), is_replicated));
 	buffer_state.replicated_regions.update_region(global_output_region, node_bitset().set() /* effectively all nodes TODO only for Allgather */);
+}
+
+void distributed_graph_generator::generate_broadcast_commands(const task& tsk) noexcept {
+	assert(tsk.get_type() == task_type::broadcast);
+
+	const auto broadcast_bids = tsk.get_buffer_access_map().get_accessed_buffers();
+	assert(broadcast_bids.size() == 1); // TODO we really need a better representation than BAMs for gather tasks
+	const auto bid = *broadcast_bids.begin();
+	auto& buffer_state = m_buffer_states.at(bid);
+
+	const auto region = tsk.get_buffer_access_map().get_mode_requirements(
+	    bid, access_mode::discard_write, tsk.get_dimensions(), {/* must be a fixed or all range mapper */}, tsk.get_global_size());
+	const auto sr = grid_box_to_subrange(region.getSingle());
+
+	node_id source_nid = 0;
+	for(auto [_, replicated] : buffer_state.replicated_regions.get_region_values(region)) {
+		for(node_id nid = 0; nid < m_num_nodes; ++nid) {
+			if(replicated[nid]) {
+				assert(source_nid == 0);
+				source_nid = nid;
+			}
+		}
+	}
+
+	const auto cmd = create_command<broadcast_command>(m_local_nid, tsk.get_id(), source_nid, sr);
+
+	if(m_local_nid == source_nid) {
+		// Store the read access for determining anti-dependencies later on
+		m_command_buffer_reads[cmd->get_cid()][bid] = subrange_to_grid_box(sr);
+
+		for(const auto& [box, wcs] : buffer_state.local_last_writer.get_region_values(subrange_to_grid_box(sr))) {
+			assert(wcs.is_fresh());
+			m_cdag.add_dependency(cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+		}
+	}
+
+	generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, region, cmd);
+
+	buffer_state.local_last_writer.update_region(region, write_command_state(cmd->get_cid(), true /* is_replicated */));
+	buffer_state.replicated_regions.update_region(region, node_bitset().set() /* effectively all nodes */);
 }
 
 void distributed_graph_generator::generate_anti_dependencies(

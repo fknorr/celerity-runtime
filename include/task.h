@@ -51,6 +51,7 @@ namespace detail {
 		horizon,        ///< task horizon
 		gather,
 		allgather,
+		broadcast,
 	};
 
 	enum class execution_target {
@@ -274,6 +275,10 @@ namespace detail {
 
 		static std::unique_ptr<task> make_allgather(task_id tid, task_geometry geometry, buffer_access_map access_map) {
 			return std::unique_ptr<task>(new task(tid, task_type::allgather, implicit_collective, geometry, nullptr, std::move(access_map), {}, {}, {}, {}));
+		}
+
+		static std::unique_ptr<task> make_broadcast(task_id tid, task_geometry geometry, buffer_access_map access_map) {
+			return std::unique_ptr<task>(new task(tid, task_type::broadcast, implicit_collective, geometry, nullptr, std::move(access_map), {}, {}, {}, {}));
 		}
 
 	  private:
