@@ -693,7 +693,8 @@ namespace detail {
 		test_utils::maybe_print_graph(tm);
 	}
 
-	TEMPLATE_TEST_CASE_SIG("task manager detects gather pattern between dependent tasks", "[task_manager][task-graph][gather]", ((int Dims), Dims), 1, 2, 3) {
+	TEMPLATE_TEST_CASE_SIG(
+	    "task manager detects allgather pattern between dependent tasks", "[task_manager][task-graph][gather]", ((int Dims), Dims), 1, 2, 3) {
 		task_manager tm{1, nullptr};
 		test_utils::mock_buffer_factory mbf(tm);
 
@@ -716,7 +717,7 @@ namespace detail {
 		REQUIRE(std::distance(consumer_deps.begin(), consumer_deps.end()) == 1);
 
 		const auto& gather_task = *consumer_deps.begin()->node;
-		CHECK(gather_task.get_type() == task_type::gather);
+		CHECK(gather_task.get_type() == task_type::allgather);
 		CHECK(gather_task.get_geometry().dimensions == Dims);
 		CHECK(gather_task.get_geometry().global_offset == id_cast<3>(consumer_subrange.offset));
 		CHECK(gather_task.get_geometry().global_size == range_cast<3>(consumer_subrange.range));
@@ -726,6 +727,39 @@ namespace detail {
 		CHECK(gather_task.get_buffer_access_map().get_mode_requirements(
 		          buf.get_id(), access_mode::discard_write, Dims, subrange_cast<3>(consumer_subrange), range_cast<3>(consumer_subrange.range))
 		      == subrange_to_grid_box(subrange_cast<3>(consumer_subrange)));
+
+		const auto gather_deps = gather_task.get_dependencies();
+		REQUIRE(std::distance(gather_deps.begin(), gather_deps.end()) == 1);
+		CHECK(gather_deps.begin()->node == tm.get_task(tid_producer));
+
+		test_utils::maybe_print_graph(tm);
+	}
+
+	TEST_CASE("task manager detects gather pattern on unsplittable consumer", "[task_manager][task-graph][gather]") {
+		task_manager tm{1, nullptr};
+		test_utils::mock_buffer_factory mbf(tm);
+
+		const range<1> producer_range(100);
+
+		auto buf = mbf.create_buffer(producer_range);
+		const auto tid_producer = test_utils::add_compute_task<class UKN(producer)>(
+		    tm,
+		    [&](handler& cgh) {
+			    experimental::hint(cgh, experimental::hints::tiled_split());
+			    buf.template get_access<access_mode::discard_write>(cgh, one_to_one());
+		    },
+		    producer_range);
+		const auto tid_consumer = test_utils::add_host_task(tm, on_master_node, [&](handler& cgh) { buf.template get_access<access_mode::read>(cgh, all()); });
+
+		CHECK(!has_dependency(tm, tid_consumer, tid_producer));
+		const auto consumer_deps = tm.get_task(tid_consumer)->get_dependencies();
+		REQUIRE(std::distance(consumer_deps.begin(), consumer_deps.end()) == 1);
+
+		const auto& gather_task = *consumer_deps.begin()->node;
+		CHECK(gather_task.get_type() == task_type::gather);
+		CHECK(gather_task.get_geometry().dimensions == 1);
+		CHECK(gather_task.get_geometry().global_offset == id<3>(0, 0, 0));
+		CHECK(gather_task.get_geometry().global_size == range_cast<3>(producer_range));
 
 		const auto gather_deps = gather_task.get_dependencies();
 		REQUIRE(std::distance(gather_deps.begin(), gather_deps.end()) == 1);

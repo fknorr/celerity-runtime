@@ -15,7 +15,6 @@
 #include "workaround.h"
 
 #include "print_utils.h"
-#include <spdlog/fmt/ostr.h>
 
 namespace celerity {
 namespace detail {
@@ -360,7 +359,11 @@ namespace detail {
 
 	std::string gather_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<gather_data>(pkg.data);
-		return fmt::format("gather {} of buffer {}", data.source_srs[m_local_nid], static_cast<size_t>(m_bid));
+		if(data.single_dest_nid) {
+			return fmt::format("gather {} of buffer {} to {}", data.source_srs[m_local_nid], static_cast<size_t>(m_bid), *data.single_dest_nid);
+		} else {
+			return fmt::format("allgather {} of buffer {}", data.source_srs[m_local_nid], static_cast<size_t>(m_bid));
+		}
 	}
 
 	bool gather_job::execute(const command_pkg& pkg) {
@@ -380,7 +383,11 @@ namespace detail {
 			assert(static_cast<size_t>(num_ranks) == data.source_srs.size());
 		}
 		for(const auto& sr : data.source_srs) {
-			assert(sr.range[1] == buffer_info.range[1] && sr.range[2] == buffer_info.range[2] && "gather_job can't deal with gathers from strided inputs yet");
+			if(sr.range.size() > 0 && (sr.range[1] != buffer_info.range[1] || sr.range[2] != buffer_info.range[2])) {
+				CELERITY_CRITICAL("gather_job can't deal with gathers from strided inputs yet, gather_job sr={}, buffer_info.range={{{}, {}, {}}}", sr,
+				    buffer_info.range[0], buffer_info.range[1], buffer_info.range[2]);
+				std::abort();
+			}
 		}
 #endif
 
@@ -388,40 +395,59 @@ namespace detail {
 		const auto total_gather_byte_size = tsk.get_global_size().size() * buffer_info.element_size;
 		assert(total_gather_byte_size <= INT_MAX);
 
-		// TODO skip this bootstrapping Allgather if all sizes are equal or can be trivially computed by mimicking an equal_split
-		std::vector<int> all_chunk_byte_sizes(data.source_srs.size());
-		for(size_t i = 0; i < data.source_srs.size(); ++i) {
-			const auto byte_size = data.source_srs[i].range.size() * buffer_info.element_size;
-			assert(byte_size <= INT_MAX);
-			all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
-		}
-		assert(std::accumulate(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), size_t(0)) == total_gather_byte_size);
-		const auto send_chunk_byte_size = all_chunk_byte_sizes[m_local_nid];
+		const auto send_chunk_byte_size = data.source_srs[m_local_nid].range.size() * buffer_info.element_size;
+		const bool sends_data = send_chunk_byte_size > 0;
+		const bool receives_data = !data.single_dest_nid || *data.single_dest_nid == m_local_nid;
 
 		unique_payload_ptr send_buffer;
-		if(all_chunk_byte_sizes[m_local_nid] > 0) {
-			send_buffer = make_uninitialized_payload<std::byte>(all_chunk_byte_sizes[m_local_nid]);
+		if(sends_data) {
+			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
 			m_buffer_mngr.get_buffer_data(m_bid, data.source_srs[m_local_nid], send_buffer.get_pointer()).wait();
-			assert(all_chunk_byte_sizes[m_local_nid] == data.source_srs[m_local_nid].range.size() * buffer_info.element_size);
+			assert(send_chunk_byte_size == data.source_srs[m_local_nid].range.size() * buffer_info.element_size);
 		}
 
-		std::vector<int> all_chunk_byte_offsets(all_chunk_byte_sizes.size());
-		std::exclusive_scan(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), all_chunk_byte_offsets.begin(), 0);
+		std::vector<int> all_chunk_byte_sizes;
+		std::vector<int> all_chunk_byte_offsets;
+		unique_payload_ptr recv_buffer;
+		if(receives_data) {
+			all_chunk_byte_sizes.resize(data.source_srs.size());
+			for(size_t i = 0; i < data.source_srs.size(); ++i) {
+				const auto byte_size = data.source_srs[i].range.size() * buffer_info.element_size;
+				assert(byte_size <= INT_MAX);
+				all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
+			}
+			assert(std::accumulate(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), size_t(0)) == total_gather_byte_size);
 
-		auto recv_buffer = make_uninitialized_payload<std::byte>(total_gather_byte_size);
-		// TODO make asynchronous?
-		MPI_Allgatherv(send_buffer.get_pointer(), send_chunk_byte_size, MPI_BYTE, recv_buffer.get_pointer(), all_chunk_byte_sizes.data(),
-		    all_chunk_byte_offsets.data(), MPI_BYTE, MPI_COMM_WORLD);
-		CELERITY_DEBUG("MPI_Allgatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
-		    send_buffer ? all_chunk_byte_sizes[m_local_nid] : 0, send_chunk_byte_size, total_gather_byte_size, fmt::join(all_chunk_byte_sizes, ", "),
-		    fmt::join(all_chunk_byte_offsets, ", "));
+			all_chunk_byte_offsets.resize(all_chunk_byte_sizes.size());
+			std::exclusive_scan(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), all_chunk_byte_offsets.begin(), 0);
+			recv_buffer = make_uninitialized_payload<std::byte>(total_gather_byte_size);
+		}
 
-		// TODO MPI_Allgatherv with MPI_IN_PLACE to keep with a single allocation
-		assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(), send_chunk_byte_size)
-		       == 0);
-		CELERITY_DEBUG("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}), recv_buffer", (int)m_bid, tsk.get_global_offset()[0],
-		    tsk.get_global_offset()[1], tsk.get_global_offset()[2], tsk.get_global_size()[0], tsk.get_global_size()[1], tsk.get_global_size()[2]);
-		m_buffer_mngr.set_buffer_data(m_bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(recv_buffer));
+		if(data.single_dest_nid) {
+			const auto root = static_cast<int>(*data.single_dest_nid);
+			MPI_Gatherv(send_buffer.get_pointer(), static_cast<int>(send_chunk_byte_size), MPI_BYTE, recv_buffer.get_pointer(), all_chunk_byte_sizes.data(),
+			    all_chunk_byte_offsets.data(), MPI_BYTE, root, MPI_COMM_WORLD);
+			CELERITY_DEBUG("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
+			    send_buffer ? send_chunk_byte_size : 0, send_chunk_byte_size, total_gather_byte_size, fmt::join(all_chunk_byte_sizes, ", "),
+			    fmt::join(all_chunk_byte_offsets, ", "), root);
+		} else {
+			// TODO make asynchronous?
+			MPI_Allgatherv(send_buffer.get_pointer(), static_cast<int>(send_chunk_byte_size), MPI_BYTE, recv_buffer.get_pointer(), all_chunk_byte_sizes.data(),
+			    all_chunk_byte_offsets.data(), MPI_BYTE, MPI_COMM_WORLD);
+			CELERITY_DEBUG("MPI_Allgatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
+			    send_buffer ? send_chunk_byte_size : 0, send_chunk_byte_size, total_gather_byte_size, fmt::join(all_chunk_byte_sizes, ", "),
+			    fmt::join(all_chunk_byte_offsets, ", "));
+		}
+
+		if(receives_data) {
+			// TODO MPI_Allgatherv with MPI_IN_PLACE to keep with a single allocation
+			assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
+			           send_chunk_byte_size)
+			       == 0);
+			CELERITY_DEBUG("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}), recv_buffer", (int)m_bid, tsk.get_global_offset()[0],
+			    tsk.get_global_offset()[1], tsk.get_global_offset()[2], tsk.get_global_size()[0], tsk.get_global_size()[1], tsk.get_global_size()[2]);
+			m_buffer_mngr.set_buffer_data(m_bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(recv_buffer));
+		}
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;

@@ -228,7 +228,7 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 		generate_horizon_command(tsk);
 	} else if(tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::master_node) {
 		generate_execution_commands(tsk);
-	} else if(tsk.get_type() == task_type::gather) {
+	} else if(tsk.get_type() == task_type::gather || tsk.get_type() == task_type::allgather) {
 		generate_gather_commands(tsk);
 	} else {
 		throw std::runtime_error("Task type NYI");
@@ -462,11 +462,13 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 }
 
 void distributed_graph_generator::generate_gather_commands(const task& tsk) noexcept {
-	assert(tsk.get_type() == task_type::gather);
+	assert(tsk.get_type() == task_type::gather || tsk.get_type() == task_type::allgather);
 
 	const auto dependencies = tsk.get_dependencies();
-	assert(std::distance(dependencies.begin(), dependencies.end()) == 1); // only dependency is the producer TODO until we have more elaborate inference
-	const auto& ptsk = *dependencies.front().node;
+	// TODO hideous, dependency_origin is only meant for graph printing
+	constexpr auto is_producer_dep = [](const task::dependency& d) { return d.kind == dependency_kind::true_dep && d.origin == dependency_origin::dataflow; };
+	assert(std::count_if(dependencies.begin(), dependencies.end(), is_producer_dep) == 1); // TODO until we have more elaborate inference
+	const auto& ptsk = *std::find_if(dependencies.begin(), dependencies.end(), is_producer_dep)->node;
 
 	const auto gathered_bids = tsk.get_buffer_access_map().get_accessed_buffers();
 	assert(gathered_bids.size() == 1); // TODO we really need a better representation than BAMs for gather tasks
@@ -505,9 +507,12 @@ void distributed_graph_generator::generate_gather_commands(const task& tsk) noex
 		// the merged producer region cannot have disjoint boxes if the output range mappers are isomorphic to one_to_one
 		source_srs[i] = grid_box_to_subrange(gather_region.getSingle());
 	}
-
 	const auto local_input_sr = source_srs[m_local_nid];
-	const auto cmd = create_command<gather_command>(m_local_nid, tsk.get_id(), std::move(source_srs));
+
+	// TODO this makes assumptions about the node assignment of the (unsplittable) consumer task
+	const auto single_dest_nid = tsk.get_type() == task_type::gather ? std::optional(node_id(0)) : std::nullopt;
+
+	const auto cmd = create_command<gather_command>(m_local_nid, tsk.get_id(), std::move(source_srs), single_dest_nid);
 
 	auto& buffer_state = m_buffer_states.at(bid);
 

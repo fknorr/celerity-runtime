@@ -306,8 +306,9 @@ namespace detail {
 		};
 		std::vector<gather_dependency> pending_gathers;
 
+		task* const consumer = &tsk;
+
 		for(const auto bid : tsk.get_buffer_access_map().get_accessed_buffers()) {
-			task* const consumer = &tsk;
 			const range_mapper_base* consumer_rm = nullptr;
 			size_t num_consumer_accesses = 0;
 			for(const auto* rm : consumer->get_buffer_access_map().get_range_mappers(bid)) {
@@ -355,8 +356,6 @@ namespace detail {
 		}
 
 		for(const auto& gather : pending_gathers) {
-			const auto consumer = &tsk;
-
 			const auto& producer_geometry = gather.full_producer->get_geometry();
 			const auto buffer_dimensions = producer_geometry.dimensions; // since we require a one-to-one access
 			const task_geometry geometry{buffer_dimensions, gather.consumed_sr.range, gather.consumed_sr.offset};
@@ -368,7 +367,8 @@ namespace detail {
 			access_map.add_access(gather.bid, gather.constant_consumer_rm->clone_as(access_mode::discard_write));
 
 			auto gather_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
-			auto gather_task_ptr = task::make_gather(gather_reserve.get_tid(), geometry, std::move(access_map));
+			const auto make_task = consumer->has_variable_split() ? task::make_allgather : task::make_gather;
+			auto gather_task_ptr = make_task(gather_reserve.get_tid(), geometry, std::move(access_map));
 			auto& gather_task = *gather_task_ptr;
 			m_task_buffer.put(std::move(gather_reserve), std::move(gather_task_ptr));
 

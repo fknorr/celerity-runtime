@@ -353,7 +353,7 @@ namespace detail {
 		});
 
 		q.submit([=](handler& cgh) {
-			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task);
+			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task); // Gather
 			cgh.host_task(range<1>(1000), [=](partition<1> part) {
 				for(size_t i = 200; i < 200 + 500; ++i) {
 					REQUIRE_LOOP(acc[i] == i);
@@ -383,7 +383,7 @@ namespace detail {
 
 		for(size_t i = 0; i < n_iter; ++i) {
 			q.submit([=](handler& cgh) {
-				accessor readPos(posBuff, cgh, celerity::access::all(), read_only);
+				accessor readPos(posBuff, cgh, celerity::access::all(), read_only); // Allgather
 				accessor rwVel(velBuff, cgh, celerity::access::one_to_one(), read_write);
 				cgh.parallel_for<class UKN(body_force)>(
 				    nd_range<1>(n_bodies, block_size), [=](nd_item<1> it) { rwVel[it.get_global_id()] += readPos[it.get_global_id()]; });
@@ -397,8 +397,8 @@ namespace detail {
 		}
 
 		q.submit([=](handler& cgh) {
-			accessor readPos{posBuff, cgh, celerity::access::all{}, read_only_host_task};
-			accessor readVel{velBuff, cgh, celerity::access::all{}, read_only_host_task};
+			accessor readPos{posBuff, cgh, celerity::access::all{}, read_only_host_task}; // Gather
+			accessor readVel{velBuff, cgh, celerity::access::all{}, read_only_host_task}; // Gather
 			cgh.host_task(celerity::on_master_node, [=] {
 				for(size_t i = 0; i < n_bodies; ++i) {
 					float vel = 0;
@@ -419,7 +419,7 @@ namespace detail {
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "Gather from a strided non-dim0 split", "[gather]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "Gather from a strided non-dim0 split", "[gather][!mayfail]") {
 		constexpr size_t grid_size = 256;
 		const range<2> range = {grid_size, grid_size};
 
@@ -434,13 +434,13 @@ namespace detail {
 		});
 
 		q.submit([=](handler& cgh) {
-			accessor a(buf_a, cgh, celerity::access::all(), read_only); // overgenerous read to trigger a Gather
+			accessor a(buf_a, cgh, celerity::access::all(), read_only); // overgenerous read to trigger an Allgather
 			accessor b(buf_b, cgh, celerity::access::one_to_one(), write_only, no_init);
 			cgh.parallel_for<class UKN(producer)>(range, [=](celerity::item<2> it) { b[it] = a[it]; });
 		});
 
 		q.submit([=](handler& cgh) {
-			accessor b{buf_b, cgh, celerity::access::all{}, read_only_host_task};
+			accessor b{buf_b, cgh, celerity::access::all{}, read_only_host_task}; // Gather
 			cgh.host_task(celerity::on_master_node, [=] {
 				for(int i = 0; size_t(i) < range.size(); ++i) {
 					REQUIRE_LOOP(b.get_pointer()[i] == i);

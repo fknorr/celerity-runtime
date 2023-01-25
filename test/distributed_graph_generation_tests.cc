@@ -383,7 +383,7 @@ class dist_cdag_test_context {
 
 		m_tm->register_task_callback([this](const task* tsk) {
 			// the TM will invoke callbacks on implicit gathers before the consumer task, so we generate them right away
-			if(tsk->get_type() == task_type::gather) {
+			if(tsk->get_type() == task_type::gather || tsk->get_type() == task_type::allgather) {
 				for(auto& dggen : m_dggens) {
 					dggen->build_task(*tsk);
 				}

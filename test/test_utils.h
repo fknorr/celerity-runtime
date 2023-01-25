@@ -264,7 +264,7 @@ namespace test_utils {
 
 			m_tm->register_task_callback([this](const detail::task* tsk) {
 				// the TM will invoke callbacks on implicit gathers before the consumer task, so we generate them right away
-				if(tsk->get_type() == detail::task_type::gather) {
+				if(tsk->get_type() == detail::task_type::gather || tsk->get_type() == detail::task_type::allgather) {
 					detail::naive_split_transformer transformer{m_num_nodes, m_num_nodes}; // shouldn't do anything, but replicates what the scheduler does
 					m_ggen->build_task(*tsk, {&transformer});
 					// m_gser->flush(tsk->get_id()); // NOCOMMIT
