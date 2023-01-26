@@ -258,6 +258,8 @@ namespace detail {
 				}
 			});
 		});
+
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "generating same task graph on different nodes", "[task-graph]") {
@@ -269,29 +271,32 @@ namespace detail {
 		buffer<int, 1> buff_a(cl::sycl::range<1>{1});
 		q.submit([=](handler& cgh) {
 			accessor write_a{buff_a, cgh, celerity::access::all{}, celerity::write_only, celerity::no_init};
-			cgh.parallel_for<class UKN(write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)write_a; });
 		});
 
 		buffer<int, 1> buff_b(cl::sycl::range<1>{1});
 		q.submit([=](handler& cgh) {
 			accessor write_b{buff_b, cgh, celerity::access::all{}, celerity::write_only, celerity::no_init};
-			cgh.parallel_for<class UKN(write_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(write_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)write_b; });
 		});
 
 		q.submit([=](handler& cgh) {
 			accessor read_write_a{buff_a, cgh, celerity::access::all{}, celerity::read_write};
-			cgh.parallel_for<class UKN(read_write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(read_write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)read_write_a; });
 		});
 
 		q.submit([=](handler& cgh) {
 			accessor read_write_a{buff_a, cgh, celerity::access::all{}, celerity::read_write};
 			accessor read_write_b{buff_b, cgh, celerity::access::all{}, celerity::read_write};
-			cgh.parallel_for<class UKN(read_write_a_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(read_write_a_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {
+				(void)read_write_a;
+				(void)read_write_b;
+			});
 		});
 
 		q.submit([=](handler& cgh) {
 			accessor write_a{buff_a, cgh, celerity::access::all{}, celerity::write_only, celerity::no_init};
-			cgh.parallel_for<class UKN(write_a_again)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(write_a_again)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)write_a; });
 		});
 
 		q.slow_full_sync();
@@ -321,6 +326,8 @@ namespace detail {
 			MPI_Recv(received_graph.data(), rec_graph_str_length, MPI_BYTE, 1, 0, test_communicator, MPI_STATUS_IGNORE);
 			CHECK(received_graph == graph_str);
 		}
+
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "nodes do not receive commands for empty chunks", "[command-graph]") {
@@ -341,6 +348,8 @@ namespace detail {
 			// more than one chunk (assuming current naive split behavior).
 			cgh.parallel_for<class UKN(kernel)>(buf.get_range(), [=](item<2> it) { acc[it] = 0; });
 		});
+
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit gathers produce the expected data distribution", "[gather]") {
