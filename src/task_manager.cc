@@ -12,7 +12,8 @@ namespace detail {
 		m_task_buffer.put(std::move(reserve), task::make_epoch(initial_epoch_task, epoch_action::none));
 	}
 
-	void task_manager::add_buffer(buffer_id bid, const cl::sycl::range<3>& range, bool host_initialized) {
+	void task_manager::add_buffer(buffer_id bid, int dimensions, const cl::sycl::range<3>& range, bool host_initialized) {
+		m_buffer_info.emplace(bid, buffer_info{dimensions, range});
 		m_buffers_last_writers.emplace(bid, range);
 		if(host_initialized) { m_buffers_last_writers.at(bid).update_region(subrange_to_grid_box(subrange<3>({}, range)), m_epoch_for_new_tasks); }
 	}
@@ -283,25 +284,39 @@ namespace detail {
 		};
 	}
 
-	template <typename Functor>
-	static std::unique_ptr<range_mapper_base> make_range_mapper(
-	    const Functor& rmfn, const int buffer_dims, const range<3>& buffer_size, const access_mode mode) {
-		const auto make = [&](const auto buffer_dims_const) {
-			return std::make_unique<range_mapper<buffer_dims_const.value, Functor>>(rmfn, mode, range_cast<buffer_dims_const.value>(buffer_size));
-		};
-		switch(buffer_dims) {
-		case 1: return make(std::integral_constant<int, 1>());
-		case 2: return make(std::integral_constant<int, 2>());
-		case 3: return make(std::integral_constant<int, 3>());
-		default: assert(false); abort();
+	template <typename Factory>
+	static auto dispatch_dims_as_integral_constant(int dims, const Factory& factory) {
+		switch(dims) {
+		case 1: return factory(std::integral_constant<int, 1>());
+		case 2: return factory(std::integral_constant<int, 2>());
+		case 3: return factory(std::integral_constant<int, 3>());
+		default: assert(!"dimensionality out of range"); abort();
 		}
+	}
+
+	static std::unique_ptr<range_mapper_base> make_one_to_one_rm(const int buffer_dims, const range<3>& buffer_size, const access_mode mode) {
+		return dispatch_dims_as_integral_constant(buffer_dims, [&](const auto buffer_dims_constexpr) -> std::unique_ptr<range_mapper_base> {
+			constexpr int buffer_dims = buffer_dims_constexpr.value;
+			using rmfn = celerity::access::one_to_one<>;
+			return std::make_unique<range_mapper<buffer_dims, rmfn>>(rmfn{}, mode, range_cast<buffer_dims>(buffer_size));
+		});
+	}
+
+	static std::unique_ptr<range_mapper_base> make_fixed_rm(
+	    const int buffer_dims, const subrange<3>& access_range, const range<3>& buffer_size, const access_mode mode) {
+		return dispatch_dims_as_integral_constant(buffer_dims, [&](const auto buffer_dims_constexpr) -> std::unique_ptr<range_mapper_base> {
+			constexpr int buffer_dims = buffer_dims_constexpr.value;
+			using rmfn = celerity::access::fixed<buffer_dims, buffer_dims>;
+			return std::make_unique<range_mapper<buffer_dims, rmfn>>(
+			    rmfn(subrange_cast<buffer_dims>(access_range)), mode, range_cast<buffer_dims>(buffer_size));
+		});
 	}
 
 	void task_manager::infer_collective_data_requirements(task& tsk) {
 		struct collective_dependency {
 			buffer_id bid;
 			subrange<3> consumed_sr;
-			const range_mapper_base* constant_consumer_rm; // not redundant with consumed_sr because RM is dimensionality-erased
+			const range_mapper_base* consumer_rm; // not redundant with consumed_sr because RM is dimensionality-erased
 			task* full_producer;
 			const range_mapper_base* full_producer_rm;
 		};
@@ -320,7 +335,7 @@ namespace detail {
 			}
 
 			// TODO allow multiple non-overlapping consumers of the same buffer.
-			if(num_consumer_accesses != 1 || !consumer_rm->is_constant()) continue;
+			if(num_consumer_accesses != 1) continue;
 
 			const auto& consumer_geometry = consumer->get_geometry();
 			const chunk<3> consumer_chunk{consumer_geometry.global_offset, consumer_geometry.global_size, consumer_geometry.global_size};
@@ -355,24 +370,24 @@ namespace detail {
 				if(produced_box.covers(consumed_box)) { full_producer_rm = prm; }
 			}
 			if(num_producer_rms != 1 || full_producer_rm == nullptr) continue;
+			if(!full_producer_rm->is_constant() && !consumer_rm->is_constant()) continue; // truly individual, or TODO Alltoall
 
 			// We stage our changes in this vector to avoid working on a partially-modified TDAG later in subsequent iterations of the loop
 			pending_collectives.push_back({bid, consumed_sr, consumer_rm, full_producer, full_producer_rm});
 		}
 
 		for(const auto& collective : pending_collectives) {
-			const auto& producer_geometry = collective.full_producer->get_geometry();
-			const auto buffer_dimensions = producer_geometry.dimensions; // since we require a one-to-one access
-			const task_geometry geometry{buffer_dimensions, collective.consumed_sr.range, collective.consumed_sr.offset};
+			const auto& buffer_info = m_buffer_info.at(collective.bid);
+			const task_geometry geometry{buffer_info.dimensions, collective.consumed_sr.range, collective.consumed_sr.offset};
 
 			buffer_access_map access_map;
 			// we know the one-to-one input will be in range
 			const range<3> any_buffer_range{std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max()};
 			auto source_rm = collective.full_producer->has_variable_split()
-			                     ? make_range_mapper(celerity::access::one_to_one(), buffer_dimensions, any_buffer_range, access_mode::read)
-			                     : make_range_mapper(celerity::access::fixed(collective.consumed_sr), buffer_dimensions, any_buffer_range, access_mode::read);
+			                     ? make_one_to_one_rm(buffer_info.dimensions, buffer_info.range, access_mode::read)
+			                     : make_fixed_rm(buffer_info.dimensions, collective.consumed_sr, buffer_info.range, access_mode::read);
 			access_map.add_access(collective.bid, std::move(source_rm));
-			access_map.add_access(collective.bid, collective.constant_consumer_rm->clone_as(access_mode::discard_write));
+			access_map.add_access(collective.bid, collective.consumer_rm->clone_as(access_mode::discard_write));
 
 			auto collective_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
 			const auto make_task = collective.full_producer->has_variable_split() ? (consumer->has_variable_split() ? task::make_allgather : task::make_gather)

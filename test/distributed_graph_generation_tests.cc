@@ -350,6 +350,7 @@ class command_query {
 		if(isa<await_push_command>(cmd)) return command_type::await_push;
 		if(isa<reduction_command>(cmd)) return command_type::reduction;
 		if(isa<gather_command>(cmd)) return command_type::gather;
+		if(isa<broadcast_command>(cmd)) return command_type::broadcast;
 		throw query_exception("Unknown command type");
 	}
 
@@ -363,6 +364,7 @@ class command_query {
 		case command_type::await_push: return "await_push";
 		case command_type::reduction: return "reduction";
 		case command_type::gather: return "gather";
+		case command_type::broadcast: return "broadcast";
 		default: return "<unknown>";
 		}
 	}
@@ -383,7 +385,7 @@ class dist_cdag_test_context {
 
 		m_tm->register_task_callback([this](const task* tsk) {
 			// the TM will invoke callbacks on implicit gathers before the consumer task, so we generate them right away
-			if(tsk->get_type() == task_type::gather || tsk->get_type() == task_type::allgather) {
+			if(tsk->get_type() == task_type::gather || tsk->get_type() == task_type::allgather || tsk->get_type() == task_type::broadcast) {
 				for(auto& dggen : m_dggens) {
 					dggen->build_task(*tsk);
 				}
@@ -397,7 +399,7 @@ class dist_cdag_test_context {
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
-		m_tm->add_buffer(bid, range_cast<3>(size), mark_as_host_initialized);
+		m_tm->add_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		for(auto& dggen : m_dggens) {
 			dggen->add_buffer(bid, range_cast<3>(size), Dims);
 		}
@@ -796,4 +798,16 @@ TEMPLATE_TEST_CASE_SIG(
 	const auto tid_producer =
 	    dctx.device_compute<class UKN(producer)>(producer_range).discard_write(buf, acc::one_to_one()).hint(experimental::hints::tiled_split()).submit();
 	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
+}
+
+TEMPLATE_TEST_CASE_SIG(
+    "graph generator generates push-/await-push-free broadcast commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+	const subrange<Dims> consumer_subrange{id_cast<Dims>(id<3>(110, 120, 130)), range_cast<Dims>(range<3>(400, 500, 600))};
+
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(producer_range);
+
+	const auto tid_producer = dctx.host_task(range<1>(1)).discard_write(buf, acc::all()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(producer_range).read(buf, acc::one_to_one()).submit();
 }

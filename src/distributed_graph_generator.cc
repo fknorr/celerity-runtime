@@ -249,7 +249,7 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	// If a new epoch was completed in the CDAG before the current task, prune all predecessor commands of that epoch.
 	prune_commands_before(epoch_to_prune_before);
 
-	assert(!m_current_cmd_batch.empty() || (tsk.get_type() == task_type::master_node && m_local_nid != 0));
+	assert(!m_current_cmd_batch.empty() || (!tsk.has_variable_split() && m_local_nid != 0));
 	return std::move(m_current_cmd_batch);
 }
 
@@ -547,19 +547,10 @@ void distributed_graph_generator::generate_broadcast_commands(const task& tsk) n
 	auto& buffer_state = m_buffer_states.at(bid);
 
 	const auto region = tsk.get_buffer_access_map().get_mode_requirements(
-	    bid, access_mode::discard_write, tsk.get_dimensions(), {/* must be a fixed or all range mapper */}, tsk.get_global_size());
+	    bid, access_mode::read, tsk.get_dimensions(), {/* must be a fixed or all range mapper */}, tsk.get_global_size());
 	const auto sr = grid_box_to_subrange(region.getSingle());
 
-	node_id source_nid = 0;
-	for(auto [_, replicated] : buffer_state.replicated_regions.get_region_values(region)) {
-		for(node_id nid = 0; nid < m_num_nodes; ++nid) {
-			if(replicated[nid]) {
-				assert(source_nid == 0);
-				source_nid = nid;
-			}
-		}
-	}
-
+	const node_id source_nid = 0; // producer is unsplittable and thus its only chunk will always be assigned to nid 0
 	const auto cmd = create_command<broadcast_command>(m_local_nid, tsk.get_id(), source_nid, sr);
 
 	if(m_local_nid == source_nid) {

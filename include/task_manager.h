@@ -109,7 +109,7 @@ namespace detail {
 		 * @brief Adds a new buffer for dependency tracking
 		 * @arg host_initialized Whether this buffer has been initialized using a host pointer (i.e., it contains useful data before any write-task)
 		 */
-		void add_buffer(buffer_id bid, const cl::sycl::range<3>& range, bool host_initialized);
+		void add_buffer(buffer_id bid, int dimensions /* TODO only for TDAG collectives */, const cl::sycl::range<3>& range, bool host_initialized);
 
 		/**
 		 * Returns the specified task if it still exists, nullptr otherwise.
@@ -174,6 +174,11 @@ namespace detail {
 		size_t get_current_task_count() const { return m_task_buffer.get_current_task_count(); }
 
 	  private:
+		struct buffer_info { // TODO only required for TDAG collectives
+			int dimensions;
+			celerity::range<3> range;
+		};
+
 		const size_t m_num_collective_nodes;
 		host_queue* m_queue;
 
@@ -183,6 +188,8 @@ namespace detail {
 		// This is useful so we can correctly generate anti-dependencies onto tasks that read host-initialized buffers.
 		// To ensure correct ordering, all tasks that have no other true-dependencies depend on this task.
 		task_id m_epoch_for_new_tasks{initial_epoch_task};
+
+		std::unordered_map<buffer_id, buffer_info> m_buffer_info; // TODO only required for TDAG collectives
 
 		// We store a map of which task last wrote to a certain region of a buffer.
 		// NOTE: This represents the state after the latest performed pre-pass.

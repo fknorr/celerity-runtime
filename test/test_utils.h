@@ -264,7 +264,8 @@ namespace test_utils {
 
 			m_tm->register_task_callback([this](const detail::task* tsk) {
 				// the TM will invoke callbacks on implicit gathers before the consumer task, so we generate them right away
-				if(tsk->get_type() == detail::task_type::gather || tsk->get_type() == detail::task_type::allgather) {
+				if(tsk->get_type() == detail::task_type::gather || tsk->get_type() == detail::task_type::allgather
+				    || tsk->get_type() == detail::task_type::broadcast) {
 					detail::naive_split_transformer transformer{m_num_nodes, m_num_nodes}; // shouldn't do anything, but replicates what the scheduler does
 					m_ggen->build_task(*tsk, {&transformer});
 					// m_gser->flush(tsk->get_id()); // NOCOMMIT
@@ -314,7 +315,7 @@ namespace test_utils {
 		mock_buffer<Dims> create_buffer(cl::sycl::range<Dims> size, bool mark_as_host_initialized = false) {
 			const detail::buffer_id bid = m_next_buffer_id++;
 			const auto buf = mock_buffer<Dims>(bid, size);
-			if(m_task_mngr != nullptr) { m_task_mngr->add_buffer(bid, detail::range_cast<3>(size), mark_as_host_initialized); }
+			if(m_task_mngr != nullptr) { m_task_mngr->add_buffer(bid, Dims, detail::range_cast<3>(size), mark_as_host_initialized); }
 			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_registered(bid, detail::range_cast<3>(size), Dims); }
 			// if(m_ggen != nullptr) { m_ggen->add_buffer(bid, detail::range_cast<3>(size)); } // NOCOMMIT
 			return buf;

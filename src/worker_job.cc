@@ -427,14 +427,14 @@ namespace detail {
 			const auto root = static_cast<int>(*data.single_dest_nid);
 			MPI_Gatherv(send_buffer.get_pointer(), static_cast<int>(send_chunk_byte_size), MPI_BYTE, recv_buffer.get_pointer(), all_chunk_byte_sizes.data(),
 			    all_chunk_byte_offsets.data(), MPI_BYTE, root, MPI_COMM_WORLD);
-			CELERITY_DEBUG("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
+			CELERITY_TRACE("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
 			    send_buffer ? send_chunk_byte_size : 0, send_chunk_byte_size, total_gather_byte_size, fmt::join(all_chunk_byte_sizes, ", "),
 			    fmt::join(all_chunk_byte_offsets, ", "), root);
 		} else {
 			// TODO make asynchronous?
 			MPI_Allgatherv(send_buffer.get_pointer(), static_cast<int>(send_chunk_byte_size), MPI_BYTE, recv_buffer.get_pointer(), all_chunk_byte_sizes.data(),
 			    all_chunk_byte_offsets.data(), MPI_BYTE, MPI_COMM_WORLD);
-			CELERITY_DEBUG("MPI_Allgatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
+			CELERITY_TRACE("MPI_Allgatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
 			    send_buffer ? send_chunk_byte_size : 0, send_chunk_byte_size, total_gather_byte_size, fmt::join(all_chunk_byte_sizes, ", "),
 			    fmt::join(all_chunk_byte_offsets, ", "));
 		}
@@ -444,9 +444,55 @@ namespace detail {
 			assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
 			           send_chunk_byte_size)
 			       == 0);
-			CELERITY_DEBUG("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}), recv_buffer", (int)m_bid, tsk.get_global_offset()[0],
+			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)m_bid, tsk.get_global_offset()[0],
 			    tsk.get_global_offset()[1], tsk.get_global_offset()[2], tsk.get_global_size()[0], tsk.get_global_size()[1], tsk.get_global_size()[2]);
 			m_buffer_mngr.set_buffer_data(m_bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(recv_buffer));
+		}
+
+		m_buffer_mngr.unlock(pkg.cid);
+		return true;
+	}
+
+	// --------------------------------------------------------------------------------------------------------------------
+	// ---------------------------------------------------- BROADCAST -----------------------------------------------------
+	// --------------------------------------------------------------------------------------------------------------------
+
+	broadcast_job::broadcast_job(command_pkg pkg, task_manager& tm, buffer_manager& bm, node_id nid)
+	    : worker_job(pkg), m_task_mngr(tm), m_buffer_mngr(bm), m_local_nid(nid) {
+		const auto data = std::get<broadcast_data>(pkg.data);
+		const auto& tsk = *m_task_mngr.get_task(data.tid);
+
+		const auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
+		assert(accessed_buffers.size() == 1);
+		m_bid = *accessed_buffers.begin();
+	}
+
+	std::string broadcast_job::get_description(const command_pkg& pkg) {
+		const auto data = std::get<broadcast_data>(pkg.data);
+		return fmt::format("broadcast {} of buffer {} from {}", data.sr, static_cast<size_t>(m_bid), data.source_nid);
+	}
+
+	bool broadcast_job::execute(const command_pkg& pkg) {
+		const auto data = std::get<broadcast_data>(pkg.data);
+		const auto& tsk = *m_task_mngr.get_task(data.tid);
+
+		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {m_bid})) return false;
+
+		const auto buffer_info = m_buffer_mngr.get_buffer_info(m_bid);
+
+		// TODO work around INT_MAX restriction
+		const auto broadcast_byte_size = tsk.get_global_size().size() * buffer_info.element_size;
+
+		unique_payload_ptr buffer = make_uninitialized_payload<std::byte>(broadcast_byte_size);
+		if(data.source_nid == m_local_nid) { m_buffer_mngr.get_buffer_data(m_bid, data.sr, buffer.get_pointer()).wait(); }
+
+		MPI_Bcast(buffer.get_pointer(), static_cast<int>(broadcast_byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
+		CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", broadcast_byte_size, data.source_nid);
+
+		if(data.source_nid != m_local_nid) {
+			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, buffer)", (int)m_bid, tsk.get_global_offset()[0],
+			    tsk.get_global_offset()[1], tsk.get_global_offset()[2], tsk.get_global_size()[0], tsk.get_global_size()[1], tsk.get_global_size()[2]);
+			m_buffer_mngr.set_buffer_data(m_bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(buffer));
 		}
 
 		m_buffer_mngr.unlock(pkg.cid);

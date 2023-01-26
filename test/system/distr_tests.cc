@@ -452,5 +452,30 @@ namespace detail {
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit broadcasts produce the expected data distribution", "[gather]") {
+		distr_queue q;
+		buffer<size_t> buf(1000);
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), read_only_host_task); // Broadcast
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				for(size_t i = 0; i < 1000; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
 } // namespace detail
 } // namespace celerity

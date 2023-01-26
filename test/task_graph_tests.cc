@@ -768,5 +768,34 @@ namespace detail {
 		test_utils::maybe_print_graph(tm);
 	}
 
+	TEST_CASE("task manager detects broadcast pattern on unsplittable producer", "[task_manager][task-graph][gather]") {
+		task_manager tm{1, nullptr};
+		test_utils::mock_buffer_factory mbf(tm);
+
+		const range<1> producer_range(100);
+
+		auto buf = mbf.create_buffer(producer_range);
+		const auto tid_producer =
+		    test_utils::add_host_task(tm, on_master_node, [&](handler& cgh) { buf.template get_access<access_mode::discard_write>(cgh, all()); });
+		const auto tid_consumer = test_utils::add_compute_task<class UKN(consumer)>(
+		    tm, [&](handler& cgh) { buf.template get_access<access_mode::read>(cgh, one_to_one()); }, producer_range);
+
+		CHECK(!has_dependency(tm, tid_consumer, tid_producer));
+		const auto consumer_deps = tm.get_task(tid_consumer)->get_dependencies();
+		REQUIRE(std::distance(consumer_deps.begin(), consumer_deps.end()) == 1);
+
+		const auto& broadcast_task = *consumer_deps.begin()->node;
+		CHECK(broadcast_task.get_type() == task_type::broadcast);
+		CHECK(broadcast_task.get_geometry().dimensions == 1);
+		CHECK(broadcast_task.get_geometry().global_offset == id<3>(0, 0, 0));
+		CHECK(broadcast_task.get_geometry().global_size == range_cast<3>(producer_range));
+
+		const auto broadcast_deps = broadcast_task.get_dependencies();
+		REQUIRE(std::distance(broadcast_deps.begin(), broadcast_deps.end()) == 1);
+		CHECK(broadcast_deps.begin()->node == tm.get_task(tid_producer));
+
+		test_utils::maybe_print_graph(tm);
+	}
+
 } // namespace detail
 } // namespace celerity

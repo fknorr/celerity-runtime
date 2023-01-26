@@ -258,8 +258,14 @@ namespace detail {
 		std::optional<node_id> single_dest_nid;
 	};
 
-	using command_data =
-	    std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data, gather_data>;
+	struct broadcast_data {
+		task_id tid;
+		subrange<3> sr;
+		node_id source_nid;
+	};
+
+	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,
+	    gather_data, broadcast_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -297,7 +303,8 @@ namespace detail {
 			    [](const await_push_data&) { return command_type::await_push; },
 				[](const data_request_data&) { return command_type::data_request; },
 			    [](const reduction_data&) { return command_type::reduction; },
-				[](const gather_data&) { return command_type::gather; }
+				[](const gather_data&) { return command_type::gather; },
+				[](const broadcast_data&) { return command_type::broadcast; }
 			);
 			// clang-format on
 		}

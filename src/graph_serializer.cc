@@ -95,6 +95,8 @@ namespace detail {
 			pkg.data = horizon_data{hcmd->get_tid()};
 		} else if(const auto* gcmd = dynamic_cast<gather_command*>(cmd)) {
 			pkg.data = gather_data{gcmd->get_tid(), gcmd->get_source_ranges(), gcmd->get_single_destination()};
+		} else if(const auto* bcmd = dynamic_cast<broadcast_command*>(cmd)) {
+			pkg.data = broadcast_data{bcmd->get_tid(), bcmd->get_range(), bcmd->get_source()};
 		} else {
 			assert(false && "Unknown command");
 		}
