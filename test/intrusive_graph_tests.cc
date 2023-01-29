@@ -67,7 +67,7 @@ namespace detail {
 		CHECK(n2.has_dependent(n1.get(), dependency_kind::true_dep));
 		n1.reset();
 		REQUIRE(std::distance(n0.get_dependencies().begin(), n0.get_dependencies().end()) == 0);
-		REQUIRE(std::distance(n2.get_dependents().begin(), n2.get_dependents().end()) == 0);
+		REQUIRE(std::distance(n2.get_dependent_nodes().begin(), n2.get_dependent_nodes().end()) == 0);
 	}
 
 	TEST_CASE("intrusive_graph_node keeps track of the pseudo critical path length", "[intrusive_graph_node]") {

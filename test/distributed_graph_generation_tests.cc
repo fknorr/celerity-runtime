@@ -225,12 +225,13 @@ class command_query {
 		return for_all_commands([&successors, &kind](const node_id nid, const abstract_command* cmd) {
 			for(const auto* expected : successors.m_commands_by_node[nid]) {
 				bool found = false;
-				for(const auto received : cmd->get_dependents()) {
-					if(received.node == expected) {
+				for(const auto received : cmd->get_dependent_nodes()) {
+					if(received == expected) {
 						found = true;
-						if(kind.has_value() && received.kind != *kind) {
+						const auto& dependency = received->get_dependency(cmd);
+						if(kind.has_value() && dependency.kind != *kind) {
 							UNSCOPED_INFO(fmt::format("Expected command {} on node {} to have successor {} with kind {}, but found kind {}", cmd->get_cid(),
-							    nid, expected->get_cid(), *kind, received.kind));
+							    nid, expected->get_cid(), *kind, dependency.kind));
 							return false;
 						}
 					}
@@ -285,10 +286,19 @@ class command_query {
 
 		std::vector<std::unordered_set<const abstract_command*>> adjacent(m_commands_by_node.size());
 		for_all_commands([&adjacent, find_predecessors, kind_filter](const node_id nid, const abstract_command* cmd) {
-			const auto iterable = find_predecessors ? cmd->get_dependencies() : cmd->get_dependents();
-			for(auto it = iterable.begin(); it != iterable.end(); ++it) {
-				if(kind_filter.has_value() && it->kind != *kind_filter) continue;
-				adjacent[nid].insert(it->node);
+			if(find_predecessors) {
+				for(const auto& dep : cmd->get_dependencies()) {
+					if(kind_filter.has_value() && dep.kind != *kind_filter) continue;
+					adjacent[nid].insert(dep.node);
+				}
+			} else {
+				for(const auto node : cmd->get_dependent_nodes()) {
+					if(kind_filter.has_value()) {
+						const auto& dep = node->get_dependency(cmd);
+						if(dep.kind != *kind_filter) continue;
+					}
+					adjacent[nid].insert(node);
+				}
 			}
 		});
 

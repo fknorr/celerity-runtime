@@ -578,11 +578,9 @@ void distributed_graph_generator::generate_anti_dependencies(
 
 		// Add anti-dependencies onto all successors of the writer
 		bool has_successors = false;
-		for(auto d : last_writer_cmd->get_dependents()) {
+		for(const auto cmd : last_writer_cmd->get_dependent_nodes()) {
 			// Only consider true dependencies
-			if(d.kind != dependency_kind::true_dep) continue;
-
-			const auto cmd = d.node;
+			if(cmd->get_dependency(last_writer_cmd).kind != dependency_kind::true_dep) continue;
 
 			// We might have already generated new commands within the same task that also depend on this; in that case, skip it
 			if(isa<task_command>(cmd) && static_cast<task_command*>(cmd)->get_tid() == tid) continue;

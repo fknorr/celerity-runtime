@@ -121,18 +121,18 @@ namespace detail {
 					// Determine anti-dependencies by looking at all the dependents of the last writing task
 					bool has_anti_dependents = false;
 
-					for(auto dependent : last_writer->get_dependents()) {
-						if(dependent.node->get_id() == tsk.get_id()) {
+					for(const auto dependent : last_writer->get_dependent_nodes()) {
+						if(dependent->get_id() == tsk.get_id()) {
 							// This can happen
 							// - if a task writes to two or more buffers with the same last writer
 							// - if the task itself also needs read access to that buffer (R/W access)
 							continue;
 						}
 						const auto dependent_read_requirements =
-						    get_requirements(*dependent.node, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+						    get_requirements(*dependent, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
 						// Only add an anti-dependency if we are really writing over the region read by this task
 						if(!GridRegion<3>::intersect(write_requirements, dependent_read_requirements).empty()) {
-							add_dependency(tsk, *dependent.node, dependency_kind::anti_dep, dependency_origin::dataflow);
+							add_dependency(tsk, *dependent, dependency_kind::anti_dep, dependency_origin::dataflow);
 							has_anti_dependents = true;
 						}
 					}

@@ -39,7 +39,7 @@ namespace detail {
 			});
 			CHECK(has_dependency(tm, tid_b, tid_a));
 
-			const auto its = tm.get_task(tid_a)->get_dependents();
+			const auto its = tm.get_task(tid_a)->get_dependent_nodes();
 			REQUIRE(std::distance(its.begin(), its.end()) == 1);
 
 			test_utils::maybe_print_graph(tm);
@@ -56,7 +56,7 @@ namespace detail {
 			});
 			CHECK(has_dependency(tm, tid_b, tid_a, dependency_kind::anti_dep));
 
-			const auto its = tm.get_task(tid_a)->get_dependents();
+			const auto its = tm.get_task(tid_a)->get_dependent_nodes();
 			REQUIRE(std::distance(its.begin(), its.end()) == 1);
 
 			test_utils::maybe_print_graph(tm);
@@ -76,7 +76,7 @@ namespace detail {
 				CHECK(has_dependency(tm, tid_b, tid_a));
 				CHECK_FALSE(has_dependency(tm, tid_b, tid_a, dependency_kind::anti_dep));
 
-				const auto its = tm.get_task(tid_a)->get_dependents();
+				const auto its = tm.get_task(tid_a)->get_dependent_nodes();
 				REQUIRE(std::distance(its.begin(), its.end()) == 1);
 
 				test_utils::maybe_print_graph(tm);
@@ -94,7 +94,7 @@ namespace detail {
 				CHECK(has_dependency(tm, tid_b, tid_a));
 				CHECK_FALSE(has_dependency(tm, tid_b, tid_a, dependency_kind::anti_dep));
 
-				const auto its = tm.get_task(tid_a)->get_dependents();
+				const auto its = tm.get_task(tid_a)->get_dependent_nodes();
 				REQUIRE(std::distance(its.begin(), its.end()) == 1);
 
 				test_utils::maybe_print_graph(tm);
