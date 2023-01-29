@@ -801,6 +801,20 @@ TEMPLATE_TEST_CASE_SIG(
 	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
 }
 
+TEMPLATE_TEST_CASE_SIG("graph generator does not duplicate gather commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+	const subrange<Dims> consumer_subrange{id_cast<Dims>(id<3>(110, 120, 130)), range_cast<Dims>(range<3>(400, 500, 600))};
+
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(producer_range);
+
+	// Allgather access pattern - see task_graph_tests "task manager detects gather pattern between dependent tasks"
+	const auto tid_producer =
+	    dctx.device_compute<class UKN(producer)>(producer_range).discard_write(buf, acc::one_to_one()).hint(experimental::hints::tiled_split()).submit();
+	const auto tid_consumer_1 = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
+	const auto tid_consumer_2 = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
+}
+
 TEMPLATE_TEST_CASE_SIG(
     "graph generator generates push-/await-push-free broadcast commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
 	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
