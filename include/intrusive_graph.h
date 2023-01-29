@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
-#include <list>
+#include <forward_list>
 #include <optional>
 #include <type_traits>
 
@@ -42,17 +42,33 @@ namespace detail {
 		Iterator m_last;
 	};
 
+	template <typename Node, typename Annotation>
+	struct intrusive_graph_dependency {
+		// forward_list: Keep struct small to ensure efficiency of the small_vector optimization in intrusive_graph_node
+		using annotation_list = std::forward_list<Annotation>;
+		static_assert(sizeof(annotation_list) == sizeof(void*));
+
+		Node* node;
+		dependency_kind kind;
+		dependency_origin origin; // context information for graph printing
+		annotation_list annotations;
+	};
+
+	// Instead of an inheritance scheme, we repeat the struct definition above to keep aggregate initialization intact
 	template <typename Node>
+	struct intrusive_graph_dependency<Node, /* Annotation */ void> {
+		Node* node;
+		dependency_kind kind;
+		dependency_origin origin; // context information for graph printing
+	};
+
+	template <typename Node, typename DependencyAnnotation = void>
 	class intrusive_graph_node {
 	  public:
-		struct dependency {
-			Node* node;
-			dependency_kind kind;
-			dependency_origin origin; // context information for graph printing
-		};
+		using dependency = intrusive_graph_dependency<Node, DependencyAnnotation>;
 
 	  public:
-		intrusive_graph_node() { static_assert(std::is_base_of<intrusive_graph_node<Node>, Node>::value, "Node must be child class (CRTP)"); }
+		intrusive_graph_node() { static_assert(std::is_base_of_v<intrusive_graph_node, Node>, "Node must be child class (CRTP)"); }
 
 	  protected:
 		~intrusive_graph_node() { // protected: Statically disallow destruction through base pointer, since dtor is not polymorphic
@@ -75,16 +91,19 @@ namespace detail {
 			if(const auto it = find_by_node(m_dependencies, dep.node); it != m_dependencies.end()) {
 				// We assume that for dependency kinds A and B, max(A, B) is strong enough to satisfy both.
 				static_assert(dependency_kind::anti_dep < dependency_kind::true_dep);
-
 				// Already exists, potentially upgrade to full dependency
 				if(it->kind < dep.kind) {
 					it->kind = dep.kind;
 					it->origin = dep.origin; // This unfortunately loses origin information from the lesser dependency
 				}
+				if constexpr(!std::is_void_v<DependencyAnnotation>) {
+					// prepend new annotations to existing annotations
+					it->annotations.splice_after(it->annotations.before_begin(), std::move(dep.annotations));
+				}
 				return;
 			}
 
-			m_dependencies.emplace_back(dep);
+			m_dependencies.push_back(std::move(dep));
 			dep.node->m_dependent_nodes.emplace_back(static_cast<Node*>(this));
 
 			m_pseudo_critical_path_length =
