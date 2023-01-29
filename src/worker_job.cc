@@ -347,32 +347,24 @@ namespace detail {
 	// ------------------------------------------------------ GATHER ------------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
-	gather_job::gather_job(command_pkg pkg, task_manager& tm, buffer_manager& bm, node_id nid)
-	    : worker_job(pkg), m_task_mngr(tm), m_buffer_mngr(bm), m_local_nid(nid) {
-		const auto data = std::get<gather_data>(pkg.data);
-		const auto& tsk = *m_task_mngr.get_task(data.tid);
-
-		const auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
-		assert(accessed_buffers.size() == 1);
-		m_bid = *accessed_buffers.begin();
+	gather_job::gather_job(command_pkg pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
+		assert(std::holds_alternative<gather_data>(pkg.data));
 	}
 
 	std::string gather_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<gather_data>(pkg.data);
 		if(data.single_dest_nid) {
-			return fmt::format("gather {} of buffer {} to {}", data.source_srs[m_local_nid], static_cast<size_t>(m_bid), *data.single_dest_nid);
+			return fmt::format("gather {} of buffer {} to {}", data.source_srs[m_local_nid], static_cast<size_t>(data.bid), *data.single_dest_nid);
 		} else {
-			return fmt::format("allgather {} of buffer {}", data.source_srs[m_local_nid], static_cast<size_t>(m_bid));
+			return fmt::format("allgather {} of buffer {}", data.source_srs[m_local_nid], static_cast<size_t>(data.bid));
 		}
 	}
 
 	bool gather_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<gather_data>(pkg.data);
-		const auto& tsk = *m_task_mngr.get_task(data.tid);
 
-		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {m_bid})) return false;
-
-		const auto buffer_info = m_buffer_mngr.get_buffer_info(m_bid);
+		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
+		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 #ifndef NDEBUG
 		{
@@ -392,7 +384,7 @@ namespace detail {
 #endif
 
 		// TODO how can we work around the INT_MAX size restriction? Larger data types only work if the split is aligned conveniently
-		const auto total_gather_byte_size = tsk.get_global_size().size() * buffer_info.element_size;
+		const auto total_gather_byte_size = data.dest_sr.range.size() * buffer_info.element_size;
 		assert(total_gather_byte_size <= INT_MAX);
 
 		const auto send_chunk_byte_size = data.source_srs[m_local_nid].range.size() * buffer_info.element_size;
@@ -402,7 +394,7 @@ namespace detail {
 		unique_payload_ptr send_buffer;
 		if(sends_data) {
 			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
-			m_buffer_mngr.get_buffer_data(m_bid, data.source_srs[m_local_nid], send_buffer.get_pointer()).wait();
+			m_buffer_mngr.get_buffer_data(data.bid, data.source_srs[m_local_nid], send_buffer.get_pointer()).wait();
 			assert(send_chunk_byte_size == data.source_srs[m_local_nid].range.size() * buffer_info.element_size);
 		}
 
@@ -444,9 +436,9 @@ namespace detail {
 			assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
 			           send_chunk_byte_size)
 			       == 0);
-			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)m_bid, tsk.get_global_offset()[0],
-			    tsk.get_global_offset()[1], tsk.get_global_offset()[2], tsk.get_global_size()[0], tsk.get_global_size()[1], tsk.get_global_size()[2]);
-			m_buffer_mngr.set_buffer_data(m_bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(recv_buffer));
+			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)data.bid, data.dest_sr.offset[0],
+			    data.dest_sr.offset[1], data.dest_sr.offset[2], data.dest_sr.range[0], data.dest_sr.range[1], data.dest_sr.range[2]);
+			m_buffer_mngr.set_buffer_data(data.bid, data.dest_sr, std::move(recv_buffer));
 		}
 
 		m_buffer_mngr.unlock(pkg.cid);
@@ -457,42 +449,34 @@ namespace detail {
 	// ---------------------------------------------------- BROADCAST -----------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
-	broadcast_job::broadcast_job(command_pkg pkg, task_manager& tm, buffer_manager& bm, node_id nid)
-	    : worker_job(pkg), m_task_mngr(tm), m_buffer_mngr(bm), m_local_nid(nid) {
-		const auto data = std::get<broadcast_data>(pkg.data);
-		const auto& tsk = *m_task_mngr.get_task(data.tid);
-
-		const auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
-		assert(accessed_buffers.size() == 1);
-		m_bid = *accessed_buffers.begin();
+	broadcast_job::broadcast_job(command_pkg pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
+		assert(std::holds_alternative<broadcast_data>(pkg.data));
 	}
 
 	std::string broadcast_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<broadcast_data>(pkg.data);
-		return fmt::format("broadcast {} of buffer {} from {}", data.sr, static_cast<size_t>(m_bid), data.source_nid);
+		return fmt::format("broadcast {} of buffer {} from {}", data.sr, static_cast<size_t>(data.bid), data.source_nid);
 	}
 
 	bool broadcast_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<broadcast_data>(pkg.data);
-		const auto& tsk = *m_task_mngr.get_task(data.tid);
 
-		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {m_bid})) return false;
-
-		const auto buffer_info = m_buffer_mngr.get_buffer_info(m_bid);
+		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
+		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		// TODO work around INT_MAX restriction
-		const auto broadcast_byte_size = tsk.get_global_size().size() * buffer_info.element_size;
+		const auto broadcast_byte_size = data.sr.range.size() * buffer_info.element_size;
 
 		unique_payload_ptr buffer = make_uninitialized_payload<std::byte>(broadcast_byte_size);
-		if(data.source_nid == m_local_nid) { m_buffer_mngr.get_buffer_data(m_bid, data.sr, buffer.get_pointer()).wait(); }
+		if(data.source_nid == m_local_nid) { m_buffer_mngr.get_buffer_data(data.bid, data.sr, buffer.get_pointer()).wait(); }
 
 		MPI_Bcast(buffer.get_pointer(), static_cast<int>(broadcast_byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
 		CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", broadcast_byte_size, data.source_nid);
 
 		if(data.source_nid != m_local_nid) {
-			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, buffer)", (int)m_bid, tsk.get_global_offset()[0],
-			    tsk.get_global_offset()[1], tsk.get_global_offset()[2], tsk.get_global_size()[0], tsk.get_global_size()[1], tsk.get_global_size()[2]);
-			m_buffer_mngr.set_buffer_data(m_bid, {tsk.get_global_offset(), tsk.get_global_size()}, std::move(buffer));
+			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, buffer)", (int)data.bid, data.sr.offset[0], data.sr.offset[1],
+			    data.sr.offset[2], data.sr.range[0], data.sr.range[1], data.sr.range[2]);
+			m_buffer_mngr.set_buffer_data(data.bid, data.sr, std::move(buffer));
 		}
 
 		m_buffer_mngr.unlock(pkg.cid);

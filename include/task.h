@@ -49,9 +49,6 @@ namespace detail {
 		collective,     ///< host task with implicit 1d global size = #ranks and fixed split
 		master_node,    ///< zero-dimensional host task
 		horizon,        ///< task horizon
-		gather,
-		allgather,
-		broadcast,
 	};
 
 	enum class execution_target {
@@ -215,8 +212,6 @@ namespace detail {
 			case task_type::collective:
 			case task_type::master_node: return execution_target::host;
 			case task_type::horizon: return execution_target::none;
-			case task_type::gather:
-			case task_type::allgather: return execution_target::none;
 			default: assert(!"Unhandled task type"); return execution_target::none;
 			}
 		}
@@ -276,18 +271,6 @@ namespace detail {
 
 		static std::unique_ptr<task> make_horizon_task(task_id tid) {
 			return std::unique_ptr<task>(new task(tid, task_type::horizon, non_collective, task_geometry{}, nullptr, {}, {}, {}, {}, {}));
-		}
-
-		static std::unique_ptr<task> make_gather(task_id tid, task_geometry geometry, buffer_access_map access_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::gather, implicit_collective, geometry, nullptr, std::move(access_map), {}, {}, {}, {}));
-		}
-
-		static std::unique_ptr<task> make_allgather(task_id tid, task_geometry geometry, buffer_access_map access_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::allgather, implicit_collective, geometry, nullptr, std::move(access_map), {}, {}, {}, {}));
-		}
-
-		static std::unique_ptr<task> make_broadcast(task_id tid, task_geometry geometry, buffer_access_map access_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::broadcast, implicit_collective, geometry, nullptr, std::move(access_map), {}, {}, {}, {}));
 		}
 
 	  private:

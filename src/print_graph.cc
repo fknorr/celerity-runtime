@@ -30,9 +30,6 @@ namespace detail {
 		case task_type::collective: return "collective host";
 		case task_type::master_node: return "master-node host";
 		case task_type::horizon: return "horizon";
-		case task_type::gather: return "gather";
-		case task_type::allgather: return "allgather";
-		case task_type::broadcast: return "broadcast";
 		default: return "unknown";
 		}
 	}
@@ -79,8 +76,7 @@ namespace detail {
 		const auto execution_range = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
 
 		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.get_type()));
-		if(tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::gather
-		    || tsk.get_type() == task_type::allgather || tsk.get_type() == task_type::broadcast) {
+		if(tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::device_compute) {
 			fmt::format_to(std::back_inserter(label), " {}", execution_range);
 		} else if(tsk.get_type() == task_type::collective) {
 			fmt::format_to(std::back_inserter(label), " in CG{}", tsk.get_collective_group_id());
@@ -148,8 +144,16 @@ namespace detail {
 			label += "<b>horizon</b>";
 		} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
 			label += gcmd->get_single_destination() ? "<b>gather</b>" : "<b>allgather</b>";
+			fmt::format_to(std::back_inserter(label), "<br/><i>in</i> B{} {}", gcmd->get_bid(), gcmd->get_source_ranges()[gcmd->get_nid()]);
+			if(!gcmd->get_single_destination() || gcmd->get_single_destination() == gcmd->get_nid()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>out</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
+			}
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
 			label += "<b>broadcast</b>";
+			if(bcmd->get_source() == bcmd->get_nid()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>in</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
+			}
+			fmt::format_to(std::back_inserter(label), "<br/><i>out</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";

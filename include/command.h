@@ -173,32 +173,37 @@ namespace detail {
 		device_id m_device_id = 0;
 	};
 
-	class gather_command final : public task_command {
+	class gather_command final : public abstract_command {
 		friend class command_graph;
-		gather_command(command_id cid, node_id nid, task_id tid, std::vector<subrange<3>> source_srs, const std::optional<node_id>& single_dest_nid)
-		    : task_command(cid, nid, tid), m_source_srs(std::move(source_srs)), m_single_dest_nid(single_dest_nid) {}
+		gather_command(
+		    command_id cid, node_id nid, buffer_id bid, std::vector<subrange<3>> source_srs, subrange<3> dest_sr, const std::optional<node_id>& single_dest_nid)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_srs(std::move(source_srs)), m_dest_sr(dest_sr), m_single_dest_nid(single_dest_nid) {}
 
 	  public:
+		buffer_id get_bid() const { return m_bid; }
 		const std::vector<subrange<3>>& get_source_ranges() const { return m_source_srs; }
-
+		const subrange<3>& get_dest_range() const { return m_dest_sr; }
 		const std::optional<node_id>& get_single_destination() const { return m_single_dest_nid; }
 
 	  private:
+		buffer_id m_bid;
 		std::vector<subrange<3>> m_source_srs;
+		subrange<3> m_dest_sr;
 		std::optional<node_id> m_single_dest_nid;
 	};
 
-	class broadcast_command final : public task_command {
+	class broadcast_command final : public abstract_command {
 		friend class command_graph;
-		broadcast_command(command_id cid, node_id nid, task_id tid, const node_id source_nid, const subrange<3>& sr)
-		    : task_command(cid, nid, tid), m_source_nid(source_nid), m_sr(sr) {}
+		broadcast_command(command_id cid, node_id nid, buffer_id bid, const node_id source_nid, const subrange<3>& sr)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_sr(sr) {}
 
 	  public:
+		buffer_id get_bid() const { return m_bid; }
 		const subrange<3>& get_range() const { return m_sr; }
-
 		node_id get_source() const { return m_source_nid; }
 
 	  private:
+		buffer_id m_bid;
 		node_id m_source_nid;
 		subrange<3> m_sr;
 	};
@@ -253,13 +258,14 @@ namespace detail {
 	};
 
 	struct gather_data {
-		task_id tid;
+		buffer_id bid;
 		std::vector<subrange<3>> source_srs;
+		subrange<3> dest_sr;
 		std::optional<node_id> single_dest_nid;
 	};
 
 	struct broadcast_data {
-		task_id tid;
+		buffer_id bid;
 		subrange<3> sr;
 		node_id source_nid;
 	};
@@ -283,7 +289,6 @@ namespace detail {
 				[](const horizon_data& d) { return std::optional{d.tid}; },
 				[](const epoch_data& d) { return std::optional{d.tid}; },
 				[](const execution_data& d) { return std::optional{d.tid}; },
-				[](const gather_data& d) { return std::optional{d.tid}; },
 				[](const auto&) { return std::optional<task_id>{}; }
 			);
 			// clang-format on

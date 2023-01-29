@@ -392,15 +392,6 @@ class dist_cdag_test_context {
 			m_cdags.emplace_back(std::make_unique<command_graph>());
 			m_dggens.emplace_back(std::make_unique<distributed_graph_generator>(num_nodes, devices_per_node, nid, *m_cdags[nid], *m_tm));
 		}
-
-		m_tm->register_task_callback([this](const task* tsk) {
-			// the TM will invoke callbacks on implicit gathers before the consumer task, so we generate them right away
-			if(tsk->get_type() == task_type::gather || tsk->get_type() == task_type::allgather || tsk->get_type() == task_type::broadcast) {
-				for(auto& dggen : m_dggens) {
-					dggen->build_task(*tsk);
-				}
-			}
-		});
 	}
 
 	~dist_cdag_test_context() { maybe_print_graphs(); }

@@ -215,14 +215,11 @@ namespace detail {
 
 	class gather_job : public worker_job {
 	  public:
-		gather_job(command_pkg pkg, task_manager& tm, buffer_manager& bm, node_id local_nid);
+		gather_job(command_pkg pkg, buffer_manager& bm, node_id local_nid);
 
 	  private:
-		task_manager& m_task_mngr;
 		buffer_manager& m_buffer_mngr;
-
 		node_id m_local_nid;
-		buffer_id m_bid;
 
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;
@@ -230,14 +227,11 @@ namespace detail {
 
 	class broadcast_job : public worker_job {
 	  public:
-		broadcast_job(command_pkg pkg, task_manager& tm, buffer_manager& bm, node_id local_nid);
+		broadcast_job(command_pkg pkg, buffer_manager& bm, node_id local_nid);
 
 	  private:
-		task_manager& m_task_mngr;
 		buffer_manager& m_buffer_mngr;
-
 		node_id m_local_nid;
-		buffer_id m_bid;
 
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;

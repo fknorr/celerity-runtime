@@ -22,13 +22,17 @@ namespace detail {
 		// Separate push commands from task commands. We flush pushes first to avoid deadlocking the executor.
 		// This is always safe as no other unflushed command within a single task can precede a push.
 		std::vector<abstract_command*> push_cmds;
-		push_cmds.reserve(cmds.size() / 2);
+		push_cmds.reserve(cmds.size());
+		std::vector<abstract_command*> collective_cmds;
+		collective_cmds.reserve(cmds.size());
 		std::vector<abstract_command*> task_cmds;
-		task_cmds.reserve(cmds.size() / 2); // Somewhat overzealous, we are likely to have more push commands
+		task_cmds.reserve(cmds.size());
 
 		for(auto& cmd : cmds) {
 			if(isa<push_command>(cmd)) {
 				push_cmds.push_back(cmd);
+			} else if(isa<gather_command>(cmd) || isa<broadcast_command>(cmd)) {
+				collective_cmds.push_back(cmd);
 			} else if(isa<task_command>(cmd)) {
 				task_cmds.push_back(cmd);
 			}
@@ -55,7 +59,7 @@ namespace detail {
 			flush_count++;
 		};
 
-		for(auto& cmds_ptr : {&push_cmds, &task_cmds}) {
+		for(auto& cmds_ptr : {&push_cmds, &collective_cmds, &task_cmds}) {
 			for(auto& cmd : *cmds_ptr) {
 				flush_recursive(cmd, flush_recursive);
 			}
@@ -94,9 +98,9 @@ namespace detail {
 		} else if(const auto* hcmd = dynamic_cast<horizon_command*>(cmd)) {
 			pkg.data = horizon_data{hcmd->get_tid()};
 		} else if(const auto* gcmd = dynamic_cast<gather_command*>(cmd)) {
-			pkg.data = gather_data{gcmd->get_tid(), gcmd->get_source_ranges(), gcmd->get_single_destination()};
+			pkg.data = gather_data{gcmd->get_bid(), gcmd->get_source_ranges(), gcmd->get_dest_range(), gcmd->get_single_destination()};
 		} else if(const auto* bcmd = dynamic_cast<broadcast_command*>(cmd)) {
-			pkg.data = broadcast_data{bcmd->get_tid(), bcmd->get_range(), bcmd->get_source()};
+			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_range(), bcmd->get_source()};
 		} else {
 			assert(false && "Unknown command");
 		}

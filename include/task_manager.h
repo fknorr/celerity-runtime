@@ -78,8 +78,6 @@ namespace detail {
 			if(m_queue) m_queue->require_collective_group(unique_tsk->get_collective_group_id());
 
 			auto& tsk = register_task_internal(std::move(reservation), std::move(unique_tsk));
-
-			// infer_collective_data_requirements(tsk);
 			compute_dependencies(tsk);
 
 			// the following deletion is intentionally redundant with the one happening when waiting for free task slots
@@ -251,8 +249,6 @@ namespace detail {
 
 		// Returns a callback which blocks until any epoch task has executed, freeing new task slots
 		task_ring_buffer::wait_callback await_free_task_slot_callback();
-
-		void infer_collective_data_requirements(task& tsk);
 
 		std::optional<task::dependency> detect_simple_dataflow(
 		    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const task* consumer) const;
