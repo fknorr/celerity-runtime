@@ -94,6 +94,8 @@ class distributed_graph_generator {
 		return cmd;
 	}
 
+	std::vector<chunk<3>> split_task(const task& tsk) const;
+
 	void generate_execution_commands(const task& tsk);
 
 	void generate_gather_commands(const task& tsk) noexcept;

@@ -171,7 +171,7 @@ namespace detail {
 
 	struct buffer_dataflow_annotation {
 		buffer_id bid;
-		GridBox<3> region;
+		GridBox<3> box;
 		const range_mapper_base* producer_rm;
 		const range_mapper_base* consumer_rm;
 	};

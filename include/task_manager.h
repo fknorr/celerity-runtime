@@ -79,7 +79,7 @@ namespace detail {
 
 			auto& tsk = register_task_internal(std::move(reservation), std::move(unique_tsk));
 
-			infer_collective_data_requirements(tsk);
+			// infer_collective_data_requirements(tsk);
 			compute_dependencies(tsk);
 
 			// the following deletion is intentionally redundant with the one happening when waiting for free task slots

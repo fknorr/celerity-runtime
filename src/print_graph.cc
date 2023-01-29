@@ -18,7 +18,7 @@ namespace detail {
 		case dependency_origin::collective_group_serialization: return "color=blue";
 		case dependency_origin::execution_front: return "color=orange";
 		case dependency_origin::last_epoch: return "color=orchid";
-		default: return nullptr;
+		default: return "";
 		}
 	}
 
@@ -99,11 +99,11 @@ namespace detail {
 			fmt::format_to(std::back_inserter(dot), "{}[shape={} label=<{}>];", tsk->get_id(), shape, get_task_label(*tsk, bm));
 			for(auto d : tsk->get_dependencies()) {
 				std::vector<std::string> attrs;
-				if(const auto d_style = dependency_style(d)) { attrs.push_back(d_style); }
+				if(const auto d_style = dependency_style(d); *d_style != 0) { attrs.push_back(d_style); }
 				if(!d.annotations.empty()) {
 					auto& label = attrs.emplace_back("taillabel=<simple data flow");
 					for(const auto& ann : d.annotations) {
-						fmt::format_to(std::back_inserter(label), "<br/>B{} {}", ann.bid, ann.region);
+						fmt::format_to(std::back_inserter(label), "<br/>B{} {}", ann.bid, ann.box);
 					}
 					label += ">,labelfontsize=10";
 				}

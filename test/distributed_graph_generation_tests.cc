@@ -819,5 +819,5 @@ TEMPLATE_TEST_CASE_SIG(
 	auto buf = dctx.create_buffer(producer_range);
 
 	const auto tid_producer = dctx.host_task(range<1>(1)).discard_write(buf, acc::all()).submit();
-	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(producer_range).read(buf, acc::one_to_one()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(producer_range).read(buf, acc::all()).submit();
 }
