@@ -386,9 +386,9 @@ namespace detail {
 			velHost[i] = sycl::float4(0, 0, 0, 0);
 		}
 
-		distr_queue q;
 		buffer<sycl::float4> posBuff(posHost.data(), n_bodies);
 		buffer<sycl::float4> velBuff(velHost.data(), n_bodies);
+		distr_queue q;
 
 		for(size_t i = 0; i < n_iter; ++i) {
 			q.submit([=](handler& cgh) {

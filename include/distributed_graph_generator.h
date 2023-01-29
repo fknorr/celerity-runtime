@@ -139,6 +139,8 @@ class distributed_graph_generator {
 
 	// Side effects on the same host object create true dependencies between task commands, so we track the last effect per host object.
 	side_effect_map m_host_object_last_effects;
+
+	std::unordered_map<collective_group_id, command_id> m_last_collective_commands;
 };
 
 } // namespace celerity::detail

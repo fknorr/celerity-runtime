@@ -42,6 +42,8 @@ namespace detail {
 		// One notable exception are reductions, which generate a tree of await push commands and reduction commands as successors.
 		[[maybe_unused]] size_t flush_count = 0;
 		const auto flush_recursive = [this, &check_tid, &flush_count](abstract_command* cmd, auto recurse) -> void {
+			if(cmd->is_flushed()) return;
+
 			(void)check_tid;
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 			if(isa<task_command>(cmd)) {
@@ -52,7 +54,7 @@ namespace detail {
 #endif
 			std::vector<command_id> deps;
 			for(auto dep : cmd->get_dependencies()) {
-				if(!dep.node->is_flushed()) { recurse(dep.node, recurse); }
+				recurse(dep.node, recurse);
 				if(!is_virtual_dependency(dep.node)) { deps.push_back(dep.node->get_cid()); }
 			}
 			serialize_and_flush(cmd, deps);

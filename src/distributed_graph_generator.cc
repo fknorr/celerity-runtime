@@ -297,10 +297,13 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 				const auto local_input_sr = source_srs[m_local_nid];
 				const auto dest_sr = grid_box_to_subrange(box);
 				const auto single_dest_nid = consumer_chunks.size() == 1 ? std::optional{node_id{0}} : std::nullopt;
-				const auto gather_cmd = create_command<gather_command>(m_local_nid, bid, std::move(source_srs), dest_sr, std::nullopt /* single_dest_nid */);
+				const auto gather_cmd = create_command<gather_command>(m_local_nid, bid, std::move(source_srs), dest_sr, single_dest_nid);
 
 				auto& buffer_state = m_buffer_states.at(bid);
+				CELERITY_TRACE(
+				    "is_writer on N{} C{} = {}", gather_cmd->get_nid(), gather_cmd->get_cid(), !single_dest_nid.has_value() || *single_dest_nid == m_local_nid);
 				if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
+					CELERITY_TRACE("generate_anti_dependencies for N{} C{}", gather_cmd->get_nid(), gather_cmd->get_cid());
 					generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, gather_cmd);
 				}
 
@@ -332,27 +335,42 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 						}
 					}
 				}
+
+				if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+					m_cdag.add_dependency(gather_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+				}
+				m_last_collective_commands[implicit_collective] = gather_cmd->get_cid();
+
+				// TODO epoch dependencies for receive-only gather cmds
 			} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer_rm->is_constant()) {
 				// Broadcast
 				const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
-				const auto cmd = create_command<broadcast_command>(m_local_nid, bid, source_nid, grid_box_to_subrange(box));
+				const auto broadcast_cmd = create_command<broadcast_command>(m_local_nid, bid, source_nid, grid_box_to_subrange(box));
 
 				auto& buffer_state = m_buffer_states.at(bid);
 
-				generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, cmd);
+				generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, broadcast_cmd);
 
 				if(m_local_nid == source_nid) {
 					// Store the read access for determining anti-dependencies later on
-					m_command_buffer_reads[cmd->get_cid()][bid] = box;
+					m_command_buffer_reads[broadcast_cmd->get_cid()][bid] = box;
 
 					for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(box)) {
 						assert(wcs.is_fresh());
-						m_cdag.add_dependency(cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+						m_cdag.add_dependency(broadcast_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
 					}
 				}
 
-				buffer_state.local_last_writer.update_region(box, write_command_state(cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
+				buffer_state.local_last_writer.update_region(box, write_command_state(broadcast_cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
 				if(m_local_nid == source_nid) { buffer_state.replicated_regions.update_region(box, node_bitset().set(/* all nodes */)); }
+
+				if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+					m_cdag.add_dependency(
+					    broadcast_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+				}
+				m_last_collective_commands[implicit_collective] = broadcast_cmd->get_cid();
+
+				// TODO epoch dependencies for receive-only broadcast cmds
 			} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer_rm->is_identity() /* TODO can this be relaxed? */) {
 				// Scatter
 			} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && false /* TODO producer_rm is transposed consumer_rm */) {
@@ -558,6 +576,7 @@ void distributed_graph_generator::generate_anti_dependencies(
 		const auto last_writer_cmd = m_cdag.get(static_cast<command_id>(wcs));
 		assert(!isa<task_command>(last_writer_cmd) || static_cast<task_command*>(last_writer_cmd)->get_tid() != tid);
 
+		CELERITY_TRACE("C{} a", write_cmd->get_nid(), write_cmd->get_cid());
 		// Add anti-dependencies onto all successors of the writer
 		bool has_successors = false;
 		for(const auto cmd : last_writer_cmd->get_dependent_nodes()) {
@@ -567,12 +586,16 @@ void distributed_graph_generator::generate_anti_dependencies(
 			// We might have already generated new commands within the same task that also depend on this; in that case, skip it
 			if(isa<task_command>(cmd) && static_cast<task_command*>(cmd)->get_tid() == tid) continue;
 
+			CELERITY_TRACE("N{} C{} b", write_cmd->get_nid(), write_cmd->get_cid());
 			// So far we don't know whether the dependent actually intersects with the subrange we're writing
 			if(const auto command_reads_it = m_command_buffer_reads.find(cmd->get_cid()); command_reads_it != m_command_buffer_reads.end()) {
 				const auto& command_reads = command_reads_it->second;
+				CELERITY_TRACE("N{} C{} c", write_cmd->get_nid(), write_cmd->get_cid());
 				// The task might be a dependent because of another buffer
 				if(const auto buffer_reads_it = command_reads.find(bid); buffer_reads_it != command_reads.end()) {
+					CELERITY_TRACE("N{} C{} d", write_cmd->get_nid(), write_cmd->get_cid());
 					if(!GridRegion<3>::intersect(write_req, buffer_reads_it->second).empty()) {
+						CELERITY_TRACE("N{} C{} add anti-dep to C{}", write_cmd->get_nid(), write_cmd->get_cid(), cmd->get_cid());
 						has_successors = true;
 						m_cdag.add_dependency(write_cmd, cmd, dependency_kind::anti_dep, dependency_origin::dataflow);
 					}
@@ -618,7 +641,10 @@ void distributed_graph_generator::set_epoch_for_new_commands(const abstract_comm
 			return new_wcs;
 		});
 	}
-	for(auto& [cgid, cid] : m_host_object_last_effects) {
+	for(auto& [hoid, cid] : m_host_object_last_effects) {
+		cid = std::max(epoch_or_horizon->get_cid(), cid);
+	}
+	for(auto& [cgid, cid] : m_last_collective_commands) {
 		cid = std::max(epoch_or_horizon->get_cid(), cid);
 	}
 
@@ -678,6 +704,7 @@ void distributed_graph_generator::generate_epoch_dependencies(abstract_command* 
 }
 
 void distributed_graph_generator::prune_commands_before(const command_id epoch) {
+	return;
 	if(epoch > m_epoch_last_pruned_before) {
 		m_cdag.erase_if([&](abstract_command* cmd) {
 			if(cmd->get_cid() < epoch) {

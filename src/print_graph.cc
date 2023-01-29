@@ -143,7 +143,11 @@ namespace detail {
 		} else if(const auto hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 			label += "<b>horizon</b>";
 		} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
-			label += gcmd->get_single_destination() ? "<b>gather</b>" : "<b>allgather</b>";
+			if(gcmd->get_single_destination()) {
+				fmt::format_to(std::back_inserter(label), "<b>gather</b> to N{}", *gcmd->get_single_destination());
+			} else {
+				label += "<b>allgather</b>";
+			}
 			fmt::format_to(std::back_inserter(label), "<br/><i>in</i> B{} {}", gcmd->get_bid(), gcmd->get_source_ranges()[gcmd->get_nid()]);
 			if(!gcmd->get_single_destination() || gcmd->get_single_destination() == gcmd->get_nid()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>out</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
