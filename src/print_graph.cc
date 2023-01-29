@@ -18,7 +18,7 @@ namespace detail {
 		case dependency_origin::collective_group_serialization: return "color=blue";
 		case dependency_origin::execution_front: return "color=orange";
 		case dependency_origin::last_epoch: return "color=orchid";
-		default: return "";
+		default: return nullptr;
 		}
 	}
 
@@ -98,7 +98,16 @@ namespace detail {
 			const auto shape = tsk->get_type() == task_type::epoch || tsk->get_type() == task_type::horizon ? "ellipse" : "box style=rounded";
 			fmt::format_to(std::back_inserter(dot), "{}[shape={} label=<{}>];", tsk->get_id(), shape, get_task_label(*tsk, bm));
 			for(auto d : tsk->get_dependencies()) {
-				fmt::format_to(std::back_inserter(dot), "{}->{}[{}];", d.node->get_id(), tsk->get_id(), dependency_style(d));
+				std::vector<std::string> attrs;
+				if(const auto d_style = dependency_style(d)) { attrs.push_back(d_style); }
+				if(!d.annotations.empty()) {
+					auto& label = attrs.emplace_back("taillabel=<simple data flow");
+					for(const auto& ann : d.annotations) {
+						fmt::format_to(std::back_inserter(label), "<br/>B{} {}", ann.bid, ann.region);
+					}
+					label += ">,labelfontsize=10";
+				}
+				fmt::format_to(std::back_inserter(dot), "{}->{}[{}];", d.node->get_id(), tsk->get_id(), fmt::join(attrs, ","));
 			}
 		}
 

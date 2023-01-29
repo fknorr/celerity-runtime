@@ -66,6 +66,41 @@ namespace detail {
 		return result;
 	}
 
+	std::optional<task::dependency> task_manager::detect_simple_dataflow(
+	    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const task* consumer) const {
+		if(last_writers.size() != 1) return std::nullopt;
+
+		const auto& [box, last_writer_tid] = last_writers.front();
+		if(!last_writer_tid.has_value()) return std::nullopt;
+
+		const auto last_writer = m_task_buffer.get_task(*last_writer_tid);
+
+		size_t num_producer_rms = 0;
+		const range_mapper_base* producer_rm = nullptr;
+		for(const auto rm : last_writer->get_buffer_access_map().get_range_mappers(bid)) {
+			if(detail::access::mode_traits::is_producer(rm->get_access_mode())) {
+				producer_rm = rm;
+				num_producer_rms += 1;
+			}
+		}
+		if(num_producer_rms != 1) return std::nullopt;
+
+		const auto producer = last_writer; // excludes (effective) epochs
+
+		const range_mapper_base* consumer_rm = nullptr;
+		size_t num_consumer_rms = 0;
+		for(const auto* rm : consumer->get_buffer_access_map().get_range_mappers(bid)) {
+			if(detail::access::mode_traits::is_consumer(rm->get_access_mode())) {
+				consumer_rm = rm;
+				num_consumer_rms += 1;
+			}
+		}
+		if(num_consumer_rms != 1) return std::nullopt;
+
+		return task::dependency{producer, dependency_kind::true_dep, dependency_origin::dataflow,
+		    task::dependency::annotation_list{buffer_dataflow_annotation{bid, box, producer_rm, consumer_rm}}};
+	}
+
 	void task_manager::compute_dependencies(task& tsk) {
 		using namespace cl::sycl::access;
 
@@ -98,12 +133,16 @@ namespace detail {
 				if(reduction.has_value()) { read_requirements = GridRegion<3>::merge(read_requirements, GridRegion<3>{{1, 1, 1}}); }
 				const auto last_writers = m_buffers_last_writers.at(bid).get_region_values(read_requirements);
 
-				for(auto& p : last_writers) {
-					// This indicates that the buffer is being used for the first time by this task, or all previous tasks also only read from it.
-					// A valid use case (i.e., not reading garbage) for this is when the buffer has been initialized using a host pointer.
-					if(p.second == std::nullopt) continue;
-					const task_id last_writer = *p.second;
-					add_dependency(tsk, *m_task_buffer.get_task(last_writer), dependency_kind::true_dep, dependency_origin::dataflow);
+				if(const auto simple_dataflow_dep = detect_simple_dataflow(bid, last_writers, &tsk)) {
+					add_dependency(tsk, std::move(*simple_dataflow_dep));
+				} else {
+					for(auto& [box, last_writer] : last_writers) {
+						// A null value indicates that the buffer is being used for the first time by this task, or all previous tasks also only read from it.
+						// A valid use case (i.e., not reading garbage) for this is when the buffer has been initialized using a host pointer.
+						if(last_writer != std::nullopt) {
+							add_dependency(tsk, *m_task_buffer.get_task(*last_writer), dependency_kind::true_dep, dependency_origin::dataflow);
+						}
+					}
 				}
 			}
 
@@ -188,11 +227,16 @@ namespace detail {
 		}
 	}
 
-	void task_manager::add_dependency(task& depender, task& dependee, dependency_kind kind, dependency_origin origin) {
+	void task_manager::add_dependency(task& depender, task::dependency dependency) {
+		auto& dependee = *dependency.node;
 		assert(&depender != &dependee);
-		depender.add_dependency({&dependee, kind, origin});
+		depender.add_dependency(std::move(dependency));
 		m_execution_front.erase(&dependee);
 		m_max_pseudo_critical_path_length = std::max(m_max_pseudo_critical_path_length, depender.get_pseudo_critical_path_length());
+	}
+
+	void task_manager::add_dependency(task& depender, task& dependee, dependency_kind kind, dependency_origin origin) {
+		add_dependency(depender, {&dependee, kind, origin, task::dependency::annotation_list{}});
 	}
 
 	task& task_manager::reduce_execution_front(task_ring_buffer::reservation&& reserve, std::unique_ptr<task> new_front) {

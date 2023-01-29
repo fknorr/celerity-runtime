@@ -227,6 +227,8 @@ namespace detail {
 
 		void invoke_callbacks(const task* tsk) const;
 
+		void add_dependency(task& depender, task::dependency dependency);
+
 		void add_dependency(task& depender, task& dependee, dependency_kind kind, dependency_origin origin);
 
 		inline bool need_new_horizon() const { return m_max_pseudo_critical_path_length - m_current_horizon_critical_path_length >= m_task_horizon_step_size; }
@@ -251,6 +253,9 @@ namespace detail {
 		task_ring_buffer::wait_callback await_free_task_slot_callback();
 
 		void infer_collective_data_requirements(task& tsk);
+
+		std::optional<task::dependency> detect_simple_dataflow(
+		    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const task* consumer) const;
 	};
 
 } // namespace detail

@@ -172,7 +172,7 @@ namespace detail {
 		case 1: return apply_range_mapper<1>(rm, chunk_cast<1>(chnk));
 		case 2: return apply_range_mapper<2>(rm, chunk_cast<2>(chnk));
 		case 3: return apply_range_mapper<3>(rm, chunk_cast<3>(chnk));
-		default: assert(!"Unreachable");
+		default: assert(!"Unreachable"); abort();
 		}
 	}
 
