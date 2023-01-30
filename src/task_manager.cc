@@ -105,8 +105,8 @@ namespace detail {
 		if(num_consumer_rms != 1) return std::nullopt;
 
 		return collect_task::dataflow{bid, box, //
-		    {producer->get_geometry(), producer->get_hint<experimental::hints::tiled_split>() != nullptr, producer_rm},
-		    {consumer->get_geometry(), consumer->get_hint<experimental::hints::tiled_split>() != nullptr, consumer_rm}};
+		    {producer->get_geometry(), producer->has_variable_split(), producer->get_hint<experimental::hints::tiled_split>() != nullptr, producer_rm},
+		    {consumer->get_geometry(), consumer->has_variable_split(), consumer->get_hint<experimental::hints::tiled_split>() != nullptr, consumer_rm}};
 	}
 
 	void task_manager::compute_command_group_dependencies(command_group_task& tsk) {

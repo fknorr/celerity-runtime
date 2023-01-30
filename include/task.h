@@ -315,6 +315,7 @@ namespace detail {
 	  public:
 		struct access {
 			task_geometry geometry;
+			bool variable_split;
 			bool tiled_split;
 			const range_mapper_base* rm;
 		};

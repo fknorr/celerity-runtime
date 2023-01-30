@@ -94,7 +94,7 @@ class distributed_graph_generator {
 		return cmd;
 	}
 
-	std::vector<chunk<3>> split_task(const task_geometry& geometry, bool tiled_split) const;
+	std::vector<chunk<3>> split_task(const task_geometry& geometry, bool variable_split, bool tiled_split) const;
 
 	void generate_execution_commands(const command_group_task& tsk);
 

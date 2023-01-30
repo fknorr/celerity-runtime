@@ -252,14 +252,19 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 }
 
 
-std::vector<chunk<3>> distributed_graph_generator::split_task(const task_geometry& geometry, const bool tiled_split) const {
+std::vector<chunk<3>> distributed_graph_generator::split_task(const task_geometry& geometry, const bool variable_split, const bool tiled_split) const {
 	// TODO: Pieced together from naive_split_transformer. We can probably do without creating all chunks and discarding everything except our own.
 	// TODO: Or - maybe - we actually want to store all chunks somewhere b/c we'll probably need them frequently for lookups later on?
 	chunk<3> full_chunk{geometry.global_offset, geometry.global_size, geometry.global_size};
 	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
 
-	const auto split = tiled_split ? split_2d : split_1d;
-	auto chunks = split(full_chunk, geometry.granularity, num_chunks);
+	std::vector<chunk<3>> chunks;
+	if(variable_split) {
+		const auto split = tiled_split ? split_2d : split_1d;
+		chunks = split(full_chunk, geometry.granularity, num_chunks);
+	} else {
+		chunks = {full_chunk};
+	}
 	assert(chunks.size() <= num_chunks); // We may have created less than requested
 	assert(!chunks.empty());
 	return chunks;
@@ -271,8 +276,8 @@ void distributed_graph_generator::generate_collective_commands(const collect_tas
 		auto& [bid, box, producer, consumer] = dataflow;
 		// Since splits are reproducible, we simply re-compute the producer split here. If we ever introduce a non-reproducible split/scheduling behavior,
 		// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
-		const auto producer_chunks = split_task(producer.geometry, producer.tiled_split);
-		const auto& consumer_chunks = split_task(consumer.geometry, consumer.tiled_split);
+		const auto producer_chunks = split_task(producer.geometry, producer.variable_split, producer.tiled_split);
+		const auto consumer_chunks = split_task(consumer.geometry, consumer.variable_split, consumer.tiled_split);
 
 		if((producer_chunks.size() == 1 && consumer_chunks.size() == 1)
 		    || (producer_chunks.size() == consumer_chunks.size() && producer.rm->is_identity() && consumer.rm->is_identity() /* TODO relax */)) {
@@ -370,7 +375,7 @@ void distributed_graph_generator::generate_collective_commands(const collect_tas
 
 
 void distributed_graph_generator::generate_execution_commands(const command_group_task& tsk) {
-	const auto distributed_chunks = split_task(tsk.get_geometry(), tsk.get_hint<experimental::hints::tiled_split>() != nullptr);
+	const auto distributed_chunks = split_task(tsk.get_geometry(), tsk.has_variable_split(), tsk.get_hint<experimental::hints::tiled_split>() != nullptr);
 
 	const auto* oversub_hint = tsk.get_hint<experimental::hints::oversubscribe>();
 	const size_t oversub_factor = oversub_hint != nullptr ? oversub_hint->get_factor() : 1;
