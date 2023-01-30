@@ -66,8 +66,12 @@ namespace detail {
 		return result;
 	}
 
-	std::optional<collect_task::dataflow> task_manager::detect_simple_dataflow(
-	    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const command_group_task* consumer) const {
+	std::optional<collect_task::dataflow> task_manager::detect_simple_dataflow(const command_group_task* consumer, const buffer_id bid) const {
+		// don't break the overlapping potential of oversubscribed tasks TODO have one collective per oversubscribed chunk?
+		if(consumer->get_hint<experimental::hints::oversubscribe>() != nullptr) return std::nullopt;
+
+		const auto read_requirements = get_requirements(*consumer, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+		const auto last_writers = m_buffers_last_writers.at(bid).get_region_values(read_requirements);
 		if(last_writers.size() != 1) return std::nullopt;
 
 		const auto& [box, last_writer_tid] = last_writers.front();
@@ -87,6 +91,8 @@ namespace detail {
 		if(num_producer_rms != 1) return std::nullopt;
 
 		const auto producer = last_writer; // excludes (effective) epochs
+		// don't break the overlapping potential of oversubscribed tasks TODO have one collective per oversubscribed chunk?
+		if(producer->get_hint<experimental::hints::oversubscribe>() != nullptr) return std::nullopt;
 
 		const range_mapper_base* consumer_rm = nullptr;
 		size_t num_consumer_rms = 0;
@@ -110,11 +116,7 @@ namespace detail {
 
 		std::vector<collect_task::dataflow> collect_dataflows;
 		for(const auto bid : access_map.get_accessed_buffers()) {
-			const auto read_requirements = get_requirements(tsk, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
-			if(!read_requirements.empty()) {
-				const auto last_writers = m_buffers_last_writers.at(bid).get_region_values(read_requirements);
-				if(const auto dataflow = detect_simple_dataflow(bid, last_writers, &tsk)) { collect_dataflows.push_back(std::move(*dataflow)); }
-			}
+			if(const auto dataflow = detect_simple_dataflow(&tsk, bid)) { collect_dataflows.push_back(std::move(*dataflow)); }
 		}
 
 		if(!collect_dataflows.empty()) {
