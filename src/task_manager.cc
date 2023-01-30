@@ -94,6 +94,9 @@ namespace detail {
 		// don't break the overlapping potential of oversubscribed tasks TODO have one collective per oversubscribed chunk?
 		if(producer->get_hint<experimental::hints::oversubscribe>() != nullptr) return std::nullopt;
 
+		// two unsplittable tasks will both be mapped to node 0, so no transfers are ever required
+		if(!producer->has_variable_split() && !consumer->has_variable_split()) return std::nullopt;
+
 		const range_mapper_base* consumer_rm = nullptr;
 		size_t num_consumer_rms = 0;
 		for(const auto* rm : consumer->get_buffer_access_map().get_range_mappers(bid)) {
