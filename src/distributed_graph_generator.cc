@@ -295,10 +295,7 @@ void distributed_graph_generator::generate_collective_commands(const collect_tas
 			const auto gather_cmd = create_command<gather_command>(m_local_nid, bid, std::move(source_srs), dest_sr, single_dest_nid);
 
 			auto& buffer_state = m_buffer_states.at(bid);
-			CELERITY_TRACE(
-			    "is_writer on N{} C{} = {}", gather_cmd->get_nid(), gather_cmd->get_cid(), !single_dest_nid.has_value() || *single_dest_nid == m_local_nid);
 			if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
-				CELERITY_TRACE("generate_anti_dependencies for N{} C{}", gather_cmd->get_nid(), gather_cmd->get_cid());
 				generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, gather_cmd);
 			}
 
@@ -574,7 +571,6 @@ void distributed_graph_generator::generate_anti_dependencies(
 		const auto last_writer_cmd = m_cdag.get(static_cast<command_id>(wcs));
 		assert(!isa<task_command>(last_writer_cmd) || static_cast<task_command*>(last_writer_cmd)->get_tid() != tid);
 
-		CELERITY_TRACE("C{} a", write_cmd->get_nid(), write_cmd->get_cid());
 		// Add anti-dependencies onto all successors of the writer
 		bool has_successors = false;
 		for(const auto cmd : last_writer_cmd->get_dependent_nodes()) {
@@ -584,16 +580,12 @@ void distributed_graph_generator::generate_anti_dependencies(
 			// We might have already generated new commands within the same task that also depend on this; in that case, skip it
 			if(isa<task_command>(cmd) && static_cast<task_command*>(cmd)->get_tid() == tid) continue;
 
-			CELERITY_TRACE("N{} C{} b", write_cmd->get_nid(), write_cmd->get_cid());
 			// So far we don't know whether the dependent actually intersects with the subrange we're writing
 			if(const auto command_reads_it = m_command_buffer_reads.find(cmd->get_cid()); command_reads_it != m_command_buffer_reads.end()) {
 				const auto& command_reads = command_reads_it->second;
-				CELERITY_TRACE("N{} C{} c", write_cmd->get_nid(), write_cmd->get_cid());
 				// The task might be a dependent because of another buffer
 				if(const auto buffer_reads_it = command_reads.find(bid); buffer_reads_it != command_reads.end()) {
-					CELERITY_TRACE("N{} C{} d", write_cmd->get_nid(), write_cmd->get_cid());
 					if(!GridRegion<3>::intersect(write_req, buffer_reads_it->second).empty()) {
-						CELERITY_TRACE("N{} C{} add anti-dep to C{}", write_cmd->get_nid(), write_cmd->get_cid(), cmd->get_cid());
 						has_successors = true;
 						m_cdag.add_dependency(write_cmd, cmd, dependency_kind::anti_dep, dependency_origin::dataflow);
 					}
