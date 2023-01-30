@@ -166,14 +166,14 @@ namespace detail {
 		cl::sycl::range<3> granularity{1, 1, 1};
 	};
 
-	struct buffer_dataflow_annotation {
+	struct simple_dataflow_annotation {
 		buffer_id bid;
 		GridBox<3> box;
 		const range_mapper_base* producer_rm;
 		const range_mapper_base* consumer_rm;
 	};
 
-	using task_dependency_annotation = buffer_dataflow_annotation; // can become a std::variant once we have multiple annotation types
+	using task_dependency_annotation = simple_dataflow_annotation; // can become a std::variant once we have multiple annotation types
 
 	class task : public intrusive_graph_node<task, task_dependency_annotation> {
 	  public:

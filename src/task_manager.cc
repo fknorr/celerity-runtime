@@ -98,7 +98,7 @@ namespace detail {
 		if(num_consumer_rms != 1) return std::nullopt;
 
 		return task::dependency{producer, dependency_kind::true_dep, dependency_origin::dataflow,
-		    task::dependency::annotation_list{buffer_dataflow_annotation{bid, box, producer_rm, consumer_rm}}};
+		    task::dependency::annotation_list{simple_dataflow_annotation{bid, box, producer_rm, consumer_rm}}};
 	}
 
 	void task_manager::compute_dependencies(task& tsk) {

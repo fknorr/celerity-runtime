@@ -274,7 +274,7 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 	const auto distributed_chunks = split_task(tsk);
 
 	for(const auto& dep : tsk.get_dependencies()) {
-		for(const buffer_dataflow_annotation& ann : dep.annotations) {
+		for(const simple_dataflow_annotation& ann : dep.annotations) {
 			const auto& producer = *dep.node;
 			assert(producer.get_type() != task_type::epoch && producer.get_type() != task_type::horizon);
 
