@@ -273,6 +273,7 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const command_grou
 void distributed_graph_generator::generate_execution_commands(const command_group_task& tsk) {
 	const auto distributed_chunks = split_task(tsk);
 
+#if 0
 	for(const auto& dep : tsk.get_dependencies()) {
 		for(const simple_dataflow_annotation& ann : dep.annotations) {
 			const auto& producer = *dep.node;
@@ -378,6 +379,7 @@ void distributed_graph_generator::generate_execution_commands(const command_grou
 			}
 		}
 	}
+#endif
 
 	const auto* oversub_hint = tsk.get_hint<experimental::hints::oversubscribe>();
 	const size_t oversub_factor = oversub_hint != nullptr ? oversub_hint->get_factor() : 1;

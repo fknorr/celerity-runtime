@@ -66,6 +66,7 @@ namespace detail {
 		return result;
 	}
 
+#if 0
 	std::optional<task::dependency> task_manager::detect_simple_dataflow(
 	    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const task* consumer) const {
 		if(last_writers.size() != 1) return std::nullopt;
@@ -100,6 +101,7 @@ namespace detail {
 		return task::dependency{producer, dependency_kind::true_dep, dependency_origin::dataflow,
 		    task::dependency::annotation_list{simple_dataflow_annotation{bid, box, producer_rm, consumer_rm}}};
 	}
+#endif
 
 	void task_manager::compute_command_group_dependencies(command_group_task& tsk) {
 		using namespace cl::sycl::access;
