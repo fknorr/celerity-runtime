@@ -389,33 +389,5 @@ namespace detail {
 		};
 	}
 
-	template <typename Factory>
-	static auto dispatch_dims_as_integral_constant(int dims, const Factory& factory) {
-		switch(dims) {
-		case 1: return factory(std::integral_constant<int, 1>());
-		case 2: return factory(std::integral_constant<int, 2>());
-		case 3: return factory(std::integral_constant<int, 3>());
-		default: assert(!"dimensionality out of range"); abort();
-		}
-	}
-
-	static std::unique_ptr<range_mapper_base> make_one_to_one_rm(const int buffer_dims, const range<3>& buffer_size, const access_mode mode) {
-		return dispatch_dims_as_integral_constant(buffer_dims, [&](const auto buffer_dims_constexpr) -> std::unique_ptr<range_mapper_base> {
-			constexpr int buffer_dims = buffer_dims_constexpr.value;
-			using rmfn = celerity::access::one_to_one<>;
-			return std::make_unique<range_mapper<buffer_dims, rmfn>>(rmfn{}, mode, range_cast<buffer_dims>(buffer_size));
-		});
-	}
-
-	static std::unique_ptr<range_mapper_base> make_fixed_rm(
-	    const int buffer_dims, const subrange<3>& access_range, const range<3>& buffer_size, const access_mode mode) {
-		return dispatch_dims_as_integral_constant(buffer_dims, [&](const auto buffer_dims_constexpr) -> std::unique_ptr<range_mapper_base> {
-			constexpr int buffer_dims = buffer_dims_constexpr.value;
-			using rmfn = celerity::access::fixed<buffer_dims, buffer_dims>;
-			return std::make_unique<range_mapper<buffer_dims, rmfn>>(
-			    rmfn(subrange_cast<buffer_dims>(access_range)), mode, range_cast<buffer_dims>(buffer_size));
-		});
-	}
-
 } // namespace detail
 } // namespace celerity
