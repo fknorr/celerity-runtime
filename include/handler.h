@@ -42,7 +42,7 @@ namespace detail {
 	class task_manager;
 
 	handler make_command_group_handler(const task_id tid, const size_t num_collective_nodes);
-	std::unique_ptr<task> into_task(handler&& cgh);
+	std::unique_ptr<command_group_task> into_task(handler&& cgh);
 	closure_object_id add_requirement(handler& cgh, const buffer_id bid, std::unique_ptr<range_mapper_base> rm);
 	void add_requirement(handler& cgh, const host_object_id hoid, const experimental::side_effect_order order);
 	void add_reduction(handler& cgh, const reduction_info& rinfo);
@@ -124,9 +124,9 @@ namespace experimental {
 	class collective_tag_factory;
 
 	/**
-	 * Each collective host task is executed within a collective group. If multiple host tasks are scheduled within the same collective group, they are
-	 * guaranteed to execute in the same order on every node and within a single thread per node. Each group has its own MPI communicator spanning all
-	 * participating nodes, so MPI operations the user invokes from different collective groups do not race.
+	 * Each host_collective host task is executed within a host_collective group. If multiple host tasks are scheduled within the same host_collective group,
+	 * they are guaranteed to execute in the same order on every node and within a single thread per node. Each group has its own MPI communicator spanning all
+	 * participating nodes, so MPI operations the user invokes from different host_collective groups do not race.
 	 */
 	class collective_group {
 	  public:
@@ -424,7 +424,7 @@ class handler {
   private:
 	// friend detail::execution_target detail::get_handler_execution_target(const handler& cgh); // NOCOMMIT For what do we use this?
 	friend handler detail::make_command_group_handler(const detail::task_id tid, const size_t num_collective_nodes);
-	friend std::unique_ptr<detail::task> detail::into_task(handler&& cgh);
+	friend std::unique_ptr<detail::command_group_task> detail::into_task(handler&& cgh);
 	friend detail::closure_object_id detail::add_requirement(handler& cgh, const detail::buffer_id bid, std::unique_ptr<detail::range_mapper_base> rm);
 	friend void detail::add_requirement(handler& cgh, const detail::host_object_id hoid, const experimental::side_effect_order order);
 	friend void detail::add_reduction(handler& cgh, const detail::reduction_info& rinfo);
@@ -438,7 +438,7 @@ class handler {
 	detail::side_effect_map m_side_effects;
 	detail::reduction_set m_reductions;
 	std::unique_ptr<detail::command_launcher_storage_base> m_launcher; // NOCOMMIT Get rid of this again (no need to have this be a member)
-	std::unique_ptr<detail::task> m_task = nullptr;
+	std::unique_ptr<detail::command_group_task> m_task = nullptr;
 	size_t m_num_collective_nodes;
 	detail::closure_object_id m_next_closure_object_id = 0;
 	range<3> m_split_constraint = detail::unit_range;
@@ -502,7 +502,7 @@ class handler {
 			// TODO this can be easily supported by not creating a task in case the execution range is empty
 			throw std::runtime_error{"The execution range of distributed host tasks must have at least one item"};
 		}
-		m_task = detail::task::make_host_compute(
+		m_task = detail::command_group_task::make_host_compute(
 		    m_tid, geometry, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects), std::move(m_reductions));
 	}
 
@@ -517,8 +517,8 @@ class handler {
 			throw std::runtime_error{"The execution range of device tasks must have at least one item"};
 		}
 		if(!m_side_effects.empty()) { throw std::runtime_error{"Side effects cannot be used in device kernels"}; }
-		m_task =
-		    detail::task::make_device_compute(m_tid, geometry, std::move(m_launcher), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
+		m_task = detail::command_group_task::make_device_compute(
+		    m_tid, geometry, std::move(m_launcher), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
 	}
 
 	template <int Dims, typename Functor>
@@ -545,20 +545,21 @@ class handler {
 		auto launcher = std::make_unique<detail::command_launcher_storage<decltype(launch_fn)>>(std::move(launch_fn));
 		const range<3> granularity = {1, 1, 1};
 		const detail::task_geometry geometry{Dims, detail::range_cast<3>(global_range), {}, get_constrained_granularity(granularity)};
-		m_task =
-		    detail::task::make_device_compute(m_tid, geometry, std::move(launcher), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
+		m_task = detail::command_group_task::make_device_compute(
+		    m_tid, geometry, std::move(launcher), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
 	}
 
 	void create_collective_task(detail::collective_group_id cgid) {
 		assert(m_task == nullptr);
 		assert(m_launcher != nullptr);
-		m_task = detail::task::make_collective(m_tid, cgid, m_num_collective_nodes, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects));
+		m_task = detail::command_group_task::make_host_collective(
+		    m_tid, cgid, m_num_collective_nodes, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects));
 	}
 
 	void create_master_node_task() {
 		assert(m_task == nullptr);
 		assert(m_launcher != nullptr);
-		m_task = detail::task::make_master_node(m_tid, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects));
+		m_task = detail::command_group_task::make_master_node(m_tid, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects));
 	}
 
 	// NOCOMMIT Get rid of this, just do it in create_device_compute_task?
@@ -619,7 +620,7 @@ class handler {
 		m_launcher = std::make_unique<detail::command_launcher_storage<decltype(fn)>>(std::move(fn));
 	}
 
-	std::unique_ptr<detail::task> into_task() && {
+	std::unique_ptr<detail::command_group_task> into_task() && {
 		assert(m_task != nullptr);
 		for(auto& h : m_hints) {
 			m_task->add_hint(std::move(h));
@@ -634,7 +635,7 @@ namespace detail {
 
 	inline handler make_command_group_handler(const detail::task_id tid, const size_t num_collective_nodes) { return handler(tid, num_collective_nodes); }
 
-	inline std::unique_ptr<detail::task> into_task(handler&& cgh) { return std::move(cgh).into_task(); }
+	inline std::unique_ptr<detail::command_group_task> into_task(handler&& cgh) { return std::move(cgh).into_task(); }
 
 	[[nodiscard]] inline closure_object_id add_requirement(handler& cgh, const buffer_id bid, std::unique_ptr<range_mapper_base> rm) {
 		return cgh.add_requirement(bid, std::move(rm));

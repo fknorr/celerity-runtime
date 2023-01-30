@@ -209,28 +209,28 @@ namespace detail {
 		if(!m_submitted) {
 			const auto data = std::get<execution_data>(pkg.data);
 
-			auto tsk = m_task_mngr.get_task(data.tid);
-			assert(tsk->get_execution_target() == execution_target::host);
+			const auto& tsk = dynamic_cast<const command_group_task&>(*m_task_mngr.get_task(data.tid));
+			assert(tsk.get_execution_target() == execution_target::host);
 			assert(!data.initialize_reductions); // For now, we do not support reductions in host tasks
 
-			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk.get_buffer_access_map().get_accessed_buffers())) { return false; }
 
 			CELERITY_TRACE("Execute live-pass, scheduling host task in thread pool");
 
 			// NOCOMMIT DRY with device execute?
-			const auto& access_map = tsk->get_buffer_access_map();
+			const auto& access_map = tsk.get_buffer_access_map();
 			std::vector<closure_hydrator::NOCOMMIT_info> access_infos;
 			access_infos.reserve(access_map.get_num_accesses());
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
-				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk.get_dimensions(), data.sr, tsk.get_global_size()));
 				const auto info = m_buffer_mngr.access_host_buffer(bid, mode, sr.range, sr.offset);
 				access_infos.push_back(closure_hydrator::NOCOMMIT_info{target::host_task, info.ptr, info.backing_buffer_range, info.backing_buffer_offset, sr});
 			}
 
 			closure_hydrator::get_instance().prepare(std::move(access_infos));
 			// NOCOMMIT TODO: There should be no need to pass cgid or global size from here, store inside launcher.
-			m_future = tsk->launch(m_queue, tsk->get_collective_group_id(), tsk->get_global_size(), data.sr);
+			m_future = tsk.launch(m_queue, tsk.get_collective_group_id(), tsk.get_global_size(), data.sr);
 
 			assert(m_future.valid());
 			m_submitted = true;
@@ -256,8 +256,8 @@ namespace detail {
 
 	std::string device_execute_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<execution_data>(pkg.data);
-		auto tsk = m_task_mngr.get_task(data.tid);
-		return fmt::format("DEVICE_EXECUTE task {} ('{}') {} on device {}", tsk->get_id(), tsk->get_debug_name(), data.sr, m_queue.get_id());
+		const auto& tsk = dynamic_cast<const command_group_task&>(*m_task_mngr.get_task(data.tid));
+		return fmt::format("DEVICE_EXECUTE task {} ('{}') {} on device {}", tsk.get_id(), tsk.get_debug_name(), data.sr, m_queue.get_id());
 	}
 
 	bool device_execute_job::prepare(const command_pkg& pkg) {
@@ -266,12 +266,12 @@ namespace detail {
 		// NOCOMMIT TODO This is not a good test b/c it wouldn't work for kernels without any accessors
 		if(m_access_infos.empty()) {
 			const auto data = std::get<execution_data>(pkg.data);
-			auto tsk = m_task_mngr.get_task(data.tid);
-			assert(tsk->get_execution_target() == execution_target::device);
+			const auto& tsk = dynamic_cast<const command_group_task&>(*m_task_mngr.get_task(data.tid));
+			assert(tsk.get_execution_target() == execution_target::device);
 
-			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
+			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk.get_buffer_access_map().get_accessed_buffers())) { return false; }
 
-			const auto& access_map = tsk->get_buffer_access_map();
+			const auto& access_map = tsk.get_buffer_access_map();
 			{
 				const auto msg = fmt::format("Preparing buffers for {} accesses", access_map.get_num_accesses());
 				TracyMessage(msg.c_str(), msg.size());
@@ -280,7 +280,7 @@ namespace detail {
 			m_access_infos.reserve(access_map.get_num_accesses());
 			for(size_t i = 0; i < access_map.get_num_accesses(); ++i) {
 				const auto [bid, mode] = access_map.get_nth_access(i);
-				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk->get_dimensions(), data.sr, tsk->get_global_size()));
+				const auto sr = grid_box_to_subrange(access_map.get_requirements_for_nth_access(i, tsk.get_dimensions(), data.sr, tsk.get_global_size()));
 				try {
 					auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), bid, mode, sr.range, sr.offset);
 					m_access_infos.push_back(
@@ -307,10 +307,10 @@ namespace detail {
 	bool device_execute_job::execute(const command_pkg& pkg) {
 		if(!m_submitted) {
 			const auto data = std::get<execution_data>(pkg.data);
-			auto tsk = m_task_mngr.get_task(data.tid);
+			const auto& tsk = dynamic_cast<const command_group_task&>(*m_task_mngr.get_task(data.tid));
 			closure_hydrator::get_instance().prepare(std::move(m_access_infos));
 			CELERITY_TRACE("Execute live-pass, submit kernel to SYCL");
-			m_event = tsk->launch(m_queue, data.sr);
+			m_event = tsk.launch(m_queue, data.sr);
 			m_submitted = true;
 			CELERITY_TRACE("Kernel submitted to SYCL");
 		}
@@ -320,8 +320,8 @@ namespace detail {
 			m_buffer_mngr.unlock(pkg.cid);
 
 			const auto data = std::get<execution_data>(pkg.data);
-			auto tsk = m_task_mngr.get_task(data.tid);
-			for(const auto& reduction : tsk->get_reductions()) {
+			const auto& tsk = dynamic_cast<const command_group_task&>(*m_task_mngr.get_task(data.tid));
+			for(const auto& reduction : tsk.get_reductions()) {
 				const auto element_size = m_buffer_mngr.get_buffer_info(reduction.bid).element_size;
 				auto operand = make_uninitialized_payload<std::byte>(element_size);
 				const auto evt = m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {1, 1, 1}}, operand.get_pointer());

@@ -226,7 +226,7 @@ set(SOURCES
   src/scheduler.cc
   src/task.cc
   src/task_manager.cc
-  src/transformers/naive_split.cc
+  # src/transformers/naive_split.cc
   src/user_bench.cc
   src/worker_job.cc
   "${CMAKE_CURRENT_BINARY_DIR}/src/version.cc"

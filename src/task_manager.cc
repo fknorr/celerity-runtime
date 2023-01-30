@@ -9,7 +9,7 @@ namespace detail {
 	task_manager::task_manager(size_t num_collective_nodes, host_queue* queue) : m_num_collective_nodes(num_collective_nodes), m_queue(queue) {
 		// We manually generate the initial epoch task, which we treat as if it has been reached immediately.
 		auto reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
-		m_task_buffer.put(std::move(reserve), task::make_epoch(initial_epoch_task, epoch_action::none));
+		m_task_buffer.put(std::move(reserve), std::make_unique<epoch_task>(initial_epoch_task, epoch_action::none));
 	}
 
 	void task_manager::add_buffer(buffer_id bid, int dimensions, const cl::sycl::range<3>& range, bool host_initialized) {
@@ -56,7 +56,7 @@ namespace detail {
 
 	void task_manager::await_epoch(task_id epoch) { m_latest_epoch_reached.await(epoch); }
 
-	GridRegion<3> get_requirements(task const& tsk, buffer_id bid, const std::vector<cl::sycl::access::mode> modes) {
+	GridRegion<3> get_requirements(command_group_task const& tsk, buffer_id bid, const std::vector<cl::sycl::access::mode> modes) {
 		const auto& access_map = tsk.get_buffer_access_map();
 		const subrange<3> full_range{tsk.get_global_offset(), tsk.get_global_size()};
 		GridRegion<3> result;
@@ -101,7 +101,7 @@ namespace detail {
 		    task::dependency::annotation_list{simple_dataflow_annotation{bid, box, producer_rm, consumer_rm}}};
 	}
 
-	void task_manager::compute_dependencies(task& tsk) {
+	void task_manager::compute_command_group_dependencies(command_group_task& tsk) {
 		using namespace cl::sycl::access;
 
 		const auto& access_map = tsk.get_buffer_access_map();
@@ -133,17 +133,17 @@ namespace detail {
 				if(reduction.has_value()) { read_requirements = GridRegion<3>::merge(read_requirements, GridRegion<3>{{1, 1, 1}}); }
 				const auto last_writers = m_buffers_last_writers.at(bid).get_region_values(read_requirements);
 
-				if(const auto simple_dataflow_dep = detect_simple_dataflow(bid, last_writers, &tsk)) {
-					add_dependency(tsk, std::move(*simple_dataflow_dep));
-				} else {
-					for(auto& [box, last_writer] : last_writers) {
-						// A null value indicates that the buffer is being used for the first time by this task, or all previous tasks also only read from it.
-						// A valid use case (i.e., not reading garbage) for this is when the buffer has been initialized using a host pointer.
-						if(last_writer != std::nullopt) {
-							add_dependency(tsk, *m_task_buffer.get_task(*last_writer), dependency_kind::true_dep, dependency_origin::dataflow);
-						}
+				// if(const auto simple_dataflow_dep = detect_simple_dataflow(bid, last_writers, &tsk)) {
+				// 	add_dependency(tsk, std::move(*simple_dataflow_dep));
+				// } else {
+				for(auto& [box, last_writer] : last_writers) {
+					// A null value indicates that the buffer is being used for the first time by this task, or all previous tasks also only read from it.
+					// A valid use case (i.e., not reading garbage) for this is when the buffer has been initialized using a host pointer.
+					if(last_writer != std::nullopt) {
+						add_dependency(tsk, *m_task_buffer.get_task(*last_writer), dependency_kind::true_dep, dependency_origin::dataflow);
 					}
 				}
+				// }
 			}
 
 			// Update last writers and determine anti-dependencies
@@ -167,12 +167,14 @@ namespace detail {
 							// - if the task itself also needs read access to that buffer (R/W access)
 							continue;
 						}
-						const auto dependent_read_requirements =
-						    get_requirements(*dependent, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
-						// Only add an anti-dependency if we are really writing over the region read by this task
-						if(!GridRegion<3>::intersect(write_requirements, dependent_read_requirements).empty()) {
-							add_dependency(tsk, *dependent, dependency_kind::anti_dep, dependency_origin::dataflow);
-							has_anti_dependents = true;
+						if(const auto cg_dependent = dynamic_cast<command_group_task*>(dependent)) {
+							const auto dependent_read_requirements =
+							    get_requirements(*cg_dependent, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+							// Only add an anti-dependency if we are really writing over the region read by this task
+							if(!GridRegion<3>::intersect(write_requirements, dependent_read_requirements).empty()) {
+								add_dependency(tsk, *cg_dependent, dependency_kind::anti_dep, dependency_origin::dataflow);
+								has_anti_dependents = true;
+							}
 						}
 					}
 
@@ -205,6 +207,10 @@ namespace detail {
 			}
 			m_last_collective_tasks.emplace(cgid, tsk.get_id());
 		}
+	}
+
+	void task_manager::compute_dependencies(task& tsk) {
+		if(const auto cgtsk = dynamic_cast<command_group_task*>(&tsk)) { compute_command_group_dependencies(*cgtsk); }
 
 		// Tasks without any other true-dependency must depend on the last epoch to ensure they cannot be re-ordered before the epoch
 		if(const auto deps = tsk.get_dependencies();
@@ -227,16 +233,11 @@ namespace detail {
 		}
 	}
 
-	void task_manager::add_dependency(task& depender, task::dependency dependency) {
-		auto& dependee = *dependency.node;
+	void task_manager::add_dependency(task& depender, task& dependee, dependency_kind kind, dependency_origin origin) {
 		assert(&depender != &dependee);
-		depender.add_dependency(std::move(dependency));
+		depender.add_dependency({&dependee, kind, origin});
 		m_execution_front.erase(&dependee);
 		m_max_pseudo_critical_path_length = std::max(m_max_pseudo_critical_path_length, depender.get_pseudo_critical_path_length());
-	}
-
-	void task_manager::add_dependency(task& depender, task& dependee, dependency_kind kind, dependency_origin origin) {
-		add_dependency(depender, {&dependee, kind, origin, task::dependency::annotation_list{}});
 	}
 
 	task& task_manager::reduce_execution_front(task_ring_buffer::reservation&& reserve, std::unique_ptr<task> new_front) {
@@ -275,7 +276,7 @@ namespace detail {
 		const auto previous_horizon = m_current_horizon;
 		m_current_horizon = tid;
 
-		task& new_horizon = reduce_execution_front(std::move(reserve), task::make_horizon_task(*m_current_horizon));
+		task& new_horizon = reduce_execution_front(std::move(reserve), std::make_unique<horizon_task>(*m_current_horizon));
 		if(previous_horizon) { set_epoch_for_new_tasks(*previous_horizon); }
 
 		invoke_callbacks(&new_horizon);
@@ -286,7 +287,7 @@ namespace detail {
 		auto reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
 		const auto tid = reserve.get_tid();
 
-		task& new_epoch = reduce_execution_front(std::move(reserve), task::make_epoch(tid, action));
+		task& new_epoch = reduce_execution_front(std::move(reserve), std::make_unique<epoch_task>(tid, action));
 		compute_dependencies(new_epoch);
 		set_epoch_for_new_tasks(tid);
 

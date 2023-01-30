@@ -128,7 +128,7 @@ namespace detail {
 
 		q.submit([=](handler& cgh) {
 			accessor acc{sum, cgh, celerity::access::all{}, celerity::read_only_host_task};
-			cgh.host_task(experimental::collective, [=](experimental::collective_partition p) {
+			cgh.host_task(experimental::host_collective, [=](experimental::collective_partition p) {
 				INFO("Node " << p.get_node_index());
 				CHECK(acc[0] == expected);
 			});

@@ -241,6 +241,7 @@ namespace detail {
 
 		task_id generate_horizon_task();
 
+		void compute_command_group_dependencies(command_group_task& tsk);
 		void compute_dependencies(task& tsk);
 
 		// Finds the first in-flight epoch, or returns the currently reached one if there are none in-flight

@@ -193,7 +193,7 @@ std::vector<chunk<3>> split_2d(const chunk<3>& full_chunk, const range<3>& granu
 
 using buffer_requirements_map = std::unordered_map<buffer_id, std::unordered_map<access_mode, GridRegion<3>>>;
 
-static buffer_requirements_map get_buffer_requirements_for_mapped_access(const task& tsk, subrange<3> sr, const range<3> global_size) {
+static buffer_requirements_map get_buffer_requirements_for_mapped_access(const command_group_task& tsk, subrange<3> sr, const range<3> global_size) {
 	buffer_requirements_map result;
 	const auto& access_map = tsk.get_buffer_access_map();
 	const auto buffers = access_map.get_accessed_buffers();
@@ -223,11 +223,11 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	const auto epoch_to_prune_before = m_epoch_for_new_commands;
 
 	if(tsk.get_type() == task_type::epoch) {
-		generate_epoch_command(tsk);
+		generate_epoch_command(dynamic_cast<const epoch_task&>(tsk));
 	} else if(tsk.get_type() == task_type::horizon) {
-		generate_horizon_command(tsk);
+		generate_horizon_command(dynamic_cast<const horizon_task&>(tsk));
 	} else if(tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::master_node) {
-		generate_execution_commands(tsk);
+		generate_execution_commands(dynamic_cast<const command_group_task&>(tsk));
 	} else {
 		throw std::runtime_error("Task type NYI");
 	}
@@ -245,12 +245,12 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	// If a new epoch was completed in the CDAG before the current task, prune all predecessor commands of that epoch.
 	prune_commands_before(epoch_to_prune_before);
 
-	assert(!m_current_cmd_batch.empty() || (!tsk.has_variable_split() && m_local_nid != 0));
+	// TODO assert(!m_current_cmd_batch.empty() || (!tsk.has_variable_split() && m_local_nid != 0));
 	return std::move(m_current_cmd_batch);
 }
 
 
-std::vector<chunk<3>> distributed_graph_generator::split_task(const task& tsk) const {
+std::vector<chunk<3>> distributed_graph_generator::split_task(const command_group_task& tsk) const {
 	// TODO: Pieced together from naive_split_transformer. We can probably do without creating all chunks and discarding everything except our own.
 	// TODO: Or - maybe - we actually want to store all chunks somewhere b/c we'll probably need them frequently for lookups later on?
 	chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
@@ -270,7 +270,7 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const task& tsk) c
 }
 
 
-void distributed_graph_generator::generate_execution_commands(const task& tsk) {
+void distributed_graph_generator::generate_execution_commands(const command_group_task& tsk) {
 	const auto distributed_chunks = split_task(tsk);
 
 	for(const auto& dep : tsk.get_dependencies()) {
@@ -609,7 +609,7 @@ void distributed_graph_generator::generate_anti_dependencies(
 	}
 }
 
-void distributed_graph_generator::process_task_side_effect_requirements(const task& tsk) {
+void distributed_graph_generator::process_task_side_effect_requirements(const command_group_task& tsk) {
 	const task_id tid = tsk.get_id();
 	if(tsk.get_side_effect_map().empty()) return; // skip the loop in the common case
 	if(m_cdag.task_command_count(tid) == 0) return;
@@ -661,7 +661,7 @@ void distributed_graph_generator::reduce_execution_front_to(abstract_command* co
 }
 
 // NOCOMMIT TODO: Apply epoch to data structures
-void distributed_graph_generator::generate_epoch_command(const task& tsk) {
+void distributed_graph_generator::generate_epoch_command(const epoch_task& tsk) {
 	assert(tsk.get_type() == task_type::epoch);
 	const auto epoch = create_command<epoch_command>(m_local_nid, tsk.get_id(), tsk.get_epoch_action());
 	set_epoch_for_new_commands(epoch);
@@ -671,7 +671,7 @@ void distributed_graph_generator::generate_epoch_command(const task& tsk) {
 }
 
 // NOCOMMIT TODO: Apply previous horizon to data structures
-void distributed_graph_generator::generate_horizon_command(const task& tsk) {
+void distributed_graph_generator::generate_horizon_command(const horizon_task& tsk) {
 	assert(tsk.get_type() == task_type::horizon);
 	const auto horizon = create_command<horizon_command>(m_local_nid, tsk.get_id());
 

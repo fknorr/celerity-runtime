@@ -44,11 +44,12 @@ namespace detail {
 
 	enum class task_type {
 		epoch,
-		host_compute,   ///< host task with explicit global size and celerity-defined split
-		device_compute, ///< device compute task
-		collective,     ///< host task with implicit 1d global size = #ranks and fixed split
-		master_node,    ///< zero-dimensional host task
-		horizon,        ///< task horizon
+		host_compute,    ///< host task with explicit global size and celerity-defined split
+		device_compute,  ///< device compute task
+		host_collective, ///< host task with implicit 1d global size = #ranks and fixed split
+		master_node,     ///< zero-dimensional host task
+		horizon,         ///< task horizon
+		shuffle,
 	};
 
 	enum class execution_target {
@@ -173,14 +174,49 @@ namespace detail {
 		const range_mapper_base* consumer_rm;
 	};
 
-	using task_dependency_annotation = simple_dataflow_annotation; // can become a std::variant once we have multiple annotation types
-
-	class task : public intrusive_graph_node<task, task_dependency_annotation> {
+	class task : public intrusive_graph_node<task> {
 	  public:
+		virtual ~task() = 0;
+
 		task_type get_type() const { return m_type; }
 
 		task_id get_id() const { return m_tid; }
 
+		virtual execution_target get_execution_target() const { return execution_target::none; }
+
+	  protected:
+		explicit task(const task_id tid, const task_type type) : m_tid(tid), m_type(type) {}
+
+		// derived classes are copy/move-constructible and assignable, but this base class is not
+		task(const task&) = default;
+		task(task&&) = default;
+		task& operator=(const task&) = default;
+		task& operator=(task&&) = default;
+
+	  private:
+		task_id m_tid;
+		task_type m_type;
+	};
+
+	inline task::~task() = default;
+
+	class epoch_task final : public task {
+	  public:
+		explicit epoch_task(const task_id tid, const detail::epoch_action epoch_action) : task(tid, task_type::epoch), m_epoch_action(epoch_action) {}
+
+		epoch_action get_epoch_action() const { return m_epoch_action; }
+
+	  private:
+		detail::epoch_action m_epoch_action;
+	};
+
+	class horizon_task final : public task {
+	  public:
+		explicit horizon_task(const task_id tid) : task(tid, task_type::horizon) {}
+	};
+
+	class command_group_task final : public task {
+	  public:
 		collective_group_id get_collective_group_id() const { return m_cgid; }
 
 		const buffer_access_map& get_buffer_access_map() const { return m_access_map; }
@@ -200,25 +236,21 @@ namespace detail {
 		const std::string& get_debug_name() const { return m_debug_name; }
 
 		bool has_variable_split() const {
-			return (m_type == task_type::host_compute || m_type == task_type::device_compute)
+			return (get_type() == task_type::host_compute || get_type() == task_type::device_compute)
 			       && (m_geometry.global_size.size() > m_geometry.granularity.size());
 		}
 
 		execution_target get_execution_target() const {
-			switch(m_type) {
-			case task_type::epoch: return execution_target::none;
+			switch(get_type()) {
 			case task_type::device_compute: return execution_target::device;
 			case task_type::host_compute:
-			case task_type::collective:
+			case task_type::host_collective:
 			case task_type::master_node: return execution_target::host;
-			case task_type::horizon: return execution_target::none;
 			default: assert(!"Unhandled task type"); return execution_target::none;
 			}
 		}
 
 		const reduction_set& get_reductions() const { return m_reductions; }
-
-		epoch_action get_epoch_action() const { return m_epoch_action; }
 
 		// NOCOMMIT TODO We can do better with typings here...
 		template <typename... Args>
@@ -240,42 +272,32 @@ namespace detail {
 			return nullptr;
 		}
 
-		static std::unique_ptr<task> make_epoch(task_id tid, detail::epoch_action action) {
-			return std::unique_ptr<task>(new task(tid, task_type::epoch, non_collective, task_geometry{}, nullptr, {}, {}, {}, {}, action));
+		static std::unique_ptr<command_group_task> make_host_compute(task_id tid, task_geometry geometry,
+		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::host_compute, non_collective, geometry, std::move(launcher),
+			    std::move(access_map), std::move(side_effect_map), std::move(reductions), {}));
 		}
 
-		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
-			return std::unique_ptr<task>(new task(tid, task_type::host_compute, non_collective, geometry, std::move(launcher), std::move(access_map),
-			    std::move(side_effect_map), std::move(reductions), {}, {}));
+		static std::unique_ptr<command_group_task> make_device_compute(task_id tid, task_geometry geometry,
+		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, reduction_set reductions, std::string debug_name) {
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::device_compute, non_collective, geometry, std::move(launcher),
+			    std::move(access_map), {}, std::move(reductions), std::move(debug_name)));
 		}
 
-		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, reduction_set reductions, std::string debug_name) {
-			return std::unique_ptr<task>(new task(tid, task_type::device_compute, non_collective, geometry, std::move(launcher), std::move(access_map), {},
-			    std::move(reductions), std::move(debug_name), {}));
-		}
-
-		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
+		static std::unique_ptr<command_group_task> make_host_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
 		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(cl::sycl::range<1>{num_collective_nodes}), {}, {1, 1, 1}};
-			return std::unique_ptr<task>(
-			    new task(tid, task_type::collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}, {}));
+			return std::unique_ptr<command_group_task>(new command_group_task(
+			    tid, task_type::host_collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
 		}
 
-		static std::unique_ptr<task> make_master_node(
+		static std::unique_ptr<command_group_task> make_master_node(
 		    task_id tid, std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::master_node, non_collective, task_geometry{}, std::move(launcher), std::move(access_map),
-			    std::move(side_effect_map), {}, {}, {}));
-		}
-
-		static std::unique_ptr<task> make_horizon_task(task_id tid) {
-			return std::unique_ptr<task>(new task(tid, task_type::horizon, non_collective, task_geometry{}, nullptr, {}, {}, {}, {}, {}));
+			return std::unique_ptr<command_group_task>(new command_group_task(
+			    tid, task_type::master_node, non_collective, task_geometry{}, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
 		}
 
 	  private:
-		task_id m_tid;
-		task_type m_type;
 		collective_group_id m_cgid;
 		task_geometry m_geometry;
 		std::unique_ptr<command_launcher_storage_base> m_launcher;
@@ -283,17 +305,16 @@ namespace detail {
 		detail::side_effect_map m_side_effects;
 		reduction_set m_reductions;
 		std::string m_debug_name;
-		detail::epoch_action m_epoch_action;
 		std::vector<std::unique_ptr<hint_base>> m_hints;
 
-		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions, std::string debug_name,
-		    detail::epoch_action epoch_action)
-		    : m_tid(tid), m_type(type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),
-		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)), m_epoch_action(epoch_action) {
+		command_group_task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry,
+		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, detail::side_effect_map side_effects,
+		    reduction_set reductions, std::string debug_name)
+		    : task(tid, type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),
+		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)) {
 			assert(type == task_type::host_compute || type == task_type::device_compute || get_granularity().size() == 1);
 			// Only host tasks can have side effects
-			assert(this->m_side_effects.empty() || type == task_type::host_compute || type == task_type::collective || type == task_type::master_node);
+			assert(this->m_side_effects.empty() || type == task_type::host_compute || type == task_type::host_collective || type == task_type::master_node);
 		}
 	};
 

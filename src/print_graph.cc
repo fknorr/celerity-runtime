@@ -27,7 +27,7 @@ namespace detail {
 		case task_type::epoch: return "epoch";
 		case task_type::host_compute: return "host-compute";
 		case task_type::device_compute: return "device-compute";
-		case task_type::collective: return "collective host";
+		case task_type::host_collective: return "host_collective host";
 		case task_type::master_node: return "master-node host";
 		case task_type::horizon: return "horizon";
 		default: return "unknown";
@@ -43,7 +43,7 @@ namespace detail {
 	}
 
 	void format_requirements(
-	    std::string& label, const task& tsk, subrange<3> execution_range, access_mode reduction_init_mode, const buffer_manager* const bm) {
+	    std::string& label, const command_group_task& tsk, subrange<3> execution_range, access_mode reduction_init_mode, const buffer_manager* const bm) {
 		for(const auto& reduction : tsk.get_reductions()) {
 			auto rmode = cl::sycl::access::mode::discard_write;
 			if(reduction.init_from_buffer) { rmode = reduction_init_mode; }
@@ -71,18 +71,22 @@ namespace detail {
 	std::string get_task_label(const task& tsk, const buffer_manager* const bm) {
 		std::string label;
 		fmt::format_to(std::back_inserter(label), "T{}", tsk.get_id());
-		if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(label), " \"{}\" ", tsk.get_debug_name()); }
 
-		const auto execution_range = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
+		const auto cgtsk = dynamic_cast<const command_group_task*>(&tsk);
+		if(!cgtsk) return label;
 
-		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.get_type()));
-		if(tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::device_compute) {
+		if(!cgtsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(label), " \"{}\" ", cgtsk->get_debug_name()); }
+
+		const auto execution_range = subrange<3>{cgtsk->get_global_offset(), cgtsk->get_global_size()};
+
+		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(cgtsk->get_type()));
+		if(cgtsk->get_type() == task_type::host_compute || cgtsk->get_type() == task_type::device_compute) {
 			fmt::format_to(std::back_inserter(label), " {}", execution_range);
-		} else if(tsk.get_type() == task_type::collective) {
-			fmt::format_to(std::back_inserter(label), " in CG{}", tsk.get_collective_group_id());
+		} else if(cgtsk->get_type() == task_type::host_collective) {
+			fmt::format_to(std::back_inserter(label), " in CG{}", cgtsk->get_collective_group_id());
 		}
 
-		format_requirements(label, tsk, execution_range, access_mode::read_write, bm);
+		format_requirements(label, *cgtsk, execution_range, access_mode::read_write, bm);
 
 		return label;
 	}
@@ -96,13 +100,6 @@ namespace detail {
 			for(auto d : tsk->get_dependencies()) {
 				std::vector<std::string> attrs;
 				if(const auto d_style = dependency_style(d); *d_style != 0) { attrs.push_back(d_style); }
-				if(!d.annotations.empty()) {
-					auto& label = attrs.emplace_back("taillabel=<simple data flow");
-					for(const auto& ann : d.annotations) {
-						fmt::format_to(std::back_inserter(label), "<br/>B{} {}", ann.bid, ann.box);
-					}
-					label += ">,labelfontsize=10";
-				}
 				fmt::format_to(std::back_inserter(dot), "{}->{}[{}];", d.node->get_id(), tsk->get_id(), fmt::join(attrs, ","));
 			}
 		}
@@ -167,18 +164,15 @@ namespace detail {
 			if(!tm.has_task(tcmd->get_tid())) return label; // NOCOMMIT This is only needed while we do TDAG pruning but not CDAG pruning
 			assert(tm.has_task(tcmd->get_tid()));
 
-			const auto& tsk = *tm.get_task(tcmd->get_tid());
-
-			auto reduction_init_mode = access_mode::discard_write;
-			auto execution_range = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
-			if(const auto ecmd = dynamic_cast<const execution_command*>(&cmd)) {
-				if(ecmd->is_reduction_initializer()) { reduction_init_mode = cl::sycl::access::mode::read_write; }
-				execution_range = ecmd->get_execution_range();
-			} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
-				execution_range = gcmd->get_source_ranges()[gcmd->get_nid()]; // we guarantee one-to-one read access
+			if(const auto* cgtsk = dynamic_cast<const command_group_task*>(tm.get_task(tcmd->get_tid()))) {
+				auto reduction_init_mode = access_mode::discard_write;
+				auto execution_range = subrange<3>{cgtsk->get_global_offset(), cgtsk->get_global_size()};
+				if(const auto ecmd = dynamic_cast<const execution_command*>(&cmd)) {
+					if(ecmd->is_reduction_initializer()) { reduction_init_mode = cl::sycl::access::mode::read_write; }
+					execution_range = ecmd->get_execution_range();
+				}
+				format_requirements(label, *cgtsk, execution_range, reduction_init_mode, bm);
 			}
-
-			format_requirements(label, tsk, execution_range, reduction_init_mode, bm);
 		}
 
 		return label;
@@ -211,11 +205,13 @@ namespace detail {
 					std::string task_label;
 					fmt::format_to(std::back_inserter(task_label), "T{} ", tid);
 					if(const auto tsk = tm.find_task(tid)) {
-						if(!tsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(task_label), "\"{}\" ", tsk->get_debug_name()); }
+						if(const auto cgtsk = dynamic_cast<const command_group_task*>(tsk); cgtsk && !cgtsk->get_debug_name().empty()) {
+							fmt::format_to(std::back_inserter(task_label), "\"{}\" ", cgtsk->get_debug_name());
+						}
 						task_label += "(";
 						task_label += task_type_string(tsk->get_type());
-						if(tsk->get_type() == task_type::collective) {
-							fmt::format_to(std::back_inserter(task_label), " on CG{}", tsk->get_collective_group_id());
+						if(tsk->get_type() == task_type::host_collective) {
+							fmt::format_to(std::back_inserter(task_label), " on CG{}", dynamic_cast<const command_group_task&>(*tsk).get_collective_group_id());
 						}
 						task_label += ")";
 					} else {

@@ -42,7 +42,7 @@ namespace detail {
 				    event,
 				    [this, &serializer](const event_task_available& e) {
 					    assert(e.tsk != nullptr);
-					    naive_split_transformer naive_split(m_num_nodes, m_num_nodes);
+					    // naive_split_transformer naive_split(m_num_nodes, m_num_nodes);
 					    const auto cmds = m_dggen->build_task(*e.tsk);
 					    serializer.flush(cmds);
 				    },
