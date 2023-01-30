@@ -165,6 +165,15 @@ namespace detail {
 		cl::sycl::range<3> global_size{0, 0, 0};
 		cl::sycl::id<3> global_offset{};
 		cl::sycl::range<3> granularity{1, 1, 1};
+
+		friend bool operator==(const task_geometry& lhs, const task_geometry& rhs) {
+			return lhs.dimensions == rhs.dimensions          //
+			       && lhs.global_size == rhs.global_size     //
+			       && lhs.global_offset == rhs.global_offset //
+			       && lhs.granularity == rhs.granularity;
+		}
+
+		friend bool operator!=(const task_geometry& lhs, const task_geometry& rhs) { return !(rhs == lhs); }
 	};
 
 	class task : public intrusive_graph_node<task> {

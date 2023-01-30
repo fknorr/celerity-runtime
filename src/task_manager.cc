@@ -104,6 +104,15 @@ namespace detail {
 		}
 		if(num_consumer_rms != 1) return std::nullopt;
 
+		// if data moves between two geometrically identical tasks with a one_to_one range mapper, no transfers will ever be needed
+		if(producer->has_variable_split() && consumer->has_variable_split() //
+		    && producer_rm->is_identity() && consumer_rm->is_identity() // TODO instead of identity, check for purity (e.g. RM output only depends on geometry)
+		    && producer->get_geometry() == consumer->get_geometry()     //
+		    && (producer->get_hint<experimental::hints::tiled_split>() != nullptr) == (consumer->get_hint<experimental::hints::tiled_split>() != nullptr) //
+		) {
+			return std::nullopt;
+		}
+
 		return collect_task::dataflow{bid, box, //
 		    {producer->get_geometry(), producer->has_variable_split(), producer->get_hint<experimental::hints::tiled_split>() != nullptr, producer_rm},
 		    {consumer->get_geometry(), consumer->has_variable_split(), consumer->get_hint<experimental::hints::tiled_split>() != nullptr, consumer_rm}};

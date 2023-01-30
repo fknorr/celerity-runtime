@@ -401,7 +401,8 @@ namespace detail {
 			q.submit([=](handler& cgh) {
 				accessor readVel(velBuff, cgh, celerity::access::one_to_one(), read_only);
 				accessor rwPos(posBuff, cgh, celerity::access::one_to_one(), read_write);
-				cgh.parallel_for<class UKN(body_pos_update)>(range<1>(n_bodies), [=](item<1> it) { rwPos[it.get_id()] += readVel[it.get_id()]; });
+				cgh.parallel_for<class UKN(body_pos_update)>(
+				    nd_range<1>(n_bodies, block_size), [=](nd_item<1> it) { rwPos[it.get_global_id()] += readVel[it.get_global_id()]; });
 			});
 		}
 
