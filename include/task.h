@@ -49,7 +49,7 @@ namespace detail {
 		host_collective, ///< host task with implicit 1d global size = #ranks and fixed split
 		master_node,     ///< zero-dimensional host task
 		horizon,         ///< task horizon
-		shuffle,
+		collect,
 	};
 
 	enum class execution_target {
@@ -165,13 +165,6 @@ namespace detail {
 		cl::sycl::range<3> global_size{0, 0, 0};
 		cl::sycl::id<3> global_offset{};
 		cl::sycl::range<3> granularity{1, 1, 1};
-	};
-
-	struct simple_dataflow_annotation {
-		buffer_id bid;
-		GridBox<3> box;
-		const range_mapper_base* producer_rm;
-		const range_mapper_base* consumer_rm;
 	};
 
 	class task : public intrusive_graph_node<task> {
@@ -316,6 +309,29 @@ namespace detail {
 			// Only host tasks can have side effects
 			assert(this->m_side_effects.empty() || type == task_type::host_compute || type == task_type::host_collective || type == task_type::master_node);
 		}
+	};
+
+	class collect_task final : public task {
+	  public:
+		struct access {
+			task_geometry geometry;
+			bool tiled_split;
+			const range_mapper_base* rm;
+		};
+
+		struct dataflow {
+			buffer_id bid;
+			GridBox<3> box;
+			access producer;
+			access consumer;
+		};
+
+		collect_task(const task_id tid, std::vector<dataflow> flows) : task(tid, task_type::collect), m_flows(std::move(flows)) {}
+
+		const std::vector<dataflow>& get_dataflows() const { return m_flows; }
+
+	  private:
+		std::vector<dataflow> m_flows;
 	};
 
 } // namespace detail

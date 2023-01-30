@@ -392,6 +392,14 @@ class dist_cdag_test_context {
 			m_cdags.emplace_back(std::make_unique<command_graph>());
 			m_dggens.emplace_back(std::make_unique<distributed_graph_generator>(num_nodes, devices_per_node, nid, *m_cdags[nid], *m_tm));
 		}
+
+		m_tm->register_task_callback([this](const task* const tsk) {
+			if(tsk->get_type() == task_type::collect) {
+				for(auto& dggen : m_dggens) {
+					dggen->build_task(*tsk);
+				}
+			}
+		});
 	}
 
 	~dist_cdag_test_context() { maybe_print_graphs(); }

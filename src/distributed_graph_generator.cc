@@ -228,6 +228,8 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 		generate_horizon_command(dynamic_cast<const horizon_task&>(tsk));
 	} else if(tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::master_node) {
 		generate_execution_commands(dynamic_cast<const command_group_task&>(tsk));
+	} else if(tsk.get_type() == task_type::collect) {
+		generate_collective_commands(dynamic_cast<const collect_task&>(tsk));
 	} else {
 		throw std::runtime_error("Task type NYI");
 	}
@@ -250,136 +252,125 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 }
 
 
-std::vector<chunk<3>> distributed_graph_generator::split_task(const command_group_task& tsk) const {
+std::vector<chunk<3>> distributed_graph_generator::split_task(const task_geometry& geometry, const bool tiled_split) const {
 	// TODO: Pieced together from naive_split_transformer. We can probably do without creating all chunks and discarding everything except our own.
 	// TODO: Or - maybe - we actually want to store all chunks somewhere b/c we'll probably need them frequently for lookups later on?
-	chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
+	chunk<3> full_chunk{geometry.global_offset, geometry.global_size, geometry.global_size};
 	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
 
-	std::vector<chunk<3>> chunks;
-	if(tsk.has_variable_split()) {
-		const auto split = tsk.get_hint<experimental::hints::tiled_split>() != nullptr ? split_2d : split_1d;
-		chunks = split(full_chunk, tsk.get_granularity(), num_chunks);
-	} else {
-		chunks = {full_chunk};
-	}
-
+	const auto split = tiled_split ? split_2d : split_1d;
+	auto chunks = split(full_chunk, geometry.granularity, num_chunks);
 	assert(chunks.size() <= num_chunks); // We may have created less than requested
 	assert(!chunks.empty());
 	return chunks;
 }
 
 
-void distributed_graph_generator::generate_execution_commands(const command_group_task& tsk) {
-	const auto distributed_chunks = split_task(tsk);
+void distributed_graph_generator::generate_collective_commands(const collect_task& tsk) {
+	for(const auto& dataflow : tsk.get_dataflows()) {
+		auto& [bid, box, producer, consumer] = dataflow;
+		// Since splits are reproducible, we simply re-compute the producer split here. If we ever introduce a non-reproducible split/scheduling behavior,
+		// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
+		const auto producer_chunks = split_task(producer.geometry, producer.tiled_split);
+		const auto& consumer_chunks = split_task(consumer.geometry, consumer.tiled_split);
 
-#if 0
-	for(const auto& dep : tsk.get_dependencies()) {
-		for(const simple_dataflow_annotation& ann : dep.annotations) {
-			const auto& producer = *dep.node;
-			assert(producer.get_type() != task_type::epoch && producer.get_type() != task_type::horizon);
-
-			// Since splits are reproducible, we simply re-compute the producer split here. If we ever introduce a non-reproducible split/scheduling behavior,
-			// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
-			const auto producer_chunks = split_task(producer);
-			const auto& consumer_chunks = distributed_chunks;
-			const auto [bid, box, producer_rm, consumer_rm] = ann;
-
-			if((producer_chunks.size() == 1 && consumer_chunks.size() == 1)
-			    || (producer_chunks.size() == consumer_chunks.size() && producer_rm->is_identity() && consumer_rm->is_identity() /* TODO relax */)) {
-				// no data transfers necessary to fulfill this dependency
-			} else if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || consumer_rm->is_constant())) {
-				// Gather or Allgather
-				std::vector<subrange<3>> source_srs(m_num_nodes);
-				for(node_id nid = 0; nid < std::min(m_num_nodes, producer_chunks.size()); ++nid) {
-					auto producer_box = subrange_to_grid_box(apply_range_mapper(producer_rm, producer_chunks[nid], producer.get_dimensions()));
-					source_srs[nid] = grid_box_to_subrange(GridBox<3>::intersect(box, producer_box));
-				}
-				const auto local_input_sr = source_srs[m_local_nid];
-				const auto dest_sr = grid_box_to_subrange(box);
-				const auto single_dest_nid = consumer_chunks.size() == 1 ? std::optional{node_id{0}} : std::nullopt;
-				const auto gather_cmd = create_command<gather_command>(m_local_nid, bid, std::move(source_srs), dest_sr, single_dest_nid);
-
-				auto& buffer_state = m_buffer_states.at(bid);
-				CELERITY_TRACE(
-				    "is_writer on N{} C{} = {}", gather_cmd->get_nid(), gather_cmd->get_cid(), !single_dest_nid.has_value() || *single_dest_nid == m_local_nid);
-				if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
-					CELERITY_TRACE("generate_anti_dependencies for N{} C{}", gather_cmd->get_nid(), gather_cmd->get_cid());
-					generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, gather_cmd);
-				}
-
-				if(local_input_sr.range.size() > 0) {
-					// Store the read access for determining anti-dependencies later on
-					m_command_buffer_reads[gather_cmd->get_cid()][bid] = subrange_to_grid_box(local_input_sr);
-
-					for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(subrange_to_grid_box(local_input_sr))) {
-						assert(wcs.is_fresh());
-						m_cdag.add_dependency(gather_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
-					}
-				}
-
-				if(m_local_nid == 0) {
-					// we treat an Allgather result has having been produced by node 0 and replicated to all other nodes
-					const auto replicated_to = single_dest_nid ? node_bitset().set(*single_dest_nid) : node_bitset().set(/* all */);
-					buffer_state.replicated_regions.update_region(box, replicated_to);
-				}
-
-				if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
-					const auto is_replicated = m_local_nid != 0;
-					buffer_state.local_last_writer.update_region(box, write_command_state(gather_cmd->get_cid(), is_replicated));
-				} else {
-					// TODO: We need a way of updating regions in place!
-					for(auto& [last_box, wcs] : buffer_state.local_last_writer.get_region_values(box)) {
-						if(wcs.is_fresh()) {
-							wcs.mark_as_stale();
-							buffer_state.local_last_writer.update_region(last_box, wcs);
-						}
-					}
-				}
-
-				if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
-					m_cdag.add_dependency(gather_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
-				}
-				m_last_collective_commands[implicit_collective] = gather_cmd->get_cid();
-
-				// TODO epoch dependencies for receive-only gather cmds
-			} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer_rm->is_constant()) {
-				// Broadcast
-				const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
-				const auto broadcast_cmd = create_command<broadcast_command>(m_local_nid, bid, source_nid, grid_box_to_subrange(box));
-
-				auto& buffer_state = m_buffer_states.at(bid);
-
-				generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, broadcast_cmd);
-
-				if(m_local_nid == source_nid) {
-					// Store the read access for determining anti-dependencies later on
-					m_command_buffer_reads[broadcast_cmd->get_cid()][bid] = box;
-
-					for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(box)) {
-						assert(wcs.is_fresh());
-						m_cdag.add_dependency(broadcast_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
-					}
-				}
-
-				buffer_state.local_last_writer.update_region(box, write_command_state(broadcast_cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
-				if(m_local_nid == source_nid) { buffer_state.replicated_regions.update_region(box, node_bitset().set(/* all nodes */)); }
-
-				if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
-					m_cdag.add_dependency(
-					    broadcast_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
-				}
-				m_last_collective_commands[implicit_collective] = broadcast_cmd->get_cid();
-
-				// TODO epoch dependencies for receive-only broadcast cmds
-			} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer_rm->is_identity() /* TODO can this be relaxed? */) {
-				// Scatter
-			} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && false /* TODO producer_rm is transposed consumer_rm */) {
-				// Alltoall
+		if((producer_chunks.size() == 1 && consumer_chunks.size() == 1)
+		    || (producer_chunks.size() == consumer_chunks.size() && producer.rm->is_identity() && consumer.rm->is_identity() /* TODO relax */)) {
+			// no data transfers necessary to fulfill this dependency
+		} else if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || consumer.rm->is_constant())) {
+			// Gather or Allgather
+			std::vector<subrange<3>> source_srs(m_num_nodes);
+			for(node_id nid = 0; nid < std::min(m_num_nodes, producer_chunks.size()); ++nid) {
+				auto producer_box = subrange_to_grid_box(apply_range_mapper(producer.rm, producer_chunks[nid], producer.geometry.dimensions));
+				source_srs[nid] = grid_box_to_subrange(GridBox<3>::intersect(box, producer_box));
 			}
+			const auto local_input_sr = source_srs[m_local_nid];
+			const auto dest_sr = grid_box_to_subrange(box);
+			const auto single_dest_nid = consumer_chunks.size() == 1 ? std::optional{node_id{0}} : std::nullopt;
+			const auto gather_cmd = create_command<gather_command>(m_local_nid, bid, std::move(source_srs), dest_sr, single_dest_nid);
+
+			auto& buffer_state = m_buffer_states.at(bid);
+			CELERITY_TRACE(
+			    "is_writer on N{} C{} = {}", gather_cmd->get_nid(), gather_cmd->get_cid(), !single_dest_nid.has_value() || *single_dest_nid == m_local_nid);
+			if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
+				CELERITY_TRACE("generate_anti_dependencies for N{} C{}", gather_cmd->get_nid(), gather_cmd->get_cid());
+				generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, gather_cmd);
+			}
+
+			if(local_input_sr.range.size() > 0) {
+				// Store the read access for determining anti-dependencies later on
+				m_command_buffer_reads[gather_cmd->get_cid()][bid] = subrange_to_grid_box(local_input_sr);
+
+				for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(subrange_to_grid_box(local_input_sr))) {
+					assert(wcs.is_fresh());
+					m_cdag.add_dependency(gather_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+				}
+			}
+
+			if(m_local_nid == 0) {
+				// we treat an Allgather result has having been produced by node 0 and replicated to all other nodes
+				const auto replicated_to = single_dest_nid ? node_bitset().set(*single_dest_nid) : node_bitset().set(/* all */);
+				buffer_state.replicated_regions.update_region(box, replicated_to);
+			}
+
+			if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
+				const auto is_replicated = m_local_nid != 0;
+				buffer_state.local_last_writer.update_region(box, write_command_state(gather_cmd->get_cid(), is_replicated));
+			} else {
+				// TODO: We need a way of updating regions in place!
+				for(auto& [last_box, wcs] : buffer_state.local_last_writer.get_region_values(box)) {
+					if(wcs.is_fresh()) {
+						wcs.mark_as_stale();
+						buffer_state.local_last_writer.update_region(last_box, wcs);
+					}
+				}
+			}
+
+			if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+				m_cdag.add_dependency(gather_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+			}
+			m_last_collective_commands[implicit_collective] = gather_cmd->get_cid();
+
+			// TODO epoch dependencies for receive-only gather cmds
+		} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer.rm->is_constant()) {
+			// Broadcast
+			const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
+			const auto broadcast_cmd = create_command<broadcast_command>(m_local_nid, bid, source_nid, grid_box_to_subrange(box));
+
+			auto& buffer_state = m_buffer_states.at(bid);
+
+			generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, broadcast_cmd);
+
+			if(m_local_nid == source_nid) {
+				// Store the read access for determining anti-dependencies later on
+				m_command_buffer_reads[broadcast_cmd->get_cid()][bid] = box;
+
+				for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(box)) {
+					assert(wcs.is_fresh());
+					m_cdag.add_dependency(broadcast_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+				}
+			}
+
+			buffer_state.local_last_writer.update_region(box, write_command_state(broadcast_cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
+			if(m_local_nid == source_nid) { buffer_state.replicated_regions.update_region(box, node_bitset().set(/* all nodes */)); }
+
+			if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+				m_cdag.add_dependency(broadcast_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+			}
+			m_last_collective_commands[implicit_collective] = broadcast_cmd->get_cid();
+
+			// TODO epoch dependencies for receive-only broadcast cmds
+		} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer.rm->is_identity() /* TODO can this be relaxed? */) {
+			// Scatter
+		} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && false /* TODO producer.rm is transposed consumer.rm */) {
+			// Alltoall
 		}
 	}
-#endif
+}
+
+
+void distributed_graph_generator::generate_execution_commands(const command_group_task& tsk) {
+	const auto distributed_chunks = split_task(tsk.get_geometry(), tsk.get_hint<experimental::hints::tiled_split>() != nullptr);
 
 	const auto* oversub_hint = tsk.get_hint<experimental::hints::oversubscribe>();
 	const size_t oversub_factor = oversub_hint != nullptr ? oversub_hint->get_factor() : 1;

@@ -261,6 +261,10 @@ namespace test_utils {
 			m_ggen = std::make_unique<detail::graph_generator>(num_nodes, *m_cdag);
 			m_gser = std::make_unique<detail::graph_serializer>(*m_cdag, m_inspector.get_cb());
 			this->m_num_nodes = num_nodes;
+
+			m_tm->register_task_callback([this](const detail::task* const tsk) {
+				if(tsk->get_type() == detail::task_type::collect) { m_ggen->build_task(*tsk, {}); }
+			});
 		}
 
 		detail::task_manager& get_task_manager() { return *m_tm; }

@@ -251,8 +251,8 @@ namespace detail {
 		// Returns a callback which blocks until any epoch task has executed, freeing new task slots
 		task_ring_buffer::wait_callback await_free_task_slot_callback();
 
-		std::optional<task::dependency> detect_simple_dataflow(
-		    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const task* consumer) const;
+		std::optional<collect_task::dataflow> detect_simple_dataflow(
+		    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const command_group_task* consumer) const;
 	};
 
 } // namespace detail

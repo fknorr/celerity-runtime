@@ -30,6 +30,7 @@ namespace detail {
 		case task_type::host_collective: return "host_collective host";
 		case task_type::master_node: return "master-node host";
 		case task_type::horizon: return "horizon";
+		case task_type::collect: return "collect";
 		default: return "unknown";
 		}
 	}
@@ -72,22 +73,26 @@ namespace detail {
 		std::string label;
 		fmt::format_to(std::back_inserter(label), "T{}", tsk.get_id());
 
-		const auto cgtsk = dynamic_cast<const command_group_task*>(&tsk);
-		if(!cgtsk) return label;
-
-		if(!cgtsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(label), " \"{}\" ", cgtsk->get_debug_name()); }
-
-		const auto execution_range = subrange<3>{cgtsk->get_global_offset(), cgtsk->get_global_size()};
-
-		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(cgtsk->get_type()));
-		if(cgtsk->get_type() == task_type::host_compute || cgtsk->get_type() == task_type::device_compute) {
-			fmt::format_to(std::back_inserter(label), " {}", execution_range);
-		} else if(cgtsk->get_type() == task_type::host_collective) {
-			fmt::format_to(std::back_inserter(label), " in CG{}", cgtsk->get_collective_group_id());
+		if(const auto cgtsk = dynamic_cast<const command_group_task*>(&tsk)) {
+			if(!cgtsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(label), " \"{}\" ", cgtsk->get_debug_name()); }
 		}
 
-		format_requirements(label, *cgtsk, execution_range, access_mode::read_write, bm);
+		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.get_type()));
 
+		if(const auto cgtsk = dynamic_cast<const command_group_task*>(&tsk)) {
+			const auto execution_range = subrange<3>{cgtsk->get_global_offset(), cgtsk->get_global_size()};
+			if(cgtsk->get_type() == task_type::host_compute || cgtsk->get_type() == task_type::device_compute) {
+				fmt::format_to(std::back_inserter(label), " {}", execution_range);
+			} else if(cgtsk->get_type() == task_type::host_collective) {
+				fmt::format_to(std::back_inserter(label), " in CG{}", cgtsk->get_collective_group_id());
+			}
+
+			format_requirements(label, *cgtsk, execution_range, access_mode::read_write, bm);
+		} else if(const auto* stsk = dynamic_cast<const collect_task*>(&tsk)) {
+			for(const auto& dataflow : stsk->get_dataflows()) {
+				fmt::format_to(std::back_inserter(label), "<br/>B{} {}", dataflow.bid, dataflow.box);
+			}
+		}
 		return label;
 	}
 
@@ -95,7 +100,7 @@ namespace detail {
 		std::string dot = "digraph G {label=\"Task Graph\" ";
 
 		for(auto tsk : tdag) {
-			const auto shape = tsk->get_type() == task_type::epoch || tsk->get_type() == task_type::horizon ? "ellipse" : "box style=rounded";
+			const auto shape = isa<command_group_task>(tsk) ? "box style=rounded" : "ellipse";
 			fmt::format_to(std::back_inserter(dot), "{}[shape={} label=<{}>];", tsk->get_id(), shape, get_task_label(*tsk, bm));
 			for(auto d : tsk->get_dependencies()) {
 				std::vector<std::string> attrs;
@@ -145,16 +150,16 @@ namespace detail {
 			} else {
 				label += "<b>allgather</b>";
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>in</i> B{} {}", gcmd->get_bid(), gcmd->get_source_ranges()[gcmd->get_nid()]);
+			fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), gcmd->get_source_ranges()[gcmd->get_nid()]);
 			if(!gcmd->get_single_destination() || gcmd->get_single_destination() == gcmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>out</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
+				fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
 			}
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
 			label += "<b>broadcast</b>";
 			if(bcmd->get_source() == bcmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>in</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>out</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
+			fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";
@@ -164,7 +169,8 @@ namespace detail {
 			if(!tm.has_task(tcmd->get_tid())) return label; // NOCOMMIT This is only needed while we do TDAG pruning but not CDAG pruning
 			assert(tm.has_task(tcmd->get_tid()));
 
-			if(const auto* cgtsk = dynamic_cast<const command_group_task*>(tm.get_task(tcmd->get_tid()))) {
+			const auto tsk = tm.get_task(tcmd->get_tid());
+			if(const auto* cgtsk = dynamic_cast<const command_group_task*>(tsk)) {
 				auto reduction_init_mode = access_mode::discard_write;
 				auto execution_range = subrange<3>{cgtsk->get_global_offset(), cgtsk->get_global_size()};
 				if(const auto ecmd = dynamic_cast<const execution_command*>(&cmd)) {

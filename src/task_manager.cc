@@ -66,15 +66,15 @@ namespace detail {
 		return result;
 	}
 
-#if 0
-	std::optional<task::dependency> task_manager::detect_simple_dataflow(
-	    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const task* consumer) const {
+	std::optional<collect_task::dataflow> task_manager::detect_simple_dataflow(
+	    const buffer_id bid, const std::vector<std::pair<GridBox<3>, std::optional<task_id>>>& last_writers, const command_group_task* consumer) const {
 		if(last_writers.size() != 1) return std::nullopt;
 
 		const auto& [box, last_writer_tid] = last_writers.front();
 		if(!last_writer_tid.has_value()) return std::nullopt;
 
-		const auto last_writer = m_task_buffer.get_task(*last_writer_tid);
+		const auto last_writer = dynamic_cast<command_group_task*>(m_task_buffer.get_task(*last_writer_tid));
+		if(last_writer == nullptr /* effective epoch */) return std::nullopt;
 
 		size_t num_producer_rms = 0;
 		const range_mapper_base* producer_rm = nullptr;
@@ -98,22 +98,82 @@ namespace detail {
 		}
 		if(num_consumer_rms != 1) return std::nullopt;
 
-		return task::dependency{producer, dependency_kind::true_dep, dependency_origin::dataflow,
-		    task::dependency::annotation_list{simple_dataflow_annotation{bid, box, producer_rm, consumer_rm}}};
+		return collect_task::dataflow{bid, box, //
+		    {producer->get_geometry(), producer->get_hint<experimental::hints::tiled_split>() != nullptr, producer_rm},
+		    {consumer->get_geometry(), consumer->get_hint<experimental::hints::tiled_split>() != nullptr, consumer_rm}};
 	}
-#endif
 
 	void task_manager::compute_command_group_dependencies(command_group_task& tsk) {
 		using namespace cl::sycl::access;
 
 		const auto& access_map = tsk.get_buffer_access_map();
 
-		auto buffers = access_map.get_accessed_buffers();
-		for(const auto& reduction : tsk.get_reductions()) {
-			buffers.emplace(reduction.bid);
+		std::vector<collect_task::dataflow> collect_dataflows;
+		for(const auto bid : access_map.get_accessed_buffers()) {
+			const auto read_requirements = get_requirements(tsk, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+			if(!read_requirements.empty()) {
+				const auto last_writers = m_buffers_last_writers.at(bid).get_region_values(read_requirements);
+				if(const auto dataflow = detect_simple_dataflow(bid, last_writers, &tsk)) { collect_dataflows.push_back(std::move(*dataflow)); }
+			}
 		}
 
-		for(const auto bid : buffers) {
+		if(!collect_dataflows.empty()) {
+			auto collect_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
+			const auto collect_tid = collect_reserve.get_tid();
+			auto unique_collect = std::make_unique<collect_task>(collect_tid, std::move(collect_dataflows));
+			auto& collect = static_cast<collect_task&>(register_task_internal(std::move(collect_reserve), std::move(unique_collect)));
+			for(const auto& dataflow : collect.get_dataflows()) {
+				// TODO begin copy-pasted dependency detection
+				for(auto& [writer_box, writer_tid] : m_buffers_last_writers.at(dataflow.bid).get_region_values(dataflow.box)) {
+					if(writer_tid == std::nullopt) continue;
+					task* last_writer = m_task_buffer.get_task(*writer_tid);
+
+					add_dependency(collect, *last_writer, dependency_kind::true_dep, dependency_origin::dataflow);
+
+					// Determine anti-dependencies by looking at all the dependents of the last writing task
+					bool has_anti_dependents = false;
+
+					for(const auto dependent : last_writer->get_dependent_nodes()) {
+						if(dependent->get_id() == collect_tid) {
+							// This can happen
+							// - if a task writes to two or more all_accessed_buffers with the same last writer
+							// - if the task itself also needs read access to that buffer (R/W access)
+							continue;
+						}
+						if(const auto cg_dependent = dynamic_cast<command_group_task*>(dependent)) {
+							const auto dependent_read_requirements =
+							    get_requirements(*cg_dependent, dataflow.bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+							// Only add an anti-dependency if we are really writing over the region read by this task
+							if(!GridRegion<3>::intersect(dataflow.box, dependent_read_requirements).empty()) {
+								add_dependency(collect, *cg_dependent, dependency_kind::anti_dep, dependency_origin::dataflow);
+								has_anti_dependents = true;
+							}
+						}
+					}
+
+					if(!has_anti_dependents) {
+						// If no intermediate consumers exist, add an anti-dependency on the last writer directly.
+						// Note that unless this task is a pure producer, a true dependency will be created and this is a no-op.
+						// While it might not always make total sense to have anti-dependencies between (pure) producers without an
+						// intermediate consumer, we at least have a defined behavior, and the thus enforced ordering of tasks
+						// likely reflects what the user expects.
+						add_dependency(collect, *last_writer, dependency_kind::anti_dep, dependency_origin::dataflow);
+					}
+				}
+				// TODO end copy-pasted dependency detection
+
+				m_buffers_last_writers.at(dataflow.bid).update_region(dataflow.box, collect_tid);
+			}
+
+			invoke_callbacks(&collect);
+		}
+
+		auto all_accessed_buffers = access_map.get_accessed_buffers();
+		for(const auto& reduction : tsk.get_reductions()) {
+			all_accessed_buffers.emplace(reduction.bid);
+		}
+
+		for(const auto bid : all_accessed_buffers) {
 			const auto modes = access_map.get_access_modes(bid);
 
 			std::optional<reduction_info> reduction;
@@ -135,9 +195,6 @@ namespace detail {
 				if(reduction.has_value()) { read_requirements = GridRegion<3>::merge(read_requirements, GridRegion<3>{{1, 1, 1}}); }
 				const auto last_writers = m_buffers_last_writers.at(bid).get_region_values(read_requirements);
 
-				// if(const auto simple_dataflow_dep = detect_simple_dataflow(bid, last_writers, &tsk)) {
-				// 	add_dependency(tsk, std::move(*simple_dataflow_dep));
-				// } else {
 				for(auto& [box, last_writer] : last_writers) {
 					// A null value indicates that the buffer is being used for the first time by this task, or all previous tasks also only read from it.
 					// A valid use case (i.e., not reading garbage) for this is when the buffer has been initialized using a host pointer.
@@ -145,7 +202,6 @@ namespace detail {
 						add_dependency(tsk, *m_task_buffer.get_task(*last_writer), dependency_kind::true_dep, dependency_origin::dataflow);
 					}
 				}
-				// }
 			}
 
 			// Update last writers and determine anti-dependencies
@@ -165,7 +221,7 @@ namespace detail {
 					for(const auto dependent : last_writer->get_dependent_nodes()) {
 						if(dependent->get_id() == tsk.get_id()) {
 							// This can happen
-							// - if a task writes to two or more buffers with the same last writer
+							// - if a task writes to two or more all_accessed_buffers with the same last writer
 							// - if the task itself also needs read access to that buffer (R/W access)
 							continue;
 						}
