@@ -237,6 +237,8 @@ namespace detail {
 
 		const std::string& get_debug_name() const { return m_debug_name; }
 
+		// TODO this is currently used to determine whether a task can be split at all, but it reports false for collective-host-tasks, where it used to mean
+		//  that naive_split_transformer cannot be applied on top of the "natural" one-item-per-node split for these tasks
 		bool has_variable_split() const {
 			return (get_type() == task_type::host_compute || get_type() == task_type::device_compute)
 			       && (m_geometry.global_size.size() > m_geometry.granularity.size());

@@ -262,6 +262,7 @@ namespace detail {
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
+	// TODO fails with distr-gathers on an assertion due to overlapping writes. We should detect those in the frontend!
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "generating same task graph on different nodes", "[task-graph]") {
 		distr_queue q;
 		REQUIRE(runtime::get_instance().get_num_nodes() > 1);
