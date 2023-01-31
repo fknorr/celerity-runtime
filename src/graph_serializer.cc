@@ -103,6 +103,8 @@ namespace detail {
 			pkg.data = gather_data{gcmd->get_bid(), gcmd->get_source_ranges(), gcmd->get_dest_range(), gcmd->get_single_destination()};
 		} else if(const auto* bcmd = dynamic_cast<broadcast_command*>(cmd)) {
 			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_range(), bcmd->get_source()};
+		} else if(const auto* scmd = dynamic_cast<scatter_command*>(cmd)) {
+			pkg.data = scatter_data{scmd->get_bid(), scmd->get_source(), scmd->get_source_range(), scmd->get_dest_ranges()};
 		} else {
 			assert(false && "Unknown command");
 		}

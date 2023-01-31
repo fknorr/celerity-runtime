@@ -160,6 +160,13 @@ namespace detail {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
 			}
 			fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
+		} else if(const auto scmd = dynamic_cast<const scatter_command*>(&cmd)) {
+			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_source());
+			if(scmd->get_source() == scmd->get_nid()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), scmd->get_source_range());
+			} else {
+				fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", scmd->get_bid(), scmd->get_dest_ranges()[scmd->get_nid()]);
+			}
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";

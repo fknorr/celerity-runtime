@@ -353,6 +353,7 @@ void distributed_graph_generator::generate_collective_commands(const collect_tas
 				}
 			}
 
+			// TODO producer should not write (in worker_job) -> only set to replicated instead of inserting a new cmd
 			buffer_state.local_last_writer.update_region(box, write_command_state(broadcast_cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
 			if(m_local_nid == source_nid) { buffer_state.replicated_regions.update_region(box, node_bitset().set(/* all nodes */)); }
 
@@ -364,6 +365,52 @@ void distributed_graph_generator::generate_collective_commands(const collect_tas
 			generate_epoch_dependencies(broadcast_cmd);
 		} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer.rm->is_identity() /* TODO can this be relaxed? */) {
 			// Scatter
+			const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
+			const auto source_sr = grid_box_to_subrange(box);
+
+			// MPI_Scatterv man page says:
+			// 		The specification of counts, types, and displacements should not cause any location on the root to be read more than one time.
+			// That is trivailly fulfilled for one_to_one RMS at the moment.
+			// TODO what does "should" mean? If it's a proper requirement, assert it
+			std::vector<subrange<3>> dest_srs(m_num_nodes);
+			for(node_id nid = 0; nid < std::min(m_num_nodes, consumer_chunks.size()); ++nid) {
+				if(nid != source_nid) {
+					auto consumer_box = subrange_to_grid_box(apply_range_mapper(consumer.rm, consumer_chunks[nid], consumer.geometry.dimensions));
+					dest_srs[nid] = grid_box_to_subrange(GridBox<3>::intersect(box, consumer_box));
+				} else {
+					dest_srs[nid] = {}; // do not send to self
+				}
+			}
+			const auto scatter_cmd = create_command<scatter_command>(m_local_nid, bid, source_nid, source_sr, dest_srs);
+
+			auto& buffer_state = m_buffer_states.at(bid);
+
+			generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, box, scatter_cmd);
+
+			if(m_local_nid == source_nid) {
+				// Store the read access for determining anti-dependencies later on
+				m_command_buffer_reads[scatter_cmd->get_cid()][bid] = box;
+
+				for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(box)) {
+					assert(wcs.is_fresh());
+					m_cdag.add_dependency(scatter_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+				}
+			}
+			if(m_local_nid == source_nid) {
+				for(node_id nid = 0; nid < m_num_nodes; ++nid) {
+					buffer_state.replicated_regions.update_region(subrange_to_grid_box(dest_srs[nid]), node_bitset().set(nid));
+				}
+			} else {
+				buffer_state.local_last_writer.update_region(
+				    subrange_to_grid_box(dest_srs[m_local_nid]), write_command_state(scatter_cmd->get_cid(), true /* is_replicated */));
+			}
+
+			if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+				m_cdag.add_dependency(scatter_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+			}
+			m_last_collective_commands[implicit_collective] = scatter_cmd->get_cid();
+
+			generate_epoch_dependencies(scatter_cmd);
 		} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && false /* TODO producer.rm is transposed consumer.rm */) {
 			// Alltoall
 		}

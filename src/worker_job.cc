@@ -347,7 +347,7 @@ namespace detail {
 	// ------------------------------------------------------ GATHER ------------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
-	gather_job::gather_job(command_pkg pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
+	gather_job::gather_job(const command_pkg& pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
 		assert(std::holds_alternative<gather_data>(pkg.data));
 	}
 
@@ -449,7 +449,7 @@ namespace detail {
 	// ---------------------------------------------------- BROADCAST -----------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
-	broadcast_job::broadcast_job(command_pkg pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
+	broadcast_job::broadcast_job(const command_pkg& pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
 		assert(std::holds_alternative<broadcast_data>(pkg.data));
 	}
 
@@ -477,6 +477,98 @@ namespace detail {
 			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, buffer)", (int)data.bid, data.sr.offset[0], data.sr.offset[1],
 			    data.sr.offset[2], data.sr.range[0], data.sr.range[1], data.sr.range[2]);
 			m_buffer_mngr.set_buffer_data(data.bid, data.sr, std::move(buffer));
+		}
+
+		m_buffer_mngr.unlock(pkg.cid);
+		return true;
+	}
+
+	// --------------------------------------------------------------------------------------------------------------------
+	// ----------------------------------------------------- SCATTER ------------------------------------------------------
+	// --------------------------------------------------------------------------------------------------------------------
+
+	scatter_job::scatter_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(local_nid) {
+		assert(std::holds_alternative<scatter_data>(pkg.data));
+	}
+
+	std::string scatter_job::get_description(const command_pkg& pkg) {
+		const auto data = std::get<scatter_data>(pkg.data);
+		if(data.source_nid == m_local_nid) {
+			return fmt::format("scatter {} of buffer {} to all", data.source_sr, data.bid);
+		} else {
+			return fmt::format("scatter {} of buffer {} from {}", data.dest_srs[m_local_nid], data.bid, data.source_nid);
+		}
+	}
+
+	bool scatter_job::execute(const command_pkg& pkg) {
+		const auto data = std::get<scatter_data>(pkg.data);
+
+		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
+		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
+
+#ifndef NDEBUG
+		{
+			int rank, num_ranks;
+			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+			MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
+			assert(static_cast<node_id>(rank) == m_local_nid);
+			assert(static_cast<size_t>(num_ranks) == data.dest_srs.size());
+		}
+		for(const auto& sr : data.dest_srs) {
+			if(sr.range.size() > 0 && (sr.range[1] != buffer_info.range[1] || sr.range[2] != buffer_info.range[2])) {
+				CELERITY_CRITICAL("scatter_job can't deal with scatters from strided inputs yet, scatter_job sr={}, buffer_info.range={{{}, {}, {}}}", sr,
+				    buffer_info.range[0], buffer_info.range[1], buffer_info.range[2]);
+				std::abort();
+			}
+		}
+#endif
+
+		// TODO how can we work around the INT_MAX size restriction? Larger data types only work if the split is aligned conveniently
+		const auto total_scatter_byte_size = data.source_sr.range.size() * buffer_info.element_size;
+		assert(total_scatter_byte_size <= INT_MAX);
+
+		const auto send_chunk_byte_size = data.source_sr.range.size() * buffer_info.element_size;
+		const auto recv_chunk_byte_size = data.dest_srs[m_local_nid].range.size() * buffer_info.element_size;
+		const bool receives_data = recv_chunk_byte_size > 0;
+
+		unique_payload_ptr send_buffer;
+		if(data.source_nid == m_local_nid) {
+			send_buffer = make_uninitialized_payload<std::byte>(recv_chunk_byte_size);
+			m_buffer_mngr.get_buffer_data(data.bid, data.source_sr, send_buffer.get_pointer()).wait();
+		}
+
+		std::vector<int> all_chunk_byte_sizes;
+		std::vector<int> all_chunk_byte_offsets;
+		unique_payload_ptr recv_buffer;
+		if(data.source_nid == m_local_nid) {
+			all_chunk_byte_sizes.resize(data.dest_srs.size());
+			for(size_t i = 0; i < data.dest_srs.size(); ++i) {
+				const auto byte_size = data.dest_srs[i].range.size() * buffer_info.element_size;
+				assert(byte_size <= INT_MAX);
+				all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
+			}
+			assert(std::accumulate(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), size_t(0)) == total_scatter_byte_size);
+
+			all_chunk_byte_offsets.resize(all_chunk_byte_sizes.size());
+			std::exclusive_scan(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), all_chunk_byte_offsets.begin(), 0);
+			recv_buffer = make_uninitialized_payload<std::byte>(total_scatter_byte_size);
+		}
+
+		const auto root = static_cast<int>(data.source_nid);
+		MPI_Scatterv(send_buffer.get_pointer(), all_chunk_byte_sizes.data(), all_chunk_byte_offsets.data(), MPI_BYTE, recv_buffer.get_pointer(),
+		    all_chunk_byte_sizes[m_local_nid], MPI_BYTE, root, MPI_COMM_WORLD);
+		CELERITY_TRACE("MPI_Scatterv([buffer of size {}],  {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD)",
+		    send_buffer ? send_chunk_byte_size : 0, fmt::join(all_chunk_byte_sizes, ", "), fmt::join(all_chunk_byte_offsets, ", "),
+		    recv_buffer ? recv_chunk_byte_size : 0, all_chunk_byte_sizes[m_local_nid], root);
+
+		if(receives_data) {
+			assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
+			           recv_chunk_byte_size)
+			       == 0);
+			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)data.bid, data.dest_srs[m_local_nid].offset[0],
+			    data.dest_srs[m_local_nid].offset[1], data.dest_srs[m_local_nid].offset[2], data.dest_srs[m_local_nid].range[0],
+			    data.dest_srs[m_local_nid].range[1], data.dest_srs[m_local_nid].range[2]);
+			m_buffer_mngr.set_buffer_data(data.bid, data.dest_srs[m_local_nid], std::move(recv_buffer));
 		}
 
 		m_buffer_mngr.unlock(pkg.cid);

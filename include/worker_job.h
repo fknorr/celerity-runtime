@@ -39,7 +39,7 @@ namespace detail {
 
 	  protected:
 		template <typename... Es>
-		explicit worker_job(command_pkg pkg, std::tuple<Es...> ctx = {}) : m_pkg(pkg), m_lctx(make_log_context(pkg, ctx)) {}
+		explicit worker_job(const command_pkg& pkg, std::tuple<Es...> ctx = {}) : m_pkg(pkg), m_lctx(make_log_context(pkg, ctx)) {}
 
 	  private:
 		command_pkg m_pkg;
@@ -77,7 +77,7 @@ namespace detail {
 
 	class horizon_job : public worker_job {
 	  public:
-		horizon_job(command_pkg pkg, task_manager& tm) : worker_job(pkg), m_task_mngr(tm) { assert(pkg.get_command_type() == command_type::horizon); }
+		horizon_job(const command_pkg& pkg, task_manager& tm) : worker_job(pkg), m_task_mngr(tm) { assert(pkg.get_command_type() == command_type::horizon); }
 
 	  private:
 		task_manager& m_task_mngr;
@@ -88,7 +88,7 @@ namespace detail {
 
 	class epoch_job : public worker_job {
 	  public:
-		epoch_job(command_pkg pkg, task_manager& tm) : worker_job(pkg), m_task_mngr(tm), m_action(std::get<epoch_data>(pkg.data).action) {
+		epoch_job(const command_pkg& pkg, task_manager& tm) : worker_job(pkg), m_task_mngr(tm), m_action(std::get<epoch_data>(pkg.data).action) {
 			assert(pkg.get_command_type() == command_type::epoch);
 		}
 
@@ -107,7 +107,7 @@ namespace detail {
 	 */
 	class await_push_job : public worker_job {
 	  public:
-		await_push_job(command_pkg pkg, buffer_transfer_manager& btm) : worker_job(pkg), m_btm(btm) {
+		await_push_job(const command_pkg& pkg, buffer_transfer_manager& btm) : worker_job(pkg), m_btm(btm) {
 			assert(pkg.get_command_type() == command_type::await_push);
 		}
 
@@ -121,7 +121,7 @@ namespace detail {
 
 	class push_job : public worker_job {
 	  public:
-		push_job(command_pkg pkg, buffer_transfer_manager& btm, buffer_manager& bm) : worker_job(pkg), m_btm(btm), m_buffer_mngr(bm) {
+		push_job(const command_pkg& pkg, buffer_transfer_manager& btm, buffer_manager& bm) : worker_job(pkg), m_btm(btm), m_buffer_mngr(bm) {
 			assert(pkg.get_command_type() == command_type::push);
 		}
 
@@ -139,7 +139,7 @@ namespace detail {
 
 	class data_request_job : public worker_job {
 	  public:
-		data_request_job(command_pkg pkg, buffer_transfer_manager& btm) : worker_job(pkg), m_btm(btm) {
+		data_request_job(const command_pkg& pkg, buffer_transfer_manager& btm) : worker_job(pkg), m_btm(btm) {
 			assert(pkg.get_command_type() == command_type::data_request);
 		}
 
@@ -152,7 +152,7 @@ namespace detail {
 
 	class reduction_job : public worker_job {
 	  public:
-		reduction_job(command_pkg pkg, reduction_manager& rm) : worker_job(pkg, std::tuple{"rid", std::get<reduction_data>(pkg.data).rid}), m_rm(rm) {
+		reduction_job(const command_pkg& pkg, reduction_manager& rm) : worker_job(pkg, std::tuple{"rid", std::get<reduction_data>(pkg.data).rid}), m_rm(rm) {
 			assert(pkg.get_command_type() == command_type::reduction);
 		}
 
@@ -166,7 +166,7 @@ namespace detail {
 	// host-compute jobs, master-node tasks and collective host tasks
 	class host_execute_job : public worker_job {
 	  public:
-		host_execute_job(command_pkg pkg, host_queue& queue, task_manager& tm, buffer_manager& bm)
+		host_execute_job(const command_pkg& pkg, host_queue& queue, task_manager& tm, buffer_manager& bm)
 		    : worker_job(pkg), m_queue(queue), m_task_mngr(tm), m_buffer_mngr(bm) {
 			assert(pkg.get_command_type() == command_type::execution);
 		}
@@ -188,7 +188,7 @@ namespace detail {
 	 */
 	class device_execute_job : public worker_job {
 	  public:
-		device_execute_job(command_pkg pkg, device_queue& queue, task_manager& tm, buffer_manager& bm, reduction_manager& rm, node_id local_nid)
+		device_execute_job(const command_pkg& pkg, device_queue& queue, task_manager& tm, buffer_manager& bm, reduction_manager& rm, node_id local_nid)
 		    : worker_job(pkg), m_queue(queue), m_task_mngr(tm), m_buffer_mngr(bm), m_reduction_mngr(rm), m_local_nid(local_nid) {
 			assert(pkg.get_command_type() == command_type::execution);
 		}
@@ -215,7 +215,7 @@ namespace detail {
 
 	class gather_job : public worker_job {
 	  public:
-		gather_job(command_pkg pkg, buffer_manager& bm, node_id local_nid);
+		gather_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid);
 
 	  private:
 		buffer_manager& m_buffer_mngr;
@@ -227,7 +227,19 @@ namespace detail {
 
 	class broadcast_job : public worker_job {
 	  public:
-		broadcast_job(command_pkg pkg, buffer_manager& bm, node_id local_nid);
+		broadcast_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid);
+
+	  private:
+		buffer_manager& m_buffer_mngr;
+		node_id m_local_nid;
+
+		bool execute(const command_pkg& pkg) override;
+		std::string get_description(const command_pkg& pkg) override;
+	};
+
+	class scatter_job : public worker_job {
+	  public:
+		scatter_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid);
 
 	  private:
 		buffer_manager& m_buffer_mngr;

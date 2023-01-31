@@ -361,6 +361,7 @@ class command_query {
 		if(isa<reduction_command>(cmd)) return command_type::reduction;
 		if(isa<gather_command>(cmd)) return command_type::gather;
 		if(isa<broadcast_command>(cmd)) return command_type::broadcast;
+		if(isa<scatter_command>(cmd)) return command_type::scatter;
 		throw query_exception("Unknown command type");
 	}
 
@@ -375,6 +376,7 @@ class command_query {
 		case command_type::reduction: return "reduction";
 		case command_type::gather: return "gather";
 		case command_type::broadcast: return "broadcast";
+		case command_type::scatter: return "scatter";
 		default: return "<unknown>";
 		}
 	}
@@ -851,4 +853,15 @@ TEST_CASE("graph generator broadcast inbound anti-dependencies", "[distributed_g
 	const auto tid_init = dctx.device_compute<class UKN(init)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
 	const auto tid_producer = dctx.device_compute<class UKN(producer)>(range<1>(1)).discard_write(buf, acc::all()).submit(); // Gather
 	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(buf.get_range()).read(buf, acc::all()).submit();
+}
+
+TEMPLATE_TEST_CASE_SIG(
+    "graph generator generates push-/await-push-free scatter commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(producer_range);
+
+	const auto tid_producer = dctx.host_task(range<1>(1)).discard_write(buf, acc::all()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(buf.get_range()).read(buf, acc::one_to_one()).submit();
 }

@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, broadcast };
+	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, broadcast, scatter };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -208,6 +208,24 @@ namespace detail {
 		subrange<3> m_sr;
 	};
 
+	class scatter_command final : public abstract_command {
+		friend class command_graph;
+		scatter_command(command_id cid, node_id nid, buffer_id bid, const node_id source_nid, subrange<3> source_sr, std::vector<subrange<3>> dest_srs)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_source_sr(source_sr), m_dest_srs(std::move(dest_srs)) {}
+
+	  public:
+		buffer_id get_bid() const { return m_bid; }
+		node_id get_source() const { return m_source_nid; }
+		const subrange<3>& get_source_range() const { return m_source_sr; }
+		const std::vector<subrange<3>>& get_dest_ranges() const { return m_dest_srs; }
+
+	  private:
+		buffer_id m_bid;
+		node_id m_source_nid;
+		subrange<3> m_source_sr;
+		std::vector<subrange<3>> m_dest_srs;
+	};
+
 	// ----------------------------------------------------------------------------------------------------------------
 	// -------------------------------------------- SERIALIZED COMMANDS -----------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
@@ -270,8 +288,15 @@ namespace detail {
 		node_id source_nid;
 	};
 
+	struct scatter_data {
+		buffer_id bid;
+		node_id source_nid;
+		subrange<3> source_sr;
+		std::vector<subrange<3>> dest_srs;
+	};
+
 	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,
-	    gather_data, broadcast_data>;
+	    gather_data, broadcast_data, scatter_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -309,7 +334,8 @@ namespace detail {
 				[](const data_request_data&) { return command_type::data_request; },
 			    [](const reduction_data&) { return command_type::reduction; },
 				[](const gather_data&) { return command_type::gather; },
-				[](const broadcast_data&) { return command_type::broadcast; }
+				[](const broadcast_data&) { return command_type::broadcast; },
+				[](const scatter_data&) { return command_type::scatter; }
 			);
 			// clang-format on
 		}
