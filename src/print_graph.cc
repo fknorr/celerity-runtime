@@ -155,7 +155,7 @@ namespace detail {
 				fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
 			}
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
-			label += "<b>broadcast</b>";
+			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_source());
 			if(bcmd->get_source() == bcmd->get_nid()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
 			}

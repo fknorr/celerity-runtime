@@ -333,7 +333,7 @@ void distributed_graph_generator::generate_collective_commands(const collect_tas
 			}
 			m_last_collective_commands[implicit_collective] = gather_cmd->get_cid();
 
-			// TODO epoch dependencies for receive-only gather cmds
+			generate_epoch_dependencies(gather_cmd);
 		} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer.rm->is_constant()) {
 			// Broadcast
 			const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
@@ -361,7 +361,7 @@ void distributed_graph_generator::generate_collective_commands(const collect_tas
 			}
 			m_last_collective_commands[implicit_collective] = broadcast_cmd->get_cid();
 
-			// TODO epoch dependencies for receive-only broadcast cmds
+			generate_epoch_dependencies(broadcast_cmd);
 		} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && consumer.rm->is_identity() /* TODO can this be relaxed? */) {
 			// Scatter
 		} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && false /* TODO producer.rm is transposed consumer.rm */) {
