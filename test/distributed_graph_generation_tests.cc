@@ -834,3 +834,21 @@ TEMPLATE_TEST_CASE_SIG(
 	const auto tid_producer = dctx.host_task(range<1>(1)).discard_write(buf, acc::all()).submit();
 	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(producer_range).read(buf, acc::all()).submit();
 }
+
+TEST_CASE("graph generator gather outbound anti-dependencies", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(range<1>(1000));
+
+	const auto tid_producer = dctx.device_compute<class UKN(producer)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(range<1>(1)).read(buf, acc::all()).submit(); // Gather
+	const auto tid_overwriter = dctx.device_compute<class UKN(overwriter)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+}
+
+TEST_CASE("graph generator broadcast inbound anti-dependencies", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(range<1>(1000));
+
+	const auto tid_init = dctx.device_compute<class UKN(init)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_producer = dctx.device_compute<class UKN(producer)>(range<1>(1)).discard_write(buf, acc::all()).submit(); // Gather
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(buf.get_range()).read(buf, acc::all()).submit();
+}
