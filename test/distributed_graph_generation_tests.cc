@@ -865,3 +865,24 @@ TEMPLATE_TEST_CASE_SIG(
 	const auto tid_producer = dctx.host_task(range<1>(1)).discard_write(buf, acc::all()).submit();
 	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(buf.get_range()).read(buf, acc::one_to_one()).submit();
 }
+
+TEST_CASE("graph generator generates allgathers for RSim pattern", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(2);
+	size_t width = 1000;
+	size_t n_iters = 3;
+	auto buf = dctx.create_buffer(range<2>(width, n_iters));
+
+	const auto access_up_to_ith_line_all = [&](size_t i) { //
+		return celerity::access::fixed<2>({{0, 0}, {i, width}});
+	};
+	const auto access_ith_line_1to1 = [](size_t i) {
+		return [i](celerity::chunk<2> chnk) { return celerity::subrange<2>({i, chnk.offset[0]}, {1, chnk.range[0]}); };
+	};
+
+	for(size_t i = 0; i < n_iters; ++i) {
+		dctx.device_compute<class UKN(rsim)>(range<2>(width, width))
+		    .read(buf, access_up_to_ith_line_all(i))
+		    .discard_write(buf, access_ith_line_1to1(i))
+		    .submit();
+	}
+}
