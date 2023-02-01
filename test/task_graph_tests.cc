@@ -788,5 +788,25 @@ namespace detail {
 		test_utils::maybe_print_graph(tm);
 	}
 
+	TEST_CASE("task manager does not insert collectives in a stencil pattern", "[task_manager][task-graph][gather]") {
+		task_manager tm{1, nullptr};
+		test_utils::mock_buffer_factory mbf(tm);
+
+		auto buf = mbf.create_buffer(range<2>(1000, 1000));
+		const auto tid_init = test_utils::add_compute_task<class UKN(init)>(
+		    tm, [&](handler& cgh) { buf.get_access<access_mode::discard_write>(cgh, one_to_one()); }, buf.get_range());
+		const auto tid_iter = test_utils::add_compute_task<class UKN(iter)>(
+		    tm,
+		    [&](handler& cgh) {
+			    buf.get_access<access_mode::read>(cgh, celerity::access::neighborhood(1, 1));
+			    buf.get_access<access_mode::discard_write>(cgh, one_to_one());
+		    },
+		    buf.get_range());
+		const auto tid_consume = test_utils::add_compute_task<class UKN(consume)>(
+		    tm, [&](handler& cgh) { buf.get_access<access_mode::read>(cgh, one_to_one()); }, buf.get_range());
+
+		test_utils::maybe_print_graph(tm);
+	}
+
 } // namespace detail
 } // namespace celerity

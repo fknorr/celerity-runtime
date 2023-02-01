@@ -150,22 +150,24 @@ namespace detail {
 			} else {
 				label += "<b>allgather</b>";
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), gcmd->get_source_ranges()[gcmd->get_nid()]);
+			if(const auto& source_sr = gcmd->get_source_ranges()[gcmd->get_nid()]; source_sr.range.size() > 0) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), source_sr);
+			}
 			if(!gcmd->get_single_destination() || gcmd->get_single_destination() == gcmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
+				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
 			}
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
 			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_source());
 			if(bcmd->get_source() == bcmd->get_nid()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
+			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
 		} else if(const auto scmd = dynamic_cast<const scatter_command*>(&cmd)) {
 			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_source());
 			if(scmd->get_source() == scmd->get_nid()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), scmd->get_source_range());
-			} else {
-				fmt::format_to(std::back_inserter(label), "<br/><i>discard_write</i> B{} {}", scmd->get_bid(), scmd->get_dest_ranges()[scmd->get_nid()]);
+			} else if(const auto& dest_sr = scmd->get_dest_ranges()[scmd->get_nid()]; dest_sr.range.size() > 0) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_sr);
 			}
 		} else {
 			assert(!"Unkown command");

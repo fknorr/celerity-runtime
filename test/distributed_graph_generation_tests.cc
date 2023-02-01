@@ -867,10 +867,10 @@ TEMPLATE_TEST_CASE_SIG(
 }
 
 TEST_CASE("graph generator generates allgathers for RSim pattern", "[distributed_graph_generator][gather]") {
-	dist_cdag_test_context dctx(2);
+	dist_cdag_test_context dctx(4);
 	size_t width = 1000;
 	size_t n_iters = 3;
-	auto buf = dctx.create_buffer(range<2>(width, n_iters));
+	auto buf = dctx.create_buffer(range<2>(n_iters, width));
 
 	const auto access_up_to_ith_line_all = [&](size_t i) { //
 		return celerity::access::fixed<2>({{0, 0}, {i, width}});
@@ -885,4 +885,16 @@ TEST_CASE("graph generator generates allgathers for RSim pattern", "[distributed
 		    .discard_write(buf, access_ith_line_1to1(i))
 		    .submit();
 	}
+}
+
+TEST_CASE("graph generator no collectives for stencil", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(2);
+	auto buf = dctx.create_buffer(range<2>(1000, 1000));
+
+	const auto tid_init = dctx.device_compute<class UKN(init)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_step_1 =
+	    dctx.device_compute<class UKN(step)>(buf.get_range()).read(buf, acc::neighborhood(1, 1)).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_step_2 =
+	    dctx.device_compute<class UKN(step)>(buf.get_range()).read(buf, acc::neighborhood(1, 1)).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_consume = dctx.device_compute<class UKN(consume)>(buf.get_range()).read(buf, acc::one_to_one()).submit();
 }
