@@ -70,8 +70,34 @@ namespace detail {
 		// don't break the overlapping potential of oversubscribed tasks TODO have one collective per oversubscribed chunk?
 		if(consumer->get_hint<experimental::hints::oversubscribe>() != nullptr) return std::nullopt;
 
-		const auto read_requirements = get_requirements(*consumer, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
-		const auto last_writers = m_buffers_last_writers.at(bid).get_region_values(read_requirements);
+		const auto consumer_reads = get_requirements(*consumer, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+
+		// Find a unique last-writer that hasn't been read from before - more general than just finding a single last-writer, works for the RSim pattern
+		auto last_writers = m_buffers_last_writers.at(bid).get_region_values(consumer_reads);
+		const auto unread_last_writers_end = std::remove_if(last_writers.begin(), last_writers.end(), [&](const auto& pair) {
+			const auto& [box, writer_tid] = pair;
+			if(writer_tid == std::nullopt) return true /* do remove */;
+			for(const auto potential_prev_reader : m_task_buffer.get_task(*writer_tid)->get_dependent_nodes()) {
+				if(const auto prev_cg_reader = dynamic_cast<command_group_task*>(potential_prev_reader)) {
+					const auto prev_reads =
+					    get_requirements(*prev_cg_reader, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+					if(!GridRegion<3>::intersect(prev_reads, consumer_reads).empty()) return true /* do remove */;
+				} else if(const auto prev_collective_reader = dynamic_cast<collect_task*>(potential_prev_reader)) {
+					if(std::any_of(prev_collective_reader->get_dataflows().begin(), prev_collective_reader->get_dataflows().end(),
+					       [&](const collect_task::dataflow& df) {
+						       return df.bid == bid; /* TODO relax based on full-read-set of df */
+					       })) {
+						return true /* do remove */;
+					}
+				} else /* epoch or horizon */ {
+					// if the dependent were an epoch we would not have been able to reach it via the last_writers map
+					assert(potential_prev_reader->get_type() == task_type::horizon);
+					// this is fine - horizon *successors* never obscure the last-writers relationship
+				}
+			}
+			return false /* keep - this box, as written, has not been read from yet */;
+		});
+		last_writers.erase(unread_last_writers_end, last_writers.end());
 		if(last_writers.size() != 1) return std::nullopt;
 
 		const auto& [box, last_writer_tid] = last_writers.front();
