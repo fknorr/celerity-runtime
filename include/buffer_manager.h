@@ -219,6 +219,20 @@ namespace detail {
 		 */
 		void set_buffer_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized);
 
+		/**
+		 * Checks whether a broadcast for the given buffer and subrange is possible (i.e. all device memory is already allocated).
+		 *
+		 * @returns Returns true if the broadcast can be immediately performed, false if the broadcast is not possible.
+		 */
+		bool is_broadcast_possible(buffer_id bid, const subrange<3>& sr) const;
+
+		/**
+		 * Eagerly broadcasts the provided payload into all device memories for this buffer.
+		 *
+		 * Precondition: all device buffers must be allocated, and must not require resizing
+		 */
+		void immediately_broadcast_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized);
+
 		template <typename DataT, int Dims>
 		access_info access_device_buffer(
 		    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {

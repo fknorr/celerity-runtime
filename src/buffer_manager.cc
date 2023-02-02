@@ -112,6 +112,58 @@ namespace detail {
 		m_scheduled_transfers[bid].push_back(buffer_manager::transfer{staging_buf, sr});
 	}
 
+	bool buffer_manager::is_broadcast_possible(buffer_id bid, const subrange<3>& sr) const {
+		std::unique_lock lock(m_mutex);
+
+		auto& buff = m_buffers.at(bid);
+		auto num_devices = m_local_devices.num_compute_devices();
+
+		// check whether we can do this without resizing
+		for(size_t device_id = 0; device_id < num_devices; ++device_id) {
+			auto mem_id = m_local_devices.get_memory_id(device_id);
+			if(is_resize_required(buff.get(mem_id), sr.range, sr.offset).resize_required) { return false; }
+		}
+		return true;
+	}
+
+	void buffer_manager::immediately_broadcast_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized) {
+		ZoneScoped;
+#ifdef TRACY_ENABLE
+		const auto msg = fmt::format("broadcast bid {} - {}", bid, sr);
+		ZoneText(msg.c_str(), msg.size());
+#endif
+
+		std::unique_lock lock(m_mutex);
+
+		auto& buff = m_buffers.at(bid);
+		auto num_devices = m_local_devices.num_compute_devices();
+		std::vector<async_event> transfer_events(num_devices);
+		data_location all_loc;
+		// upload to all devices
+		for(size_t device_id = 0; device_id < num_devices; ++device_id) {
+			auto mem_id = m_local_devices.get_memory_id(device_id);
+			all_loc.set(mem_id);
+			auto& storage = buff.get(mem_id).storage;
+			transfer_events[device_id] = storage->set_data(sr, in_linearized.get_pointer());
+#ifdef TRACY_ENABLE
+			const auto msg = fmt::format("Broadcast set_data started for device {}", device_id);
+			TracyMessage(msg.c_str(), msg.size());
+#endif
+		}
+
+		// wait for uploads to complete
+		for(size_t device_id = 0; device_id < num_devices; ++device_id) {
+			transfer_events[device_id].wait();
+#ifdef TRACY_ENABLE
+			const auto msg = fmt::format("Broadcast set_data completed for device {}", device_id);
+			TracyMessage(msg.c_str(), msg.size());
+#endif
+		}
+
+		// update data availability
+		m_newest_data_location.at(bid).update_region(subrange_to_grid_box(sr), all_loc);
+	}
+
 	buffer_manager::access_info buffer_manager::access_device_buffer(
 	    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
 		std::unique_lock lock(m_mutex);

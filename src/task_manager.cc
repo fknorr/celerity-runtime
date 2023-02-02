@@ -67,6 +67,9 @@ namespace detail {
 	}
 
 	std::optional<collect_task::dataflow> task_manager::detect_simple_dataflow(const command_group_task* consumer, const buffer_id bid) const {
+		// Allow disabling collectives at runtime using env var
+		// TODO NOCOMMIT (at least the env var handling)
+		if(nullptr != getenv("CELERITY_NO_COLLECTIVES")) return std::nullopt;
 		// don't break the overlapping potential of oversubscribed tasks TODO have one collective per oversubscribed chunk?
 		if(consumer->get_hint<experimental::hints::oversubscribe>() != nullptr) return std::nullopt;
 

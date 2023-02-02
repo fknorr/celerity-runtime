@@ -361,6 +361,7 @@ namespace detail {
 	}
 
 	bool gather_job::execute(const command_pkg& pkg) {
+		ZoneScoped;
 		const auto data = std::get<gather_data>(pkg.data);
 
 		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
@@ -393,6 +394,7 @@ namespace detail {
 
 		unique_payload_ptr send_buffer;
 		if(sends_data) {
+			ZoneScopedN("sends_data");
 			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
 			m_buffer_mngr.get_buffer_data(data.bid, data.source_srs[m_local_nid], send_buffer.get_pointer()).wait();
 			assert(send_chunk_byte_size == data.source_srs[m_local_nid].range.size() * buffer_info.element_size);
@@ -402,6 +404,7 @@ namespace detail {
 		std::vector<int> all_chunk_byte_offsets;
 		unique_payload_ptr recv_buffer;
 		if(receives_data) {
+			ZoneScopedN("receives_data 1");
 			all_chunk_byte_sizes.resize(data.source_srs.size());
 			for(size_t i = 0; i < data.source_srs.size(); ++i) {
 				const auto byte_size = data.source_srs[i].range.size() * buffer_info.element_size;
@@ -416,6 +419,7 @@ namespace detail {
 		}
 
 		if(data.single_dest_nid) {
+			ZoneScopedN("Gatherv");
 			const auto root = static_cast<int>(*data.single_dest_nid);
 			MPI_Gatherv(send_buffer.get_pointer(), static_cast<int>(send_chunk_byte_size), MPI_BYTE, recv_buffer.get_pointer(), all_chunk_byte_sizes.data(),
 			    all_chunk_byte_offsets.data(), MPI_BYTE, root, MPI_COMM_WORLD);
@@ -423,6 +427,7 @@ namespace detail {
 			    send_buffer ? send_chunk_byte_size : 0, send_chunk_byte_size, total_gather_byte_size, fmt::join(all_chunk_byte_sizes, ", "),
 			    fmt::join(all_chunk_byte_offsets, ", "), root);
 		} else {
+			ZoneScopedN("Allgatherv");
 			// TODO make asynchronous?
 			MPI_Allgatherv(send_buffer.get_pointer(), static_cast<int>(send_chunk_byte_size), MPI_BYTE, recv_buffer.get_pointer(), all_chunk_byte_sizes.data(),
 			    all_chunk_byte_offsets.data(), MPI_BYTE, MPI_COMM_WORLD);
@@ -432,13 +437,45 @@ namespace detail {
 		}
 
 		if(receives_data) {
-			// TODO MPI_Allgatherv with MPI_IN_PLACE to keep with a single allocation
-			assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
-			           send_chunk_byte_size)
-			       == 0);
-			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)data.bid, data.dest_sr.offset[0],
-			    data.dest_sr.offset[1], data.dest_sr.offset[2], data.dest_sr.range[0], data.dest_sr.range[1], data.dest_sr.range[2]);
-			m_buffer_mngr.set_buffer_data(data.bid, data.dest_sr, std::move(recv_buffer));
+			ZoneScopedN("receives_data 2");
+			bool used_broadcast = false;
+			// try to immediately upload allgather data to all device memories
+			// TODO NOCOMMIT (at least the env var handling)
+			if(getenv("CELERITY_USE_ALLGATHER_BROADCAST")) {
+				bool lock_success = true;
+				auto& local_devices = runtime::get_instance().get_local_devices();
+				auto num_devices = local_devices.num_compute_devices();
+				std::vector<bool> mem_locked(num_devices, false);
+				for(size_t device_id=0; device_id < num_devices; ++device_id) {
+					auto mem_id = local_devices.get_memory_id(device_id);
+					if(m_buffer_mngr.try_lock(device_id, mem_id, {data.bid})) {
+						mem_locked[device_id] = true;
+					} else {
+						lock_success = false;
+						break;
+					}
+				}
+				if(lock_success) {
+					if(m_buffer_mngr.is_broadcast_possible(data.bid, data.dest_sr)) {
+						m_buffer_mngr.immediately_broadcast_data(data.bid, data.dest_sr, std::move(recv_buffer));
+						used_broadcast = true;
+					}
+				}
+				for(size_t device_id=0; device_id < num_devices; ++device_id) {
+					if(mem_locked[device_id]) {
+						m_buffer_mngr.unlock(device_id);
+					}
+				}
+			}
+			if(!used_broadcast) {
+				// TODO MPI_Allgatherv with MPI_IN_PLACE to keep with a single allocation
+				assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
+						send_chunk_byte_size)
+					== 0);
+				CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)data.bid, data.dest_sr.offset[0],
+					data.dest_sr.offset[1], data.dest_sr.offset[2], data.dest_sr.range[0], data.dest_sr.range[1], data.dest_sr.range[2]);
+				m_buffer_mngr.set_buffer_data(data.bid, data.dest_sr, std::move(recv_buffer));
+			}
 		}
 
 		m_buffer_mngr.unlock(pkg.cid);

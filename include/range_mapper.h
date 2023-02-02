@@ -174,6 +174,7 @@ namespace detail {
 		case 3: return apply_range_mapper<3>(rm, chunk_cast<3>(chnk));
 		default: assert(!"Unreachable"); abort();
 		}
+		return {};
 	}
 
 
