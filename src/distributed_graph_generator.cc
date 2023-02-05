@@ -272,6 +272,20 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 }
 
 
+bool combined_range_mappers_non_overlapping(const std::vector<const range_mapper_base*> range_mappers, const split_constraints& task_split) {
+	if(!std::all_of(range_mappers.begin(), range_mappers.end(), std::mem_fn(&range_mapper_base::is_non_overlapping))) return false;
+
+	const chunk<3> full_chunk{task_split.geometry.global_offset, task_split.geometry.global_size, task_split.geometry.global_size};
+	GridRegion<3> combined_region;
+	for(const auto rm : range_mappers) {
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, full_chunk, task_split.geometry.dimensions));
+		if(!GridRegion<3>::intersect(combined_region, rm_box).empty()) return false;
+		combined_region = GridRegion<3>::merge(combined_region, rm_box);
+	}
+	return true;
+}
+
+
 void distributed_graph_generator::generate_collective_commands(const forward_task& tsk) {
 	// Since splits are reproducible, we simply re-compute the producer split here. If we ever introduce a non-reproducible split/scheduling behavior,
 	// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
@@ -289,12 +303,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
 
-	if((producer_chunks.size() == 1 && consumer_chunks.size() == 1)
-	    || (producer_chunks.size() == consumer_chunks.size() && all(producer_rms, &range_mapper_base::is_identity)
-	        && all(consumer_rms, &range_mapper_base::is_identity)
-	        /* TODO relax */)) {
-		// no data transfers necessary to fulfill this dependency
-	} else if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || all(consumer_rms, &range_mapper_base::is_constant))) {
+	if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || all(consumer_rms, &range_mapper_base::is_constant))) {
 		// Gather or Allgather
 		std::vector<GridRegion<3>> source_regions(m_num_nodes);
 		for(node_id nid = 0; nid < std::min(m_num_nodes, producer_chunks.size()); ++nid) {
@@ -304,7 +313,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 			}
 			node_region = GridRegion<3>::intersect(node_region, forward_region);
 		}
-		auto local_input_region = source_regions[m_local_nid];
+		const auto local_input_region = source_regions[m_local_nid];
 		const auto single_dest_nid = consumer_chunks.size() == 1 ? std::optional{node_id{0}} : std::nullopt;
 		const auto gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), forward_region, single_dest_nid);
 
@@ -365,12 +374,12 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 				assert(wcs.is_fresh());
 				m_cdag.add_dependency(broadcast_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
 			}
-		}
 
-		// TODO producer should not write (in worker_job) -> only set to replicated instead of inserting a new cmd
-		buffer_state.local_last_writer.update_region(
-		    forward_region, write_command_state(broadcast_cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
-		if(m_local_nid == source_nid) { buffer_state.replicated_regions.update_region(forward_region, node_bitset().set(/* all nodes */)); }
+			buffer_state.replicated_regions.update_region(forward_region, node_bitset().set(/* all nodes */));
+		} else {
+			buffer_state.local_last_writer.update_region(
+			    forward_region, write_command_state(broadcast_cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
+		}
 
 		if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
 			m_cdag.add_dependency(broadcast_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
@@ -378,7 +387,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 		m_last_collective_commands[implicit_collective] = broadcast_cmd->get_cid();
 
 		generate_epoch_dependencies(broadcast_cmd);
-	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && all(consumer_rms, &range_mapper_base::is_identity) /* TODO can this be relaxed? */) {
+	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && combined_range_mappers_non_overlapping(consumer_rms, tsk.get_consumer().split)) {
 		// Scatter
 		const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
 
@@ -386,21 +395,22 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 		// 		The specification of counts, types, and displacements should not cause any location on the root to be read more than one time.
 		// That is trivailly fulfilled for one_to_one RMS at the moment.
 		// TODO what does "should" mean? If it's a proper requirement, assert it
+		GridRegion<3> source_region;
 		std::vector<GridRegion<3>> dest_regions(m_num_nodes);
 		for(node_id nid = 0; nid < std::min(m_num_nodes, consumer_chunks.size()); ++nid) {
 			if(nid == source_nid) continue; // do not send to self
+
 			auto& node_region = dest_regions[nid];
 			for(const auto& crm : consumer_rms) {
 				node_region = GridRegion<3>::merge(node_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_chunks[nid], consumer_dims)));
 			}
 			node_region = GridRegion<3>::intersect(node_region, forward_region);
+			source_region = GridRegion<3>::merge(source_region, node_region);
 		}
-		const auto scatter_cmd = create_command<scatter_command>(m_local_nid, bid, source_nid, forward_region, dest_regions /* TODO eliminate copy? */);
+
+		const auto scatter_cmd = create_command<scatter_command>(m_local_nid, bid, source_nid, source_region, dest_regions /* TODO eliminate copy? */);
 
 		auto& buffer_state = m_buffer_states.at(bid);
-
-		generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, forward_region, scatter_cmd);
-
 		if(m_local_nid == source_nid) {
 			// Store the read access for determining anti-dependencies later on
 			m_command_buffer_reads[scatter_cmd->get_cid()][bid] = forward_region;
@@ -409,12 +419,13 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 				assert(wcs.is_fresh());
 				m_cdag.add_dependency(scatter_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
 			}
-		}
-		if(m_local_nid == source_nid) {
+
 			for(node_id nid = 0; nid < m_num_nodes; ++nid) {
 				buffer_state.replicated_regions.update_region(dest_regions[nid], node_bitset().set(nid));
 			}
 		} else {
+			generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, forward_region, scatter_cmd);
+
 			buffer_state.local_last_writer.update_region(dest_regions[m_local_nid], write_command_state(scatter_cmd->get_cid(), true /* is_replicated */));
 		}
 

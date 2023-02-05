@@ -401,7 +401,7 @@ namespace detail {
 
 		unique_payload_ptr send_buffer;
 		if(sends_data) {
-			ZoneScopedN("fill input");
+			ZoneScopedN("fetch input");
 			CELERITY_DEBUG("make_uninitialized_payload<std::byte>({})", send_chunk_byte_size);
 			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
 			m_buffer_mngr.get_buffer_data(data.bid, local_source_sr, send_buffer.get_pointer()).wait();
@@ -447,7 +447,7 @@ namespace detail {
 		}
 
 		if(receives_data) {
-			ZoneScopedN("commit output");
+			ZoneScopedN("commit");
 			bool used_broadcast = false;
 			// try to immediately upload allgather data to all device memories
 			// TODO NOCOMMIT (at least the env var handling)
@@ -471,10 +471,8 @@ namespace detail {
 						used_broadcast = true;
 					}
 				}
-				for(size_t device_id=0; device_id < num_devices; ++device_id) {
-					if(mem_locked[device_id]) {
-						m_buffer_mngr.unlock(device_id);
-					}
+				for(size_t device_id = 0; device_id < num_devices; ++device_id) {
+					if(mem_locked[device_id]) { m_buffer_mngr.unlock(device_id); }
 				}
 			}
 			if(!used_broadcast) {
@@ -514,13 +512,25 @@ namespace detail {
 		auto sr = grid_box_to_subrange(data.region.getSingle());
 		const auto broadcast_byte_size = sr.range.size() * buffer_info.element_size;
 
-		unique_payload_ptr buffer = make_uninitialized_payload<std::byte>(broadcast_byte_size);
-		if(data.source_nid == m_local_nid) { m_buffer_mngr.get_buffer_data(data.bid, sr, buffer.get_pointer()).wait(); }
+		unique_payload_ptr buffer;
+		{
+			ZoneScopedN("alloc output");
+			buffer = make_uninitialized_payload<std::byte>(broadcast_byte_size);
+		}
 
-		MPI_Bcast(buffer.get_pointer(), static_cast<int>(broadcast_byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
-		CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", broadcast_byte_size, data.source_nid);
+		if(data.source_nid == m_local_nid) {
+			ZoneScopedN("fetch input");
+			m_buffer_mngr.get_buffer_data(data.bid, sr, buffer.get_pointer()).wait();
+		}
+
+		{
+			ZoneScopedN("Bcast");
+			CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", broadcast_byte_size, data.source_nid);
+			MPI_Bcast(buffer.get_pointer(), static_cast<int>(broadcast_byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
+		}
 
 		if(data.source_nid != m_local_nid) {
+			ZoneScopedN("commit");
 			CELERITY_TRACE("set_buffer_data({}, {}, buffer)", (int)data.bid, data.region);
 			m_buffer_mngr.set_buffer_data(data.bid, sr, std::move(buffer));
 		}
@@ -580,45 +590,49 @@ namespace detail {
 		const auto total_scatter_byte_size = source_sr.range.size() * buffer_info.element_size;
 		assert(total_scatter_byte_size <= INT_MAX);
 
-		const auto send_chunk_byte_size = source_sr.range.size() * buffer_info.element_size;
+		const bool sends_data = data.source_nid == m_local_nid;
+		const auto send_chunk_byte_size = sends_data ? source_sr.range.size() * buffer_info.element_size : 0;
 		const auto recv_chunk_byte_size = local_dest_sr.range.size() * buffer_info.element_size;
 		const bool receives_data = recv_chunk_byte_size > 0;
 
 		unique_payload_ptr send_buffer;
-		if(data.source_nid == m_local_nid) {
-			send_buffer = make_uninitialized_payload<std::byte>(recv_chunk_byte_size);
+		if(sends_data) {
+			ZoneScopedN("fetch input");
+			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
 			m_buffer_mngr.get_buffer_data(data.bid, source_sr, send_buffer.get_pointer()).wait();
 		}
 
-		std::vector<int> all_chunk_byte_sizes;
-		std::vector<int> all_chunk_byte_offsets;
-		unique_payload_ptr recv_buffer;
-		if(data.source_nid == m_local_nid) {
-			all_chunk_byte_sizes.resize(data.dest_regions.size());
-			for(size_t i = 0; i < data.dest_regions.size(); ++i) {
-				const auto sr = grid_box_to_subrange(data.dest_regions[i].getSingle());
-				const auto byte_size = sr.range.size() * buffer_info.element_size;
-				assert(byte_size <= INT_MAX);
-				all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
-			}
-			assert(std::accumulate(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), size_t(0)) == total_scatter_byte_size);
+		// TODO only significant at the root process
+		std::vector<int> all_chunk_byte_sizes(data.dest_regions.size());
+		std::vector<int> all_chunk_byte_offsets(all_chunk_byte_sizes.size());
+		for(size_t i = 0; i < data.dest_regions.size(); ++i) {
+			const auto sr = grid_box_to_subrange(data.dest_regions[i].getSingle());
+			const auto byte_size = sr.range.size() * buffer_info.element_size;
+			assert(byte_size <= INT_MAX);
+			all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
+		}
+		assert(std::accumulate(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), size_t(0)) == total_scatter_byte_size);
+		std::exclusive_scan(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), all_chunk_byte_offsets.begin(), 0);
 
-			all_chunk_byte_offsets.resize(all_chunk_byte_sizes.size());
-			std::exclusive_scan(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), all_chunk_byte_offsets.begin(), 0);
-			recv_buffer = make_uninitialized_payload<std::byte>(total_scatter_byte_size);
+		unique_payload_ptr recv_buffer;
+		if(receives_data) {
+			ZoneScopedN("alloc output");
+			// TODO do not allocate on source node
+			recv_buffer = make_uninitialized_payload<std::byte>(recv_chunk_byte_size);
 		}
 
-		const auto root = static_cast<int>(data.source_nid);
-		MPI_Scatterv(send_buffer.get_pointer(), all_chunk_byte_sizes.data(), all_chunk_byte_offsets.data(), MPI_BYTE, recv_buffer.get_pointer(),
-		    all_chunk_byte_sizes[m_local_nid], MPI_BYTE, root, MPI_COMM_WORLD);
-		CELERITY_TRACE("MPI_Scatterv([buffer of size {}],  {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD)",
-		    send_buffer ? send_chunk_byte_size : 0, fmt::join(all_chunk_byte_sizes, ", "), fmt::join(all_chunk_byte_offsets, ", "),
-		    recv_buffer ? recv_chunk_byte_size : 0, all_chunk_byte_sizes[m_local_nid], root);
+		{
+			ZoneScopedN("Scatterv");
+			const auto root = static_cast<int>(data.source_nid);
+			CELERITY_TRACE("MPI_Scatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD)",
+			    send_chunk_byte_size, fmt::join(all_chunk_byte_sizes, ", "), fmt::join(all_chunk_byte_offsets, ", "), recv_chunk_byte_size,
+			    recv_chunk_byte_size, root);
+			MPI_Scatterv(send_buffer.get_pointer(), all_chunk_byte_sizes.data(), all_chunk_byte_offsets.data(), MPI_BYTE, recv_buffer.get_pointer(),
+			    recv_chunk_byte_size, MPI_BYTE, root, MPI_COMM_WORLD);
+		}
 
 		if(receives_data) {
-			assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
-			           recv_chunk_byte_size)
-			       == 0);
+			ZoneScopedN("commit");
 			CELERITY_TRACE("set_buffer_data({}, {}, recv_buffer)", (int)data.bid, data.dest_regions[m_local_nid]);
 			m_buffer_mngr.set_buffer_data(data.bid, local_dest_sr, std::move(recv_buffer));
 		}

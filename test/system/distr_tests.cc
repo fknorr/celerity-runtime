@@ -353,7 +353,7 @@ namespace detail {
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit gathers produce the expected data distribution", "[gather]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Gather produces the expected data distribution", "[gather]") {
 		buffer<size_t> buf(1000);
 		distr_queue q;
 
@@ -364,8 +364,74 @@ namespace detail {
 
 		q.submit([=](handler& cgh) {
 			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task); // Gather
+			cgh.host_task(range<1>(1), [=](partition<1> part) {
+				for(size_t i = 200; i < 200 + 500; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Allgather produces the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(producer)>(range<1>(1000), [=](item<1> it) { acc[it] = it.get_linear_id(); });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task); // Allgather
 			cgh.host_task(range<1>(1000), [=](partition<1> part) {
 				for(size_t i = 200; i < 200 + 500; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Bcast produces the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task); // Bcast
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				for(size_t i = 200; i < 200 + 500; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Scatter produces the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), read_only_host_task); // Bcast
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				const auto sr = part.get_subrange();
+				for(size_t i = sr.offset[0]; i < sr.offset[0] + sr.range[0]; ++i) {
 					REQUIRE_LOOP(acc[i] == i);
 				}
 			});

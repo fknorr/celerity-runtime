@@ -31,7 +31,7 @@ namespace detail {
 		for(auto& cmd : cmds) {
 			if(isa<push_command>(cmd)) {
 				push_cmds.push_back(cmd);
-			} else if(isa<gather_command>(cmd) || isa<broadcast_command>(cmd)) {
+			} else if(isa<gather_command>(cmd) || isa<broadcast_command>(cmd) || isa<scatter_command>(cmd)) {
 				collective_cmds.push_back(cmd);
 			} else if(isa<task_command>(cmd)) {
 				task_cmds.push_back(cmd);
