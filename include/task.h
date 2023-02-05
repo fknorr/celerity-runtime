@@ -222,6 +222,13 @@ namespace detail {
 		bool variable;
 		bool tiled;
 		// oversubscription is not a concern because it is applied after the initial internode split
+
+		friend bool operator==(const split_constraints& lhs, const split_constraints& rhs) {
+			return lhs.geometry == rhs.geometry    //
+			       && lhs.variable == rhs.variable //
+			       && lhs.tiled == rhs.tiled;
+		}
+		friend bool operator!=(const split_constraints& lhs, const split_constraints& rhs) { return !(rhs == lhs); }
 	};
 
 	class command_group_task final : public task {

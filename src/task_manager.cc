@@ -80,6 +80,54 @@ namespace detail {
 		return participating_rms;
 	}
 
+	bool is_trivial_forward(const forward_task::access& producer, const forward_task::access& consumer) {
+		constexpr bool trivial = true;
+		constexpr bool non_trivial = false;
+
+		// (1) if consumers are neither constant nor non-overlapping, distributed_graph_generator will not be able to detect a pattern
+		if(!std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_constant))
+		    && !std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_non_overlapping))) {
+			return trivial;
+		}
+
+		// (2) if producer and consumer are unsplittable, both will be mapped to node 0 and no data transfer will take place
+		if(!producer.split.variable && !consumer.split.variable) {
+			// TODO variable-split is currently interpreted as "splittable"
+			return trivial;
+		}
+
+		// (3) if producer and consumer have same split-constraints and equal range-mappers, no data transfer will take place
+		if(producer.split != consumer.split) return non_trivial;
+		if(producer.range_mappers.size() != consumer.range_mappers.size()) return non_trivial;
+
+		const auto num_rms = producer.range_mappers.size();
+		assert(num_rms > 0); // otherwise how would this forward task come to be?
+
+		size_t first_rm_mismatch = num_rms;
+		for(size_t i = 0; i < num_rms; ++i) {
+			if(!producer.range_mappers[i]->function_equals(*consumer.range_mappers[i])) {
+				first_rm_mismatch = i;
+				break;
+			}
+		}
+		if(first_rm_mismatch == num_rms) return trivial;         // no mismatch
+		if(first_rm_mismatch == num_rms - 1) return non_trivial; // single mismatch - order independent
+
+		// mismatches might be due to ordering: linear-search a corresponding consumer for every producer
+		std::vector<const range_mapper_base*> remaining_consumer_rms(consumer.range_mappers.begin() + first_rm_mismatch, consumer.range_mappers.end());
+		for(auto prm_it = producer.range_mappers.begin() + first_rm_mismatch; prm_it != producer.range_mappers.end(); ++prm_it) {
+			const auto crm_it = std::find_if(remaining_consumer_rms.begin(), remaining_consumer_rms.end(),
+			    [prm = *prm_it](const range_mapper_base* const crm) { return crm->function_equals(*prm); });
+			if(crm_it != remaining_consumer_rms.end()) {
+				remaining_consumer_rms.erase(crm_it);
+			} else {
+				return non_trivial;
+			}
+		}
+		assert(remaining_consumer_rms.empty());
+		return trivial;
+	}
+
 	void task_manager::generate_forward_tasks(const command_group_task* consumer) {
 		// Allow disabling collectives at runtime using env var
 		// TODO NOCOMMIT (at least the env var handling)
@@ -135,6 +183,8 @@ namespace detail {
 			    get_participating_range_mappers(flow.producer, flow.bid, flow.region, access::mode_traits::is_producer)};
 			forward_task::access consumer_acc{
 			    consumer->get_split_constraints(), get_participating_range_mappers(consumer, flow.bid, flow.region, access::mode_traits::is_consumer)};
+			if(is_trivial_forward(producer_acc, consumer_acc)) continue;
+
 			auto& fwd = static_cast<forward_task&>(register_task_internal(std::move(fwd_reserve),
 			    std::make_unique<forward_task>(fwd_reserve.get_tid(), flow.bid, flow.region, std::move(producer_acc), std::move(consumer_acc))));
 

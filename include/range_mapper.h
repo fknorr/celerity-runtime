@@ -14,8 +14,16 @@ struct range_mapper_traits;
 }
 
 namespace celerity {
-
 namespace detail {
+
+	template <typename T, typename Enable = void>
+	struct is_equality_comparable : std::false_type {};
+
+	template <typename T>
+	struct is_equality_comparable<T, std::void_t<decltype(std::declval<T>() == std::declval<T>())>> : std::true_type {};
+
+	template <typename T>
+	constexpr bool is_equality_comparable_v = is_equality_comparable<T>::value;
 
 	template <typename Functor, int BufferDims, int KernelDims>
 	constexpr bool is_range_mapper_invocable_for_chunk_only = std::is_invocable_r_v<subrange<BufferDims>, const Functor&, const celerity::chunk<KernelDims>&>;
@@ -106,6 +114,8 @@ namespace detail {
 
 		virtual bool is_constant() const = 0;
 		virtual bool is_identity() const = 0;
+		virtual bool is_non_overlapping() const = 0;
+		virtual bool function_equals(const range_mapper_base& other) const = 0;
 
 	  protected:
 		range_mapper_base(const range_mapper_base& other) = default;
@@ -116,7 +126,7 @@ namespace detail {
 	};
 
 	template <int BufferDims, typename Functor>
-	class range_mapper : public range_mapper_base {
+	class range_mapper final : public range_mapper_base {
 	  public:
 		range_mapper(Functor rmfn, cl::sycl::access::mode am, range<BufferDims> buffer_size)
 		    : range_mapper_base(am), m_rmfn(rmfn), m_buffer_size(buffer_size) {}
@@ -137,6 +147,14 @@ namespace detail {
 
 		bool is_constant() const override { return experimental::range_mapper_traits<Functor>::is_constant; }
 		bool is_identity() const override { return experimental::range_mapper_traits<Functor>::is_identity; }
+		bool is_non_overlapping() const override { return experimental::range_mapper_traits<Functor>::is_non_overlapping; }
+
+		bool function_equals(const range_mapper_base& other) const override {
+			if constexpr(is_equality_comparable_v<Functor>) {
+				if(typeid(other) == typeid(range_mapper)) { return m_rmfn == static_cast<const range_mapper&>(other).m_rmfn; }
+			}
+			return false;
+		}
 
 	  private:
 		Functor m_rmfn;
@@ -176,7 +194,6 @@ namespace detail {
 		return {};
 	}
 
-
 } // namespace detail
 
 
@@ -193,6 +210,9 @@ namespace access {
 		subrange<Dims> operator()(const chunk<Dims>& chnk) const {
 			return chnk;
 		}
+
+		friend bool operator==(const one_to_one, const one_to_one) { return true; }
+		friend bool operator!=(const one_to_one, const one_to_one) { return false; }
 	};
 
 	template <int Dims>
@@ -212,6 +232,9 @@ namespace access {
 		subrange<BufferDims> operator()(const chunk<KernelDims>&) const {
 			return m_sr;
 		}
+
+		friend bool operator==(const fixed& lhs, const fixed& rhs) { return lhs.m_sr == rhs.m_sr; }
+		friend bool operator!=(const fixed& lhs, const fixed& rhs) { return !(rhs == lhs); }
 
 	  private:
 		subrange<BufferDims> m_sr;
@@ -239,6 +262,9 @@ namespace access {
 			return result;
 		}
 
+		friend bool operator==(const slice& lhs, const slice& rhs) { return lhs.m_dim_idx == rhs.m_dim_idx; }
+		friend bool operator!=(const slice& lhs, const slice& rhs) { return !(rhs == lhs); }
+
 	  private:
 		size_t m_dim_idx;
 	};
@@ -252,6 +278,9 @@ namespace access {
 		subrange<BufferDims> operator()(const chunk<KernelDims>&, const range<BufferDims>& buffer_size) const {
 			return {{}, buffer_size};
 		}
+
+		friend bool operator==(const all, const all) { return true; }
+		friend bool operator!=(const all, const all) { return false; }
 	};
 
 	template <int KernelDims, int BufferDims>
@@ -277,6 +306,11 @@ namespace access {
 			result.range += range<3>{m_dim0 + delta[0], m_dim1 + delta[1], m_dim2 + delta[2]};
 			return detail::subrange_cast<Dims>(result);
 		}
+
+		friend bool operator==(const neighborhood& lhs, const neighborhood& rhs) {
+			return lhs.m_dim0 == rhs.m_dim0 && lhs.m_dim1 == rhs.m_dim1 && lhs.m_dim2 == rhs.m_dim2;
+		}
+		friend bool operator!=(const neighborhood& lhs, const neighborhood& rhs) { return !(rhs == lhs); }
 
 	  private:
 		size_t m_dim0, m_dim1, m_dim2;
@@ -334,6 +368,9 @@ namespace experimental::access {
 
 			return sr;
 		}
+
+		friend bool operator==(const even_split& lhs, const even_split& rhs) { return lhs.m_granularity == rhs.m_granularity; }
+		friend bool operator!=(const even_split& lhs, const even_split& rhs) { return !(rhs == lhs); }
 
 	  private:
 		range<BufferDims> m_granularity = detail::range_cast<BufferDims>(range<3>(1, 1, 1));
