@@ -694,7 +694,7 @@ namespace detail {
 	}
 
 	TEMPLATE_TEST_CASE_SIG(
-	    "task manager detects allgather-collect pattern between dependent tasks", "[task_manager][task-graph][gather]", ((int Dims), Dims), 1, 2, 3) {
+	    "task manager detects allgather-forward pattern between dependent tasks", "[task_manager][task-graph][gather]", ((int Dims), Dims), 1, 2, 3) {
 		task_manager tm{1, nullptr};
 		test_utils::mock_buffer_factory mbf(tm);
 
@@ -716,19 +716,17 @@ namespace detail {
 		const auto consumer_deps = tm.get_task(tid_consumer)->get_dependencies();
 		REQUIRE(std::distance(consumer_deps.begin(), consumer_deps.end()) == 1);
 
-		const auto& collect_task = dynamic_cast<detail::collect_task&>(*consumer_deps.begin()->node);
-		REQUIRE(collect_task.get_dataflows().size() == 1);
-		const auto& flow = collect_task.get_dataflows()[0];
-		CHECK(flow.bid == buf.get_id());
+		const auto& forward_task = dynamic_cast<detail::forward_task&>(*consumer_deps.begin()->node);
+		CHECK(forward_task.get_bid() == buf.get_id());
 
-		const auto collect_deps = collect_task.get_dependencies();
-		REQUIRE(std::distance(collect_deps.begin(), collect_deps.end()) == 1);
-		CHECK(collect_deps.begin()->node == tm.get_task(tid_producer));
+		const auto forward_deps = forward_task.get_dependencies();
+		REQUIRE(std::distance(forward_deps.begin(), forward_deps.end()) == 1);
+		CHECK(forward_deps.begin()->node == tm.get_task(tid_producer));
 
 		test_utils::maybe_print_graph(tm);
 	}
 
-	TEST_CASE("task manager detects gather-collect pattern on unsplittable consumer", "[task_manager][task-graph][gather]") {
+	TEST_CASE("task manager detects gather-forward pattern on unsplittable consumer", "[task_manager][task-graph][gather]") {
 		task_manager tm{1, nullptr};
 		test_utils::mock_buffer_factory mbf(tm);
 
@@ -748,14 +746,12 @@ namespace detail {
 		const auto consumer_deps = tm.get_task(tid_consumer)->get_dependencies();
 		REQUIRE(std::distance(consumer_deps.begin(), consumer_deps.end()) == 1);
 
-		const auto& collect_task = dynamic_cast<detail::collect_task&>(*consumer_deps.begin()->node);
-		REQUIRE(collect_task.get_dataflows().size() == 1);
-		const auto& flow = collect_task.get_dataflows()[0];
-		CHECK(flow.bid == buf.get_id());
+		const auto& forward_task = dynamic_cast<detail::forward_task&>(*consumer_deps.begin()->node);
+		CHECK(forward_task.get_bid() == buf.get_id());
 
-		const auto collect_deps = collect_task.get_dependencies();
-		REQUIRE(std::distance(collect_deps.begin(), collect_deps.end()) == 1);
-		CHECK(collect_deps.begin()->node == tm.get_task(tid_producer));
+		const auto forward_deps = forward_task.get_dependencies();
+		REQUIRE(std::distance(forward_deps.begin(), forward_deps.end()) == 1);
+		CHECK(forward_deps.begin()->node == tm.get_task(tid_producer));
 
 		test_utils::maybe_print_graph(tm);
 	}
@@ -776,14 +772,12 @@ namespace detail {
 		const auto consumer_deps = tm.get_task(tid_consumer)->get_dependencies();
 		REQUIRE(std::distance(consumer_deps.begin(), consumer_deps.end()) == 1);
 
-		const auto& collect_task = dynamic_cast<detail::collect_task&>(*consumer_deps.begin()->node);
-		REQUIRE(collect_task.get_dataflows().size() == 1);
-		const auto& flow = collect_task.get_dataflows()[0];
-		CHECK(flow.bid == buf.get_id());
+		const auto& forward_task = dynamic_cast<detail::forward_task&>(*consumer_deps.begin()->node);
+		CHECK(forward_task.get_bid() == buf.get_id());
 
-		const auto collect_deps = collect_task.get_dependencies();
-		REQUIRE(std::distance(collect_deps.begin(), collect_deps.end()) == 1);
-		CHECK(collect_deps.begin()->node == tm.get_task(tid_producer));
+		const auto forward_deps = forward_task.get_dependencies();
+		REQUIRE(std::distance(forward_deps.begin(), forward_deps.end()) == 1);
+		CHECK(forward_deps.begin()->node == tm.get_task(tid_producer));
 
 		test_utils::maybe_print_graph(tm);
 	}

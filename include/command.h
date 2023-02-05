@@ -175,55 +175,58 @@ namespace detail {
 
 	class gather_command final : public abstract_command {
 		friend class command_graph;
-		gather_command(
-		    command_id cid, node_id nid, buffer_id bid, std::vector<subrange<3>> source_srs, subrange<3> dest_sr, const std::optional<node_id>& single_dest_nid)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_srs(std::move(source_srs)), m_dest_sr(dest_sr), m_single_dest_nid(single_dest_nid) {}
+		gather_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions, GridRegion<3> dest_region,
+		    const std::optional<node_id>& single_dest_nid)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_dest_region(std::move(dest_region)),
+		      m_single_dest_nid(single_dest_nid) {}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
-		const std::vector<subrange<3>>& get_source_ranges() const { return m_source_srs; }
-		const subrange<3>& get_dest_range() const { return m_dest_sr; }
+		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
+		const GridRegion<3>& get_dest_region() const { return m_dest_region; }
 		const std::optional<node_id>& get_single_destination() const { return m_single_dest_nid; }
 
 	  private:
 		buffer_id m_bid;
-		std::vector<subrange<3>> m_source_srs;
-		subrange<3> m_dest_sr;
+		std::vector<GridRegion<3>> m_source_regions;
+		GridRegion<3> m_dest_region;
 		std::optional<node_id> m_single_dest_nid;
 	};
 
 	class broadcast_command final : public abstract_command {
 		friend class command_graph;
-		broadcast_command(command_id cid, node_id nid, buffer_id bid, const node_id source_nid, const subrange<3>& sr)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_sr(sr) {}
+		broadcast_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id source_nid, GridRegion<3> region)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_region(std::move(region)) {}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
-		const subrange<3>& get_range() const { return m_sr; }
+		const GridRegion<3>& get_region() const { return m_region; }
 		node_id get_source() const { return m_source_nid; }
 
 	  private:
 		buffer_id m_bid;
 		node_id m_source_nid;
-		subrange<3> m_sr;
+		GridRegion<3> m_region;
 	};
 
 	class scatter_command final : public abstract_command {
 		friend class command_graph;
-		scatter_command(command_id cid, node_id nid, buffer_id bid, const node_id source_nid, subrange<3> source_sr, std::vector<subrange<3>> dest_srs)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_source_sr(source_sr), m_dest_srs(std::move(dest_srs)) {}
+		scatter_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id source_nid, GridRegion<3> source_region,
+		    std::vector<GridRegion<3>> dest_regions)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_source_region(std::move(source_region)),
+		      m_dest_regions(std::move(dest_regions)) {}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
-		node_id get_source() const { return m_source_nid; }
-		const subrange<3>& get_source_range() const { return m_source_sr; }
-		const std::vector<subrange<3>>& get_dest_ranges() const { return m_dest_srs; }
+		node_id get_source_nid() const { return m_source_nid; }
+		const GridRegion<3>& get_source_region() const { return m_source_region; }
+		const std::vector<GridRegion<3>>& get_dest_regions() const { return m_dest_regions; }
 
 	  private:
 		buffer_id m_bid;
 		node_id m_source_nid;
-		subrange<3> m_source_sr;
-		std::vector<subrange<3>> m_dest_srs;
+		GridRegion<3> m_source_region;
+		std::vector<GridRegion<3>> m_dest_regions;
 	};
 
 	// ----------------------------------------------------------------------------------------------------------------
@@ -277,22 +280,22 @@ namespace detail {
 
 	struct gather_data {
 		buffer_id bid;
-		std::vector<subrange<3>> source_srs;
-		subrange<3> dest_sr;
+		std::vector<GridRegion<3>> source_regions;
+		GridRegion<3> dest_region;
 		std::optional<node_id> single_dest_nid;
 	};
 
 	struct broadcast_data {
 		buffer_id bid;
-		subrange<3> sr;
+		GridRegion<3> region;
 		node_id source_nid;
 	};
 
 	struct scatter_data {
 		buffer_id bid;
 		node_id source_nid;
-		subrange<3> source_sr;
-		std::vector<subrange<3>> dest_srs;
+		GridRegion<3> source_region;
+		std::vector<GridRegion<3>> dest_regions;
 	};
 
 	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,

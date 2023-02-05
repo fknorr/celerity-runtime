@@ -263,7 +263,7 @@ namespace test_utils {
 			this->m_num_nodes = num_nodes;
 
 			m_tm->register_task_callback([this](const detail::task* const tsk) {
-				if(tsk->get_type() == detail::task_type::collect) { m_ggen->build_task(*tsk, {}); }
+				if(tsk->get_type() == detail::task_type::forward) { m_ggen->build_task(*tsk, {}); }
 			});
 		}
 

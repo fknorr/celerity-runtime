@@ -66,150 +66,89 @@ namespace detail {
 		return result;
 	}
 
-	std::optional<collect_task::dataflow> task_manager::detect_simple_dataflow(const command_group_task* consumer, const buffer_id bid) const {
+	std::vector<const range_mapper_base*> get_participating_range_mappers(
+	    const command_group_task* const cgtsk, const buffer_id bid, const GridRegion<3>& region, bool (*const mode_filter)(access_mode)) {
+		std::vector<const range_mapper_base*> participating_rms;
+		for(const auto rm : cgtsk->get_buffer_access_map().get_range_mappers(bid)) {
+			if(!mode_filter(rm->get_access_mode())) continue;
+			const auto& geometry = cgtsk->get_geometry();
+			const auto rm_region =
+			    subrange_to_grid_box(apply_range_mapper(rm, chunk<3>(geometry.global_offset, geometry.global_size, geometry.global_size), geometry.dimensions));
+			if(GridRegion<3>::intersect(region, rm_region).empty()) continue;
+			participating_rms.push_back(rm);
+		}
+		return participating_rms;
+	}
+
+	void task_manager::generate_forward_tasks(const command_group_task* consumer) {
 		// Allow disabling collectives at runtime using env var
 		// TODO NOCOMMIT (at least the env var handling)
-		if(nullptr != getenv("CELERITY_NO_COLLECTIVES")) return std::nullopt;
-		// don't break the overlapping potential of oversubscribed tasks TODO have one collective per oversubscribed chunk?
-		if(consumer->get_hint<experimental::hints::oversubscribe>() != nullptr) return std::nullopt;
+		if(nullptr != getenv("CELERITY_NO_COLLECTIVES")) return;
 
-		const auto consumer_reads = get_requirements(*consumer, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+		struct dataflow {
+			command_group_task* producer;
+			buffer_id bid;
+			GridRegion<3> region;
+		};
+		std::vector<dataflow> dataflows;
 
-		// Find a unique last-writer that hasn't been read from before - more general than just finding a single last-writer, works for the RSim pattern
-		auto last_writers = m_buffers_last_writers.at(bid).get_region_values(consumer_reads);
-		const auto unread_last_writers_end = std::remove_if(last_writers.begin(), last_writers.end(), [&](const auto& pair) {
-			const auto& [box, writer_tid] = pair;
-			if(writer_tid == std::nullopt) return true /* do remove */;
-			for(const auto potential_prev_reader : m_task_buffer.get_task(*writer_tid)->get_dependent_nodes()) {
-				if(const auto prev_cg_reader = dynamic_cast<command_group_task*>(potential_prev_reader)) {
-					const auto prev_reads =
-					    get_requirements(*prev_cg_reader, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
-					if(!GridRegion<3>::intersect(prev_reads, consumer_reads).empty()) return true /* do remove */;
-				} else if(const auto prev_collective_reader = dynamic_cast<collect_task*>(potential_prev_reader)) {
-					if(std::any_of(prev_collective_reader->get_dataflows().begin(), prev_collective_reader->get_dataflows().end(),
-					       [&](const collect_task::dataflow& df) {
-						       return df.bid == bid; /* TODO relax based on full-read-set of df */
-					       })) {
-						return true /* do remove */;
-					}
-				} else /* epoch or horizon */ {
-					// if the dependent were an epoch we would not have been able to reach it via the last_writers map
-					assert(potential_prev_reader->get_type() == task_type::horizon);
-					// this is fine - horizon *successors* never obscure the last-writers relationship
+		for(const auto bid : consumer->get_buffer_access_map().get_accessed_buffers()) {
+			const auto consumer_reads = get_requirements(*consumer, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+
+			std::unordered_map<command_group_task*, GridRegion<3>> contributing_writes;
+			for(const auto& [box, producer_tid] : m_buffers_last_writers.at(bid).get_region_values(consumer_reads)) {
+				if(producer_tid == std::nullopt || box.empty()) continue;
+				const auto producer = m_task_buffer.get_task(*producer_tid);
+				if(const auto cg_producer = dynamic_cast<command_group_task*>(producer)) {
+					auto& writes = contributing_writes[cg_producer]; // allow default-insert
+					writes = GridRegion<3>::merge(writes, box);
 				}
 			}
-			return false /* keep - this box, as written, has not been read from yet */;
-		});
-		last_writers.erase(unread_last_writers_end, last_writers.end());
-		if(last_writers.size() != 1) return std::nullopt;
 
-		const auto& [box, last_writer_tid] = last_writers.front();
-		if(!last_writer_tid.has_value()) return std::nullopt;
+			for(const auto& [producer, contributed_region] : contributing_writes) {
+				GridRegion<3> unconsumed_writes = contributed_region;
+				for(const auto potential_earlier_consumer : producer->get_dependent_nodes()) {
+					if(const auto earlier_cg = dynamic_cast<command_group_task*>(potential_earlier_consumer)) {
+						const auto earlier_read =
+						    get_requirements(*earlier_cg, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
+						unconsumed_writes = GridRegion<3>::difference(unconsumed_writes, earlier_read);
+					} else if(const auto earlier_forward = dynamic_cast<forward_task*>(potential_earlier_consumer)) {
+						if(earlier_forward->get_bid() == bid) {
+							unconsumed_writes = GridRegion<3>::difference(unconsumed_writes, earlier_forward->get_region());
+						}
+					} else /* epoch or horizon */ {
+						// if the dependent were an epoch we would not have been able to reach it via the last_writers map
+						assert(potential_earlier_consumer->get_type() == task_type::horizon);
+						// this is fine - horizon *successors* never obscure the last-writers relationship
+					}
+				}
+				if(unconsumed_writes.empty()) continue;
 
-		const auto last_writer = dynamic_cast<command_group_task*>(m_task_buffer.get_task(*last_writer_tid));
-		if(last_writer == nullptr /* effective epoch */) return std::nullopt;
-
-		size_t num_producer_rms = 0;
-		const range_mapper_base* producer_rm = nullptr;
-		for(const auto rm : last_writer->get_buffer_access_map().get_range_mappers(bid)) {
-			if(detail::access::mode_traits::is_producer(rm->get_access_mode())) {
-				producer_rm = rm;
-				num_producer_rms += 1;
+				// TODO filter trivial / impossible forwards
+				dataflows.push_back(dataflow{producer, bid, unconsumed_writes});
 			}
 		}
-		if(num_producer_rms != 1) return std::nullopt;
 
-		const auto producer = last_writer; // excludes (effective) epochs
-		// don't break the overlapping potential of oversubscribed tasks TODO have one collective per oversubscribed chunk?
-		if(producer->get_hint<experimental::hints::oversubscribe>() != nullptr) return std::nullopt;
+		for(const auto& flow : dataflows) {
+			auto fwd_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
+			forward_task::access producer_acc{flow.producer->get_split_constraints(),
+			    get_participating_range_mappers(flow.producer, flow.bid, flow.region, access::mode_traits::is_producer)};
+			forward_task::access consumer_acc{
+			    consumer->get_split_constraints(), get_participating_range_mappers(consumer, flow.bid, flow.region, access::mode_traits::is_consumer)};
+			auto& fwd = static_cast<forward_task&>(register_task_internal(std::move(fwd_reserve),
+			    std::make_unique<forward_task>(fwd_reserve.get_tid(), flow.bid, flow.region, std::move(producer_acc), std::move(consumer_acc))));
 
-		// two unsplittable tasks will both be mapped to node 0, so no transfers are ever required
-		if(!producer->has_variable_split() && !consumer->has_variable_split()) return std::nullopt;
-
-		const range_mapper_base* consumer_rm = nullptr;
-		size_t num_consumer_rms = 0;
-		for(const auto* rm : consumer->get_buffer_access_map().get_range_mappers(bid)) {
-			if(detail::access::mode_traits::is_consumer(rm->get_access_mode())) {
-				consumer_rm = rm;
-				num_consumer_rms += 1;
-			}
+			add_dependency(fwd, *flow.producer, dependency_kind::true_dep, dependency_origin::dataflow);
+			m_buffers_last_writers.at(flow.bid).update_region(flow.region, fwd.get_id());
+			invoke_callbacks(&fwd);
+			// never automatically insert horizons here as they could break the dependency chain
 		}
-		if(num_consumer_rms != 1) return std::nullopt;
-
-		// if data moves between two geometrically identical tasks with a one_to_one range mapper, no transfers will ever be needed
-		if(producer->has_variable_split() && consumer->has_variable_split() //
-		    && producer_rm->is_identity() && consumer_rm->is_identity() // TODO instead of identity, check for purity (e.g. RM output only depends on geometry)
-		    && producer->get_geometry() == consumer->get_geometry()     //
-		    && (producer->get_hint<experimental::hints::tiled_split>() != nullptr) == (consumer->get_hint<experimental::hints::tiled_split>() != nullptr) //
-		) {
-			return std::nullopt;
-		}
-
-		return collect_task::dataflow{bid, box, //
-		    {producer->get_geometry(), producer->has_variable_split(), producer->get_hint<experimental::hints::tiled_split>() != nullptr, producer_rm},
-		    {consumer->get_geometry(), consumer->has_variable_split(), consumer->get_hint<experimental::hints::tiled_split>() != nullptr, consumer_rm}};
 	}
 
 	void task_manager::compute_command_group_dependencies(command_group_task& tsk) {
 		using namespace cl::sycl::access;
 
 		const auto& access_map = tsk.get_buffer_access_map();
-
-		std::vector<collect_task::dataflow> collect_dataflows;
-		for(const auto bid : access_map.get_accessed_buffers()) {
-			if(const auto dataflow = detect_simple_dataflow(&tsk, bid)) { collect_dataflows.push_back(std::move(*dataflow)); }
-		}
-
-		if(!collect_dataflows.empty()) {
-			auto collect_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
-			const auto collect_tid = collect_reserve.get_tid();
-			auto unique_collect = std::make_unique<collect_task>(collect_tid, std::move(collect_dataflows));
-			auto& collect = static_cast<collect_task&>(register_task_internal(std::move(collect_reserve), std::move(unique_collect)));
-			for(const auto& dataflow : collect.get_dataflows()) {
-				// TODO begin copy-pasted dependency detection
-				for(auto& [writer_box, writer_tid] : m_buffers_last_writers.at(dataflow.bid).get_region_values(dataflow.box)) {
-					if(writer_tid == std::nullopt) continue;
-					task* last_writer = m_task_buffer.get_task(*writer_tid);
-
-					add_dependency(collect, *last_writer, dependency_kind::true_dep, dependency_origin::dataflow);
-
-					// Determine anti-dependencies by looking at all the dependents of the last writing task
-					bool has_anti_dependents = false;
-
-					for(const auto dependent : last_writer->get_dependent_nodes()) {
-						if(dependent->get_id() == collect_tid) {
-							// This can happen
-							// - if a task writes to two or more all_accessed_buffers with the same last writer
-							// - if the task itself also needs read access to that buffer (R/W access)
-							continue;
-						}
-						if(const auto cg_dependent = dynamic_cast<command_group_task*>(dependent)) {
-							const auto dependent_read_requirements =
-							    get_requirements(*cg_dependent, dataflow.bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
-							// Only add an anti-dependency if we are really writing over the region read by this task
-							if(!GridRegion<3>::intersect(dataflow.box, dependent_read_requirements).empty()) {
-								add_dependency(collect, *cg_dependent, dependency_kind::anti_dep, dependency_origin::dataflow);
-								has_anti_dependents = true;
-							}
-						}
-					}
-
-					if(!has_anti_dependents) {
-						// If no intermediate consumers exist, add an anti-dependency on the last writer directly.
-						// Note that unless this task is a pure producer, a true dependency will be created and this is a no-op.
-						// While it might not always make total sense to have anti-dependencies between (pure) producers without an
-						// intermediate consumer, we at least have a defined behavior, and the thus enforced ordering of tasks
-						// likely reflects what the user expects.
-						add_dependency(collect, *last_writer, dependency_kind::anti_dep, dependency_origin::dataflow);
-					}
-				}
-				// TODO end copy-pasted dependency detection
-
-				m_buffers_last_writers.at(dataflow.bid).update_region(dataflow.box, collect_tid);
-			}
-
-			invoke_callbacks(&collect);
-		}
 
 		auto all_accessed_buffers = access_map.get_accessed_buffers();
 		for(const auto& reduction : tsk.get_reductions()) {
@@ -318,14 +257,6 @@ namespace detail {
 		    std::none_of(deps.begin(), deps.end(), [](const task::dependency d) { return d.kind == dependency_kind::true_dep; })) {
 			add_dependency(tsk, *m_task_buffer.get_task(m_epoch_for_new_tasks), dependency_kind::true_dep, dependency_origin::last_epoch);
 		}
-	}
-
-	task& task_manager::register_task_internal(task_ring_buffer::reservation&& reserve, std::unique_ptr<task> task) {
-		auto& task_ref = *task;
-		assert(task != nullptr);
-		m_task_buffer.put(std::move(reserve), std::move(task));
-		m_execution_front.insert(&task_ref);
-		return task_ref;
 	}
 
 	void task_manager::invoke_callbacks(const task* tsk) const {

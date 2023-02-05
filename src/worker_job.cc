@@ -354,9 +354,9 @@ namespace detail {
 	std::string gather_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<gather_data>(pkg.data);
 		if(data.single_dest_nid) {
-			return fmt::format("gather {} of buffer {} to {}", data.source_srs[m_local_nid], static_cast<size_t>(data.bid), *data.single_dest_nid);
+			return fmt::format("gather {} of buffer {} to {}", data.source_regions[m_local_nid], static_cast<size_t>(data.bid), *data.single_dest_nid);
 		} else {
-			return fmt::format("allgather {} of buffer {}", data.source_srs[m_local_nid], static_cast<size_t>(data.bid));
+			return fmt::format("allgather {} of buffer {}", data.source_regions[m_local_nid], static_cast<size_t>(data.bid));
 		}
 	}
 
@@ -373,41 +373,50 @@ namespace detail {
 			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 			MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
 			assert(static_cast<node_id>(rank) == m_local_nid);
-			assert(static_cast<size_t>(num_ranks) == data.source_srs.size());
+			assert(static_cast<size_t>(num_ranks) == data.source_regions.size());
 		}
-		for(const auto& sr : data.source_srs) {
-			if(sr.range.size() > 0 && (sr.range[1] != buffer_info.range[1] || sr.range[2] != buffer_info.range[2])) {
-				CELERITY_CRITICAL("gather_job can't deal with gathers from strided inputs yet, gather_job sr={}, buffer_info.range={{{}, {}, {}}}", sr,
-				    buffer_info.range[0], buffer_info.range[1], buffer_info.range[2]);
-				std::abort();
+		for(const auto& region : data.source_regions) {
+			if(!region.hasMultipleBoxes()) {
+				const auto sr = grid_box_to_subrange(region.getSingle());
+				if(sr.range.size() == 0 || (sr.range[1] == buffer_info.range[1] && sr.range[2] == buffer_info.range[2])) {
+					continue; // ok
+				}
 			}
+			CELERITY_CRITICAL("gather_job can't deal with gathers from strided inputs yet, gather_job region={}, buffer_info.range={{{}, {}, {}}}", region,
+			    buffer_info.range[0], buffer_info.range[1], buffer_info.range[2]);
+			std::abort();
 		}
 #endif
 
+		const auto dest_sr = grid_box_to_subrange(data.dest_region.getSingle());
+		const auto local_source_sr = grid_box_to_subrange(data.source_regions[m_local_nid].getSingle());
+
 		// TODO how can we work around the INT_MAX size restriction? Larger data types only work if the split is aligned conveniently
-		const auto total_gather_byte_size = data.dest_sr.range.size() * buffer_info.element_size;
+		const auto total_gather_byte_size = dest_sr.range.size() * buffer_info.element_size;
 		assert(total_gather_byte_size <= INT_MAX);
 
-		const auto send_chunk_byte_size = data.source_srs[m_local_nid].range.size() * buffer_info.element_size;
+		const auto send_chunk_byte_size = local_source_sr.range.size() * buffer_info.element_size;
 		const bool sends_data = send_chunk_byte_size > 0;
 		const bool receives_data = !data.single_dest_nid || *data.single_dest_nid == m_local_nid;
 
 		unique_payload_ptr send_buffer;
 		if(sends_data) {
-			ZoneScopedN("sends_data");
+			ZoneScopedN("fill input");
+			CELERITY_DEBUG("make_uninitialized_payload<std::byte>({})", send_chunk_byte_size);
 			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
-			m_buffer_mngr.get_buffer_data(data.bid, data.source_srs[m_local_nid], send_buffer.get_pointer()).wait();
-			assert(send_chunk_byte_size == data.source_srs[m_local_nid].range.size() * buffer_info.element_size);
+			m_buffer_mngr.get_buffer_data(data.bid, local_source_sr, send_buffer.get_pointer()).wait();
+			assert(send_chunk_byte_size == local_source_sr.range.size() * buffer_info.element_size);
 		}
 
 		std::vector<int> all_chunk_byte_sizes;
 		std::vector<int> all_chunk_byte_offsets;
 		unique_payload_ptr recv_buffer;
 		if(receives_data) {
-			ZoneScopedN("receives_data 1");
-			all_chunk_byte_sizes.resize(data.source_srs.size());
-			for(size_t i = 0; i < data.source_srs.size(); ++i) {
-				const auto byte_size = data.source_srs[i].range.size() * buffer_info.element_size;
+			ZoneScopedN("alloc output");
+			all_chunk_byte_sizes.resize(data.source_regions.size());
+			for(size_t i = 0; i < data.source_regions.size(); ++i) {
+				const auto sr = grid_box_to_subrange(data.source_regions[i].getSingle());
+				const auto byte_size = sr.range.size() * buffer_info.element_size;
 				assert(byte_size <= INT_MAX);
 				all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
 			}
@@ -415,6 +424,7 @@ namespace detail {
 
 			all_chunk_byte_offsets.resize(all_chunk_byte_sizes.size());
 			std::exclusive_scan(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), all_chunk_byte_offsets.begin(), 0);
+			CELERITY_DEBUG("make_uninitialized_payload<std::byte>({})", total_gather_byte_size);
 			recv_buffer = make_uninitialized_payload<std::byte>(total_gather_byte_size);
 		}
 
@@ -437,7 +447,7 @@ namespace detail {
 		}
 
 		if(receives_data) {
-			ZoneScopedN("receives_data 2");
+			ZoneScopedN("commit output");
 			bool used_broadcast = false;
 			// try to immediately upload allgather data to all device memories
 			// TODO NOCOMMIT (at least the env var handling)
@@ -446,7 +456,7 @@ namespace detail {
 				auto& local_devices = runtime::get_instance().get_local_devices();
 				auto num_devices = local_devices.num_compute_devices();
 				std::vector<bool> mem_locked(num_devices, false);
-				for(size_t device_id=0; device_id < num_devices; ++device_id) {
+				for(size_t device_id = 0; device_id < num_devices; ++device_id) {
 					auto mem_id = local_devices.get_memory_id(device_id);
 					if(m_buffer_mngr.try_lock(device_id, mem_id, {data.bid})) {
 						mem_locked[device_id] = true;
@@ -456,8 +466,8 @@ namespace detail {
 					}
 				}
 				if(lock_success) {
-					if(m_buffer_mngr.is_broadcast_possible(data.bid, data.dest_sr)) {
-						m_buffer_mngr.immediately_broadcast_data(data.bid, data.dest_sr, std::move(recv_buffer));
+					if(m_buffer_mngr.is_broadcast_possible(data.bid, dest_sr)) {
+						m_buffer_mngr.immediately_broadcast_data(data.bid, dest_sr, std::move(recv_buffer));
 						used_broadcast = true;
 					}
 				}
@@ -470,11 +480,10 @@ namespace detail {
 			if(!used_broadcast) {
 				// TODO MPI_Allgatherv with MPI_IN_PLACE to keep with a single allocation
 				assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
-						send_chunk_byte_size)
-					== 0);
-				CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)data.bid, data.dest_sr.offset[0],
-					data.dest_sr.offset[1], data.dest_sr.offset[2], data.dest_sr.range[0], data.dest_sr.range[1], data.dest_sr.range[2]);
-				m_buffer_mngr.set_buffer_data(data.bid, data.dest_sr, std::move(recv_buffer));
+				           send_chunk_byte_size)
+				       == 0);
+				CELERITY_TRACE("set_buffer_data({}, {}, recv_buffer)", (int)data.bid, data.dest_region);
+				m_buffer_mngr.set_buffer_data(data.bid, dest_sr, std::move(recv_buffer));
 			}
 		}
 
@@ -492,7 +501,7 @@ namespace detail {
 
 	std::string broadcast_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<broadcast_data>(pkg.data);
-		return fmt::format("broadcast {} of buffer {} from {}", data.sr, static_cast<size_t>(data.bid), data.source_nid);
+		return fmt::format("broadcast {} of buffer {} from {}", data.region, static_cast<size_t>(data.bid), data.source_nid);
 	}
 
 	bool broadcast_job::execute(const command_pkg& pkg) {
@@ -502,18 +511,18 @@ namespace detail {
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		// TODO work around INT_MAX restriction
-		const auto broadcast_byte_size = data.sr.range.size() * buffer_info.element_size;
+		auto sr = grid_box_to_subrange(data.region.getSingle());
+		const auto broadcast_byte_size = sr.range.size() * buffer_info.element_size;
 
 		unique_payload_ptr buffer = make_uninitialized_payload<std::byte>(broadcast_byte_size);
-		if(data.source_nid == m_local_nid) { m_buffer_mngr.get_buffer_data(data.bid, data.sr, buffer.get_pointer()).wait(); }
+		if(data.source_nid == m_local_nid) { m_buffer_mngr.get_buffer_data(data.bid, sr, buffer.get_pointer()).wait(); }
 
 		MPI_Bcast(buffer.get_pointer(), static_cast<int>(broadcast_byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
 		CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", broadcast_byte_size, data.source_nid);
 
 		if(data.source_nid != m_local_nid) {
-			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, buffer)", (int)data.bid, data.sr.offset[0], data.sr.offset[1],
-			    data.sr.offset[2], data.sr.range[0], data.sr.range[1], data.sr.range[2]);
-			m_buffer_mngr.set_buffer_data(data.bid, data.sr, std::move(buffer));
+			CELERITY_TRACE("set_buffer_data({}, {}, buffer)", (int)data.bid, data.region);
+			m_buffer_mngr.set_buffer_data(data.bid, sr, std::move(buffer));
 		}
 
 		m_buffer_mngr.unlock(pkg.cid);
@@ -531,9 +540,9 @@ namespace detail {
 	std::string scatter_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<scatter_data>(pkg.data);
 		if(data.source_nid == m_local_nid) {
-			return fmt::format("scatter {} of buffer {} to all", data.source_sr, data.bid);
+			return fmt::format("scatter {} of buffer {} to all", data.source_region, data.bid);
 		} else {
-			return fmt::format("scatter {} of buffer {} from {}", data.dest_srs[m_local_nid], data.bid, data.source_nid);
+			return fmt::format("scatter {} of buffer {} from {}", data.dest_regions[m_local_nid], data.bid, data.source_nid);
 		}
 	}
 
@@ -549,38 +558,46 @@ namespace detail {
 			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 			MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
 			assert(static_cast<node_id>(rank) == m_local_nid);
-			assert(static_cast<size_t>(num_ranks) == data.dest_srs.size());
+			assert(static_cast<size_t>(num_ranks) == data.dest_regions.size());
 		}
-		for(const auto& sr : data.dest_srs) {
-			if(sr.range.size() > 0 && (sr.range[1] != buffer_info.range[1] || sr.range[2] != buffer_info.range[2])) {
-				CELERITY_CRITICAL("scatter_job can't deal with scatters from strided inputs yet, scatter_job sr={}, buffer_info.range={{{}, {}, {}}}", sr,
-				    buffer_info.range[0], buffer_info.range[1], buffer_info.range[2]);
-				std::abort();
+		for(const auto& region : data.dest_regions) {
+			if(!region.hasMultipleBoxes()) {
+				const auto sr = grid_box_to_subrange(region.getSingle());
+				if(sr.range.size() == 0 || (sr.range[1] == buffer_info.range[1] && sr.range[2] == buffer_info.range[2])) {
+					continue; // ok
+				}
 			}
+			CELERITY_CRITICAL("gather_job can't deal with scatters to strided outputs yet, gather_job region={}, buffer_info.range={{{}, {}, {}}}", region,
+			    buffer_info.range[0], buffer_info.range[1], buffer_info.range[2]);
+			std::abort();
 		}
 #endif
 
+		const auto source_sr = grid_box_to_subrange(data.source_region.getSingle());
+		const auto local_dest_sr = grid_box_to_subrange(data.dest_regions[m_local_nid].getSingle());
+
 		// TODO how can we work around the INT_MAX size restriction? Larger data types only work if the split is aligned conveniently
-		const auto total_scatter_byte_size = data.source_sr.range.size() * buffer_info.element_size;
+		const auto total_scatter_byte_size = source_sr.range.size() * buffer_info.element_size;
 		assert(total_scatter_byte_size <= INT_MAX);
 
-		const auto send_chunk_byte_size = data.source_sr.range.size() * buffer_info.element_size;
-		const auto recv_chunk_byte_size = data.dest_srs[m_local_nid].range.size() * buffer_info.element_size;
+		const auto send_chunk_byte_size = source_sr.range.size() * buffer_info.element_size;
+		const auto recv_chunk_byte_size = local_dest_sr.range.size() * buffer_info.element_size;
 		const bool receives_data = recv_chunk_byte_size > 0;
 
 		unique_payload_ptr send_buffer;
 		if(data.source_nid == m_local_nid) {
 			send_buffer = make_uninitialized_payload<std::byte>(recv_chunk_byte_size);
-			m_buffer_mngr.get_buffer_data(data.bid, data.source_sr, send_buffer.get_pointer()).wait();
+			m_buffer_mngr.get_buffer_data(data.bid, source_sr, send_buffer.get_pointer()).wait();
 		}
 
 		std::vector<int> all_chunk_byte_sizes;
 		std::vector<int> all_chunk_byte_offsets;
 		unique_payload_ptr recv_buffer;
 		if(data.source_nid == m_local_nid) {
-			all_chunk_byte_sizes.resize(data.dest_srs.size());
-			for(size_t i = 0; i < data.dest_srs.size(); ++i) {
-				const auto byte_size = data.dest_srs[i].range.size() * buffer_info.element_size;
+			all_chunk_byte_sizes.resize(data.dest_regions.size());
+			for(size_t i = 0; i < data.dest_regions.size(); ++i) {
+				const auto sr = grid_box_to_subrange(data.dest_regions[i].getSingle());
+				const auto byte_size = sr.range.size() * buffer_info.element_size;
 				assert(byte_size <= INT_MAX);
 				all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
 			}
@@ -602,10 +619,8 @@ namespace detail {
 			assert(memcmp(static_cast<std::byte*>(recv_buffer.get_pointer()) + all_chunk_byte_offsets[m_local_nid], send_buffer.get_pointer(),
 			           recv_chunk_byte_size)
 			       == 0);
-			CELERITY_TRACE("set_buffer_data({}, {{{{{}, {}, {}}}, {{{}, {}, {}}}}}, recv_buffer)", (int)data.bid, data.dest_srs[m_local_nid].offset[0],
-			    data.dest_srs[m_local_nid].offset[1], data.dest_srs[m_local_nid].offset[2], data.dest_srs[m_local_nid].range[0],
-			    data.dest_srs[m_local_nid].range[1], data.dest_srs[m_local_nid].range[2]);
-			m_buffer_mngr.set_buffer_data(data.bid, data.dest_srs[m_local_nid], std::move(recv_buffer));
+			CELERITY_TRACE("set_buffer_data({}, {}, recv_buffer)", (int)data.bid, data.dest_regions[m_local_nid]);
+			m_buffer_mngr.set_buffer_data(data.bid, local_dest_sr, std::move(recv_buffer));
 		}
 
 		m_buffer_mngr.unlock(pkg.cid);

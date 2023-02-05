@@ -94,7 +94,7 @@ class distributed_graph_generator {
 		return cmd;
 	}
 
-	std::vector<chunk<3>> split_task(const task_geometry& geometry, bool variable_split, bool tiled_split) const;
+	std::vector<chunk<3>> split_task(const split_constraints& constraints) const;
 
 	void generate_execution_commands(const command_group_task& tsk);
 
@@ -107,7 +107,7 @@ class distributed_graph_generator {
 
 	void reduce_execution_front_to(abstract_command* const new_front);
 
-	void generate_collective_commands(const collect_task& tsk);
+	void generate_collective_commands(const forward_task& tsk);
 
 	void generate_epoch_command(const epoch_task& tsk);
 

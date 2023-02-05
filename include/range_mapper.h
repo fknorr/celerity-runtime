@@ -159,9 +159,8 @@ namespace detail {
 		case 1: return subrange_cast<3>(rm->map_1(chnk));
 		case 2: return subrange_cast<3>(rm->map_2(chnk));
 		case 3: return rm->map_3(chnk);
-		default: assert(false);
+		default: assert(false); abort();
 		}
-		return subrange<3>{};
 	}
 
 	inline subrange<3> apply_range_mapper(range_mapper_base const* rm, const chunk<3>& chnk, int kernel_dims) {
@@ -353,24 +352,28 @@ struct range_mapper_traits {
 
 	constexpr static bool is_constant = false;
 	constexpr static bool is_identity = false;
+	constexpr static bool is_non_overlapping = false;
 };
 
 template <int Dims>
 struct range_mapper_traits<celerity::access::one_to_one<Dims>> {
 	constexpr static bool is_constant = false;
 	constexpr static bool is_identity = true;
+	constexpr static bool is_non_overlapping = true;
 };
 
 template <int KernelDims, int BufferDims>
 struct range_mapper_traits<celerity::access::fixed<KernelDims, BufferDims>> {
 	constexpr static bool is_constant = true;
 	constexpr static bool is_identity = false;
+	constexpr static bool is_non_overlapping = false;
 };
 
 template <int KernelDims, int BufferDims>
 struct range_mapper_traits<celerity::access::all<KernelDims, BufferDims>> {
 	constexpr static bool is_constant = true;
 	constexpr static bool is_identity = false;
+	constexpr static bool is_non_overlapping = false;
 };
 
 } // namespace celerity::experimental

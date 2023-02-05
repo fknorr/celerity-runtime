@@ -354,8 +354,8 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit gathers produce the expected data distribution", "[gather]") {
-		distr_queue q;
 		buffer<size_t> buf(1000);
+		distr_queue q;
 
 		q.submit([=](handler& cgh) {
 			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
@@ -370,13 +370,10 @@ namespace detail {
 				}
 			});
 		});
-
-		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
-		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "NBody gather pattern", "[gather]") {
-		constexpr size_t n_bodies = 262144;
+		constexpr size_t n_bodies = 65536;
 		constexpr size_t block_size = 256;
 		constexpr size_t n_iter = 3;
 
@@ -425,18 +422,15 @@ namespace detail {
 				}
 			});
 		});
-
-		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
-		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "Gather from a strided non-dim0 split", "[gather][!mayfail]") {
 		constexpr size_t grid_size = 256;
 		const range<2> range = {grid_size, grid_size};
 
-		distr_queue q;
 		celerity::buffer<int, 2> buf_a(range);
 		celerity::buffer<int, 2> buf_b(range);
+		distr_queue q;
 
 		q.submit([=](handler& cgh) {
 			accessor a(buf_a, cgh, celerity::access::one_to_one(), write_only, no_init);
@@ -464,8 +458,8 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit broadcasts produce the expected data distribution", "[gather]") {
-		distr_queue q;
 		buffer<size_t> buf(1000);
+		distr_queue q;
 
 		q.submit([=](handler& cgh) {
 			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);

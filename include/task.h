@@ -49,7 +49,7 @@ namespace detail {
 		host_collective, ///< host task with implicit 1d global size = #ranks and fixed split
 		master_node,     ///< zero-dimensional host task
 		horizon,         ///< task horizon
-		collect,
+		forward,
 	};
 
 	enum class execution_target {
@@ -217,6 +217,13 @@ namespace detail {
 		explicit horizon_task(const task_id tid) : task(tid, task_type::horizon) {}
 	};
 
+	struct split_constraints {
+		task_geometry geometry;
+		bool variable;
+		bool tiled;
+		// oversubscription is not a concern because it is applied after the initial internode split
+	};
+
 	class command_group_task final : public task {
 	  public:
 		collective_group_id get_collective_group_id() const { return m_cgid; }
@@ -276,6 +283,8 @@ namespace detail {
 			return nullptr;
 		}
 
+		split_constraints get_split_constraints() const;
+
 		static std::unique_ptr<command_group_task> make_host_compute(task_id tid, task_geometry geometry,
 		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
 			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::host_compute, non_collective, geometry, std::move(launcher),
@@ -322,28 +331,26 @@ namespace detail {
 		}
 	};
 
-	class collect_task final : public task {
+	class forward_task final : public task {
 	  public:
 		struct access {
-			task_geometry geometry;
-			bool variable_split;
-			bool tiled_split;
-			const range_mapper_base* rm;
+			split_constraints split;
+			std::vector<const range_mapper_base*> range_mappers;
 		};
 
-		struct dataflow {
-			buffer_id bid;
-			GridBox<3> box;
-			access producer;
-			access consumer;
-		};
+		forward_task(const task_id tid, const buffer_id bid, GridRegion<3> region, access producer, access consumer)
+		    : task(tid, task_type::forward), m_bid(bid), m_region(std::move(region)), m_producer(std::move(producer)), m_consumer(std::move(consumer)) {}
 
-		collect_task(const task_id tid, std::vector<dataflow> flows) : task(tid, task_type::collect), m_flows(std::move(flows)) {}
-
-		const std::vector<dataflow>& get_dataflows() const { return m_flows; }
+		const buffer_id& get_bid() const { return m_bid; }
+		const GridRegion<3>& get_region() const { return m_region; }
+		const access& get_producer() const { return m_producer; }
+		const access& get_consumer() const { return m_consumer; }
 
 	  private:
-		std::vector<dataflow> m_flows;
+		buffer_id m_bid;
+		GridRegion<3> m_region;
+		access m_producer;
+		access m_consumer;
 	};
 
 } // namespace detail

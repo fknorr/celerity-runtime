@@ -30,7 +30,7 @@ namespace detail {
 		case task_type::host_collective: return "host_collective host";
 		case task_type::master_node: return "master-node host";
 		case task_type::horizon: return "horizon";
-		case task_type::collect: return "collect";
+		case task_type::forward: return "forward";
 		default: return "unknown";
 		}
 	}
@@ -88,10 +88,8 @@ namespace detail {
 			}
 
 			format_requirements(label, *cgtsk, execution_range, access_mode::read_write, bm);
-		} else if(const auto* stsk = dynamic_cast<const collect_task*>(&tsk)) {
-			for(const auto& dataflow : stsk->get_dataflows()) {
-				fmt::format_to(std::back_inserter(label), "<br/>B{} {}", dataflow.bid, dataflow.box);
-			}
+		} else if(const auto* ftsk = dynamic_cast<const forward_task*>(&tsk)) {
+			fmt::format_to(std::back_inserter(label), "<br/>B{} {}", ftsk->get_bid(), ftsk->get_region());
 		}
 		return label;
 	}
@@ -150,24 +148,24 @@ namespace detail {
 			} else {
 				label += "<b>allgather</b>";
 			}
-			if(const auto& source_sr = gcmd->get_source_ranges()[gcmd->get_nid()]; source_sr.range.size() > 0) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), source_sr);
+			if(const auto& source_region = gcmd->get_source_regions()[gcmd->get_nid()]; !source_region.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), source_region);
 			}
 			if(!gcmd->get_single_destination() || gcmd->get_single_destination() == gcmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_range());
+				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_region());
 			}
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
 			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_source());
 			if(bcmd->get_source() == bcmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_region());
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", bcmd->get_bid(), bcmd->get_range());
+			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", bcmd->get_bid(), bcmd->get_region());
 		} else if(const auto scmd = dynamic_cast<const scatter_command*>(&cmd)) {
-			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_source());
-			if(scmd->get_source() == scmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), scmd->get_source_range());
-			} else if(const auto& dest_sr = scmd->get_dest_ranges()[scmd->get_nid()]; dest_sr.range.size() > 0) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_sr);
+			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_source_nid());
+			if(scmd->get_source_nid() == scmd->get_nid()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), scmd->get_source_region());
+			} else if(const auto& dest_region = scmd->get_dest_regions()[scmd->get_nid()]; !dest_region.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
 			}
 		} else {
 			assert(!"Unkown command");

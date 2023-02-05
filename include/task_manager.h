@@ -78,6 +78,7 @@ namespace detail {
 			if(m_queue) m_queue->require_collective_group(unique_tsk->get_collective_group_id());
 
 			auto& tsk = register_task_internal(std::move(reservation), std::move(unique_tsk));
+			generate_forward_tasks(&tsk);
 			compute_dependencies(tsk);
 
 			// the following deletion is intentionally redundant with the one happening when waiting for free task slots
@@ -221,7 +222,14 @@ namespace detail {
 		// Set of tasks with no dependents
 		std::unordered_set<task*> m_execution_front;
 
-		task& register_task_internal(task_ring_buffer::reservation&& reserve, std::unique_ptr<task> task);
+		template <typename Task>
+		Task& register_task_internal(task_ring_buffer::reservation&& reserve, std::unique_ptr<Task> task) {
+			Task& task_ref = *task;
+			assert(task != nullptr);
+			m_task_buffer.put(std::move(reserve), std::move(task));
+			m_execution_front.insert(&task_ref);
+			return task_ref;
+		}
 
 		void invoke_callbacks(const task* tsk) const;
 
@@ -251,7 +259,7 @@ namespace detail {
 		// Returns a callback which blocks until any epoch task has executed, freeing new task slots
 		task_ring_buffer::wait_callback await_free_task_slot_callback();
 
-		std::optional<collect_task::dataflow> detect_simple_dataflow(const command_group_task* consumer, const buffer_id bid) const;
+		void generate_forward_tasks(const command_group_task* consumer);
 	};
 
 } // namespace detail

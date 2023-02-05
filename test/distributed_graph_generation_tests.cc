@@ -396,7 +396,7 @@ class dist_cdag_test_context {
 		}
 
 		m_tm->register_task_callback([this](const task* const tsk) {
-			if(tsk->get_type() == task_type::collect) {
+			if(tsk->get_type() == task_type::forward) {
 				for(auto& dggen : m_dggens) {
 					dggen->build_task(*tsk);
 				}

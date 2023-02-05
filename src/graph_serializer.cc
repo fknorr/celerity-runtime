@@ -100,11 +100,11 @@ namespace detail {
 		} else if(const auto* hcmd = dynamic_cast<horizon_command*>(cmd)) {
 			pkg.data = horizon_data{hcmd->get_tid()};
 		} else if(const auto* gcmd = dynamic_cast<gather_command*>(cmd)) {
-			pkg.data = gather_data{gcmd->get_bid(), gcmd->get_source_ranges(), gcmd->get_dest_range(), gcmd->get_single_destination()};
+			pkg.data = gather_data{gcmd->get_bid(), gcmd->get_source_regions(), gcmd->get_dest_region(), gcmd->get_single_destination()};
 		} else if(const auto* bcmd = dynamic_cast<broadcast_command*>(cmd)) {
-			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_range(), bcmd->get_source()};
+			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_region(), bcmd->get_source()};
 		} else if(const auto* scmd = dynamic_cast<scatter_command*>(cmd)) {
-			pkg.data = scatter_data{scmd->get_bid(), scmd->get_source(), scmd->get_source_range(), scmd->get_dest_ranges()};
+			pkg.data = scatter_data{scmd->get_bid(), scmd->get_source_nid(), scmd->get_source_region(), scmd->get_dest_regions()};
 		} else {
 			assert(false && "Unknown command");
 		}
