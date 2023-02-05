@@ -80,25 +80,16 @@ namespace detail {
 		return participating_rms;
 	}
 
-	bool is_trivial_forward(const forward_task::access& producer, const forward_task::access& consumer) {
-		constexpr bool trivial = true;
-		constexpr bool non_trivial = false;
-
-		// (1) if consumers are neither constant nor non-overlapping, distributed_graph_generator will not be able to detect a pattern
-		if(!std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_constant))
-		    && !std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_non_overlapping))) {
-			return trivial;
-		}
-
+	bool is_communication_free_dataflow(const forward_task::access& producer, const forward_task::access& consumer) {
 		// (2) if producer and consumer are unsplittable, both will be mapped to node 0 and no data transfer will take place
 		if(!producer.split.variable && !consumer.split.variable) {
 			// TODO variable-split is currently interpreted as "splittable"
-			return trivial;
+			return true;
 		}
 
 		// (3) if producer and consumer have same split-constraints and equal range-mappers, no data transfer will take place
-		if(producer.split != consumer.split) return non_trivial;
-		if(producer.range_mappers.size() != consumer.range_mappers.size()) return non_trivial;
+		if(producer.split != consumer.split) return false;
+		if(producer.range_mappers.size() != consumer.range_mappers.size()) return false;
 
 		const auto num_rms = producer.range_mappers.size();
 		assert(num_rms > 0); // otherwise how would this forward task come to be?
@@ -110,8 +101,8 @@ namespace detail {
 				break;
 			}
 		}
-		if(first_rm_mismatch == num_rms) return trivial;         // no mismatch
-		if(first_rm_mismatch == num_rms - 1) return non_trivial; // single mismatch - order independent
+		if(first_rm_mismatch == num_rms) return true;      // no mismatch
+		if(first_rm_mismatch == num_rms - 1) return false; // single mismatch - order independent
 
 		// mismatches might be due to ordering: linear-search a corresponding consumer for every producer
 		std::vector<const range_mapper_base*> remaining_consumer_rms(consumer.range_mappers.begin() + first_rm_mismatch, consumer.range_mappers.end());
@@ -121,11 +112,21 @@ namespace detail {
 			if(crm_it != remaining_consumer_rms.end()) {
 				remaining_consumer_rms.erase(crm_it);
 			} else {
-				return non_trivial;
+				return false;
 			}
 		}
 		assert(remaining_consumer_rms.empty());
-		return trivial;
+		return true;
+	}
+
+	bool is_potential_collective(const forward_task::access& producer, const forward_task::access& consumer) {
+		// (1) if consumers are neither constant nor non-overlapping, distributed_graph_generator will not be able to detect a pattern
+		if(!std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_constant))
+		    && !std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_non_overlapping))) {
+			return false;
+		}
+
+		return !is_communication_free_dataflow(producer, consumer);
 	}
 
 	void task_manager::generate_forward_tasks(const command_group_task* consumer) {
@@ -159,7 +160,16 @@ namespace detail {
 					if(const auto earlier_cg = dynamic_cast<command_group_task*>(potential_earlier_consumer)) {
 						const auto earlier_read =
 						    get_requirements(*earlier_cg, bid, {detail::access::consumer_modes.cbegin(), detail::access::consumer_modes.cend()});
-						unconsumed_writes = GridRegion<3>::difference(unconsumed_writes, earlier_read);
+
+						if(const auto earlier_region = GridRegion<3>::intersect(unconsumed_writes, earlier_read); !earlier_region.empty()) {
+							forward_task::access earlier_producer_acc{producer->get_split_constraints(),
+							    get_participating_range_mappers(producer, bid, earlier_region, access::mode_traits::is_producer)};
+							forward_task::access earlier_consumer_acc{earlier_cg->get_split_constraints(),
+							    get_participating_range_mappers(earlier_cg, bid, earlier_region, access::mode_traits::is_consumer)};
+							if(!is_communication_free_dataflow(earlier_producer_acc, earlier_consumer_acc)) {
+								unconsumed_writes = GridRegion<3>::difference(unconsumed_writes, earlier_region);
+							}
+						}
 					} else if(const auto earlier_forward = dynamic_cast<forward_task*>(potential_earlier_consumer)) {
 						if(earlier_forward->get_bid() == bid) {
 							unconsumed_writes = GridRegion<3>::difference(unconsumed_writes, earlier_forward->get_region());
@@ -183,7 +193,7 @@ namespace detail {
 			    get_participating_range_mappers(flow.producer, flow.bid, flow.region, access::mode_traits::is_producer)};
 			forward_task::access consumer_acc{
 			    consumer->get_split_constraints(), get_participating_range_mappers(consumer, flow.bid, flow.region, access::mode_traits::is_consumer)};
-			if(is_trivial_forward(producer_acc, consumer_acc)) continue;
+			if(!is_potential_collective(producer_acc, consumer_acc)) continue;
 
 			auto& fwd = static_cast<forward_task&>(register_task_internal(std::move(fwd_reserve),
 			    std::make_unique<forward_task>(fwd_reserve.get_tid(), flow.bid, flow.region, std::move(producer_acc), std::move(consumer_acc))));
