@@ -146,7 +146,7 @@ namespace detail {
 			if(gcmd->get_single_destination()) {
 				fmt::format_to(std::back_inserter(label), "<b>gather</b> to N{}", *gcmd->get_single_destination());
 			} else {
-				label += "<b>allgather</b>";
+				label += "<b>all-gather</b>";
 			}
 			if(const auto& source_region = gcmd->get_source_regions()[gcmd->get_nid()]; !source_region.empty()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), source_region);
@@ -168,7 +168,7 @@ namespace detail {
 				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
 			}
 		} else if(const auto a2acmd = dynamic_cast<const alltoall_command*>(&cmd)) {
-			fmt::format_to(std::back_inserter(label), "<b>alltoall</b>");
+			fmt::format_to(std::back_inserter(label), "<b>all-to-all</b>");
 			GridRegion<3> read_set;
 			for(const auto& region : a2acmd->get_send_regions()) {
 				read_set = GridRegion<3>::merge(read_set, region);

@@ -256,6 +256,7 @@ namespace detail {
 		case command_type::gather: create_job<gather_job>(pkg, m_buffer_mngr, m_local_nid); break;
 		case command_type::broadcast: create_job<broadcast_job>(pkg, m_buffer_mngr, m_local_nid); break;
 		case command_type::scatter: create_job<scatter_job>(pkg, m_buffer_mngr, m_local_nid); break;
+		case command_type::alltoall: create_job<alltoall_job>(pkg, m_buffer_mngr); break;
 		default: assert(!"Unexpected command");
 		}
 		return true;

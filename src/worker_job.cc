@@ -641,5 +641,89 @@ namespace detail {
 		return true;
 	}
 
+	// --------------------------------------------------------------------------------------------------------------------
+	// ----------------------------------------------------- ALLTOALL -----------------------------------------------------
+	// --------------------------------------------------------------------------------------------------------------------
+
+	alltoall_job::alltoall_job(const command_pkg& pkg, buffer_manager& bm) : worker_job(pkg), m_buffer_mngr(bm) {
+		assert(std::holds_alternative<alltoall_data>(pkg.data));
+	}
+
+	std::string alltoall_job::get_description(const command_pkg& pkg) {
+		const auto data = std::get<alltoall_data>(pkg.data);
+		return fmt::format("all-to-all buffer {}", data.bid);
+	}
+
+	bool alltoall_job::execute(const command_pkg& pkg) {
+		const auto data = std::get<alltoall_data>(pkg.data);
+
+		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
+		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
+
+		// TODO get around INT_MAX limitation
+		std::vector<int> send_chunk_byte_sizes(data.send_regions.size());
+		std::vector<int> send_chunk_byte_offsets(send_chunk_byte_sizes.size());
+		int send_buffer_size = 0;
+		for(size_t i = 0; i < data.send_regions.size(); ++i) {
+			send_chunk_byte_sizes[i] = data.send_regions[i].area() * buffer_info.element_size;
+			send_chunk_byte_offsets[i] = send_buffer_size;
+			send_buffer_size += send_chunk_byte_sizes[i];
+		}
+
+		unique_payload_ptr send_buffer;
+		{
+			ZoneScopedN("fetch input");
+			send_buffer = make_uninitialized_payload<std::byte>(send_buffer_size);
+			auto send_buffer_cursor = static_cast<std::byte*>(send_buffer.get_pointer());
+			for(const auto& send : data.send_regions) {
+				send.scanByBoxes([&](const GridBox<3>& box) {
+					m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), send_buffer_cursor).wait();
+					send_buffer_cursor += box.area() * buffer_info.element_size;
+				});
+			}
+		}
+
+		std::vector<int> recv_chunk_byte_sizes(data.recv_regions.size());
+		std::vector<int> recv_chunk_byte_offsets(recv_chunk_byte_sizes.size());
+		int recv_buffer_size = 0;
+		for(size_t i = 0; i < data.recv_regions.size(); ++i) {
+			recv_chunk_byte_sizes[i] = data.recv_regions[i].area() * buffer_info.element_size;
+			recv_chunk_byte_offsets[i] = recv_buffer_size;
+			recv_buffer_size += recv_chunk_byte_sizes[i];
+		}
+
+		std::unique_ptr<std::byte[]> recv_buffer; // TODO can become a unique_payload_ptr once we eliminate the box-copy below
+		{
+			ZoneScopedN("alloc output");
+			recv_buffer = std::make_unique<std::byte[]>(recv_buffer_size);
+		}
+
+		{
+			ZoneScopedN("Alltoallv");
+			CELERITY_TRACE("MPI_Alltoallv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
+			    send_buffer_size, fmt::join(send_chunk_byte_sizes, ", "), fmt::join(send_chunk_byte_offsets, ", "), recv_buffer_size,
+			    fmt::join(recv_chunk_byte_sizes, ", "), fmt::join(recv_chunk_byte_offsets, ", "));
+			MPI_Alltoallv(send_buffer.get_pointer(), send_chunk_byte_sizes.data(), send_chunk_byte_offsets.data(), MPI_BYTE, recv_buffer.get(),
+			    recv_chunk_byte_sizes.data(), recv_chunk_byte_offsets.data(), MPI_BYTE, MPI_COMM_WORLD);
+		}
+
+		{
+			ZoneScopedN("commit");
+			auto recv_buffer_cursor = static_cast<std::byte*>(recv_buffer.get());
+			for(const auto& recv : data.recv_regions) {
+				recv.scanByBoxes([&](const GridBox<3>& box) {
+					const auto box_size_bytes = box.area() * buffer_info.element_size;
+					auto box_buffer = make_uninitialized_payload<std::byte>(box_size_bytes); // TODO eliminate copy
+					memcpy(box_buffer.get_pointer(), recv_buffer_cursor, box_size_bytes);
+					m_buffer_mngr.set_buffer_data(data.bid, grid_box_to_subrange(box), std::move(box_buffer));
+					recv_buffer_cursor += box_size_bytes;
+				});
+			}
+		}
+
+		m_buffer_mngr.unlock(pkg.cid);
+		return true;
+	}
+
 } // namespace detail
 } // namespace celerity

@@ -548,5 +548,44 @@ namespace detail {
 		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit alltoall produces the expected data distribution", "[gather]") {
+		buffer<sycl::int2, 2> buf({100, 100});
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only_host_task, no_init);
+			cgh.host_task(buf.get_range(), [acc](partition<2> part) {
+				const auto& sr = part.get_subrange();
+				for(size_t i = 0; i < sr.range[0]; ++i) {
+					for(size_t j = 0; j < sr.range[1]; ++j) {
+						const size_t x = sr.offset[0] + i;
+						const size_t y = sr.offset[1] + j;
+						acc[x][y] = sycl::int2{static_cast<int>(x), static_cast<int>(y)};
+					}
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::experimental::access::transposed<1, 0>(), read_only_host_task);
+			cgh.host_task(buf.get_range(), [acc](partition<2> part) {
+				const auto& sr = part.get_subrange();
+				for(size_t i = 0; i < sr.range[0]; ++i) {
+					for(size_t j = 0; j < sr.range[1]; ++j) {
+						const size_t x = sr.offset[0] + i;
+						const size_t y = sr.offset[1] + j;
+						const auto got = acc[x][y];
+						const auto expected = sycl::int2{static_cast<int>(x), static_cast<int>(y)};
+						REQUIRE_LOOP(got[0] == expected[0]);
+						REQUIRE_LOOP(got[1] == expected[1]);
+					}
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
 } // namespace detail
 } // namespace celerity

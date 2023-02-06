@@ -249,5 +249,16 @@ namespace detail {
 		std::string get_description(const command_pkg& pkg) override;
 	};
 
+	class alltoall_job : public worker_job {
+	  public:
+		alltoall_job(const command_pkg& pkg, buffer_manager& bm);
+
+	  private:
+		buffer_manager& m_buffer_mngr;
+
+		bool execute(const command_pkg& pkg) override;
+		std::string get_description(const command_pkg& pkg) override;
+	};
+
 } // namespace detail
 } // namespace celerity
