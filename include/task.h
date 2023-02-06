@@ -229,6 +229,15 @@ namespace detail {
 			       && lhs.tiled == rhs.tiled;
 		}
 		friend bool operator!=(const split_constraints& lhs, const split_constraints& rhs) { return !(rhs == lhs); }
+
+		experimental::split_geometry_map get_geometry_map() const {
+			assert(geometry.dimensions <= 3);
+			experimental::split_geometry_map g(geometry.dimensions);
+			if(geometry.dimensions > 0) { g[0] = experimental::split_geometry::split; }
+			if(geometry.dimensions > 1) { g[1] = tiled ? experimental::split_geometry::split : experimental::constant; }
+			if(geometry.dimensions > 2) { g[2] = experimental::constant; }
+			return g;
+		}
 	};
 
 	class command_group_task final : public task {

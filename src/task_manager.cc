@@ -121,10 +121,13 @@ namespace detail {
 
 	bool is_potential_collective(const forward_task::access& producer, const forward_task::access& consumer) {
 		// (1) if consumers are neither constant nor non-overlapping, distributed_graph_generator will not be able to detect a pattern
-		if(!std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_constant))
-		    && !std::all_of(consumer.range_mappers.begin(), consumer.range_mappers.end(), std::mem_fn(&range_mapper_base::is_non_overlapping))) {
-			return false;
+		bool all_constant = true, all_non_overlapping = true;
+		for(const auto rm : consumer.range_mappers) {
+			const auto props = rm->get_properties(consumer.split.get_geometry_map());
+			all_constant &= props.is_constant;
+			all_non_overlapping &= props.is_non_overlapping;
 		}
+		if(!all_constant && !all_non_overlapping) return false;
 
 		return !is_communication_free_dataflow(producer, consumer);
 	}

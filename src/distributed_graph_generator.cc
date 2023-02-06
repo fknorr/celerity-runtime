@@ -272,8 +272,17 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 }
 
 
+bool all_range_mappers_constant(const std::vector<const range_mapper_base*> range_mappers, const split_constraints& task_split) {
+	return std::all_of(range_mappers.begin(), range_mappers.end(),
+	    [&](const range_mapper_base* const rm) { return rm->get_properties(task_split.get_geometry_map()).is_constant; });
+}
+
+
 bool combined_range_mappers_non_overlapping(const std::vector<const range_mapper_base*> range_mappers, const split_constraints& task_split) {
-	if(!std::all_of(range_mappers.begin(), range_mappers.end(), std::mem_fn(&range_mapper_base::is_non_overlapping))) return false;
+	if(!std::all_of(range_mappers.begin(), range_mappers.end(),
+	       [&](const range_mapper_base* const rm) { return rm->get_properties(task_split.get_geometry_map()).is_non_overlapping; })) {
+		return false;
+	}
 
 	const chunk<3> full_chunk{task_split.geometry.global_offset, task_split.geometry.global_size, task_split.geometry.global_size};
 	GridRegion<3> combined_region;
@@ -291,11 +300,6 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 	// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
 	const auto producer_chunks = split_task(tsk.get_producer().split);
 	const auto consumer_chunks = split_task(tsk.get_consumer().split);
-
-	const auto all = [](auto&& rms, auto&& predicate) {
-		using std::begin, std::end;
-		return std::all_of(begin(rms), end(rms), [&](auto&& rm) { return std::invoke(predicate, rm); });
-	};
 	const auto producer_dims = tsk.get_producer().split.geometry.dimensions;
 	const auto consumer_dims = tsk.get_consumer().split.geometry.dimensions;
 	const auto& producer_rms = tsk.get_producer().range_mappers;
@@ -303,7 +307,10 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
 
-	if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || all(consumer_rms, &range_mapper_base::is_constant))) {
+	const bool all_consumers_constant = all_range_mappers_constant(consumer_rms, tsk.get_consumer().split);
+	const bool combined_consumers_non_overlapping = combined_range_mappers_non_overlapping(consumer_rms, tsk.get_consumer().split);
+
+	if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || all_consumers_constant)) {
 		// Gather or Allgather
 		std::vector<GridRegion<3>> source_regions(m_num_nodes);
 		for(node_id nid = 0; nid < std::min(m_num_nodes, producer_chunks.size()); ++nid) {
@@ -357,7 +364,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 		m_last_collective_commands[implicit_collective] = gather_cmd->get_cid();
 
 		generate_epoch_dependencies(gather_cmd);
-	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && all(consumer_rms, &range_mapper_base::is_constant)) {
+	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && all_consumers_constant) {
 		// Broadcast
 		const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
 		const auto broadcast_cmd = create_command<broadcast_command>(m_local_nid, bid, source_nid, forward_region);
@@ -387,7 +394,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 		m_last_collective_commands[implicit_collective] = broadcast_cmd->get_cid();
 
 		generate_epoch_dependencies(broadcast_cmd);
-	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && combined_range_mappers_non_overlapping(consumer_rms, tsk.get_consumer().split)) {
+	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && combined_consumers_non_overlapping) {
 		// Scatter
 		const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
 

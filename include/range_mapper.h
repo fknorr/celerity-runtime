@@ -9,9 +9,51 @@
 #include "ranges.h"
 
 namespace celerity::experimental {
+
+enum split_geometry { split, constant };
+using split_geometry_map = std::vector<split_geometry>;
+
+namespace access_geometry {
+	struct other {
+		friend bool operator==(other, other) { return true; }
+		friend bool operator!=(other, other) { return false; }
+	};
+
+	struct one_to_one {
+		int dimension;
+
+		friend bool operator==(const one_to_one& lhs, const one_to_one& rhs) { return lhs.dimension == rhs.dimension; }
+		friend bool operator!=(const one_to_one& lhs, const one_to_one& rhs) { return !(rhs == lhs); }
+	};
+
+	struct fixed {
+		size_t offset;
+		size_t range;
+
+		friend bool operator==(const fixed& lhs, const fixed& rhs) { return lhs.offset == rhs.offset && lhs.range == rhs.range; }
+		friend bool operator!=(const fixed& lhs, const fixed& rhs) { return !(rhs == lhs); }
+	};
+} // namespace access_geometry
+
+using access_geometry_t = std::variant<access_geometry::other, access_geometry::one_to_one, access_geometry::fixed>;
+using access_geometry_map = std::vector<access_geometry_t>;
+
+struct range_mapper_properties {
+	access_geometry_map access_geometry;
+	bool is_constant = false;
+	bool is_non_overlapping = false;
+};
+
+using buffer_geometry = std::vector<size_t>;
+
 template <typename Functor>
-struct range_mapper_traits;
-}
+struct range_mapper_traits {
+	// by supplying a cv-qualified type here a user could accidentally not select the trait specializations below
+	static_assert(!std::is_const_v<Functor> && !std::is_volatile_v<Functor>);
+
+	static range_mapper_properties get_properties(const Functor&, const split_geometry_map&, const buffer_geometry&) { return {}; }
+};
+} // namespace celerity::experimental
 
 namespace celerity {
 namespace detail {
@@ -112,9 +154,8 @@ namespace detail {
 		virtual std::unique_ptr<range_mapper_base> clone_as(access_mode mode) const = 0;
 		std::unique_ptr<range_mapper_base> clone() { return clone_as(m_access_mode); }
 
-		virtual bool is_constant() const = 0;
-		virtual bool is_identity() const = 0;
-		virtual bool is_non_overlapping() const = 0;
+		virtual experimental::range_mapper_properties get_properties(const experimental::split_geometry_map& split) const = 0;
+
 		virtual bool function_equals(const range_mapper_base& other) const = 0;
 
 	  protected:
@@ -145,9 +186,13 @@ namespace detail {
 
 		std::unique_ptr<range_mapper_base> clone_as(access_mode mode) const override { return std::make_unique<range_mapper>(m_rmfn, mode, m_buffer_size); }
 
-		bool is_constant() const override { return experimental::range_mapper_traits<Functor>::is_constant; }
-		bool is_identity() const override { return experimental::range_mapper_traits<Functor>::is_identity; }
-		bool is_non_overlapping() const override { return experimental::range_mapper_traits<Functor>::is_non_overlapping; }
+		experimental::range_mapper_properties get_properties(const experimental::split_geometry_map& split) const override {
+			std::vector<size_t> buffer_range(BufferDims);
+			for(int d = 0; d < BufferDims; ++d) {
+				buffer_range[d] = m_buffer_size[d];
+			}
+			return experimental::range_mapper_traits<Functor>::get_properties(m_rmfn, split, buffer_range);
+		}
 
 		bool function_equals(const range_mapper_base& other) const override {
 			if constexpr(is_equality_comparable_v<Functor>) {
@@ -194,6 +239,76 @@ namespace detail {
 		return {};
 	}
 
+	// std::is_permutation is C++20-only
+
+	template <size_t, typename>
+	struct prepend_to_index_sequence;
+
+	template <size_t Index, size_t... Seq>
+	struct prepend_to_index_sequence<Index, std::index_sequence<Seq...>> {
+		using type = std::index_sequence<Index, Seq...>;
+	};
+
+	template <size_t Needle, typename Seq>
+	struct find_in_index_sequence;
+
+	template <size_t Needle, size_t Head, size_t... Tail>
+	struct find_in_index_sequence<Needle, std::index_sequence<Head, Tail...>> {
+		using next = find_in_index_sequence<Needle, std::index_sequence<Tail...>>;
+		constexpr static bool found = next::found;
+		using without = typename prepend_to_index_sequence<Head, typename next::without>::type;
+		constexpr static size_t index = 1 + next::index;
+	};
+
+	template <size_t Needle, size_t... Tail>
+	struct find_in_index_sequence<Needle, std::index_sequence<Needle, Tail...>> {
+		constexpr static bool found = true;
+		using without = std::index_sequence<Tail...>;
+		constexpr static size_t index = 0;
+	};
+
+	template <size_t Needle>
+	struct find_in_index_sequence<Needle, std::index_sequence<>> {
+		constexpr static bool found = false;
+		using without = std::index_sequence<>;
+		constexpr static size_t index = 0;
+	};
+
+	template <size_t Min, size_t Max, typename Seq>
+	struct is_range_permutation;
+
+	template <size_t Min, size_t Max, size_t... Seq>
+	struct is_range_permutation<Min, Max, std::index_sequence<Seq...>> {
+		using find = find_in_index_sequence<Min, std::index_sequence<Seq...>>;
+		constexpr static bool value = find::found && is_range_permutation<Min + 1, Max, typename find::without>::value;
+	};
+
+	template <size_t Min>
+	struct is_range_permutation<Min, Min, std::index_sequence<Min>> : std::true_type {};
+
+	template <size_t Min, size_t... Seq>
+	struct is_range_permutation<Min, Min, std::index_sequence<Seq...>> : std::false_type {};
+
+	template <size_t... Seq>
+	struct is_index_permutation : is_range_permutation<0, sizeof...(Seq) - 1, std::index_sequence<Seq...>> {};
+
+	template <>
+	struct is_index_permutation<> : std::true_type {};
+
+	template <size_t... Seq>
+	constexpr bool is_index_permutation_v = is_index_permutation<Seq...>::value;
+
+	static_assert(is_index_permutation_v<>);
+	static_assert(is_index_permutation_v<0>);
+	static_assert(!is_index_permutation_v<1>);
+	static_assert(!is_index_permutation_v<2>);
+	static_assert(is_index_permutation_v<0, 1>);
+	static_assert(is_index_permutation_v<1, 0>);
+	static_assert(!is_index_permutation_v<2, 0>);
+	static_assert(!is_index_permutation_v<0, 0>);
+	static_assert(is_index_permutation_v<2, 0, 1>);
+	static_assert(!is_index_permutation_v<1, 1, 1>);
+
 } // namespace detail
 
 
@@ -228,6 +343,8 @@ namespace access {
 	struct fixed<BufferDims, BufferDims> {
 		fixed(const subrange<BufferDims>& sr) : m_sr(sr) {}
 
+		const subrange<BufferDims>& get_subrange() const { return m_sr; }
+
 		template <int KernelDims>
 		subrange<BufferDims> operator()(const chunk<KernelDims>&) const {
 			return m_sr;
@@ -253,6 +370,8 @@ namespace access {
 	template <int Dims>
 	struct slice {
 		slice(size_t dim_idx) : m_dim_idx(dim_idx) { assert(dim_idx < Dims && "Invalid slice dimension index (starts at 0)"); }
+
+		size_t get_slice_dimension() const { return m_dim_idx; }
 
 		subrange<Dims> operator()(const chunk<Dims>& chnk) const {
 			subrange<Dims> result = chnk;
@@ -376,12 +495,11 @@ namespace experimental::access {
 		range<BufferDims> m_granularity = detail::range_cast<BufferDims>(range<3>(1, 1, 1));
 	};
 
-	template <size_t... Permutation>
-	struct transpose {
+	template <int... Permutation>
+	struct transposed {
+		static_assert(detail::is_index_permutation_v<Permutation...>);
+
 		static constexpr int dimensions = sizeof...(Permutation);
-		static_assert((... + Permutation) == dimensions * (dimensions + 1) / 2);
-		static_assert((... && (Permutation < dimensions)));
-		// TODO static_assert(is_permutation_of_0_to_dimensions_minus_1<Permutation>)
 
 		subrange<dimensions> operator()(const chunk<dimensions>& ck) const { return {{ck.offset[Permutation]...}, {ck.range[Permutation]...}}; }
 	};
@@ -393,35 +511,79 @@ namespace experimental::access {
 
 namespace celerity::experimental {
 
-template <typename Functor>
-struct range_mapper_traits {
-	// by supplying a cv-qualified type here a user could accidentally not select the trait specializations below
-	static_assert(!std::is_const_v<Functor> && !std::is_volatile_v<Functor>);
-
-	constexpr static bool is_constant = false;
-	constexpr static bool is_identity = false;
-	constexpr static bool is_non_overlapping = false;
+template <int Dims>
+struct range_mapper_traits<celerity::access::one_to_one<Dims>> {
+	static range_mapper_properties get_properties(
+	    const celerity::access::one_to_one<Dims>&, const split_geometry_map& split, [[maybe_unused]] const buffer_geometry& buffer_range) {
+		access_geometry_map map(split.size());
+		for(int d = 0; d < static_cast<int>(split.size()); ++d) {
+			map[d] = access_geometry::one_to_one{d};
+		}
+		return range_mapper_properties{std::move(map), /* is_constant= */ false, /* is_non_overlapping= */ true};
+	}
 };
 
 template <int Dims>
-struct range_mapper_traits<celerity::access::one_to_one<Dims>> {
-	constexpr static bool is_constant = false;
-	constexpr static bool is_identity = true;
-	constexpr static bool is_non_overlapping = true;
+struct range_mapper_traits<celerity::access::slice<Dims>> {
+	static_assert(Dims > 0);
+
+	static range_mapper_properties get_properties(
+	    const celerity::access::slice<Dims>& rmfn, const split_geometry_map& split, const buffer_geometry& buffer_range) {
+		assert(split.size() == Dims);
+		assert(buffer_range.size() == Dims);
+
+		access_geometry_map map(Dims);
+		bool is_constant = true;
+		for(int d = 0; d < Dims; ++d) {
+			if(split[d] == split_geometry::split && d != static_cast<int>(rmfn.get_slice_dimension())) {
+				map[d] = access_geometry::one_to_one{d};
+				is_constant = false;
+			} else {
+				map[d] = access_geometry::fixed{0, buffer_range[d]};
+			}
+		}
+
+		const bool is_non_overlapping = split[static_cast<int>(rmfn.get_slice_dimension())] != split_geometry::split;
+		return range_mapper_properties{std::move(map), is_constant, is_non_overlapping};
+	}
 };
 
 template <int KernelDims, int BufferDims>
 struct range_mapper_traits<celerity::access::fixed<KernelDims, BufferDims>> {
-	constexpr static bool is_constant = true;
-	constexpr static bool is_identity = false;
-	constexpr static bool is_non_overlapping = false;
+	static range_mapper_properties get_properties(
+	    const celerity::access::fixed<KernelDims, BufferDims>& rmfn, const split_geometry_map&, [[maybe_unused]] const buffer_geometry& buffer_range) {
+		assert(buffer_range.size() == BufferDims);
+
+		access_geometry_map map(BufferDims);
+		for(int d = 0; d < BufferDims; ++d) {
+			map[d] = access_geometry::fixed{rmfn.get_subrange().offset[d], rmfn.get_subrange().range[d]};
+		}
+		return range_mapper_properties{std::move(map), /* is_constant= */ true, /* is_non_overlapping= */ false};
+	}
 };
 
 template <int KernelDims, int BufferDims>
 struct range_mapper_traits<celerity::access::all<KernelDims, BufferDims>> {
-	constexpr static bool is_constant = true;
-	constexpr static bool is_identity = false;
-	constexpr static bool is_non_overlapping = false;
+	static range_mapper_properties get_properties(
+	    const celerity::access::all<KernelDims, BufferDims>& rmfn, const split_geometry_map&, const buffer_geometry& buffer_range) {
+		access_geometry_map map(buffer_range.size());
+		for(size_t d = 0; d < buffer_range.size(); ++d) {
+			map[d] = access_geometry::fixed{0, buffer_range[d]};
+		}
+		return range_mapper_properties{std::move(map), /* is_constant= */ true, /* is_non_overlapping= */ false};
+	}
+};
+
+template <int... Permutation>
+struct range_mapper_traits<celerity::experimental::access::transposed<Permutation...>> {
+	static range_mapper_properties get_properties(const celerity::experimental::access::transposed<Permutation...>&,
+	    [[maybe_unused]] const split_geometry_map& split, [[maybe_unused]] const buffer_geometry& buffer_range) {
+		assert(split.size() == sizeof...(Permutation));
+		assert(buffer_range.size() == sizeof...(Permutation));
+
+		access_geometry_map map{access_geometry::one_to_one{Permutation}...};
+		return range_mapper_properties{std::move(map), /* is_constant= */ false, /* is_non_overlapping= */ true};
+	}
 };
 
 } // namespace celerity::experimental
