@@ -812,32 +812,32 @@ namespace detail {
 		const auto props_2_0_0 = range_mapper_traits<celerity::access::slice<2>>::get_properties(celerity::access::slice<2>(0), split_2_0, buffer_range);
 		CHECK(props_2_0_0.is_constant);
 		CHECK(!props_2_0_0.is_non_overlapping);
-		CHECK(props_2_0_0.access_geometry == access_geometry_map{access_geometry::fixed{0, 1000}, access_geometry::fixed{0, 1000}});
+		CHECK(props_2_0_0.access_geometry == access_geometry_map{access_geometry::constant{0, 1000}, access_geometry::constant{0, 1000}});
 
 		const auto props_2_0_1 = range_mapper_traits<celerity::access::slice<2>>::get_properties(celerity::access::slice<2>(1), split_2_0, buffer_range);
 		CHECK(!props_2_0_1.is_constant);
 		CHECK(props_2_0_1.is_non_overlapping);
-		CHECK(props_2_0_1.access_geometry == access_geometry_map{access_geometry::one_to_one{0}, access_geometry::fixed{0, 1000}});
+		CHECK(props_2_0_1.access_geometry == access_geometry_map{access_geometry::split{0}, access_geometry::constant{0, 1000}});
 
 		const auto props_2_1_0 = range_mapper_traits<celerity::access::slice<2>>::get_properties(celerity::access::slice<2>(0), split_2_1, buffer_range);
 		CHECK(!props_2_1_0.is_constant);
 		CHECK(props_2_1_0.is_non_overlapping);
-		CHECK(props_2_1_0.access_geometry == access_geometry_map{access_geometry::fixed{0, 1000}, access_geometry::one_to_one{1}});
+		CHECK(props_2_1_0.access_geometry == access_geometry_map{access_geometry::constant{0, 1000}, access_geometry::split{1}});
 
 		const auto props_2_1_1 = range_mapper_traits<celerity::access::slice<2>>::get_properties(celerity::access::slice<2>(1), split_2_1, buffer_range);
 		CHECK(props_2_1_1.is_constant);
 		CHECK(!props_2_1_1.is_non_overlapping);
-		CHECK(props_2_1_1.access_geometry == access_geometry_map{access_geometry::fixed{0, 1000}, access_geometry::fixed{0, 1000}});
+		CHECK(props_2_1_1.access_geometry == access_geometry_map{access_geometry::constant{0, 1000}, access_geometry::constant{0, 1000}});
 
 		const auto props_2_x_0 = range_mapper_traits<celerity::access::slice<2>>::get_properties(celerity::access::slice<2>(0), split_2_x, buffer_range);
 		CHECK(!props_2_x_0.is_constant);
 		CHECK(!props_2_x_0.is_non_overlapping);
-		CHECK(props_2_x_0.access_geometry == access_geometry_map{access_geometry::fixed{0, 1000}, access_geometry::one_to_one{1}});
+		CHECK(props_2_x_0.access_geometry == access_geometry_map{access_geometry::constant{0, 1000}, access_geometry::split{1}});
 
 		const auto props_2_x_1 = range_mapper_traits<celerity::access::slice<2>>::get_properties(celerity::access::slice<2>(1), split_2_x, buffer_range);
 		CHECK(!props_2_x_1.is_constant);
 		CHECK(!props_2_x_1.is_non_overlapping);
-		CHECK(props_2_x_1.access_geometry == access_geometry_map{access_geometry::one_to_one{0}, access_geometry::fixed{0, 1000}});
+		CHECK(props_2_x_1.access_geometry == access_geometry_map{access_geometry::split{0}, access_geometry::constant{0, 1000}});
 	}
 
 	TEST_CASE("slice range mapper metadata - 3d", "[gather]") {
@@ -851,25 +851,24 @@ namespace detail {
 		CHECK(props_3_0_0.is_constant);
 		CHECK(!props_3_0_0.is_non_overlapping);
 		CHECK(props_3_0_0.access_geometry
-		      == access_geometry_map{access_geometry::fixed{0, 1000}, access_geometry::fixed{0, 1000}, access_geometry::fixed{0, 1000}});
+		      == access_geometry_map{access_geometry::constant{0, 1000}, access_geometry::constant{0, 1000}, access_geometry::constant{0, 1000}});
 
 		const auto props_3_0_2 = range_mapper_traits<celerity::access::slice<3>>::get_properties(celerity::access::slice<3>(2), split_3_0, buffer_range);
 		CHECK(!props_3_0_2.is_constant);
 		CHECK(props_3_0_2.is_non_overlapping);
 		CHECK(props_3_0_2.access_geometry
-		      == access_geometry_map{access_geometry::one_to_one{0}, access_geometry::fixed{0, 1000}, access_geometry::fixed{0, 1000}});
+		      == access_geometry_map{access_geometry::split{0}, access_geometry::constant{0, 1000}, access_geometry::constant{0, 1000}});
 
 		const auto props_3_x_0 = range_mapper_traits<celerity::access::slice<3>>::get_properties(celerity::access::slice<3>(0), split_3_x, buffer_range);
 		CHECK(!props_3_x_0.is_constant);
 		CHECK(!props_3_x_0.is_non_overlapping);
 		CHECK(props_3_x_0.access_geometry
-		      == access_geometry_map{access_geometry::fixed{0, 1000}, access_geometry::one_to_one{1}, access_geometry::fixed{0, 1000}});
+		      == access_geometry_map{access_geometry::constant{0, 1000}, access_geometry::split{1}, access_geometry::constant{0, 1000}});
 
 		const auto props_3_x_2 = range_mapper_traits<celerity::access::slice<3>>::get_properties(celerity::access::slice<3>(2), split_3_x, buffer_range);
 		CHECK(!props_3_x_2.is_constant);
 		CHECK(props_3_x_2.is_non_overlapping);
-		CHECK(props_3_x_2.access_geometry
-		      == access_geometry_map{access_geometry::one_to_one{0}, access_geometry::one_to_one{1}, access_geometry::fixed{0, 1000}});
+		CHECK(props_3_x_2.access_geometry == access_geometry_map{access_geometry::split{0}, access_geometry::split{1}, access_geometry::constant{0, 1000}});
 	}
 
 } // namespace detail
