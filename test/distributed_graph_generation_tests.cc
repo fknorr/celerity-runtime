@@ -898,3 +898,12 @@ TEST_CASE("graph generator no collectives for stencil", "[distributed_graph_gene
 	    dctx.device_compute<class UKN(step)>(buf.get_range()).read(buf, acc::neighborhood(1, 1)).discard_write(buf, acc::one_to_one()).submit();
 	const auto tid_consume = dctx.device_compute<class UKN(consume)>(buf.get_range()).read(buf, acc::one_to_one()).submit();
 }
+
+TEST_CASE("graph generator generates alltoalls for transposition pattern", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	celerity::range<2> range(1000, 1000);
+	auto buf = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(producer)>(range).discard_write(buf, celerity::access::one_to_one()).submit();
+	dctx.device_compute<class UKN(consumer)>(range).read(buf, celerity::experimental::access::transposed<1, 0>()).submit();
+}

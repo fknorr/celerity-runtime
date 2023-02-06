@@ -272,7 +272,7 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 }
 
 
-bool all_range_mappers_constant(const std::vector<const range_mapper_base*> range_mappers, const split_constraints& task_split) {
+bool all_range_mappers_constant(const std::vector<const range_mapper_base*>& range_mappers, const split_constraints& task_split) {
 	return std::all_of(range_mappers.begin(), range_mappers.end(),
 	    [&](const range_mapper_base* const rm) { return rm->get_properties(task_split.get_geometry_map()).is_constant; });
 }
@@ -292,6 +292,37 @@ bool combined_range_mappers_non_overlapping(const std::vector<const range_mapper
 		combined_region = GridRegion<3>::merge(combined_region, rm_box);
 	}
 	return true;
+}
+
+
+// split or an experimental::transposed<0, 1> RM would be considered a "trivial transposition"
+bool is_non_trivial_transposition(const forward_task::access& producer, const forward_task::access& consumer) {
+	// TODO relax: if there are more than one consumer RMs but some are dataflow-free, this can still be a transposition
+	// (think producer_rms={split}, consumer_rms={split, transposed}
+	if(producer.range_mappers.size() != 1) return false;
+	if(consumer.range_mappers.size() != 1) return false;
+
+	const auto producer_properties = producer.range_mappers.front()->get_properties(producer.split.get_geometry_map());
+	const auto consumer_properties = consumer.range_mappers.front()->get_properties(consumer.split.get_geometry_map());
+
+	// producer RMs must always be non-overlapping, but the default range_mapper_traits implementation will return false for custom RMs
+	if(!producer_properties.is_non_overlapping || !consumer_properties.is_non_overlapping) return false;
+
+	assert(producer_properties.access_geometry.size() == consumer_properties.access_geometry.size());
+	bool have_unknown_geometry = false; // all bets are off if there is a dimension with access_geometry::other
+	bool have_non_trivial_dimension = false;
+	for(size_t i = 0; i < producer_properties.access_geometry.size(); ++i) {
+		const auto const_producer = std::get_if<experimental::access_geometry::constant>(&producer_properties.access_geometry[i]);
+		const auto const_consumer = std::get_if<experimental::access_geometry::constant>(&consumer_properties.access_geometry[i]);
+		const auto split_producer = std::get_if<experimental::access_geometry::split>(&producer_properties.access_geometry[i]);
+		const auto split_consumer = std::get_if<experimental::access_geometry::split>(&consumer_properties.access_geometry[i]);
+
+		if((!const_producer && !split_producer) || (!const_consumer && !split_consumer)) have_unknown_geometry = true;
+		if((split_producer && const_consumer) || (const_producer && split_consumer)) have_non_trivial_dimension = true;
+		if(split_producer && split_consumer && split_producer->kernel_dimension != split_consumer->kernel_dimension) have_non_trivial_dimension = true;
+	}
+
+	return !have_unknown_geometry && have_non_trivial_dimension;
 }
 
 
@@ -400,7 +431,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 
 		// MPI_Scatterv man page says:
 		// 		The specification of counts, types, and displacements should not cause any location on the root to be read more than one time.
-		// That is trivailly fulfilled for one_to_one RMS at the moment.
+		// That is trivailly fulfilled for split RMS at the moment.
 		// TODO what does "should" mean? If it's a proper requirement, assert it
 		GridRegion<3> source_region;
 		std::vector<GridRegion<3>> dest_regions(m_num_nodes);
@@ -442,7 +473,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 		m_last_collective_commands[implicit_collective] = scatter_cmd->get_cid();
 
 		generate_epoch_dependencies(scatter_cmd);
-	} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && false /* TODO producer.rm is transposed consumer.rm */) {
+	} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && is_non_trivial_transposition(tsk.get_producer(), tsk.get_consumer())) {
 		// Alltoall
 	}
 }

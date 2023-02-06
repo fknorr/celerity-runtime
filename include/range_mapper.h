@@ -19,23 +19,23 @@ namespace access_geometry {
 		friend bool operator!=(other, other) { return false; }
 	};
 
-	struct one_to_one {
-		int dimension;
+	struct split {
+		int kernel_dimension;
 
-		friend bool operator==(const one_to_one& lhs, const one_to_one& rhs) { return lhs.dimension == rhs.dimension; }
-		friend bool operator!=(const one_to_one& lhs, const one_to_one& rhs) { return !(rhs == lhs); }
+		friend bool operator==(const split& lhs, const split& rhs) { return lhs.kernel_dimension == rhs.kernel_dimension; }
+		friend bool operator!=(const split& lhs, const split& rhs) { return !(rhs == lhs); }
 	};
 
-	struct fixed {
+	struct constant {
 		size_t offset;
 		size_t range;
 
-		friend bool operator==(const fixed& lhs, const fixed& rhs) { return lhs.offset == rhs.offset && lhs.range == rhs.range; }
-		friend bool operator!=(const fixed& lhs, const fixed& rhs) { return !(rhs == lhs); }
+		friend bool operator==(const constant& lhs, const constant& rhs) { return lhs.offset == rhs.offset && lhs.range == rhs.range; }
+		friend bool operator!=(const constant& lhs, const constant& rhs) { return !(rhs == lhs); }
 	};
 } // namespace access_geometry
 
-using access_geometry_t = std::variant<access_geometry::other, access_geometry::one_to_one, access_geometry::fixed>;
+using access_geometry_t = std::variant<access_geometry::other, access_geometry::split, access_geometry::constant>;
 using access_geometry_map = std::vector<access_geometry_t>;
 
 struct range_mapper_properties {
@@ -331,8 +331,7 @@ namespace access {
 	};
 
 	template <int Dims>
-	struct [[deprecated("Explicitly-dimensioned range mappers are deprecated, remove template arguments from celerity::one_to_one")]] one_to_one
-	    : one_to_one<0>{};
+	struct [[deprecated("Explicitly-dimensioned range mappers are deprecated, remove template arguments from celerity::split")]] one_to_one : one_to_one<0>{};
 
 	one_to_one() -> one_to_one<>;
 
@@ -514,10 +513,14 @@ namespace celerity::experimental {
 template <int Dims>
 struct range_mapper_traits<celerity::access::one_to_one<Dims>> {
 	static range_mapper_properties get_properties(
-	    const celerity::access::one_to_one<Dims>&, const split_geometry_map& split, [[maybe_unused]] const buffer_geometry& buffer_range) {
+	    const celerity::access::one_to_one<Dims>&, const split_geometry_map& split, const buffer_geometry& buffer_range) {
 		access_geometry_map map(split.size());
 		for(int d = 0; d < static_cast<int>(split.size()); ++d) {
-			map[d] = access_geometry::one_to_one{d};
+			if(split[d] == split_geometry::split) {
+				map[d] = access_geometry::split{d};
+			} else {
+				map[d] = access_geometry::constant{0, buffer_range[d]};
+			}
 		}
 		return range_mapper_properties{std::move(map), /* is_constant= */ false, /* is_non_overlapping= */ true};
 	}
@@ -536,10 +539,10 @@ struct range_mapper_traits<celerity::access::slice<Dims>> {
 		bool is_constant = true;
 		for(int d = 0; d < Dims; ++d) {
 			if(split[d] == split_geometry::split && d != static_cast<int>(rmfn.get_slice_dimension())) {
-				map[d] = access_geometry::one_to_one{d};
+				map[d] = access_geometry::split{d};
 				is_constant = false;
 			} else {
-				map[d] = access_geometry::fixed{0, buffer_range[d]};
+				map[d] = access_geometry::constant{0, buffer_range[d]};
 			}
 		}
 
@@ -556,7 +559,7 @@ struct range_mapper_traits<celerity::access::fixed<KernelDims, BufferDims>> {
 
 		access_geometry_map map(BufferDims);
 		for(int d = 0; d < BufferDims; ++d) {
-			map[d] = access_geometry::fixed{rmfn.get_subrange().offset[d], rmfn.get_subrange().range[d]};
+			map[d] = access_geometry::constant{rmfn.get_subrange().offset[d], rmfn.get_subrange().range[d]};
 		}
 		return range_mapper_properties{std::move(map), /* is_constant= */ true, /* is_non_overlapping= */ false};
 	}
@@ -568,7 +571,7 @@ struct range_mapper_traits<celerity::access::all<KernelDims, BufferDims>> {
 	    const celerity::access::all<KernelDims, BufferDims>& rmfn, const split_geometry_map&, const buffer_geometry& buffer_range) {
 		access_geometry_map map(buffer_range.size());
 		for(size_t d = 0; d < buffer_range.size(); ++d) {
-			map[d] = access_geometry::fixed{0, buffer_range[d]};
+			map[d] = access_geometry::constant{0, buffer_range[d]};
 		}
 		return range_mapper_properties{std::move(map), /* is_constant= */ true, /* is_non_overlapping= */ false};
 	}
@@ -578,10 +581,21 @@ template <int... Permutation>
 struct range_mapper_traits<celerity::experimental::access::transposed<Permutation...>> {
 	static range_mapper_properties get_properties(const celerity::experimental::access::transposed<Permutation...>&,
 	    [[maybe_unused]] const split_geometry_map& split, [[maybe_unused]] const buffer_geometry& buffer_range) {
-		assert(split.size() == sizeof...(Permutation));
-		assert(buffer_range.size() == sizeof...(Permutation));
+		constexpr int dimensions = sizeof...(Permutation);
+		constexpr std::array<int, dimensions> kernel_to_buffer_dims{Permutation...};
+		assert(split.size() == static_cast<size_t>(dimensions));
+		assert(buffer_range.size() == static_cast<size_t>(dimensions));
 
-		access_geometry_map map{access_geometry::one_to_one{Permutation}...};
+		access_geometry_map map(dimensions);
+		for(int kernel_dim = 0; kernel_dim < dimensions; ++kernel_dim) {
+			const auto buffer_dim = kernel_to_buffer_dims[kernel_dim];
+			if(split[kernel_dim] == split_geometry::split) {
+				map[buffer_dim] = access_geometry::split{kernel_dim};
+			} else {
+				map[buffer_dim] = access_geometry::constant{0, buffer_range[buffer_dim]};
+			}
+		}
+
 		return range_mapper_properties{std::move(map), /* is_constant= */ false, /* is_non_overlapping= */ true};
 	}
 };
