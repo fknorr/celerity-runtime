@@ -376,6 +376,17 @@ namespace experimental::access {
 		range<BufferDims> m_granularity = detail::range_cast<BufferDims>(range<3>(1, 1, 1));
 	};
 
+	template <size_t... Permutation>
+	struct transpose {
+		static constexpr int dimensions = sizeof...(Permutation);
+		static_assert((... + Permutation) == dimensions * (dimensions + 1) / 2);
+		static_assert((... && (Permutation < dimensions)));
+		// TODO static_assert(is_permutation_of_0_to_dimensions_minus_1<Permutation>)
+
+		subrange<dimensions> operator()(const chunk<dimensions>& ck) const { return {{ck.offset[Permutation]...}, {ck.range[Permutation]...}}; }
+	};
+	// TODO what is the trait/query for this? "given split direction X we always have entire dimension Y"?
+
 } // namespace experimental::access
 
 } // namespace celerity
