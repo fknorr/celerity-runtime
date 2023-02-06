@@ -167,6 +167,18 @@ namespace detail {
 			} else if(const auto& dest_region = scmd->get_dest_regions()[scmd->get_nid()]; !dest_region.empty()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
 			}
+		} else if(const auto a2acmd = dynamic_cast<const alltoall_command*>(&cmd)) {
+			fmt::format_to(std::back_inserter(label), "<b>alltoall</b>");
+			GridRegion<3> read_set;
+			for(const auto& region : a2acmd->get_send_regions()) {
+				read_set = GridRegion<3>::merge(read_set, region);
+			}
+			fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", a2acmd->get_bid(), read_set);
+			GridRegion<3> write_set;
+			for(const auto& region : a2acmd->get_recv_regions()) {
+				write_set = GridRegion<3>::merge(write_set, region);
+			}
+			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", a2acmd->get_bid(), write_set);
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";

@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, broadcast, scatter };
+	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, broadcast, scatter, alltoall };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -229,6 +229,23 @@ namespace detail {
 		std::vector<GridRegion<3>> m_dest_regions;
 	};
 
+	class alltoall_command final : public abstract_command {
+		friend class command_graph;
+		alltoall_command(
+		    const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> send_regions, std::vector<GridRegion<3>> recv_regions)
+		    : abstract_command(cid, nid), m_bid(bid), m_send_regions(std::move(send_regions)), m_recv_regions(std::move(recv_regions)) {}
+
+	  public:
+		buffer_id get_bid() const { return m_bid; }
+		const std::vector<GridRegion<3>>& get_send_regions() const { return m_send_regions; }
+		const std::vector<GridRegion<3>>& get_recv_regions() const { return m_recv_regions; }
+
+	  private:
+		buffer_id m_bid;
+		std::vector<GridRegion<3>> m_send_regions;
+		std::vector<GridRegion<3>> m_recv_regions;
+	};
+
 	// ----------------------------------------------------------------------------------------------------------------
 	// -------------------------------------------- SERIALIZED COMMANDS -----------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
@@ -298,8 +315,14 @@ namespace detail {
 		std::vector<GridRegion<3>> dest_regions;
 	};
 
+	struct alltoall_data {
+		buffer_id bid;
+		std::vector<GridRegion<3>> send_regions;
+		std::vector<GridRegion<3>> recv_regions;
+	};
+
 	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,
-	    gather_data, broadcast_data, scatter_data>;
+	    gather_data, broadcast_data, scatter_data, alltoall_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -338,7 +361,8 @@ namespace detail {
 			    [](const reduction_data&) { return command_type::reduction; },
 				[](const gather_data&) { return command_type::gather; },
 				[](const broadcast_data&) { return command_type::broadcast; },
-				[](const scatter_data&) { return command_type::scatter; }
+				[](const scatter_data&) { return command_type::scatter; },
+				[](const alltoall_data&) { return command_type::alltoall; }
 			);
 			// clang-format on
 		}

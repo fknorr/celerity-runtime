@@ -475,6 +475,67 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 		generate_epoch_dependencies(scatter_cmd);
 	} else if(producer_chunks.size() > 1 && consumer_chunks.size() > 1 && is_non_trivial_transposition(tsk.get_producer(), tsk.get_consumer())) {
 		// Alltoall
+		GridRegion<3> local_producer_region;
+		for(const auto& prm : producer_rms) {
+			local_producer_region =
+			    GridRegion<3>::merge(local_producer_region, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[m_local_nid], producer_dims)));
+		}
+
+		GridRegion<3> local_consumer_region;
+		for(const auto& crm : consumer_rms) {
+			local_consumer_region =
+			    GridRegion<3>::merge(local_consumer_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_chunks[m_local_nid], consumer_dims)));
+		}
+
+		GridRegion<3> local_read_set, local_write_set;
+		std::vector<GridRegion<3>> send_regions(m_num_nodes);
+		std::vector<GridRegion<3>> recv_regions(m_num_nodes);
+		for(node_id nid = 0; nid < std::min(m_num_nodes, consumer_chunks.size()); ++nid) {
+			if(nid == m_local_nid) continue; // do not exchange with self
+
+			auto& send_to_node = send_regions[nid];
+			for(const auto& crm : consumer_rms) {
+				send_to_node = GridRegion<3>::merge(send_to_node, subrange_to_grid_box(apply_range_mapper(crm, consumer_chunks[nid], consumer_dims)));
+			}
+			send_to_node = GridRegion<3>::intersect(send_to_node, local_producer_region);
+			local_read_set = GridRegion<3>::merge(local_read_set, send_to_node);
+
+			auto& recv_from_node = recv_regions[nid];
+			for(const auto& prm : producer_rms) {
+				recv_from_node = GridRegion<3>::merge(recv_from_node, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[nid], producer_dims)));
+			}
+			recv_from_node = GridRegion<3>::intersect(recv_from_node, local_consumer_region);
+			local_write_set = GridRegion<3>::merge(local_write_set, recv_from_node);
+		}
+		assert(GridRegion<3>::intersect(local_read_set, local_write_set).empty());
+
+		const auto alltoall_cmd = create_command<alltoall_command>(m_local_nid, bid, send_regions, recv_regions); // TODO eliminate copies
+
+		auto& buffer_state = m_buffer_states.at(bid);
+
+		// Store the read access for determining anti-dependencies later on
+		m_command_buffer_reads[alltoall_cmd->get_cid()][bid] = local_read_set;
+
+		for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(local_read_set)) {
+			assert(wcs.is_fresh());
+			m_cdag.add_dependency(alltoall_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+		}
+
+		for(node_id nid = 0; nid < m_num_nodes; ++nid) {
+			// one replacement-update is enough per node since we assume send-regions are disjoint
+			buffer_state.replicated_regions.update_region(send_regions[nid], node_bitset().set(nid));
+		}
+
+		generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, local_write_set, alltoall_cmd);
+
+		buffer_state.local_last_writer.update_region(local_write_set, write_command_state(alltoall_cmd->get_cid(), true /* is_replicated */));
+
+		if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+			m_cdag.add_dependency(alltoall_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+		}
+		m_last_collective_commands[implicit_collective] = alltoall_cmd->get_cid();
+
+		generate_epoch_dependencies(alltoall_cmd);
 	}
 }
 

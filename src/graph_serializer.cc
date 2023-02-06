@@ -105,6 +105,8 @@ namespace detail {
 			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_region(), bcmd->get_source()};
 		} else if(const auto* scmd = dynamic_cast<scatter_command*>(cmd)) {
 			pkg.data = scatter_data{scmd->get_bid(), scmd->get_source_nid(), scmd->get_source_region(), scmd->get_dest_regions()};
+		} else if(const auto* a2acmd = dynamic_cast<alltoall_command*>(cmd)) {
+			pkg.data = alltoall_data{a2acmd->get_bid(), a2acmd->get_send_regions(), a2acmd->get_recv_regions()};
 		} else {
 			assert(false && "Unknown command");
 		}

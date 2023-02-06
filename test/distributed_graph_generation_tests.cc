@@ -362,6 +362,7 @@ class command_query {
 		if(isa<gather_command>(cmd)) return command_type::gather;
 		if(isa<broadcast_command>(cmd)) return command_type::broadcast;
 		if(isa<scatter_command>(cmd)) return command_type::scatter;
+		if(isa<alltoall_command>(cmd)) return command_type::alltoall;
 		throw query_exception("Unknown command type");
 	}
 
@@ -377,6 +378,7 @@ class command_query {
 		case command_type::gather: return "gather";
 		case command_type::broadcast: return "broadcast";
 		case command_type::scatter: return "scatter";
+		case command_type::alltoall: return "alltoall";
 		default: return "<unknown>";
 		}
 	}
@@ -905,5 +907,5 @@ TEST_CASE("graph generator generates alltoalls for transposition pattern", "[dis
 	auto buf = dctx.create_buffer(range);
 
 	dctx.device_compute<class UKN(producer)>(range).discard_write(buf, celerity::access::one_to_one()).submit();
-	dctx.device_compute<class UKN(consumer)>(range).read(buf, celerity::experimental::access::transposed<1, 0>()).submit();
+	dctx.device_compute<class UKN(consumer)>(range).read(buf, experimental::access::transposed<1, 0>()).submit();
 }
