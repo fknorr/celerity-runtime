@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include "distributed_graph_generator.h"
 #include "intrusive_graph.h"
 #include "task_manager.h"
 #include "test_utils.h"
@@ -150,18 +151,15 @@ struct task_manager_benchmark_context {
 
 struct graph_generator_benchmark_context {
 	const size_t num_nodes;
+	const size_t num_local_devices;
 	command_graph cdag;
-	graph_serializer gser{cdag, [](node_id, unique_frame_ptr<command_frame>) {}};
+	graph_serializer gser{cdag, [](node_id, command_pkg) {}};
 	task_manager tm{num_nodes, nullptr};
-	graph_generator ggen{num_nodes, cdag};
-	test_utils::mock_buffer_factory mbf{tm, ggen};
+	distributed_graph_generator dggen{num_nodes, num_local_devices, /* local_nid= */ 0, cdag, tm};
+	test_utils::mock_buffer_factory mbf{tm, dggen};
 
-	explicit graph_generator_benchmark_context(size_t num_nodes) : num_nodes{num_nodes} {
-		tm.register_task_callback([this](const task* tsk) {
-			naive_split_transformer transformer{this->num_nodes, this->num_nodes};
-			ggen.build_task(*tsk, {&transformer});
-			gser.flush(tsk->get_id());
-		});
+	explicit graph_generator_benchmark_context(size_t num_nodes, size_t num_local_devices) : num_nodes{num_nodes}, num_local_devices{num_local_devices} {
+		tm.register_task_callback([this](const task* tsk) { gser.flush(dggen.build_task(*tsk)); });
 	}
 
 	~graph_generator_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
@@ -231,6 +229,7 @@ class restartable_thread {
 	}
 };
 
+#if 0  // NOCOMMIT
 class benchmark_scheduler final : public abstract_scheduler {
   public:
 	benchmark_scheduler(restartable_thread& worker_thread, std::unique_ptr<graph_generator> ggen, std::unique_ptr<graph_serializer> gser, size_t num_nodes)
@@ -298,6 +297,7 @@ struct submission_throttle_benchmark_context : public BaseBenchmarkContext {
 		last_submission = std::chrono::steady_clock::now();
 	}
 };
+#endif // NOCOMMIT
 
 
 // The generate_* methods are [[noinline]] to make them visible in a profiler.
@@ -432,9 +432,10 @@ TEST_CASE("generating large task graphs", "[benchmark][task-graph]") {
 }
 
 TEMPLATE_TEST_CASE_SIG("generating large command graphs for N nodes", "[benchmark][command-graph]", ((size_t NumNodes), NumNodes), 1, 4, 16) {
-	run_benchmarks([] { return graph_generator_benchmark_context{NumNodes}; });
+	run_benchmarks([] { return graph_generator_benchmark_context{NumNodes, 4}; });
 }
 
+#if 0  // NOCOMMIT
 TEMPLATE_TEST_CASE_SIG("building command graphs in a dedicated scheduler thread for N nodes", "[benchmark][scheduler]", ((size_t NumNodes), NumNodes), 1, 4) {
 	SECTION("reference: single-threaded immediate graph generation") {
 		run_benchmarks([&] { return graph_generator_benchmark_context{NumNodes}; });
@@ -451,6 +452,7 @@ TEMPLATE_TEST_CASE_SIG("building command graphs in a dedicated scheduler thread 
 		run_benchmarks([&] { return submission_throttle_benchmark_context<scheduler_benchmark_context>{10us, thrd, NumNodes}; });
 	}
 }
+#endif // NOCOMMIT
 
 template <typename BenchmarkContextFactory, typename BenchmarkContextConsumer>
 void debug_graphs(BenchmarkContextFactory&& make_ctx, BenchmarkContextConsumer&& debug_ctx) {
@@ -467,5 +469,5 @@ TEST_CASE("printing benchmark task graphs", "[.][debug-graphs][task-graph]") {
 }
 
 TEST_CASE("printing benchmark command graphs", "[.][debug-graphs][command-graph]") {
-	debug_graphs([] { return graph_generator_benchmark_context{2}; }, [](auto&& ctx) { test_utils::maybe_print_graph(ctx.cdag, ctx.tm); });
+	debug_graphs([] { return graph_generator_benchmark_context{2, 2}; }, [](auto&& ctx) { test_utils::maybe_print_graph(ctx.cdag, ctx.tm); });
 }
