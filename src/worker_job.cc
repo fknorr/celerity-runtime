@@ -364,6 +364,7 @@ namespace detail {
 		ZoneScoped;
 		const auto data = std::get<gather_data>(pkg.data);
 
+		// TODO usually we do not want lock host memory, but all device memories here
 		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
@@ -532,6 +533,7 @@ namespace detail {
 		if(data.source_nid != m_local_nid) {
 			ZoneScopedN("commit");
 			CELERITY_TRACE("set_buffer_data({}, {}, buffer)", (int)data.bid, data.region);
+			// TODO this should also do a "device broadcast" like we have for Allgather
 			m_buffer_mngr.set_buffer_data(data.bid, sr, std::move(buffer));
 		}
 
