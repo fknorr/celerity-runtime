@@ -360,15 +360,13 @@ namespace detail {
 		}
 	}
 
-	class gather_buffer {
+	class linearized_region_array {
 	  public:
-		gather_buffer() = default;
+		linearized_region_array() = default;
 
-		gather_buffer(const std::vector<GridRegion<3>>& source_regions, size_t element_size)
-		    : m_element_size(element_size), m_byte_sizes(source_regions.size()), m_byte_offsets(source_regions.size()) {
-			std::vector<std::tuple<size_t, size_t, GridBox<3>>> size_offset_boxes;
+		linearized_region_array(const std::vector<GridRegion<3>>& source_regions, const size_t element_size)
+		    : m_byte_sizes(source_regions.size()), m_byte_offsets(source_regions.size()) {
 			std::optional<GridBox<3>> merge;
-			size_t total_size_bytes = 0;
 			size_t merge_size_bytes = 0;
 			size_t merge_offset_bytes = 0;
 			size_t box_offset_bytes = 0;
@@ -383,7 +381,7 @@ namespace detail {
 							*merge = GridBox<3>::fuse<0>(*merge, box);
 							merge_size_bytes += box_size_bytes;
 						} else {
-							size_offset_boxes.emplace_back(merge_size_bytes, merge_offset_bytes, *merge);
+							m_size_offset_boxes.emplace_back(merge_size_bytes, merge_offset_bytes, *merge);
 							merge.reset();
 						}
 					}
@@ -398,37 +396,77 @@ namespace detail {
 				m_byte_sizes[i] = static_cast<int>(chunk_size_bytes);
 				m_byte_offsets[i] = static_cast<int>(chunk_offset_bytes);
 				chunk_offset_bytes += chunk_size_bytes;
-				total_size_bytes += chunk_size_bytes;
+				m_total_size_bytes += chunk_size_bytes;
 			}
-			if(merge.has_value()) { size_offset_boxes.emplace_back(merge_size_bytes, merge_offset_bytes, *merge); }
+			if(merge.has_value()) { m_size_offset_boxes.emplace_back(merge_size_bytes, merge_offset_bytes, *merge); }
+		}
 
+		const auto& get_chunk_byte_sizes() const { return m_byte_sizes; }
+		const auto& get_chunk_byte_offsets() const { return m_byte_offsets; }
+		size_t get_size_bytes() const { return m_total_size_bytes; }
+
+	  protected:
+		const auto& get_size_offset_boxes() const { return m_size_offset_boxes; }
+
+	  private:
+		std::vector<std::tuple<size_t, size_t, GridBox<3>>> m_size_offset_boxes;
+		std::vector<int> m_byte_sizes;
+		std::vector<int> m_byte_offsets;
+		size_t m_total_size_bytes = 0;
+	};
+
+	class collective_send_buffer : public linearized_region_array {
+	  public:
+		collective_send_buffer() = default;
+
+		collective_send_buffer(const std::vector<GridRegion<3>>& source_regions, size_t element_size)
+		    : linearized_region_array(source_regions, element_size), m_element_size(element_size) {
+			ZoneScopedN("allocate send buffer");
+
+			m_payload = make_uninitialized_payload<std::byte>(get_size_bytes());
+			m_box_pointers.reserve(get_size_offset_boxes().size());
+			for(const auto& [size, offset, box] : get_size_offset_boxes()) {
+				m_box_pointers.emplace_back(box, static_cast<std::byte*>(m_payload.get_pointer()) + offset);
+			}
+		}
+
+		void* get_pointer() { return m_payload.get_pointer(); }
+		auto& get_boxes() { return m_box_pointers; }
+
+	  private:
+		size_t m_element_size;
+		unique_payload_ptr m_payload;
+		std::vector<std::pair<GridBox<3>, void*>> m_box_pointers;
+	};
+
+	class collective_receive_buffer : public linearized_region_array {
+	  public:
+		collective_receive_buffer() = default;
+
+		collective_receive_buffer(const std::vector<GridRegion<3>>& source_regions, size_t element_size)
+		    : linearized_region_array(source_regions, element_size), m_element_size(element_size) {
 			ZoneScopedN("allocate receive buffer");
 
-			assert(!size_offset_boxes.empty());
-			m_box_payloads.reserve(size_offset_boxes.size());
-			for(const auto& [size, offset, box] : size_offset_boxes) {
+			assert(!get_size_offset_boxes().empty());
+			m_box_payloads.reserve(get_size_offset_boxes().size());
+			for(const auto& [size, offset, box] : get_size_offset_boxes()) {
 				auto payload = make_uninitialized_payload<std::byte>(size);
 				m_box_payloads.emplace_back(box, std::move(payload));
 			}
 
 			assert(!m_box_payloads.empty());
 			if(m_box_payloads.size() > 1) {
-				m_staging_buffer_opt = std::make_unique<std::byte[]>(total_size_bytes);
+				m_staging_buffer_opt = std::make_unique<std::byte[]>(get_size_bytes());
 				m_receive_buffer = m_staging_buffer_opt.get();
 			} else {
 				auto& [box, payload] = m_box_payloads.front();
 				m_receive_buffer = payload.get_pointer();
 			}
-
-			m_size_bytes = total_size_bytes;
 		}
 
 		void* get_pointer() { return m_receive_buffer; }
-		size_t get_size_bytes() { return m_size_bytes; }
-		const auto& get_chunk_byte_sizes() const { return m_byte_sizes; }
-		const auto& get_chunk_byte_offsets() const { return m_byte_offsets; }
 
-		auto into_box_payloads() && {
+		auto into_boxes() && {
 			if(m_staging_buffer_opt) {
 				ZoneScopedN("split receive buffer");
 				size_t offset_bytes = 0;
@@ -440,7 +478,6 @@ namespace detail {
 				m_staging_buffer_opt.reset();
 			}
 			m_receive_buffer = nullptr;
-			m_size_bytes = 0;
 			return std::move(m_box_payloads);
 		}
 
@@ -448,10 +485,7 @@ namespace detail {
 		size_t m_element_size;
 		std::unique_ptr<std::byte[]> m_staging_buffer_opt;
 		std::vector<std::pair<GridBox<3>, unique_payload_ptr>> m_box_payloads;
-		std::vector<int> m_byte_sizes;
-		std::vector<int> m_byte_offsets;
 		void* m_receive_buffer = nullptr;
-		size_t m_size_bytes = 0;
 	};
 
 	bool gather_job::execute(const command_pkg& pkg) {
@@ -465,47 +499,43 @@ namespace detail {
 		const bool sends_data = !data.source_regions[m_local_nid].empty();
 		const bool receives_data = !data.single_dest_nid.has_value() || *data.single_dest_nid == m_local_nid;
 
-		const auto send_chunk_byte_size = data.source_regions[m_local_nid].area() * buffer_info.element_size;
-
-		unique_payload_ptr send_buffer;
+		collective_send_buffer send_buffer;
 		if(sends_data) {
 			ZoneScopedN("fetch input");
-			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
-			auto send_buffer_cursor = static_cast<std::byte*>(send_buffer.get_pointer());
-			data.source_regions[m_local_nid].scanByBoxes([&](const GridBox<3>& box) {
-				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), send_buffer_cursor).wait();
-				send_buffer_cursor += box.area() * buffer_info.element_size;
-			});
+			send_buffer = collective_send_buffer({data.source_regions[m_local_nid]}, buffer_info.element_size);
+			for(auto& [box, pointer] : send_buffer.get_boxes()) {
+				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), pointer).wait();
+			}
 		}
 
-		gather_buffer recv_buffer;
+		collective_receive_buffer recv_buffer;
 		if(receives_data) {
 			ZoneScopedN("alloc output");
-			recv_buffer = gather_buffer(data.source_regions, buffer_info.element_size);
+			recv_buffer = collective_receive_buffer(data.source_regions, buffer_info.element_size);
 		}
 
 		if(data.single_dest_nid) {
 			ZoneScopedN("Gatherv");
 			const auto root = static_cast<int>(*data.single_dest_nid);
-			MPI_Gatherv(send_buffer.get_pointer(), send_chunk_byte_size, MPI_BYTE, recv_buffer.get_pointer(), recv_buffer.get_chunk_byte_sizes().data(),
+			MPI_Gatherv(send_buffer.get_pointer(), send_buffer.get_size_bytes(), MPI_BYTE, recv_buffer.get_pointer(), recv_buffer.get_chunk_byte_sizes().data(),
 			    recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, root, MPI_COMM_WORLD);
 			CELERITY_TRACE("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
-			    send_chunk_byte_size, send_chunk_byte_size, recv_buffer.get_size_bytes(), fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "),
+			    send_buffer.get_size_bytes(), send_buffer.get_size_bytes(), recv_buffer.get_size_bytes(), fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "),
 			    fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "), root);
 		} else {
 			ZoneScopedN("Allgatherv");
 			// TODO make asynchronous?
-			MPI_Allgatherv(send_buffer.get_pointer(), send_chunk_byte_size, MPI_BYTE, recv_buffer.get_pointer(), recv_buffer.get_chunk_byte_sizes().data(),
-			    recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, MPI_COMM_WORLD);
+			MPI_Allgatherv(send_buffer.get_pointer(), send_buffer.get_size_bytes(), MPI_BYTE, recv_buffer.get_pointer(),
+			    recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, MPI_COMM_WORLD);
 			CELERITY_TRACE("MPI_Allgatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
-			    send_chunk_byte_size, send_chunk_byte_size, recv_buffer.get_size_bytes(), fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "),
+			    send_buffer.get_size_bytes(), send_buffer.get_size_bytes(), recv_buffer.get_size_bytes(), fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "),
 			    fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "));
 		}
 
 		if(receives_data) {
 			ZoneScopedN("commit");
 
-			auto box_payloads = std::move(recv_buffer).into_box_payloads();
+			auto box_payloads = std::move(recv_buffer).into_boxes();
 
 			bool used_broadcast = false;
 			// try to immediately upload allgather data to all device memories
