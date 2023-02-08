@@ -490,7 +490,7 @@ namespace detail {
 		});
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "Gather from a strided non-dim0 split", "[gather][!mayfail]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "Gather from a strided non-dim0 split", "[gather]") {
 		constexpr size_t grid_size = 256;
 		const range<2> range = {grid_size, grid_size};
 
