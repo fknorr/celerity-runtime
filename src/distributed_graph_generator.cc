@@ -273,10 +273,9 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 
 
 bool combined_range_mappers_constant(const std::vector<const range_mapper_base*>& range_mappers, const split_constraints& task_split) {
-	const chunk<3> full_chunk{task_split.geometry.global_offset, task_split.geometry.global_size, task_split.geometry.global_size};
 	GridRegion<3> combined_region, const_region;
 	for(const auto rm : range_mappers) {
-		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, full_chunk, task_split.geometry.dimensions));
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, task_split.geometry));
 		combined_region = GridRegion<3>::merge(combined_region, rm_box);
 		if(rm->get_properties(task_split.get_geometry_map()).is_constant) { const_region = GridRegion<3>::merge(const_region, rm_box); }
 	}
@@ -290,10 +289,9 @@ bool combined_range_mappers_non_overlapping(const std::vector<const range_mapper
 		return false;
 	}
 
-	const chunk<3> full_chunk{task_split.geometry.global_offset, task_split.geometry.global_size, task_split.geometry.global_size};
 	GridRegion<3> combined_region;
 	for(const auto rm : range_mappers) {
-		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, full_chunk, task_split.geometry.dimensions));
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, task_split.geometry));
 		if(!GridRegion<3>::intersect(combined_region, rm_box).empty()) return false;
 		combined_region = GridRegion<3>::merge(combined_region, rm_box);
 	}
@@ -308,6 +306,13 @@ bool is_non_trivial_transposition(const forward_task::access& producer, const fo
 	if(producer.range_mappers.size() != 1) return false;
 	if(consumer.range_mappers.size() != 1) return false;
 
+	const auto producer_rm = producer.range_mappers.front();
+	const auto consumer_rm = consumer.range_mappers.front();
+
+	const auto produced_sr = apply_range_mapper(producer_rm, producer.split.geometry);
+	const auto consumed_sr = apply_range_mapper(consumer_rm, producer.split.geometry);
+	if(produced_sr != consumed_sr) return false;
+
 	const auto producer_properties = producer.range_mappers.front()->get_properties(producer.split.get_geometry_map());
 	const auto consumer_properties = consumer.range_mappers.front()->get_properties(consumer.split.get_geometry_map());
 
@@ -316,7 +321,8 @@ bool is_non_trivial_transposition(const forward_task::access& producer, const fo
 
 	assert(producer_properties.access_geometry.size() == consumer_properties.access_geometry.size());
 	bool have_unknown_geometry = false; // all bets are off if there is a dimension with access_geometry::other
-	bool have_non_trivial_dimension = false;
+	bool have_split_producer_const_consumer = false;
+	bool have_const_producer_split_consumer = false;
 	for(size_t i = 0; i < producer_properties.access_geometry.size(); ++i) {
 		const auto const_producer = std::get_if<experimental::access_geometry::constant>(&producer_properties.access_geometry[i]);
 		const auto const_consumer = std::get_if<experimental::access_geometry::constant>(&consumer_properties.access_geometry[i]);
@@ -324,11 +330,11 @@ bool is_non_trivial_transposition(const forward_task::access& producer, const fo
 		const auto split_consumer = std::get_if<experimental::access_geometry::split>(&consumer_properties.access_geometry[i]);
 
 		if((!const_producer && !split_producer) || (!const_consumer && !split_consumer)) have_unknown_geometry = true;
-		if((split_producer && const_consumer) || (const_producer && split_consumer)) have_non_trivial_dimension = true;
-		if(split_producer && split_consumer && split_producer->kernel_dimension != split_consumer->kernel_dimension) have_non_trivial_dimension = true;
+		if(split_producer && const_consumer) have_split_producer_const_consumer = true;
+		if(const_producer && split_consumer) have_const_producer_split_consumer = true;
 	}
 
-	return !have_unknown_geometry && have_non_trivial_dimension;
+	return !have_unknown_geometry && have_split_producer_const_consumer && have_const_producer_split_consumer;
 }
 
 

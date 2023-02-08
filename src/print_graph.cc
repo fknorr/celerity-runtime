@@ -126,7 +126,7 @@ namespace detail {
 		} else if(const auto pcmd = dynamic_cast<const push_command*>(&cmd)) {
 			if(pcmd->get_rid()) { fmt::format_to(std::back_inserter(label), "(R{}) ", pcmd->get_rid()); }
 			const std::string bl = get_buffer_label(bm, pcmd->get_bid());
-			fmt::format_to(std::back_inserter(label), "<b>push</b> transfer {} to N{}<br/>B{} {}", pcmd->get_transfer_id(), pcmd->get_target(), bl,
+			fmt::format_to(std::back_inserter(label), "<b>push</b> transfer {} to N{}<br/>{} {}", pcmd->get_transfer_id(), pcmd->get_target(), bl,
 			    subrange_to_grid_box(pcmd->get_range()));
 		} else if(const auto apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
 			// if(apcmd->get_source()->get_rid()) { label += fmt::format("(R{}) ", apcmd->get_source()->get_rid()); }
@@ -168,17 +168,17 @@ namespace detail {
 				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
 			}
 		} else if(const auto a2acmd = dynamic_cast<const alltoall_command*>(&cmd)) {
-			fmt::format_to(std::back_inserter(label), "<b>all-to-all</b>");
-			GridRegion<3> read_set;
-			for(const auto& region : a2acmd->get_send_regions()) {
-				read_set = GridRegion<3>::merge(read_set, region);
+			fmt::format_to(std::back_inserter(label), "<b>all-to-all</b> B{}", a2acmd->get_bid());
+			for(node_id from_nid = 0; from_nid < a2acmd->get_send_regions().size(); ++from_nid) {
+				const auto& sends = a2acmd->get_send_regions()[from_nid];
+				if(!sends.empty()) {
+					fmt::format_to(std::back_inserter(label), "<br/>N{} &lt;- <i>read</i> {}", from_nid, a2acmd->get_send_regions()[from_nid]);
+				}
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", a2acmd->get_bid(), read_set);
-			GridRegion<3> write_set;
-			for(const auto& region : a2acmd->get_recv_regions()) {
-				write_set = GridRegion<3>::merge(write_set, region);
+			for(node_id to_nid = 0; to_nid < a2acmd->get_recv_regions().size(); ++to_nid) {
+				const auto& sends = a2acmd->get_recv_regions()[to_nid];
+				if(!sends.empty()) { fmt::format_to(std::back_inserter(label), "<br/>N{} -&gt; <i>write</i> {}", to_nid, a2acmd->get_recv_regions()[to_nid]); }
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", a2acmd->get_bid(), write_set);
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";

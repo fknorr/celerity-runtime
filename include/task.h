@@ -369,5 +369,9 @@ namespace detail {
 		access m_consumer;
 	};
 
+	inline subrange<3> apply_range_mapper(range_mapper_base const* rm, const task_geometry& geometry) {
+		return apply_range_mapper(rm, chunk<3>{geometry.global_offset, geometry.global_size, geometry.global_size}, geometry.dimensions);
+	}
+
 } // namespace detail
 } // namespace celerity
