@@ -909,3 +909,37 @@ TEST_CASE("graph generator generates alltoalls for transposition pattern", "[dis
 	dctx.device_compute<class UKN(producer)>(range).discard_write(buf, celerity::access::one_to_one()).submit();
 	dctx.device_compute<class UKN(consumer)>(range).read(buf, experimental::access::transposed<1, 0>()).submit();
 }
+
+TEST_CASE("graph generator generates allgathers for striped chain-matrix-multiply", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	celerity::range<2> range(1000, 1000);
+	auto buf_a = dctx.create_buffer(range);
+	auto buf_b = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(init)>(celerity::range<1>(1)).discard_write(buf_a, celerity::access::all()).submit();
+	for(int i = 0; i < 3; ++i) {
+		dctx.device_compute<class UKN(mul)>(range)
+		    .read(buf_a, celerity::access::slice<2>(0))
+		    .read(buf_a, celerity::access::slice<2>(1))
+		    .discard_write(buf_b, celerity::access::one_to_one())
+		    .submit();
+		std::swap(buf_a, buf_b);
+	}
+}
+TEST_CASE("graph generator generates alltoalls for tiled chain-matrix-multiply", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	celerity::range<2> range(1000, 1000);
+	auto buf_a = dctx.create_buffer(range);
+	auto buf_b = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(init)>(celerity::range<1>(1)).discard_write(buf_a, celerity::access::all()).submit();
+	for(int i = 0; i < 3; ++i) {
+		dctx.device_compute<class UKN(mul)>(range)
+		    .read(buf_a, celerity::access::slice<2>(0))
+		    .read(buf_a, celerity::access::slice<2>(1))
+		    .discard_write(buf_b, celerity::access::one_to_one())
+		    .hint(experimental::hints::tiled_split())
+		    .submit();
+		std::swap(buf_a, buf_b);
+	}
+}

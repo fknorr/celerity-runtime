@@ -272,9 +272,15 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 }
 
 
-bool all_range_mappers_constant(const std::vector<const range_mapper_base*>& range_mappers, const split_constraints& task_split) {
-	return std::all_of(range_mappers.begin(), range_mappers.end(),
-	    [&](const range_mapper_base* const rm) { return rm->get_properties(task_split.get_geometry_map()).is_constant; });
+bool combined_range_mappers_constant(const std::vector<const range_mapper_base*>& range_mappers, const split_constraints& task_split) {
+	const chunk<3> full_chunk{task_split.geometry.global_offset, task_split.geometry.global_size, task_split.geometry.global_size};
+	GridRegion<3> combined_region, const_region;
+	for(const auto rm : range_mappers) {
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, full_chunk, task_split.geometry.dimensions));
+		combined_region = GridRegion<3>::merge(combined_region, rm_box);
+		if(rm->get_properties(task_split.get_geometry_map()).is_constant) { const_region = GridRegion<3>::merge(const_region, rm_box); }
+	}
+	return combined_region == const_region;
 }
 
 
@@ -338,10 +344,10 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
 
-	const bool all_consumers_constant = all_range_mappers_constant(consumer_rms, tsk.get_consumer().split);
+	const bool combined_consumers_constant = combined_range_mappers_constant(consumer_rms, tsk.get_consumer().split);
 	const bool combined_consumers_non_overlapping = combined_range_mappers_non_overlapping(consumer_rms, tsk.get_consumer().split);
 
-	if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || all_consumers_constant)) {
+	if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || combined_consumers_constant)) {
 		// Gather or Allgather
 		std::vector<GridRegion<3>> source_regions(m_num_nodes);
 		for(node_id nid = 0; nid < std::min(m_num_nodes, producer_chunks.size()); ++nid) {
@@ -395,7 +401,7 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 		m_last_collective_commands[implicit_collective] = gather_cmd->get_cid();
 
 		generate_epoch_dependencies(gather_cmd);
-	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && all_consumers_constant) {
+	} else if(producer_chunks.size() == 1 && consumer_chunks.size() > 1 && combined_consumers_constant) {
 		// Broadcast
 		const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
 		const auto broadcast_cmd = create_command<broadcast_command>(m_local_nid, bid, source_nid, forward_region);
