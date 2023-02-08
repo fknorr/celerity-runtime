@@ -662,80 +662,35 @@ namespace detail {
 		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-#ifndef NDEBUG
-		{
-			int rank, num_ranks;
-			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-			MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
-			assert(static_cast<node_id>(rank) == m_local_nid);
-			assert(static_cast<size_t>(num_ranks) == data.dest_regions.size());
-		}
-		for(const auto& region : data.dest_regions) {
-			if(!region.hasMultipleBoxes()) {
-				const auto sr = grid_box_to_subrange(region.getSingle());
-				if(sr.range.size() == 0 || (sr.range[1] == buffer_info.range[1] && sr.range[2] == buffer_info.range[2])) {
-					continue; // ok
-				}
-			}
-			CELERITY_CRITICAL("gather_job can't deal with scatters to strided outputs yet, gather_job region={}, buffer_info.range={{{}, {}, {}}}", region,
-			    buffer_info.range[0], buffer_info.range[1], buffer_info.range[2]);
-			std::abort();
-		}
-#endif
-
-		const auto source_sr = grid_box_to_subrange(data.source_region.getSingle());
-		const auto local_dest_sr = grid_box_to_subrange(data.dest_regions[m_local_nid].getSingle());
-
-		// TODO how can we work around the INT_MAX size restriction? Larger data types only work if the split is aligned conveniently
-		const auto total_scatter_byte_size = source_sr.range.size() * buffer_info.element_size;
-		assert(total_scatter_byte_size <= INT_MAX);
-
 		const bool sends_data = data.source_nid == m_local_nid;
-		const auto send_chunk_byte_size = sends_data ? source_sr.range.size() * buffer_info.element_size : 0;
-		const auto recv_chunk_byte_size = local_dest_sr.range.size() * buffer_info.element_size;
-		const bool receives_data = recv_chunk_byte_size > 0;
+		const bool receives_data = !data.dest_regions[m_local_nid].empty();
 
-		unique_payload_ptr send_buffer;
+		collective_send_buffer send_buffer;
 		if(sends_data) {
 			ZoneScopedN("fetch input");
-			send_buffer = make_uninitialized_payload<std::byte>(send_chunk_byte_size);
-			m_buffer_mngr.get_buffer_data(data.bid, source_sr, send_buffer.get_pointer()).wait();
+			send_buffer = collective_send_buffer(data.dest_regions, buffer_info.element_size);
+			for(auto& [box, pointer] : send_buffer.get_boxes()) {
+				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), pointer).wait();
+			}
 		}
 
-		// TODO only significant at the root process
-		std::vector<int> all_chunk_byte_sizes(data.dest_regions.size());
-		std::vector<int> all_chunk_byte_offsets(all_chunk_byte_sizes.size());
-		for(size_t i = 0; i < data.dest_regions.size(); ++i) {
-			const auto sr = grid_box_to_subrange(data.dest_regions[i].getSingle());
-			const auto byte_size = sr.range.size() * buffer_info.element_size;
-			assert(byte_size <= INT_MAX);
-			all_chunk_byte_sizes[i] = static_cast<int>(byte_size);
-		}
-		assert(std::accumulate(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), size_t(0)) == total_scatter_byte_size);
-		std::exclusive_scan(all_chunk_byte_sizes.begin(), all_chunk_byte_sizes.end(), all_chunk_byte_offsets.begin(), 0);
-
-		unique_payload_ptr recv_buffer;
+		collective_receive_buffer recv_buffer;
 		if(receives_data) {
 			ZoneScopedN("alloc output");
-			// TODO do not allocate on source node
-			recv_buffer = make_uninitialized_payload<std::byte>(recv_chunk_byte_size);
+			recv_buffer = collective_receive_buffer({data.dest_regions[m_local_nid]}, buffer_info.element_size);
 		}
 
 		{
 			ZoneScopedN("Scatterv");
 			const auto root = static_cast<int>(data.source_nid);
 			CELERITY_TRACE("MPI_Scatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD)",
-			    send_chunk_byte_size, fmt::join(all_chunk_byte_sizes, ", "), fmt::join(all_chunk_byte_offsets, ", "), recv_chunk_byte_size,
-			    recv_chunk_byte_size, root);
-			MPI_Scatterv(send_buffer.get_pointer(), all_chunk_byte_sizes.data(), all_chunk_byte_offsets.data(), MPI_BYTE, recv_buffer.get_pointer(),
-			    recv_chunk_byte_size, MPI_BYTE, root, MPI_COMM_WORLD);
+			    send_buffer.get_size_bytes(), fmt::join(send_buffer.get_chunk_byte_sizes(), ", "), fmt::join(send_buffer.get_chunk_byte_offsets(), ", "),
+			    recv_buffer.get_size_bytes(), recv_buffer.get_size_bytes(), root);
+			MPI_Scatterv(send_buffer.get_pointer(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
+			    recv_buffer.get_pointer(), recv_buffer.get_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD);
 		}
 
-		if(receives_data) {
-			ZoneScopedN("commit");
-			CELERITY_TRACE("set_buffer_data({}, {}, recv_buffer)", (int)data.bid, data.dest_regions[m_local_nid]);
-			m_buffer_mngr.set_buffer_data(data.bid, local_dest_sr, std::move(recv_buffer));
-		}
+		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;

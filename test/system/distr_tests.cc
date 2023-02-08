@@ -549,6 +549,33 @@ namespace detail {
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit scatters produce the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), read_only_host_task); // Scatter
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				const auto& sr = part.get_subrange();
+				for(size_t i = 0; i < sr.range[0]; ++i) {
+					REQUIRE_LOOP(acc[sr.offset[0] + i] == sr.offset[0] + i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
+
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit alltoall produces the expected data distribution", "[gather]") {
 		buffer<sycl::int2, 2> buf({100, 100});
 		distr_queue q;
