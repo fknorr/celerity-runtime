@@ -419,8 +419,7 @@ namespace detail {
 	  public:
 		collective_send_buffer() = default;
 
-		collective_send_buffer(const std::vector<GridRegion<3>>& source_regions, size_t element_size)
-		    : linearized_region_array(source_regions, element_size), m_element_size(element_size) {
+		collective_send_buffer(const std::vector<GridRegion<3>>& source_regions, size_t element_size) : linearized_region_array(source_regions, element_size) {
 			ZoneScopedN("allocate send buffer");
 
 			m_payload = make_uninitialized_payload<std::byte>(get_size_bytes());
@@ -434,7 +433,6 @@ namespace detail {
 		auto& get_boxes() { return m_box_pointers; }
 
 	  private:
-		size_t m_element_size;
 		unique_payload_ptr m_payload;
 		std::vector<std::pair<GridBox<3>, void*>> m_box_pointers;
 	};
@@ -488,6 +486,56 @@ namespace detail {
 		void* m_receive_buffer = nullptr;
 	};
 
+	void commit_collective_receive(buffer_manager& bm, const buffer_id bid, collective_receive_buffer&& recv_buffer) {
+		ZoneScopedN("commit");
+
+		auto box_payloads = std::move(recv_buffer).into_boxes();
+
+		bool used_broadcast = false;
+		// try to immediately upload allgather data to all device memories
+		// TODO NOCOMMIT (at least the env var handling)
+		if(getenv("CELERITY_USE_ALLGATHER_BROADCAST")) {
+			bool lock_success = true;
+			auto& local_devices = runtime::get_instance().get_local_devices();
+			auto num_devices = local_devices.num_compute_devices();
+			std::vector<bool> mem_locked(num_devices, false);
+			for(size_t device_id = 0; device_id < num_devices; ++device_id) {
+				auto mem_id = local_devices.get_memory_id(device_id);
+				if(bm.try_lock(device_id, mem_id, {bid})) {
+					mem_locked[device_id] = true;
+				} else {
+					lock_success = false;
+					break;
+				}
+			}
+			if(lock_success) {
+				bool is_broadcast_possible = true;
+				for(const auto& [box, _] : box_payloads) {
+					const auto sr = grid_box_to_subrange(box);
+					is_broadcast_possible &= bm.is_broadcast_possible(bid, sr);
+				}
+				if(is_broadcast_possible) {
+					for(auto& [box, payload] : box_payloads) {
+						const auto sr = grid_box_to_subrange(box);
+						CELERITY_TRACE("immediately_broadcast_data({}, {}, payload)", (int)bid, sr);
+						bm.immediately_broadcast_data(bid, sr, std::move(payload));
+					}
+					used_broadcast = true;
+				}
+			}
+			for(size_t device_id = 0; device_id < num_devices; ++device_id) {
+				if(mem_locked[device_id]) { bm.unlock(device_id); }
+			}
+		}
+		if(!used_broadcast) {
+			for(auto& [box, payload] : box_payloads) {
+				const auto sr = grid_box_to_subrange(box);
+				CELERITY_TRACE("non-broadcast set_buffer_data({}, {}, payload)", (int)bid, sr);
+				bm.set_buffer_data(bid, sr, std::move(payload));
+			}
+		}
+	}
+
 	bool gather_job::execute(const command_pkg& pkg) {
 		ZoneScoped;
 		const auto data = std::get<gather_data>(pkg.data);
@@ -532,56 +580,7 @@ namespace detail {
 			    fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "));
 		}
 
-		if(receives_data) {
-			ZoneScopedN("commit");
-
-			auto box_payloads = std::move(recv_buffer).into_boxes();
-
-			bool used_broadcast = false;
-			// try to immediately upload allgather data to all device memories
-			// TODO NOCOMMIT (at least the env var handling)
-			if(getenv("CELERITY_USE_ALLGATHER_BROADCAST")) {
-				bool lock_success = true;
-				auto& local_devices = runtime::get_instance().get_local_devices();
-				auto num_devices = local_devices.num_compute_devices();
-				std::vector<bool> mem_locked(num_devices, false);
-				for(size_t device_id = 0; device_id < num_devices; ++device_id) {
-					auto mem_id = local_devices.get_memory_id(device_id);
-					if(m_buffer_mngr.try_lock(device_id, mem_id, {data.bid})) {
-						mem_locked[device_id] = true;
-					} else {
-						lock_success = false;
-						break;
-					}
-				}
-				if(lock_success) {
-					bool is_broadcast_possible = true;
-					for(const auto& [box, _] : box_payloads) {
-						const auto sr = grid_box_to_subrange(box);
-						is_broadcast_possible &= m_buffer_mngr.is_broadcast_possible(data.bid, sr);
-					}
-					if(is_broadcast_possible) {
-						for(auto& [box, payload] : box_payloads) {
-							const auto sr = grid_box_to_subrange(box);
-							CELERITY_TRACE("immediately_broadcast_data({}, {}, payload)", (int)data.bid, sr);
-							m_buffer_mngr.immediately_broadcast_data(data.bid, sr, std::move(payload));
-						}
-						used_broadcast = true;
-					}
-				}
-				for(size_t device_id = 0; device_id < num_devices; ++device_id) {
-					if(mem_locked[device_id]) { m_buffer_mngr.unlock(device_id); }
-				}
-			}
-			if(!used_broadcast) {
-				// TODO MPI_Allgatherv with MPI_IN_PLACE to keep with a single allocation
-				for(auto& [box, payload] : box_payloads) {
-					const auto sr = grid_box_to_subrange(box);
-					CELERITY_TRACE("non-broadcast set_buffer_data({}, {}, payload)", (int)data.bid, sr);
-					m_buffer_mngr.set_buffer_data(data.bid, sr, std::move(payload));
-				}
-			}
-		}
+		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;
@@ -606,33 +605,35 @@ namespace detail {
 		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-		// TODO work around INT_MAX restriction
-		auto sr = grid_box_to_subrange(data.region.getSingle());
-		const auto broadcast_byte_size = sr.range.size() * buffer_info.element_size;
+		const bool sends_data = data.source_nid == m_local_nid;
+		const bool receives_data = !sends_data;
 
-		unique_payload_ptr buffer;
-		{
-			ZoneScopedN("alloc output");
-			buffer = make_uninitialized_payload<std::byte>(broadcast_byte_size);
-		}
-
-		if(data.source_nid == m_local_nid) {
+		collective_send_buffer send_buffer;
+		collective_receive_buffer recv_buffer;
+		size_t byte_size;
+		void* buffer;
+		if(sends_data) {
 			ZoneScopedN("fetch input");
-			m_buffer_mngr.get_buffer_data(data.bid, sr, buffer.get_pointer()).wait();
+			send_buffer = collective_send_buffer({data.region}, buffer_info.element_size);
+			for(auto& [box, pointer] : send_buffer.get_boxes()) {
+				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), pointer).wait();
+			}
+			buffer = send_buffer.get_pointer();
+			byte_size = send_buffer.get_size_bytes();
+		} else {
+			ZoneScopedN("alloc output");
+			recv_buffer = collective_receive_buffer({data.region}, buffer_info.element_size);
+			buffer = recv_buffer.get_pointer();
+			byte_size = recv_buffer.get_size_bytes();
 		}
 
 		{
 			ZoneScopedN("Bcast");
-			CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", broadcast_byte_size, data.source_nid);
-			MPI_Bcast(buffer.get_pointer(), static_cast<int>(broadcast_byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
+			CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", byte_size, data.source_nid);
+			MPI_Bcast(buffer, static_cast<int>(byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
 		}
 
-		if(data.source_nid != m_local_nid) {
-			ZoneScopedN("commit");
-			CELERITY_TRACE("set_buffer_data({}, {}, buffer)", (int)data.bid, data.region);
-			// TODO this should also do a "device broadcast" like we have for Allgather
-			m_buffer_mngr.set_buffer_data(data.bid, sr, std::move(buffer));
-		}
+		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;
