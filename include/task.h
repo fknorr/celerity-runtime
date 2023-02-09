@@ -219,13 +219,11 @@ namespace detail {
 
 	struct split_constraints {
 		task_geometry geometry;
-		bool variable;
 		bool tiled;
 		// oversubscription is not a concern because it is applied after the initial internode split
 
 		friend bool operator==(const split_constraints& lhs, const split_constraints& rhs) {
 			return lhs.geometry == rhs.geometry    //
-			       && lhs.variable == rhs.variable //
 			       && lhs.tiled == rhs.tiled;
 		}
 		friend bool operator!=(const split_constraints& lhs, const split_constraints& rhs) { return !(rhs == lhs); }
@@ -238,6 +236,8 @@ namespace detail {
 			if(geometry.dimensions > 2) { g[2] = experimental::constant; }
 			return g;
 		}
+
+		bool is_splittable() const { return (geometry.global_size > geometry.granularity) != sycl::id<3>(false, false, false); }
 	};
 
 	class command_group_task final : public task {

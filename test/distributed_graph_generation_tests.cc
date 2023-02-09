@@ -960,3 +960,12 @@ TEST_CASE("graph generator generates no collectives for tiled chain-matrix-trans
 		std::swap(buf_a, buf_b);
 	}
 }
+
+TEST_CASE("graph generator generates alltoalls for transposed-write/slice-read pattern that depends on split", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	celerity::range<2> range(1000, 1000);
+	auto buf = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(producer)>(range).discard_write(buf, experimental::access::transposed<1, 0>()).submit();
+	dctx.device_compute<class UKN(consumer)>(range).read(buf, celerity::access::slice<2>(1)).submit();
+}

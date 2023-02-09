@@ -8,7 +8,6 @@ namespace detail {
 	split_constraints command_group_task::get_split_constraints() const {
 		return split_constraints{
 		    get_geometry(),
-		    has_variable_split(),
 		    get_hint<experimental::hints::tiled_split>() != nullptr,
 		};
 	}

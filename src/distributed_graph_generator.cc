@@ -260,7 +260,7 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
 
 	std::vector<chunk<3>> chunks;
-	if(constraints.variable) {
+	if(constraints.is_splittable()) {
 		const auto split = constraints.tiled ? split_2d : split_1d;
 		chunks = split(full_chunk, geometry.granularity, num_chunks);
 	} else {
@@ -272,26 +272,26 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 }
 
 
-bool combined_range_mappers_constant(const std::vector<const range_mapper_base*>& range_mappers, const split_constraints& task_split) {
+bool combined_range_mappers_constant(const forward_task::access& access) {
 	GridRegion<3> combined_region, const_region;
-	for(const auto rm : range_mappers) {
-		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, task_split.geometry));
+	for(const auto rm : access.range_mappers) {
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.split.geometry));
 		combined_region = GridRegion<3>::merge(combined_region, rm_box);
-		if(rm->get_properties(task_split.get_geometry_map()).is_constant) { const_region = GridRegion<3>::merge(const_region, rm_box); }
+		if(rm->get_properties(access.split.get_geometry_map()).is_constant) { const_region = GridRegion<3>::merge(const_region, rm_box); }
 	}
 	return combined_region == const_region;
 }
 
 
-bool combined_range_mappers_non_overlapping(const std::vector<const range_mapper_base*> range_mappers, const split_constraints& task_split) {
-	if(!std::all_of(range_mappers.begin(), range_mappers.end(),
-	       [&](const range_mapper_base* const rm) { return rm->get_properties(task_split.get_geometry_map()).is_non_overlapping; })) {
+bool combined_range_mappers_non_overlapping(const forward_task::access& access) {
+	if(!std::all_of(access.range_mappers.begin(), access.range_mappers.end(),
+	       [&](const range_mapper_base* const rm) { return rm->get_properties(access.split.get_geometry_map()).is_non_overlapping; })) {
 		return false;
 	}
 
 	GridRegion<3> combined_region;
-	for(const auto rm : range_mappers) {
-		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, task_split.geometry));
+	for(const auto rm : access.range_mappers) {
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.split.geometry));
 		if(!GridRegion<3>::intersect(combined_region, rm_box).empty()) return false;
 		combined_region = GridRegion<3>::merge(combined_region, rm_box);
 	}
@@ -350,8 +350,8 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
 
-	const bool combined_consumers_constant = combined_range_mappers_constant(consumer_rms, tsk.get_consumer().split);
-	const bool combined_consumers_non_overlapping = combined_range_mappers_non_overlapping(consumer_rms, tsk.get_consumer().split);
+	const bool combined_consumers_constant = combined_range_mappers_constant(tsk.get_consumer());
+	const bool combined_consumers_non_overlapping = combined_range_mappers_non_overlapping(tsk.get_consumer());
 
 	if(producer_chunks.size() > 1 && (consumer_chunks.size() == 1 || combined_consumers_constant)) {
 		// Gather or Allgather
