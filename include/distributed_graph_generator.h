@@ -107,6 +107,11 @@ class distributed_graph_generator {
 
 	void reduce_execution_front_to(abstract_command* const new_front);
 
+	void generate_gather_command(const forward_task& tsk);
+	void generate_broadcast_command(const forward_task& tsk);
+	void generate_scatter_command(const forward_task& tsk);
+	void generate_alltoall_command(const forward_task& tsk);
+
 	void generate_collective_commands(const forward_task& tsk);
 
 	void generate_epoch_command(const epoch_task& tsk);
