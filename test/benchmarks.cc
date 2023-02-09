@@ -141,15 +141,31 @@ struct task_manager_benchmark_context {
 	~task_manager_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
 
 	template <int KernelDims, typename CGF>
-	void create_task(range<KernelDims> global_range, CGF cgf) {
+	void host_task(range<KernelDims> global_range, CGF cgf) {
 		tm.submit_command_group([=](handler& cgh) {
 			cgf(cgh);
 			cgh.host_task(global_range, [](partition<KernelDims>) {});
 		});
 	}
+
+	template <int KernelDims, typename CGF>
+	void parallel_for(range<KernelDims> global_range, CGF cgf) {
+		tm.submit_command_group([=](handler& cgh) {
+			cgf(cgh);
+			cgh.parallel_for<class kernel_name>(global_range, [](item<KernelDims>) {});
+		});
+	}
+
+	template <int KernelDims, typename CGF>
+	void parallel_for(nd_range<KernelDims> global_range, CGF cgf) {
+		tm.submit_command_group([=](handler& cgh) {
+			cgf(cgh);
+			cgh.parallel_for<class kernel_name>(global_range, [](nd_item<KernelDims>) {});
+		});
+	}
 };
 
-struct graph_generator_benchmark_context {
+struct distributed_graph_generator_benchmark_context {
 	const size_t num_nodes;
 	const size_t num_local_devices;
 	command_graph cdag;
@@ -158,18 +174,34 @@ struct graph_generator_benchmark_context {
 	distributed_graph_generator dggen{num_nodes, num_local_devices, /* local_nid= */ 0, cdag, tm};
 	test_utils::mock_buffer_factory mbf{tm, dggen};
 
-	explicit graph_generator_benchmark_context(size_t num_nodes, size_t num_local_devices) : num_nodes{num_nodes}, num_local_devices{num_local_devices} {
+	explicit distributed_graph_generator_benchmark_context(size_t num_nodes, size_t num_local_devices)
+	    : num_nodes{num_nodes}, num_local_devices{num_local_devices} {
 		tm.register_task_callback([this](const task* tsk) { gser.flush(dggen.build_task(*tsk)); });
 	}
 
-	~graph_generator_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
+	~distributed_graph_generator_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
 
 	template <int KernelDims, typename CGF>
-	void create_task(range<KernelDims> global_range, CGF cgf) {
-		// note: This ignores communication overhead with the scheduler thread
+	void host_task(range<KernelDims> global_range, CGF cgf) {
 		tm.submit_command_group([=](handler& cgh) {
 			cgf(cgh);
 			cgh.host_task(global_range, [](partition<KernelDims>) {});
+		});
+	}
+
+	template <int KernelDims, typename CGF>
+	void parallel_for(range<KernelDims> global_range, CGF cgf) {
+		tm.submit_command_group([=](handler& cgh) {
+			cgf(cgh);
+			cgh.parallel_for<class kernel_name>(global_range, [](item<KernelDims>) {});
+		});
+	}
+
+	template <int KernelDims, typename CGF>
+	void parallel_for(nd_range<KernelDims> global_range, CGF cgf) {
+		tm.submit_command_group([=](handler& cgh) {
+			cgf(cgh);
+			cgh.parallel_for<class kernel_name>(global_range, [](nd_item<KernelDims>) {});
 		});
 	}
 };
@@ -307,7 +339,7 @@ template <typename BenchmarkContext>
 [[gnu::noinline]] BenchmarkContext&& generate_soup_graph(BenchmarkContext&& ctx, const size_t num_tasks) {
 	test_utils::mock_buffer<2> buf = ctx.mbf.create_buffer(range<2>{ctx.num_nodes, num_tasks}, true /* host_initialized */);
 	for(size_t t = 0; t < num_tasks; ++t) {
-		ctx.create_task(range<1>{ctx.num_nodes}, [&](handler& cgh) {
+		ctx.parallel_for(range<1>{ctx.num_nodes}, [&](handler& cgh) {
 			buf.get_access<access_mode::read_write>(cgh, [=](chunk<1> ck) { return subrange<2>{{ck.offset[0], t}, {ck.range[0], 1}}; });
 		});
 	}
@@ -321,7 +353,7 @@ template <typename BenchmarkContext>
 	const range<2> global_range{ctx.num_nodes, ctx.num_nodes};
 	test_utils::mock_buffer<2> buf = ctx.mbf.create_buffer(global_range);
 	for(size_t t = 0; t < num_tasks; ++t) {
-		ctx.create_task(global_range, [&](handler& cgh) {
+		ctx.parallel_for(global_range, [&](handler& cgh) {
 			buf.get_access<access_mode::read>(cgh, [=](chunk<2> ck) { return subrange<2>{{ck.offset[1], ck.offset[0]}, {ck.range[1], ck.range[0]}}; });
 			buf.get_access<access_mode::write>(cgh, celerity::access::one_to_one{});
 		});
@@ -341,7 +373,7 @@ template <tree_topology Topology, typename BenchmarkContext>
 	for(size_t exp_step = 1; exp_step <= tree_breadth; exp_step *= 2) {
 		const auto sr_range = Topology == tree_topology::expanding ? tree_breadth / exp_step : exp_step;
 		for(size_t sr_off = 0; sr_off < tree_breadth; sr_off += sr_range) {
-			ctx.create_task(range<1>{ctx.num_nodes}, [&](handler& cgh) {
+			ctx.parallel_for(range<1>{ctx.num_nodes}, [&](handler& cgh) {
 				buf.get_access<access_mode::read>(cgh, [=](chunk<1> ck) { return subrange<2>{{0, sr_off}, {ck.global_size[0], sr_range}}; });
 				buf.get_access<access_mode::write>(cgh, [=](chunk<1> ck) { return subrange<2>{{ck.offset[0], sr_off}, {ck.range[0], sr_range}}; });
 			});
@@ -358,11 +390,11 @@ template <typename BenchmarkContext>
 	constexpr float dt = 0.25f;
 
 	const auto fill = [&](test_utils::mock_buffer<2> u) {
-		ctx.create_task(u.get_range(), [&](celerity::handler& cgh) { u.get_access<access_mode::discard_write>(cgh, celerity::access::one_to_one{}); });
+		ctx.parallel_for(u.get_range(), [&](celerity::handler& cgh) { u.get_access<access_mode::discard_write>(cgh, celerity::access::one_to_one{}); });
 	};
 
 	const auto step = [&](test_utils::mock_buffer<2> up, test_utils::mock_buffer<2> u) {
-		ctx.create_task(up.get_range(), [&](celerity::handler& cgh) {
+		ctx.parallel_for(up.get_range(), [&](celerity::handler& cgh) {
 			up.get_access<access_mode::read_write>(cgh, celerity::access::one_to_one{});
 			u.get_access<access_mode::read>(cgh, celerity::access::neighborhood{1, 1});
 		});
@@ -398,14 +430,14 @@ template <typename BenchmarkContext>
 	test_utils::mock_buffer<1> x_new = ctx.mbf.create_buffer(range<1>{N});
 
 	// initial guess zero
-	ctx.create_task(range<1>{N}, [&](handler& cgh) { x.get_access<access_mode::discard_write>(cgh, celerity::access::one_to_one{}); });
+	ctx.parallel_for(range<1>{N}, [&](handler& cgh) { x.get_access<access_mode::discard_write>(cgh, celerity::access::one_to_one{}); });
 
 	constexpr auto one_to_one = celerity::access::one_to_one{};
 	constexpr auto rows = [](const chunk<2>& ck) { return subrange<1>{ck.offset[0], ck.range[0]}; };
 	constexpr auto columns = [](const chunk<2>& ck) { return subrange<1>{ck.offset[1], ck.range[1]}; };
 
 	for(int k = 0; k < steps; ++k) {
-		ctx.create_task(range<2>{N, N}, [&](handler& cgh) {
+		ctx.parallel_for(range<2>{N, N}, [&](handler& cgh) {
 			A.get_access<access_mode::read>(cgh, one_to_one);
 			b.get_access<access_mode::read>(cgh, rows);
 			x.get_access<access_mode::read>(cgh, columns);
@@ -417,35 +449,84 @@ template <typename BenchmarkContext>
 	return std::forward<BenchmarkContext>(ctx);
 }
 
+template <typename BenchmarkContext>
+[[gnu::noinline]] BenchmarkContext&& generate_nbody_graph(BenchmarkContext&& ctx, const int steps) {
+	constexpr size_t n_bodies = 65536;
+	constexpr size_t block_size = 256;
+
+	test_utils::mock_buffer<1> posBuff = ctx.mbf.create_buffer(range<1>{n_bodies}, true /* host initialized */);
+	test_utils::mock_buffer<1> velBuff = ctx.mbf.create_buffer(range<1>{n_bodies}, true /* host initialized */);
+
+	for(int i = 0; i < steps; ++i) {
+		ctx.parallel_for(nd_range<1>(n_bodies, block_size), [&](handler& cgh) {
+			posBuff.get_access<access_mode::read>(cgh, celerity::access::all()); // Allgather
+			velBuff.get_access<access_mode::read_write>(cgh, celerity::access::one_to_one());
+		});
+
+		ctx.parallel_for(nd_range<1>(n_bodies, block_size), [&](handler& cgh) {
+			velBuff.get_access<access_mode::read>(cgh, celerity::access::one_to_one());
+			posBuff.get_access<access_mode::read_write>(cgh, celerity::access::one_to_one());
+		});
+	}
+
+	return std::forward<BenchmarkContext>(ctx);
+}
+
+template <typename BenchmarkContext>
+[[gnu::noinline]] BenchmarkContext&& generate_rsim_graph(BenchmarkContext&& ctx, const int steps) {
+	const size_t width = 1000;
+	const size_t n_iters = static_cast<size_t>(steps);
+
+	test_utils::mock_buffer<2> buf = ctx.mbf.create_buffer(range<2>{n_iters, width}, true /* host initialized */);
+
+	const auto access_up_to_ith_line_all = [&](size_t i) { //
+		return celerity::access::fixed<2>({{0, 0}, {i, width}});
+	};
+	const auto access_ith_line_1to1 = [](size_t i) {
+		return [i](celerity::chunk<2> chnk) { return celerity::subrange<2>({i, chnk.offset[0]}, {1, chnk.range[0]}); };
+	};
+
+	for(size_t i = 0; i < n_iters; ++i) {
+		ctx.parallel_for(range<2>(width, width), [&](handler& cgh) {
+			buf.get_access<access_mode::read>(cgh, access_up_to_ith_line_all(i));
+			buf.get_access<access_mode::discard_write>(cgh, access_ith_line_1to1(i));
+		});
+	}
+
+	return std::forward<BenchmarkContext>(ctx);
+}
+
 template <typename BenchmarkContextFactory>
 void run_benchmarks(BenchmarkContextFactory&& make_ctx) {
-	BENCHMARK("soup topology") { generate_soup_graph(make_ctx(), 100); };
-	BENCHMARK("chain topology") { generate_chain_graph(make_ctx(), 30); };
-	BENCHMARK("expanding tree topology") { generate_tree_graph<tree_topology::expanding>(make_ctx(), 30); };
-	BENCHMARK("contracting tree topology") { generate_tree_graph<tree_topology::contracting>(make_ctx(), 30); };
+	// BENCHMARK("soup topology") { generate_soup_graph(make_ctx(), 100); };
+	// BENCHMARK("chain topology") { generate_chain_graph(make_ctx(), 30); };
+	// BENCHMARK("expanding tree topology") { generate_tree_graph<tree_topology::expanding>(make_ctx(), 30); };
+	// BENCHMARK("contracting tree topology") { generate_tree_graph<tree_topology::contracting>(make_ctx(), 30); };
 	BENCHMARK("wave_sim topology") { generate_wave_sim_graph(make_ctx(), 50); };
-	BENCHMARK("jacobi topology") { generate_jacobi_graph(make_ctx(), 50); };
+	// BENCHMARK("jacobi topology") { generate_jacobi_graph(make_ctx(), 50); };
+	BENCHMARK("nbody topology") { generate_nbody_graph(make_ctx(), 100); };
+	BENCHMARK("rsim topology") { generate_rsim_graph(make_ctx(), 100); };
 }
 
 TEST_CASE("generating large task graphs", "[benchmark][task-graph]") {
 	run_benchmarks([] { return task_manager_benchmark_context{}; });
 }
 
-TEMPLATE_TEST_CASE_SIG("generating large command graphs for N nodes", "[benchmark][command-graph]", ((size_t NumNodes), NumNodes), 1, 4, 16) {
-	run_benchmarks([] { return graph_generator_benchmark_context{NumNodes, 4}; });
+TEMPLATE_TEST_CASE_SIG("generating large command graphs for N nodes", "[benchmark][command-graph]", ((size_t NumNodes), NumNodes), 1, 2, 4, 8, 16, 32, 64) {
+	run_benchmarks([] { return distributed_graph_generator_benchmark_context{NumNodes, 4}; });
 }
 
 #if 0  // NOCOMMIT
 TEMPLATE_TEST_CASE_SIG("building command graphs in a dedicated scheduler thread for N nodes", "[benchmark][scheduler]", ((size_t NumNodes), NumNodes), 1, 4) {
 	SECTION("reference: single-threaded immediate graph generation") {
-		run_benchmarks([&] { return graph_generator_benchmark_context{NumNodes}; });
+		run_benchmarks([&] { return distributed_graph_generator_benchmark_context{NumNodes}; });
 	}
 	SECTION("immediate submission to a scheduler thread") {
 		restartable_thread thrd;
 		run_benchmarks([&] { return scheduler_benchmark_context{thrd, NumNodes}; });
 	}
 	SECTION("reference: throttled single-threaded graph generation at 10 us per task") {
-		run_benchmarks([] { return submission_throttle_benchmark_context<graph_generator_benchmark_context>{10us, NumNodes}; });
+		run_benchmarks([] { return submission_throttle_benchmark_context<distributed_graph_generator_benchmark_context>{10us, NumNodes}; });
 	}
 	SECTION("throttled submission to a scheduler thread at 10 us per task") {
 		restartable_thread thrd;
@@ -469,5 +550,5 @@ TEST_CASE("printing benchmark task graphs", "[.][debug-graphs][task-graph]") {
 }
 
 TEST_CASE("printing benchmark command graphs", "[.][debug-graphs][command-graph]") {
-	debug_graphs([] { return graph_generator_benchmark_context{2, 2}; }, [](auto&& ctx) { test_utils::maybe_print_graph(ctx.cdag, ctx.tm); });
+	debug_graphs([] { return distributed_graph_generator_benchmark_context{2, 2}; }, [](auto&& ctx) { test_utils::maybe_print_graph(ctx.cdag, ctx.tm); });
 }

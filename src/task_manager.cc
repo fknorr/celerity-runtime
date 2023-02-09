@@ -152,13 +152,13 @@ namespace detail {
 		}
 
 		for(const auto& flow : dataflows) {
-			auto fwd_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
 			if(is_communication_free_dataflow(flow.bid, flow.region, flow.producer, consumer)) continue;
 
 			forward_task::access producer_acc{flow.producer->get_split_constraints(),
 			    get_participating_range_mappers(flow.producer, flow.bid, flow.region, access::mode_traits::is_producer)};
 			forward_task::access consumer_acc{
 			    consumer->get_split_constraints(), get_participating_range_mappers(consumer, flow.bid, flow.region, access::mode_traits::is_consumer)};
+			auto fwd_reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
 			auto& fwd = static_cast<forward_task&>(register_task_internal(std::move(fwd_reserve),
 			    std::make_unique<forward_task>(fwd_reserve.get_tid(), flow.bid, flow.region, std::move(producer_acc), std::move(consumer_acc))));
 
