@@ -218,26 +218,37 @@ namespace detail {
 	};
 
 	struct split_constraints {
-		task_geometry geometry;
-		bool tiled;
-		// oversubscription is not a concern because it is applied after the initial internode split
+		split_constraints(const task_geometry& task_geometry, const bool require_tiled_split)
+		    : m_task_geometry(task_geometry), m_tiled_split(require_tiled_split), m_split_geometry(task_geometry.dimensions) {
+			if(task_geometry.dimensions > 0) { m_split_geometry[0] = experimental::split_geometry::split; }
+			if(task_geometry.dimensions > 1) { m_split_geometry[1] = require_tiled_split ? experimental::split_geometry::split : experimental::constant; }
+			if(task_geometry.dimensions > 2) { m_split_geometry[2] = experimental::constant; }
+			m_is_splittable = (task_geometry.global_size > task_geometry.granularity) != sycl::id<3>(false, false, false);
+		}
 
 		friend bool operator==(const split_constraints& lhs, const split_constraints& rhs) {
-			return lhs.geometry == rhs.geometry    //
-			       && lhs.tiled == rhs.tiled;
+			return lhs.m_task_geometry == rhs.m_task_geometry //
+			       && lhs.m_tiled_split == rhs.m_tiled_split;
 		}
 		friend bool operator!=(const split_constraints& lhs, const split_constraints& rhs) { return !(rhs == lhs); }
 
-		experimental::split_geometry_map get_geometry_map() const {
-			assert(geometry.dimensions <= 3);
-			experimental::split_geometry_map g(geometry.dimensions);
-			if(geometry.dimensions > 0) { g[0] = experimental::split_geometry::split; }
-			if(geometry.dimensions > 1) { g[1] = tiled ? experimental::split_geometry::split : experimental::constant; }
-			if(geometry.dimensions > 2) { g[2] = experimental::constant; }
-			return g;
-		}
+		task_geometry get_task_geometry() const { return m_task_geometry; }
 
-		bool is_splittable() const { return (geometry.global_size > geometry.granularity) != sycl::id<3>(false, false, false); }
+		const experimental::split_geometry_map& get_split_geometry() const { return m_split_geometry; }
+
+		bool is_splittable() const { return m_is_splittable; }
+
+		bool requires_tiled_split() const { return m_tiled_split; }
+
+	  private:
+		// v-- inputs
+		detail::task_geometry m_task_geometry;
+		bool m_tiled_split;
+		// oversubscription is not a concern because it is applied after the initial internode split
+
+		// v-- generated
+		experimental::split_geometry_map m_split_geometry;
+		bool m_is_splittable;
 	};
 
 	class command_group_task final : public task {
@@ -350,7 +361,7 @@ namespace detail {
 	class forward_task final : public task {
 	  public:
 		struct access {
-			split_constraints split;
+			split_constraints constraints;
 			std::vector<const range_mapper_base*> range_mappers;
 		};
 

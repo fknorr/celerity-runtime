@@ -255,13 +255,13 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constraints& constraints) const {
 	// TODO: Pieced together from naive_split_transformer. We can probably do without creating all chunks and discarding everything except our own.
 	// TODO: Or - maybe - we actually want to store all chunks somewhere b/c we'll probably need them frequently for lookups later on?
-	const auto& geometry = constraints.geometry;
+	const auto& geometry = constraints.get_task_geometry();
 	chunk<3> full_chunk{geometry.global_offset, geometry.global_size, geometry.global_size};
 	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
 
 	std::vector<chunk<3>> chunks;
 	if(constraints.is_splittable()) {
-		const auto split = constraints.tiled ? split_2d : split_1d;
+		const auto split = constraints.requires_tiled_split() ? split_2d : split_1d;
 		chunks = split(full_chunk, geometry.granularity, num_chunks);
 	} else {
 		chunks = {full_chunk};
@@ -275,9 +275,9 @@ std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constr
 bool combined_range_mappers_constant(const forward_task::access& access) {
 	GridRegion<3> combined_region, const_region;
 	for(const auto rm : access.range_mappers) {
-		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.split.geometry));
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.constraints.get_task_geometry()));
 		combined_region = GridRegion<3>::merge(combined_region, rm_box);
-		if(rm->get_properties(access.split.get_geometry_map()).is_constant) { const_region = GridRegion<3>::merge(const_region, rm_box); }
+		if(rm->get_properties(access.constraints.get_split_geometry()).is_constant) { const_region = GridRegion<3>::merge(const_region, rm_box); }
 	}
 	return combined_region == const_region;
 }
@@ -285,13 +285,13 @@ bool combined_range_mappers_constant(const forward_task::access& access) {
 
 bool combined_range_mappers_non_overlapping(const forward_task::access& access) {
 	if(!std::all_of(access.range_mappers.begin(), access.range_mappers.end(),
-	       [&](const range_mapper_base* const rm) { return rm->get_properties(access.split.get_geometry_map()).is_non_overlapping; })) {
+	       [&](const range_mapper_base* const rm) { return rm->get_properties(access.constraints.get_split_geometry()).is_non_overlapping; })) {
 		return false;
 	}
 
 	GridRegion<3> combined_region;
 	for(const auto rm : access.range_mappers) {
-		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.split.geometry));
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.constraints.get_task_geometry()));
 		if(!GridRegion<3>::intersect(combined_region, rm_box).empty()) return false;
 		combined_region = GridRegion<3>::merge(combined_region, rm_box);
 	}
@@ -309,12 +309,12 @@ bool is_non_trivial_transposition(const forward_task::access& producer, const fo
 	const auto producer_rm = producer.range_mappers.front();
 	const auto consumer_rm = consumer.range_mappers.front();
 
-	const auto produced_sr = apply_range_mapper(producer_rm, producer.split.geometry);
-	const auto consumed_sr = apply_range_mapper(consumer_rm, producer.split.geometry);
+	const auto produced_sr = apply_range_mapper(producer_rm, producer.constraints.get_task_geometry());
+	const auto consumed_sr = apply_range_mapper(consumer_rm, producer.constraints.get_task_geometry());
 	if(produced_sr != consumed_sr) return false;
 
-	const auto producer_properties = producer.range_mappers.front()->get_properties(producer.split.get_geometry_map());
-	const auto consumer_properties = consumer.range_mappers.front()->get_properties(consumer.split.get_geometry_map());
+	const auto producer_properties = producer.range_mappers.front()->get_properties(producer.constraints.get_split_geometry());
+	const auto consumer_properties = consumer.range_mappers.front()->get_properties(consumer.constraints.get_split_geometry());
 
 	// producer RMs must always be non-overlapping, but the default range_mapper_traits implementation will return false for custom RMs
 	if(!producer_properties.is_non_overlapping || !consumer_properties.is_non_overlapping) return false;
@@ -339,9 +339,9 @@ bool is_non_trivial_transposition(const forward_task::access& producer, const fo
 
 
 void distributed_graph_generator::generate_gather_command(const forward_task& tsk) {
-	const auto producer_chunks = split_task(tsk.get_producer().split);
-	const auto num_consumer_chunks = split_task(tsk.get_consumer().split).size();
-	const auto producer_dims = tsk.get_producer().split.geometry.dimensions;
+	const auto producer_chunks = split_task(tsk.get_producer().constraints);
+	const auto num_consumer_chunks = split_task(tsk.get_consumer().constraints).size();
+	const auto producer_dims = tsk.get_producer().constraints.get_task_geometry().dimensions;
 	const auto& producer_rms = tsk.get_producer().range_mappers;
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
@@ -437,8 +437,8 @@ void distributed_graph_generator::generate_broadcast_command(const forward_task&
 
 
 void distributed_graph_generator::generate_scatter_command(const forward_task& tsk) {
-	const auto consumer_chunks = split_task(tsk.get_consumer().split);
-	const auto consumer_dims = tsk.get_consumer().split.geometry.dimensions;
+	const auto consumer_chunks = split_task(tsk.get_consumer().constraints);
+	const auto consumer_dims = tsk.get_consumer().constraints.get_task_geometry().dimensions;
 	const auto& consumer_rms = tsk.get_consumer().range_mappers;
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
@@ -489,10 +489,10 @@ void distributed_graph_generator::generate_scatter_command(const forward_task& t
 
 
 void distributed_graph_generator::generate_alltoall_command(const forward_task& tsk) {
-	const auto producer_chunks = split_task(tsk.get_producer().split);
-	const auto consumer_chunks = split_task(tsk.get_consumer().split);
-	const auto producer_dims = tsk.get_producer().split.geometry.dimensions;
-	const auto consumer_dims = tsk.get_consumer().split.geometry.dimensions;
+	const auto producer_chunks = split_task(tsk.get_producer().constraints);
+	const auto consumer_chunks = split_task(tsk.get_consumer().constraints);
+	const auto producer_dims = tsk.get_producer().constraints.get_task_geometry().dimensions;
+	const auto consumer_dims = tsk.get_consumer().constraints.get_task_geometry().dimensions;
 	const auto& producer_rms = tsk.get_producer().range_mappers;
 	const auto& consumer_rms = tsk.get_consumer().range_mappers;
 	const auto bid = tsk.get_bid();
@@ -564,8 +564,8 @@ void distributed_graph_generator::generate_alltoall_command(const forward_task& 
 void distributed_graph_generator::generate_collective_commands(const forward_task& tsk) {
 	// Since splits are reproducible, we simply re-compute the producer split here. If we ever introduce a non-reproducible split/scheduling behavior,
 	// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
-	const auto num_producer_chunks = split_task(tsk.get_producer().split).size();
-	const auto num_consumer_chunks = split_task(tsk.get_consumer().split).size();
+	const auto num_producer_chunks = split_task(tsk.get_producer().constraints).size();
+	const auto num_consumer_chunks = split_task(tsk.get_consumer().constraints).size();
 	const auto bid = tsk.get_bid();
 
 	const bool combined_consumers_constant = combined_range_mappers_constant(tsk.get_consumer());
