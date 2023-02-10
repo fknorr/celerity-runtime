@@ -12,3 +12,20 @@ if(MSVC)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
   target_compile_options(distr_tests PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable)
 endif()
+
+
+# v--- NOCOMMIT copy-pasta
+add_executable(synthetic_collective_benchmarks synthetic_collective_benchmarks.cc)
+
+target_link_libraries(synthetic_collective_benchmarks PRIVATE test_main)
+
+set_property(TARGET synthetic_collective_benchmarks PROPERTY CXX_STANDARD 17)
+set_property(TARGET synthetic_collective_benchmarks PROPERTY FOLDER "tests/system")
+
+add_celerity_to_target(TARGET synthetic_collective_benchmarks SOURCES synthetic_collective_benchmarks.cc)
+
+if(MSVC)
+  target_compile_options(synthetic_collective_benchmarks PRIVATE /D_CRT_SECURE_NO_WARNINGS /MP /W3 /bigobj)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+  target_compile_options(synthetic_collective_benchmarks PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable)
+endif()
