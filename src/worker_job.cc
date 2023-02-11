@@ -486,15 +486,17 @@ namespace detail {
 		void* m_receive_buffer = nullptr;
 	};
 
-	void commit_collective_receive(buffer_manager& bm, const buffer_id bid, collective_receive_buffer&& recv_buffer) {
+	// try to immediately upload allgather data to all device memories
+	// TODO NOCOMMIT (at least the env var handling)
+	const bool device_broadcast_enabled = getenv("CELERITY_USE_ALLGATHER_BROADCAST");
+
+	void commit_collective_receive(buffer_manager& bm, const buffer_id bid, collective_receive_buffer&& recv_buffer, bool attempt_broadcast) {
 		ZoneScopedN("commit");
 
 		auto box_payloads = std::move(recv_buffer).into_boxes();
 
 		bool used_broadcast = false;
-		// try to immediately upload allgather data to all device memories
-		// TODO NOCOMMIT (at least the env var handling)
-		if(getenv("CELERITY_USE_ALLGATHER_BROADCAST")) {
+		if(device_broadcast_enabled) {
 			bool lock_success = true;
 			auto& local_devices = runtime::get_instance().get_local_devices();
 			auto num_devices = local_devices.num_compute_devices();
@@ -580,7 +582,7 @@ namespace detail {
 			    fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "));
 		}
 
-		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
+		if(receives_data) commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ !data.single_dest_nid);
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;
@@ -633,7 +635,7 @@ namespace detail {
 			MPI_Bcast(buffer, static_cast<int>(byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
 		}
 
-		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
+		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ true); }
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;
@@ -690,7 +692,7 @@ namespace detail {
 			    recv_buffer.get_pointer(), recv_buffer.get_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD);
 		}
 
-		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
+		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ false); }
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;
@@ -739,7 +741,7 @@ namespace detail {
 			    recv_buffer.get_pointer(), recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, MPI_COMM_WORLD);
 		}
 
-		commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer));
+		commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ false);
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;
