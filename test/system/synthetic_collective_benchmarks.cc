@@ -142,5 +142,5 @@ TEST_CASE_METHOD(runtime_fixture, "Alltoall") {
 		}
 	});
 
-	if(is_master_node()) { fmt::print("Allgather;{};{}\n", range.size(), time.count()); }
+	if(is_master_node()) { fmt::print("Alltoall;{};{}\n", range.size(), time.count()); }
 }
