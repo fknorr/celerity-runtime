@@ -140,15 +140,15 @@ namespace detail {
 	// NOCOMMIT Copy pasta of host variant. Unify with above.
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<1>& source_range, const cl::sycl::id<1>& source_offset, const cl::sycl::range<1>& target_range,
-	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range);
+	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range, cudaStream_t stream = 0);
 
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<2>& source_range, const cl::sycl::id<2>& source_offset, const cl::sycl::range<2>& target_range,
-	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range);
+	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range, cudaStream_t stream = 0);
 
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<3>& source_range, const cl::sycl::id<3>& source_offset, const cl::sycl::range<3>& target_range,
-	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range);
+	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range, cudaStream_t stream = 0);
 
 	void linearize_subrange(const void* source_base_ptr, void* target_ptr, size_t elem_size, const range<3>& source_range, const subrange<3>& copy_sr);
 
@@ -232,7 +232,7 @@ namespace detail {
 
 		virtual async_event get_data(const subrange<3>& sr, void* out_linearized) const = 0;
 
-		virtual async_event set_data(const subrange<3>& sr, const void* in_linearized) = 0;
+		virtual async_event set_data(const subrange<3>& sr, const void* in_linearized, cudaStream_t stream = 0) = 0;
 
 		/**
 		 * Copy data from the given source buffer into this buffer.
@@ -309,7 +309,7 @@ namespace detail {
 #endif
 		}
 
-		async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
+		async_event set_data(const subrange<3>& sr, const void* in_linearized, cudaStream_t stream = 0) override {
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 #if USE_NDVBUFFER
@@ -321,7 +321,7 @@ namespace detail {
 			// NOCOMMIT Use assert_copy_is_in_range from below?
 			assert((id_cast<Dims>(sr.offset) + range_cast<Dims>(sr.range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
 			return memcpy_strided_device(m_owning_queue, in_linearized, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id<Dims>{},
-			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
+			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), stream);
 #endif
 		}
 
@@ -364,7 +364,7 @@ namespace detail {
 			return async_event{};
 		}
 
-		async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
+		async_event set_data(const subrange<3>& sr, const void* in_linearized, cudaStream_t stream = 0) override {
 			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
 			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
 

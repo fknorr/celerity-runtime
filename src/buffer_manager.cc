@@ -137,6 +137,17 @@ namespace detail {
 
 		auto& buff = m_buffers.at(bid);
 		auto num_devices = m_local_devices.num_compute_devices();
+
+		static bool streams_inited = false;
+		static std::vector<cudaStream_t> streams(num_devices);
+		if(!streams_inited) { 
+			streams_inited = true;
+			for(size_t i=0; i<num_devices; ++i) {
+				const auto ret = cudaStreamCreate(&streams[i]);
+				if(ret != cudaSuccess) throw std::runtime_error("cudaStreamCreate failed");
+			}
+		}
+
 		std::vector<async_event> transfer_events(num_devices);
 		data_location all_loc;
 		// upload to all devices
@@ -144,7 +155,7 @@ namespace detail {
 			auto mem_id = m_local_devices.get_memory_id(device_id);
 			all_loc.set(mem_id);
 			auto& storage = buff.get(mem_id).storage;
-			transfer_events[device_id] = storage->set_data(sr, in_linearized.get_pointer());
+			transfer_events[device_id] = storage->set_data(sr, in_linearized.get_pointer(), streams[device_id]);
 #ifdef TRACY_ENABLE
 			const auto msg = fmt::format("Broadcast set_data started for device {}", device_id);
 			TracyMessage(msg.c_str(), msg.size());
@@ -153,7 +164,8 @@ namespace detail {
 
 		// wait for uploads to complete
 		for(size_t device_id = 0; device_id < num_devices; ++device_id) {
-			transfer_events[device_id].wait();
+			//transfer_events[device_id].wait();
+			cudaStreamSynchronize(streams[device_id]);
 #ifdef TRACY_ENABLE
 			const auto msg = fmt::format("Broadcast set_data completed for device {}", device_id);
 			TracyMessage(msg.c_str(), msg.size());
