@@ -50,7 +50,7 @@ bool is_master_node() {
 TEST_CASE_METHOD(runtime_fixture, "Allgather") {
 	const size_t n_warmup = 2;
 	const size_t n_passes = 20;
-	const size_t n_iters = 100;
+	const size_t n_iters = 10;
 	const size_t range = GENERATE(values({4_Ki, 256_Ki, 16_Mi, 256_Mi}));
 
 	celerity::buffer<int> buf(range);
@@ -81,7 +81,7 @@ TEST_CASE_METHOD(runtime_fixture, "Allgather") {
 TEST_CASE_METHOD(runtime_fixture, "Gather-Scatter") {
 	const size_t n_warmup = 2;
 	const size_t n_passes = 20;
-	const size_t n_iters = 100;
+	const size_t n_iters = 10;
 	const size_t range = GENERATE(values({4_Ki, 256_Ki, 16_Mi, 256_Mi}));
 
 	celerity::buffer<int> buf(range);
@@ -113,7 +113,7 @@ TEST_CASE_METHOD(runtime_fixture, "Gather-Scatter") {
 TEST_CASE_METHOD(runtime_fixture, "Alltoall") {
 	const size_t n_warmup = 2;
 	const size_t n_passes = 20;
-	const size_t n_iters = 100;
+	const size_t n_iters = 10;
 	const size_t size = GENERATE(values({64_i, 512_i, 4_Ki, 16_Ki}));
 	const range<2> range(size, size);
 
