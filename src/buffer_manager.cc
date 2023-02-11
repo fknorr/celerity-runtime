@@ -8,7 +8,14 @@ namespace celerity {
 namespace detail {
 
 	buffer_manager::buffer_manager(local_devices& devices, buffer_lifecycle_callback lifecycle_cb)
-	    : m_local_devices(devices), m_lifecycle_cb(std::move(lifecycle_cb)) {}
+	    : m_local_devices(devices), m_lifecycle_cb(std::move(lifecycle_cb)) {
+		// NOCOMMIT
+		for(device_id did = 0; did < devices.num_compute_devices(); ++did) {
+			cudaStream_t s;
+			cudaStreamCreate(&s);
+			m_cuda_copy_streams.emplace(did, std::unique_ptr<CUstream_st, delete_cuda_stream>(s));
+		}
+	}
 
 	void buffer_manager::unregister_buffer(buffer_id bid) noexcept {
 		{
@@ -95,7 +102,8 @@ namespace detail {
 		// FIXME: Not memory aware
 		auto& device = m_local_devices.get_device_queue(m_next_staging_allocation_device);
 		// Do at least 10 MiB
-		auto buf = std::make_unique<staging_buffer>(std::max(size, size_t(10) * 1024 * 1024), device);
+		auto buf =
+		    std::make_unique<staging_buffer>(std::max(size, size_t(10) * 1024 * 1024), device, m_cuda_copy_streams.at(m_next_staging_allocation_device).get());
 		m_staging_buffers.emplace_back(std::move(buf));
 		return *m_staging_buffers.back();
 	}
@@ -107,7 +115,8 @@ namespace detail {
 		// Find free staging buffer
 		auto& staging_buf = get_free_staging_buffer(sr.range.size() * m_buffer_infos[bid].element_size);
 		auto evt = memcpy_strided_device(staging_buf.buffer.get_owning_queue(), in_linearized.get_pointer(), staging_buf.buffer.get_pointer(),
-		    m_buffer_infos[bid].element_size, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()));
+		    m_buffer_infos[bid].element_size, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()),
+		    m_cuda_copy_streams.at(m_next_staging_allocation_device).get());
 		evt.wait(); // FIXME This should be async as well...
 		m_scheduled_transfers[bid].push_back(buffer_manager::transfer{staging_buf, sr});
 	}
@@ -207,7 +216,7 @@ namespace detail {
 				// could evict other buffers first.
 				die(allocation_size);
 			}
-			replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_device(range, device_queue), offset};
+			replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_device(range, device_queue, m_cuda_copy_streams.at(mid - 1).get()), offset};
 #endif
 		} else {
 #if USE_NDVBUFFER
@@ -224,7 +233,8 @@ namespace detail {
 				const auto allocation_size = info.new_range.size() * element_size;
 				if(can_allocate(device_queue.get_memory_id(), allocation_size)) {
 					// Easy path: We can just do the resize on the device directly
-					replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_device(info.new_range, device_queue), info.new_offset};
+					replacement_buf = backing_buffer{
+					    m_buffer_infos.at(bid).construct_device(info.new_range, device_queue, m_cuda_copy_streams.at(mid - 1).get()), info.new_offset};
 				} else {
 					ZoneScopedN("slow path: reallocate through host");
 
@@ -263,7 +273,8 @@ namespace detail {
 
 					// Finally create the new device buffer. It will be made coherent with data from the host below.
 					// If we have to spill to host, only allocate the currently requested subrange. Otherwise use bounding box of existing and new range.
-					replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_device(spill_to_host ? range : info.new_range, device_queue),
+					replacement_buf = backing_buffer{
+					    m_buffer_infos.at(bid).construct_device(spill_to_host ? range : info.new_range, device_queue, m_cuda_copy_streams.at(mid - 1).get()),
 					    spill_to_host ? offset : info.new_offset};
 				}
 			}
@@ -450,7 +461,7 @@ namespace detail {
 						// auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(sr.offset), sr.range}, tmp.get_pointer());
 						// target_buffer.storage->copy(, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range)
 						auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range,
-						    sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
+						    sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range, t.get_buffer().m_copy_stream);
 						// auto evt = target_buffer.storage->copy(t.get_buffer(), sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
 						// evt.hack_attach_payload(std::move(tmp)); // FIXME
 						pending_transfers.merge(std::move(evt));
@@ -471,7 +482,7 @@ namespace detail {
 				remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, t.unconsumed);
 				// auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(t.sr.offset), t.sr.range}, t.linearized.get_pointer());
 				auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range, id<3>{},
-				    target_buffer.get_local_offset(t.sr.offset), t.sr.range);
+				    target_buffer.get_local_offset(t.sr.offset), t.sr.range, t.get_buffer().m_copy_stream);
 				// auto evt = target_buffer.storage->copy(t.get_buffer(), id<3>{}, target_buffer.get_local_offset(t.sr.offset), t.sr.range);
 				// evt.hack_attach_payload(std::move(t.linearized)); // FIXME
 				pending_transfers.merge(std::move(evt));

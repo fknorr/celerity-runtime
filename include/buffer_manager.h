@@ -94,7 +94,7 @@ namespace detail {
 
 		using buffer_lifecycle_callback = std::function<void(buffer_lifecycle_event, buffer_id)>;
 
-		using device_buffer_factory = std::function<std::unique_ptr<buffer_storage>(const range<3>&, device_queue&)>;
+		using device_buffer_factory = std::function<std::unique_ptr<buffer_storage>(const range<3>&, device_queue&, cudaStream_t)>;
 		using host_buffer_factory = std::function<std::unique_ptr<buffer_storage>(const range<3>&)>;
 
 		struct buffer_info {
@@ -144,8 +144,8 @@ namespace detail {
 				std::unique_lock lock(m_mutex);
 				bid = m_buffer_count++;
 				m_buffers.emplace(std::piecewise_construct, std::tuple{bid}, std::tuple{m_local_devices.num_memories()});
-				auto device_factory = [](const ::celerity::range<3>& r, device_queue& q) {
-					return std::make_unique<device_buffer_storage<DataT, Dims>>(range_cast<Dims>(r), q);
+				auto device_factory = [](const ::celerity::range<3>& r, device_queue& q, cudaStream_t copy_stream) {
+					return std::make_unique<device_buffer_storage<DataT, Dims>>(range_cast<Dims>(r), q, copy_stream);
 				};
 				auto host_factory = [](const ::celerity::range<3>& r) { return std::make_unique<host_buffer_storage<DataT, Dims>>(range_cast<Dims>(r)); };
 				m_buffer_infos.emplace(
@@ -335,7 +335,7 @@ namespace detail {
 		};
 
 		struct staging_buffer {
-			staging_buffer(const size_t size, device_queue& queue) : buffer(range<1>(size), queue) {}
+			staging_buffer(const size_t size, device_queue& queue, cudaStream_t stream) : buffer(range<1>(size), queue, stream) {}
 
 			bool is_free = false;
 			device_buffer_storage<std::byte, 1> buffer;
@@ -421,6 +421,12 @@ namespace detail {
 		// In debug builds we can help out a bit by remembering the type and asserting it on every access.
 		std::unordered_map<buffer_id, std::unique_ptr<buffer_type_guard_base>> m_buffer_types;
 #endif
+
+		// NOCOMMIT
+		struct delete_cuda_stream {
+			void operator()(cudaStream_t s) { cudaStreamDestroy(s); }
+		};
+		std::unordered_map<device_id, std::unique_ptr<CUstream_st, delete_cuda_stream>> m_cuda_copy_streams;
 
 		static resize_info is_resize_required(const backing_buffer& buffer, cl::sycl::range<3> request_range, cl::sycl::id<3> request_offset) {
 			if(!buffer.is_allocated()) { return resize_info{true, request_offset, request_range}; }

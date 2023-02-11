@@ -140,15 +140,15 @@ namespace detail {
 	// NOCOMMIT Copy pasta of host variant. Unify with above.
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<1>& source_range, const cl::sycl::id<1>& source_offset, const cl::sycl::range<1>& target_range,
-	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range);
+	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range, cudaStream_t stream);
 
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<2>& source_range, const cl::sycl::id<2>& source_offset, const cl::sycl::range<2>& target_range,
-	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range);
+	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range, cudaStream_t stream);
 
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<3>& source_range, const cl::sycl::id<3>& source_offset, const cl::sycl::range<3>& target_range,
-	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range);
+	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range, cudaStream_t stream);
 
 	void linearize_subrange(const void* source_base_ptr, void* target_ptr, size_t elem_size, const range<3>& source_range, const subrange<3>& copy_sr);
 
@@ -242,7 +242,7 @@ namespace detail {
 		// FIXME Just hacking - this assumes source has same dimensionality
 		// FIXME: Need to pass SYCL queue for copying to host... ugh
 		virtual async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset,
-		    const id<3>& target_offset, const range<3>& copy_range) = 0;
+		    const id<3>& target_offset, const range<3>& copy_range, cudaStream_t stream) = 0;
 
 		virtual ~buffer_storage() = default;
 
@@ -260,14 +260,15 @@ namespace detail {
 	template <typename DataT, int Dims>
 	class device_buffer_storage : public buffer_storage {
 	  public:
-		device_buffer_storage(range<Dims> range, device_queue& owning_queue)
+		device_buffer_storage(range<Dims> range, device_queue& owning_queue, cudaStream_t copy_stream)
 		    : buffer_storage(range_cast<3>(range), buffer_type::device_buffer), m_owning_queue(owning_queue.get_sycl_queue()),
 #if USE_NDVBUFFER
 		      m_device_buf(sycl::get_native<sycl::backend::cuda>(m_owning_queue.get_device()), ndv::extent<Dims>::make_from(range))
 #else
 		      m_device_buf(range, owning_queue)
 #endif
-		{
+		      ,
+		      m_copy_stream(copy_stream) {
 		}
 
 		~device_buffer_storage() {
@@ -305,7 +306,7 @@ namespace detail {
 			assert(false && "Figure out how to integrate with async_event");
 #else
 			return memcpy_strided_device(m_owning_queue, m_device_buf.get_pointer(), out_linearized, sizeof(DataT), m_device_buf.get_range(),
-			    id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), id<Dims>{}, range_cast<Dims>(sr.range));
+			    id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), id<Dims>{}, range_cast<Dims>(sr.range), m_copy_stream);
 #endif
 		}
 
@@ -321,14 +322,14 @@ namespace detail {
 			// NOCOMMIT Use assert_copy_is_in_range from below?
 			assert((id_cast<Dims>(sr.offset) + range_cast<Dims>(sr.range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
 			return memcpy_strided_device(m_owning_queue, in_linearized, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id<Dims>{},
-			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
+			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), m_copy_stream);
 #endif
 		}
 
 		async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
 
 		async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset,
-		    const range<3>& copy_range) override;
+		    const range<3>& copy_range, cudaStream_t stream) override;
 
 #if USE_NDVBUFFER
 		// FIXME: Required for more efficient D->H copies (see host_buffer_storage::copy). Find cleaner API.
@@ -342,6 +343,10 @@ namespace detail {
 #else
 		device_buffer<DataT, Dims> m_device_buf;
 #endif
+
+		// NOCOMMIT HACK copy_from_device_raw() takes the stream by argument, but copy() doesn't, so we keep it as a member here
+	  public:
+		cudaStream_t m_copy_stream;
 	};
 
 	template <typename DataT, int Dims>
@@ -376,7 +381,7 @@ namespace detail {
 		async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
 
 		async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset,
-		    const range<3>& copy_range) override;
+		    const range<3>& copy_range, cudaStream_t copy_stream) override;
 
 		host_buffer<DataT, Dims>& get_host_buffer() { return m_host_buf; }
 
@@ -413,7 +418,7 @@ namespace detail {
 #else
 			return memcpy_strided_device(m_owning_queue, device_source.m_device_buf.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
 			    device_source.m_device_buf.get_range(), id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset),
-			    range_cast<Dims>(copy_range));
+			    range_cast<Dims>(copy_range), m_copy_stream);
 #endif
 		}
 
@@ -446,10 +451,10 @@ namespace detail {
 	}
 
 	template <typename DataT, int Dims>
-	async_event device_buffer_storage<DataT, Dims>::copy_from_device_raw(
-	    sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range) {
+	async_event device_buffer_storage<DataT, Dims>::copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range,
+	    const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range, cudaStream_t copy_stream) {
 		return memcpy_strided_device(m_owning_queue, source_ptr, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(source_range),
-		    id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range));
+		    id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range), copy_stream);
 	}
 
 	template <typename DataT, int Dims>
@@ -499,10 +504,10 @@ namespace detail {
 	}
 
 	template <typename DataT, int Dims>
-	async_event host_buffer_storage<DataT, Dims>::copy_from_device_raw(
-	    sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range) {
+	async_event host_buffer_storage<DataT, Dims>::copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range,
+	    const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range, cudaStream_t copy_stream) {
 		return memcpy_strided_device(q, source_ptr, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(source_range), id_cast<Dims>(source_offset),
-		    m_host_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range));
+		    m_host_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range), copy_stream);
 	}
 
 } // namespace detail
