@@ -2,6 +2,7 @@
 
 #include <foonathan/memory/fallback_allocator.hpp>
 #include <foonathan/memory/memory_pool.hpp>
+#include <foonathan/memory/segregator.hpp>
 
 #include <sycl/sycl.hpp>
 
@@ -120,7 +121,7 @@ class host_allocator {
 
   private:
 	using memory_pool_t = foonathan::memory::memory_pool<foonathan::memory::node_pool, cuda_pinned_memory_allocator>;
-	using fallback_allocator_t = foonathan::memory::fallback_allocator<memory_pool_t, foonathan::memory::default_allocator>;
+	using fallback_allocator_t = foonathan::memory::fallback_allocator<memory_pool_t, foonathan::memory::null_allocator>;
 
 	inline static std::unique_ptr<host_allocator> instance;
 
@@ -131,9 +132,9 @@ class host_allocator {
 
 	static fallback_allocator_t construct_allocator() {
 		using namespace foonathan::memory::literals;
-		const auto max_pinned_memory = 8_GiB; // FIXME: This should be a configurable percentage of total host memory
-		auto pool = memory_pool_t(get_pool_node_size(), 1_GiB, max_pinned_memory);
-		return fallback_allocator_t{std::move(pool), foonathan::memory::default_allocator{}};
+		const auto max_pinned_memory = 256_GiB; // FIXME: This should be a configurable percentage of total host memory
+		auto pool = memory_pool_t(get_pool_node_size(), 16_GiB, max_pinned_memory);
+		return fallback_allocator_t{std::move(pool), foonathan::memory::null_allocator{}};
 	}
 
   private:

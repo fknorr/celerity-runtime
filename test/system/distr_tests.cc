@@ -4,6 +4,7 @@
 
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <mpi.h>
@@ -614,5 +615,70 @@ namespace detail {
 		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
 		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
+
+template <typename F>
+std::chrono::microseconds run_distributed_benchmark(size_t n_warmup, size_t n_passes, F&& f) {
+	celerity::distr_queue q;
+	q.slow_full_sync();
+
+	std::chrono::microseconds time{};
+	for(size_t i = 0; i < n_warmup + n_passes; ++i) {
+		const auto start = std::chrono::steady_clock::now();
+		f(q);
+		q.slow_full_sync();
+		const auto end = std::chrono::steady_clock::now();
+
+		if(i > n_warmup) { time += std::chrono::duration_cast<std::chrono::microseconds>(end - start); }
+	}
+	return time / n_passes;
+}
+
+
+bool is_master_node() {
+	int rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	return rank == 0;
+}
+
+size_t operator""_i(unsigned long long v) { return v; }
+size_t operator""_Ki(unsigned long long v) { return v << 10; }
+size_t operator""_Mi(unsigned long long v) { return v << 20; }
+size_t operator""_Gi(unsigned long long v) { return v << 30; }
+
+
+TEST_CASE_METHOD(test_utils::runtime_fixture, "Allgather") {
+	const size_t n_warmup = 2;
+	const size_t n_passes = 20;
+	const size_t n_iters = 10;
+	const size_t range = GENERATE(values({4_Ki, 256_Ki, 16_Mi, 256_Mi}));
+
+	celerity::buffer<int> buf(range);
+
+	celerity::distr_queue q;
+	q.slow_full_sync();
+
+	q.submit([=](celerity::handler& cgh) {
+			accessor write_acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { //
+					(void)write_acc;
+					});
+			});
+
+	for(size_t i = 0; i < n_iters; ++i) {
+		q.submit([=](celerity::handler& cgh) {
+				accessor read_acc(buf, cgh, celerity::access::all(), read_only);
+				accessor write_acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+				cgh.parallel_for<class UKN(allgather)>(celerity::range<1>(range), [=](celerity::item<1>) {
+						(void)read_acc;
+						(void)write_acc;
+						});
+				});
+	}
+
+	q.slow_full_sync();
+
+}
+
+
 } // namespace detail
 } // namespace celerity
