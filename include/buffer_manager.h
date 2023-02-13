@@ -299,6 +299,15 @@ namespace detail {
 
 		bool NOMERGE_warn_on_device_buffer_resize = false;
 
+		// NOCOMMIT HACK for reasons unbeknownst to us, synchronizing on cudaEventQuery() == cudaSuccess for get_buffer_data events is not sufficient and
+		// DMA can still be ongoing, corrupting the host_allocator state (at least on Marconi). As a workaround, we call cudasStreamSynchronize on the
+		// copy stream.
+		void block_on_all_copy_streams() {
+			for(auto& [_, s] : m_cuda_copy_streams) {
+				cudaStreamSynchronize(s.get());
+			}
+		}
+
 	  private:
 		struct backing_buffer {
 			std::unique_ptr<buffer_storage> storage = nullptr;
