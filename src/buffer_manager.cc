@@ -135,7 +135,7 @@ namespace detail {
 		return true;
 	}
 
-	void buffer_manager::immediately_broadcast_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized) {
+	void buffer_manager::immediately_broadcast_data(buffer_id bid, const subrange<3>& sr, void* const in_linearized) {
 		ZoneScoped;
 #ifdef TRACY_ENABLE
 		const auto msg = fmt::format("broadcast bid {} - {}", bid, sr);
@@ -153,7 +153,7 @@ namespace detail {
 			auto mem_id = m_local_devices.get_memory_id(device_id);
 			all_loc.set(mem_id);
 			auto& storage = buff.get(mem_id).storage;
-			transfer_events[device_id] = storage->set_data(sr, in_linearized.get_pointer());
+			transfer_events[device_id] = storage->set_data(sr, in_linearized);
 #ifdef TRACY_ENABLE
 			const auto msg = fmt::format("Broadcast set_data started for device {}", device_id);
 			TracyMessage(msg.c_str(), msg.size());

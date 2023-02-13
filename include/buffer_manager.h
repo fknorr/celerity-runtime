@@ -231,7 +231,7 @@ namespace detail {
 		 *
 		 * Precondition: all device buffers must be allocated, and must not require resizing
 		 */
-		void immediately_broadcast_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized);
+		void immediately_broadcast_data(buffer_id bid, const subrange<3>& sr, void* in_linearized);
 
 		template <typename DataT, int Dims>
 		access_info access_device_buffer(

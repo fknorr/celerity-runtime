@@ -133,7 +133,7 @@ class host_allocator {
 	static fallback_allocator_t construct_allocator() {
 		using namespace foonathan::memory::literals;
 		const auto max_pinned_memory = 256_GiB; // FIXME: This should be a configurable percentage of total host memory
-		auto pool = memory_pool_t(get_pool_node_size(), 16_GiB /* this will be the maximum allocation size! */, max_pinned_memory);
+		auto pool = memory_pool_t(get_pool_node_size(), 2_GiB /* this will be the maximum allocation size! */, max_pinned_memory);
 		// null_allocator causes the program to fail if the memory pool is exhausted or an allocation above its maximum size is requested. We could (should?)
 		// include a fallback here, but having a default_allocator can introduce hard to debug performance regressions.
 		// TODO get rid of the fallback_allocator entirely (needs some different API on cuda_pinned_memory_allocator?)
