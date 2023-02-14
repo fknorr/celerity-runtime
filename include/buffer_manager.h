@@ -299,6 +299,12 @@ namespace detail {
 
 		bool NOMERGE_warn_on_device_buffer_resize = false;
 
+		void block_on_all_copy_streams() {
+			for (auto &[_, s]: m_cuda_copy_streams) {
+				cudaStreamSynchronize(s.get());
+			}
+		}
+		
 	  private:
 		struct backing_buffer {
 			std::unique_ptr<buffer_storage> storage = nullptr;

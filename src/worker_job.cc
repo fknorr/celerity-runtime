@@ -554,8 +554,9 @@ namespace detail {
 			ZoneScopedN("fetch input");
 			send_buffer = collective_send_buffer({data.source_regions[m_local_nid]}, buffer_info.element_size);
 			for(auto& [box, pointer] : send_buffer.get_boxes()) {
-				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), pointer).wait();
+				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), pointer);
 			}
+			m_buffer_mngr.block_on_all_copy_streams();
 		}
 
 		collective_receive_buffer recv_buffer;
