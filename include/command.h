@@ -210,36 +210,35 @@ namespace detail {
 
 	class broadcast_command final : public abstract_command {
 		friend class command_graph;
-		broadcast_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id source_nid, GridRegion<3> region)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_region(std::move(region)) {}
+		broadcast_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id root, GridRegion<3> region)
+		    : abstract_command(cid, nid), m_bid(bid), m_root(root), m_region(std::move(region)) {}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		const GridRegion<3>& get_region() const { return m_region; }
-		node_id get_source() const { return m_source_nid; }
+		node_id get_root() const { return m_root; }
 
 	  private:
 		buffer_id m_bid;
-		node_id m_source_nid;
+		node_id m_root;
 		GridRegion<3> m_region;
 	};
 
 	class scatter_command final : public abstract_command {
 		friend class command_graph;
-		scatter_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id source_nid, GridRegion<3> source_region,
+		scatter_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id root, GridRegion<3> source_region,
 		    std::vector<GridRegion<3>> dest_regions)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_nid(source_nid), m_source_region(std::move(source_region)),
-		      m_dest_regions(std::move(dest_regions)) {}
+		    : abstract_command(cid, nid), m_bid(bid), m_root(root), m_source_region(std::move(source_region)), m_dest_regions(std::move(dest_regions)) {}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
-		node_id get_source_nid() const { return m_source_nid; }
+		node_id get_root() const { return m_root; }
 		const GridRegion<3>& get_source_region() const { return m_source_region; }
 		const std::vector<GridRegion<3>>& get_dest_regions() const { return m_dest_regions; }
 
 	  private:
 		buffer_id m_bid;
-		node_id m_source_nid;
+		node_id m_root;
 		GridRegion<3> m_source_region;
 		std::vector<GridRegion<3>> m_dest_regions;
 	};
@@ -326,12 +325,12 @@ namespace detail {
 	struct broadcast_data {
 		buffer_id bid;
 		GridRegion<3> region;
-		node_id source_nid;
+		node_id root;
 	};
 
 	struct scatter_data {
 		buffer_id bid;
-		node_id source_nid;
+		node_id root;
 		GridRegion<3> source_region;
 		std::vector<GridRegion<3>> dest_regions;
 	};

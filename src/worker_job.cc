@@ -787,7 +787,7 @@ namespace detail {
 
 	std::string broadcast_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<broadcast_data>(pkg.data);
-		return fmt::format("broadcast {} of buffer {} from {}", data.region, static_cast<size_t>(data.bid), data.source_nid);
+		return fmt::format("broadcast {} of buffer {} from {}", data.region, static_cast<size_t>(data.bid), data.root);
 	}
 
 	bool broadcast_job::execute(const command_pkg& pkg) {
@@ -796,7 +796,7 @@ namespace detail {
 		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-		const bool sends_data = data.source_nid == m_local_nid;
+		const bool sends_data = data.root == m_local_nid;
 		const bool receives_data = !sends_data;
 
 		collective_send_buffer send_buffer;
@@ -820,8 +820,8 @@ namespace detail {
 
 		{
 			ZoneScopedN("Bcast");
-			CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", byte_size, data.source_nid);
-			MPI_Bcast(buffer, static_cast<int>(byte_size), MPI_BYTE, static_cast<int>(data.source_nid), MPI_COMM_WORLD);
+			CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", byte_size, data.root);
+			MPI_Bcast(buffer, static_cast<int>(byte_size), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD);
 		}
 
 		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ true); }
@@ -840,10 +840,10 @@ namespace detail {
 
 	std::string scatter_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<scatter_data>(pkg.data);
-		if(data.source_nid == m_local_nid) {
+		if(data.root == m_local_nid) {
 			return fmt::format("scatter {} of buffer {} to all", data.source_region, data.bid);
 		} else {
-			return fmt::format("scatter {} of buffer {} from {}", data.dest_regions[m_local_nid], data.bid, data.source_nid);
+			return fmt::format("scatter {} of buffer {} from {}", data.dest_regions[m_local_nid], data.bid, data.root);
 		}
 	}
 
@@ -853,7 +853,7 @@ namespace detail {
 		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-		const bool sends_data = data.source_nid == m_local_nid;
+		const bool sends_data = data.root == m_local_nid;
 		const bool receives_data = !data.dest_regions[m_local_nid].empty();
 
 		collective_send_buffer send_buffer;
@@ -873,7 +873,7 @@ namespace detail {
 
 		{
 			ZoneScopedN("Scatterv");
-			const auto root = static_cast<int>(data.source_nid);
+			const auto root = static_cast<int>(data.root);
 			CELERITY_TRACE("MPI_Scatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD)",
 			    send_buffer.get_size_bytes(), fmt::join(send_buffer.get_chunk_byte_sizes(), ", "), fmt::join(send_buffer.get_chunk_byte_offsets(), ", "),
 			    recv_buffer.get_size_bytes(), recv_buffer.get_size_bytes(), root);

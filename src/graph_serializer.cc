@@ -105,9 +105,9 @@ namespace detail {
 		} else if(const auto* agcmd = dynamic_cast<allgather_command*>(cmd)) {
 			pkg.data = allgather_data{agcmd->get_bid(), agcmd->get_source_regions(), agcmd->get_dest_region()};
 		} else if(const auto* bcmd = dynamic_cast<broadcast_command*>(cmd)) {
-			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_region(), bcmd->get_source()};
+			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_region(), bcmd->get_root()};
 		} else if(const auto* scmd = dynamic_cast<scatter_command*>(cmd)) {
-			pkg.data = scatter_data{scmd->get_bid(), scmd->get_source_nid(), scmd->get_source_region(), scmd->get_dest_regions()};
+			pkg.data = scatter_data{scmd->get_bid(), scmd->get_root(), scmd->get_source_region(), scmd->get_dest_regions()};
 		} else if(const auto* a2acmd = dynamic_cast<alltoall_command*>(cmd)) {
 			pkg.data = alltoall_data{a2acmd->get_bid(), a2acmd->get_send_regions(), a2acmd->get_recv_regions()};
 		} else {

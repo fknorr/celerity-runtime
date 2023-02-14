@@ -129,7 +129,7 @@ namespace detail {
 			fmt::format_to(std::back_inserter(label), "<b>push</b> transfer {} to N{}<br/>{} {}", pcmd->get_transfer_id(), pcmd->get_target(), bl,
 			    subrange_to_grid_box(pcmd->get_range()));
 		} else if(const auto apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
-			// if(apcmd->get_source()->get_rid()) { label += fmt::format("(R{}) ", apcmd->get_source()->get_rid()); }
+			// if(apcmd->get_source()->get_rid()) { label += fmt::format("(R{}) ", apcmd->get_root()->get_rid()); }
 			const std::string bl = get_buffer_label(bm, apcmd->get_bid());
 			fmt::format_to(std::back_inserter(label), "<b>await push</b> transfer {} <br/>B{} {}", apcmd->get_transfer_id(), bl, apcmd->get_region());
 		} else if(const auto drcmd = dynamic_cast<const data_request_command*>(&cmd)) {
@@ -157,14 +157,14 @@ namespace detail {
 			}
 			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", agcmd->get_bid(), agcmd->get_dest_region());
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
-			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_source());
-			if(bcmd->get_source() == bcmd->get_nid()) {
+			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_root());
+			if(bcmd->get_root() == bcmd->get_nid()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_region());
 			}
 			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", bcmd->get_bid(), bcmd->get_region());
 		} else if(const auto scmd = dynamic_cast<const scatter_command*>(&cmd)) {
-			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_source_nid());
-			if(scmd->get_source_nid() == scmd->get_nid()) {
+			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_root());
+			if(scmd->get_root() == scmd->get_nid()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), scmd->get_source_region());
 			} else if(const auto& dest_region = scmd->get_dest_regions()[scmd->get_nid()]; !dest_region.empty()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
@@ -259,7 +259,7 @@ namespace detail {
 
 			// Add a dashed line to the corresponding push
 			// if(const auto apcmd = dynamic_cast<const await_push_command*>(cmd)) {
-			// 	fmt::format_to(std::back_inserter(main_dot), "{}->{}[style=dashed color=gray40];", local_to_global_id(apcmd->get_source()->get_cid()),
+			// 	fmt::format_to(std::back_inserter(main_dot), "{}->{}[style=dashed color=gray40];", local_to_global_id(apcmd->get_root()->get_cid()),
 			// 	    local_to_global_id(cmd->get_cid()));
 			// }
 		};
