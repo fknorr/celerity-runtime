@@ -54,17 +54,21 @@ namespace detail {
 
 	class cuda_event_wrapper final : public native_event_wrapper {
 	  public:
-		cuda_event_wrapper(cudaEvent_t evt) : m_event(evt) {}
+		cuda_event_wrapper(cudaEvent_t evt, cudaStream_t stream) : m_event(evt), m_stream(stream) {}
 		~cuda_event_wrapper() { cudaEventDestroy(m_event); }
 
 		bool is_done() const override {
 			const auto ret = cudaEventQuery(m_event);
 			assert(ret == cudaSuccess || ret == cudaErrorNotReady);
+			if(ret == cudaSuccess) {
+				cudaStreamSynchronize(m_stream); // HACK
+			}
 			return ret == cudaSuccess;
 		}
 
 	  private:
 		cudaEvent_t m_event;
+		cudaStream_t m_stream;
 	};
 #endif
 

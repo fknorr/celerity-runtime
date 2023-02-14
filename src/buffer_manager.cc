@@ -168,7 +168,6 @@ namespace detail {
 			TracyMessage(msg.c_str(), msg.size());
 #endif
 		}
-		block_on_all_copy_streams();
 
 		// update data availability
 		m_newest_data_location.at(bid).update_region(subrange_to_grid_box(sr), all_loc);

@@ -53,7 +53,7 @@ namespace detail {
 		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpyAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
-		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream))};
+		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream), stream)};
 #else
 		const auto evt = queue.memcpy(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size);
@@ -76,7 +76,7 @@ namespace detail {
 		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2DAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
-		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream))};
+		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream), stream)};
 #else
 		const size_t line_size = elem_size * copy_range[1];
 		std::vector<cl::sycl::event> wait_list;
@@ -112,7 +112,7 @@ namespace detail {
 		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy3DAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
-		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream))};
+		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream), stream)};
 #else
 		// We simply decompose this into a bunch of 2D copies. Subtract offset on the copy plane, as it will be added again during the 2D copy.
 		const auto source_base_offset =

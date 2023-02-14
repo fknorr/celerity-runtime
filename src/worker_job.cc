@@ -701,7 +701,6 @@ namespace detail {
 			for(auto& [box, offset_bytes, size_bytes] : send_recv_buffer.get_send_boxes()) {
 				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), send_recv_buffer.get_payload(offset_bytes)).wait();
 			}
-			m_buffer_mngr.block_on_all_copy_streams();
 		}
 
 		{
@@ -760,7 +759,6 @@ namespace detail {
 			for(auto& [box, offset_bytes, size_bytes] : send_recv_buffer.get_send_boxes()) {
 				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), send_recv_buffer.get_payload(offset_bytes)).wait();
 			}
-			m_buffer_mngr.block_on_all_copy_streams();
 		}
 
 		{
