@@ -31,7 +31,8 @@ namespace detail {
 		for(auto& cmd : cmds) {
 			if(isa<push_command>(cmd)) {
 				push_cmds.push_back(cmd);
-			} else if(isa<gather_command>(cmd) || isa<broadcast_command>(cmd) || isa<scatter_command>(cmd) || isa<alltoall_command>(cmd)) {
+			} else if(isa<gather_command>(cmd) || isa<allgather_command>(cmd) || isa<broadcast_command>(cmd) || isa<scatter_command>(cmd)
+			          || isa<alltoall_command>(cmd)) {
 				collective_cmds.push_back(cmd);
 			} else if(isa<task_command>(cmd)) {
 				task_cmds.push_back(cmd);
@@ -100,7 +101,9 @@ namespace detail {
 		} else if(const auto* hcmd = dynamic_cast<horizon_command*>(cmd)) {
 			pkg.data = horizon_data{hcmd->get_tid()};
 		} else if(const auto* gcmd = dynamic_cast<gather_command*>(cmd)) {
-			pkg.data = gather_data{gcmd->get_bid(), gcmd->get_source_regions(), gcmd->get_dest_region(), gcmd->get_single_destination()};
+			pkg.data = gather_data{gcmd->get_bid(), gcmd->get_source_regions(), gcmd->get_dest_region(), gcmd->get_root()};
+		} else if(const auto* agcmd = dynamic_cast<allgather_command*>(cmd)) {
+			pkg.data = allgather_data{agcmd->get_bid(), agcmd->get_source_regions(), agcmd->get_dest_region()};
 		} else if(const auto* bcmd = dynamic_cast<broadcast_command*>(cmd)) {
 			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_region(), bcmd->get_source()};
 		} else if(const auto* scmd = dynamic_cast<scatter_command*>(cmd)) {

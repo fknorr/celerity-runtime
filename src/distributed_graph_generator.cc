@@ -355,13 +355,22 @@ void distributed_graph_generator::generate_gather_command(const forward_task& ts
 		node_region = GridRegion<3>::intersect(node_region, forward_region);
 	}
 	const auto local_input_region = source_regions[m_local_nid];
-	const auto single_dest_nid = num_consumer_chunks == 1 ? std::optional{node_id{0}} : std::nullopt;
-	const auto gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), forward_region, single_dest_nid);
+	std::optional<node_id> gather_root;
+	abstract_command* gather_cmd;
+	bool is_local_writer;
+	if(num_consumer_chunks == 1) {
+		const auto root = node_id{0};
+		gather_root = root;
+		gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), forward_region, root);
+		is_local_writer = m_local_nid == root;
+	} else {
+		gather_root = std::nullopt;
+		gather_cmd = create_command<allgather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), forward_region);
+		is_local_writer = true;
+	}
 
 	auto& buffer_state = m_buffer_states.at(bid);
-	if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
-		generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, forward_region, gather_cmd);
-	}
+	if(is_local_writer) { generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, forward_region, gather_cmd); }
 
 	if(!local_input_region.empty()) {
 		// Store the read access for determining anti-dependencies later on
@@ -375,11 +384,11 @@ void distributed_graph_generator::generate_gather_command(const forward_task& ts
 
 	if(m_local_nid == 0) {
 		// we treat an Allgather result has having been produced by node 0 and replicated to all other nodes
-		const auto replicated_to = single_dest_nid ? node_bitset().set(*single_dest_nid) : node_bitset().set(/* all */);
+		const auto replicated_to = gather_root.has_value() ? node_bitset().set(*gather_root) : node_bitset().set(/* all */);
 		buffer_state.replicated_regions.update_region(forward_region, replicated_to);
 	}
 
-	if(!single_dest_nid.has_value() || *single_dest_nid == m_local_nid) {
+	if(is_local_writer) {
 		const auto is_replicated = m_local_nid != 0;
 		buffer_state.local_last_writer.update_region(forward_region, write_command_state(gather_cmd->get_cid(), is_replicated));
 	} else {

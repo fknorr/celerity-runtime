@@ -225,6 +225,18 @@ namespace detail {
 		std::string get_description(const command_pkg& pkg) override;
 	};
 
+	class allgather_job : public worker_job {
+	  public:
+		allgather_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid);
+
+	  private:
+		buffer_manager& m_buffer_mngr;
+		node_id m_local_nid;
+
+		bool execute(const command_pkg& pkg) override;
+		std::string get_description(const command_pkg& pkg) override;
+	};
+
 	class broadcast_job : public worker_job {
 	  public:
 		broadcast_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid);

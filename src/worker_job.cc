@@ -347,19 +347,6 @@ namespace detail {
 	// ------------------------------------------------------ GATHER ------------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
-	gather_job::gather_job(const command_pkg& pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
-		assert(std::holds_alternative<gather_data>(pkg.data));
-	}
-
-	std::string gather_job::get_description(const command_pkg& pkg) {
-		const auto data = std::get<gather_data>(pkg.data);
-		if(data.single_dest_nid) {
-			return fmt::format("gather {} of buffer {} to {}", data.source_regions[m_local_nid], static_cast<size_t>(data.bid), *data.single_dest_nid);
-		} else {
-			return fmt::format("allgather {} of buffer {}", data.source_regions[m_local_nid], static_cast<size_t>(data.bid));
-		}
-	}
-
 	class linearized_region_array {
 	  public:
 		linearized_region_array() = default;
@@ -681,6 +668,15 @@ namespace detail {
 		}
 	}
 
+	gather_job::gather_job(const command_pkg& pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
+		assert(std::holds_alternative<gather_data>(pkg.data));
+	}
+
+	std::string gather_job::get_description(const command_pkg& pkg) {
+		const auto data = std::get<gather_data>(pkg.data);
+		return fmt::format("gather {} of buffer {} to {}", data.source_regions[m_local_nid], static_cast<size_t>(data.bid), data.root);
+	}
+
 	bool gather_job::execute(const command_pkg& pkg) {
 		ZoneScoped;
 		const auto data = std::get<gather_data>(pkg.data);
@@ -689,29 +685,13 @@ namespace detail {
 		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-		const auto gather_root = data.single_dest_nid.value_or(0);
-
-		enum { gather, allgather } operation;
-		bool is_receiver;
-		if(data.single_dest_nid.has_value()) {
-			operation = gather;
-			is_receiver = m_local_nid == gather_root;
-		} else {
-			operation = allgather;
-			is_receiver = true;
-		}
-
+		const bool is_receiver = m_local_nid == data.root;
 		std::vector<collective_send_receive_buffer::region_spec> send_recv_regions(data.source_regions.size());
 		for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
 			auto& r = send_recv_regions[nid];
 			r.region = data.source_regions[nid];
-			if(operation == gather) {
-				r.send = nid == m_local_nid && nid != gather_root;
-				r.recv = m_local_nid == gather_root && nid != m_local_nid;
-			} else /* operation == allgather */ {
-				r.send = nid == m_local_nid;
-				r.recv = nid != m_local_nid;
-			}
+			r.send = nid == m_local_nid && nid != data.root;
+			r.recv = m_local_nid == data.root && nid != m_local_nid;
 		}
 
 		collective_send_receive_buffer send_recv_buffer(send_recv_regions, buffer_info.element_size);
@@ -724,22 +704,66 @@ namespace detail {
 			m_buffer_mngr.block_on_all_copy_streams();
 		}
 
-		if(operation == gather) {
+		{
 			ZoneScopedN("Gatherv");
-			if(m_local_nid == gather_root) {
+			if(m_local_nid == data.root) {
 				MPI_Gatherv(MPI_IN_PLACE, 0, MPI_BYTE, send_recv_buffer.get_payload(), send_recv_buffer.get_chunk_byte_sizes().data(),
-				    send_recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, static_cast<int>(gather_root), MPI_COMM_WORLD);
+				    send_recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD);
 				CELERITY_TRACE("MPI_Gatherv(MPI_IN_PLACE, 0, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
 				    send_recv_buffer.get_payload_size_bytes(), fmt::join(send_recv_buffer.get_chunk_byte_sizes(), ", "),
-				    fmt::join(send_recv_buffer.get_chunk_byte_offsets(), ", "), gather_root);
+				    fmt::join(send_recv_buffer.get_chunk_byte_offsets(), ", "), data.root);
 			} else {
 				assert(send_recv_buffer.payload_is_single_send_box() || send_recv_buffer.payload_is_null());
 				MPI_Gatherv(send_recv_buffer.get_payload(), send_recv_buffer.get_chunk_byte_sizes()[m_local_nid], MPI_BYTE, nullptr, nullptr, nullptr, MPI_BYTE,
-				    static_cast<int>(gather_root), MPI_COMM_WORLD);
+				    static_cast<int>(data.root), MPI_COMM_WORLD);
 				CELERITY_TRACE("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, nullptr, nullptr, nullptr, MPI_BYTE, {}, MPI_COMM_WORLD)",
-				    send_recv_buffer.get_payload_size_bytes(), send_recv_buffer.get_chunk_byte_sizes()[m_local_nid], gather_root);
+				    send_recv_buffer.get_payload_size_bytes(), send_recv_buffer.get_chunk_byte_sizes()[m_local_nid], data.root);
 			}
-		} else /* operation == allgather */ {
+		}
+
+		if(is_receiver) commit_collective_receive(m_buffer_mngr, data.bid, std::move(send_recv_buffer), /* attempt_broadcast= */ false);
+
+		m_buffer_mngr.unlock(pkg.cid);
+		return true;
+	}
+
+	allgather_job::allgather_job(const command_pkg& pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
+		assert(std::holds_alternative<allgather_data>(pkg.data));
+	}
+
+	std::string allgather_job::get_description(const command_pkg& pkg) {
+		const auto data = std::get<allgather_data>(pkg.data);
+		return fmt::format("allgather {} of buffer {}", data.source_regions[m_local_nid], static_cast<size_t>(data.bid));
+	}
+
+
+	bool allgather_job::execute(const command_pkg& pkg) {
+		ZoneScoped;
+		const auto data = std::get<allgather_data>(pkg.data);
+
+		// TODO usually we do not want lock host memory, but all device memories here
+		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
+		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
+
+		std::vector<collective_send_receive_buffer::region_spec> send_recv_regions(data.source_regions.size());
+		for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
+			auto& r = send_recv_regions[nid];
+			r.region = data.source_regions[nid];
+			r.send = nid == m_local_nid;
+			r.recv = nid != m_local_nid;
+		}
+
+		collective_send_receive_buffer send_recv_buffer(send_recv_regions, buffer_info.element_size);
+
+		{
+			ZoneScopedN("fetch input");
+			for(auto& [box, offset_bytes, size_bytes] : send_recv_buffer.get_send_boxes()) {
+				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), send_recv_buffer.get_payload(offset_bytes)).wait();
+			}
+			m_buffer_mngr.block_on_all_copy_streams();
+		}
+
+		{
 			ZoneScopedN("Allgatherv");
 			// TODO make asynchronous?
 			MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_BYTE, send_recv_buffer.get_payload(), send_recv_buffer.get_chunk_byte_sizes().data(),
@@ -749,7 +773,7 @@ namespace detail {
 			    fmt::join(send_recv_buffer.get_chunk_byte_offsets(), ", "));
 		}
 
-		if(is_receiver) commit_collective_receive(m_buffer_mngr, data.bid, std::move(send_recv_buffer), /* attempt_broadcast= */ operation == allgather);
+		commit_collective_receive(m_buffer_mngr, data.bid, std::move(send_recv_buffer), /* attempt_broadcast= */ true);
 
 		m_buffer_mngr.unlock(pkg.cid);
 		return true;

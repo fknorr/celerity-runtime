@@ -360,6 +360,7 @@ class command_query {
 		if(isa<await_push_command>(cmd)) return command_type::await_push;
 		if(isa<reduction_command>(cmd)) return command_type::reduction;
 		if(isa<gather_command>(cmd)) return command_type::gather;
+		if(isa<allgather_command>(cmd)) return command_type::allgather;
 		if(isa<broadcast_command>(cmd)) return command_type::broadcast;
 		if(isa<scatter_command>(cmd)) return command_type::scatter;
 		if(isa<alltoall_command>(cmd)) return command_type::alltoall;
@@ -376,6 +377,7 @@ class command_query {
 		case command_type::await_push: return "await_push";
 		case command_type::reduction: return "reduction";
 		case command_type::gather: return "gather";
+		case command_type::allgather: return "allgather";
 		case command_type::broadcast: return "broadcast";
 		case command_type::scatter: return "scatter";
 		case command_type::alltoall: return "alltoall";

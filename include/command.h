@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, broadcast, scatter, alltoall };
+	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, allgather, broadcast, scatter, alltoall };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -176,21 +176,36 @@ namespace detail {
 	class gather_command final : public abstract_command {
 		friend class command_graph;
 		gather_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions, GridRegion<3> dest_region,
-		    const std::optional<node_id>& single_dest_nid)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_dest_region(std::move(dest_region)),
-		      m_single_dest_nid(single_dest_nid) {}
+		    const node_id root)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_dest_region(std::move(dest_region)), m_root(root) {}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
 		const GridRegion<3>& get_dest_region() const { return m_dest_region; }
-		const std::optional<node_id>& get_single_destination() const { return m_single_dest_nid; }
+		node_id get_root() const { return m_root; }
 
 	  private:
 		buffer_id m_bid;
 		std::vector<GridRegion<3>> m_source_regions;
 		GridRegion<3> m_dest_region;
-		std::optional<node_id> m_single_dest_nid;
+		node_id m_root;
+	};
+
+	class allgather_command final : public abstract_command {
+		friend class command_graph;
+		allgather_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions, GridRegion<3> dest_region)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_dest_region(std::move(dest_region)) {}
+
+	  public:
+		buffer_id get_bid() const { return m_bid; }
+		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
+		const GridRegion<3>& get_dest_region() const { return m_dest_region; }
+
+	  private:
+		buffer_id m_bid;
+		std::vector<GridRegion<3>> m_source_regions;
+		GridRegion<3> m_dest_region;
 	};
 
 	class broadcast_command final : public abstract_command {
@@ -299,7 +314,13 @@ namespace detail {
 		buffer_id bid;
 		std::vector<GridRegion<3>> source_regions;
 		GridRegion<3> dest_region;
-		std::optional<node_id> single_dest_nid;
+		node_id root;
+	};
+
+	struct allgather_data {
+		buffer_id bid;
+		std::vector<GridRegion<3>> source_regions;
+		GridRegion<3> dest_region;
 	};
 
 	struct broadcast_data {
@@ -322,7 +343,7 @@ namespace detail {
 	};
 
 	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,
-	    gather_data, broadcast_data, scatter_data, alltoall_data>;
+	    gather_data, allgather_data, broadcast_data, scatter_data, alltoall_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -360,6 +381,7 @@ namespace detail {
 				[](const data_request_data&) { return command_type::data_request; },
 			    [](const reduction_data&) { return command_type::reduction; },
 				[](const gather_data&) { return command_type::gather; },
+				[](const allgather_data&) { return command_type::allgather; },
 				[](const broadcast_data&) { return command_type::broadcast; },
 				[](const scatter_data&) { return command_type::scatter; },
 				[](const alltoall_data&) { return command_type::alltoall; }
