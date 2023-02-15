@@ -89,9 +89,7 @@ TEST_CASE_METHOD(runtime_fixture, "Gather-Scatter") {
 	const auto time = run_distributed_benchmark(n_warmup, n_passes, [&](celerity::distr_queue& q) mutable {
 		q.submit([=](celerity::handler& cgh) {
 			accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
-			cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { //
-				(void)write_acc;
-			});
+			cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { (void)write_acc; });
 		});
 
 		for(size_t i = 0; i < n_iters; ++i) {
@@ -101,8 +99,9 @@ TEST_CASE_METHOD(runtime_fixture, "Gather-Scatter") {
 			});
 
 			q.submit([=](celerity::handler& cgh) {
-				accessor acc(buf, cgh, access::all(), read_write);
-				cgh.parallel_for<class UKN(scatter)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)acc; });
+				accessor read_acc(buf, cgh, access::fixed<1>({0, 1}), read_only);
+				accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
+				cgh.parallel_for<class UKN(scatter)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)read_acc, (void) write_acc; });
 			});
 		}
 	});
