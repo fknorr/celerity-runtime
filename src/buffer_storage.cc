@@ -45,9 +45,10 @@ namespace detail {
 	// NOCOMMIT Don't wait here - return event (needs solution for 2D/3D with multiple events!)
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<1>& source_range, const cl::sycl::id<1>& source_offset, const cl::sycl::range<1>& target_range,
-	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range, cudaStream_t stream) {
+	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range, device_id did, cudaStream_t stream) {
 		const size_t line_size = elem_size * copy_range[0];
 #if defined(__HIPSYCL__)
+		cudaSetDevice(did);
 		const auto ret = cudaMemcpyAsync(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault, stream);
 		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpyAsync failed");
@@ -64,12 +65,13 @@ namespace detail {
 	// TODO Optimize for contiguous copies?
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<2>& source_range, const cl::sycl::id<2>& source_offset, const cl::sycl::range<2>& target_range,
-	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range, cudaStream_t stream) {
+	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range, device_id did, cudaStream_t stream) {
 		const auto source_base_offset = get_linear_index(source_range, source_offset);
 		const auto target_base_offset = get_linear_index(target_range, target_offset);
 
 // NOCOMMIT Move into backend-specific module
 #if defined(__HIPSYCL__)
+		cudaSetDevice(did);
 		const auto ret = cudaMemcpy2DAsync(reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size,
 		    copy_range[0], cudaMemcpyDefault, stream);
@@ -97,9 +99,10 @@ namespace detail {
 	// TODO Optimize for contiguous copies?
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<3>& source_range, const cl::sycl::id<3>& source_offset, const cl::sycl::range<3>& target_range,
-	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range, cudaStream_t stream) {
+	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range, device_id did, cudaStream_t stream) {
 // NOCOMMIT Move into backend-specific module
 #if defined(__HIPSYCL__)
+		cudaSetDevice(did);
 		// NOCOMMIT TODO This needs thorough testing. I don't think current unit tests exercise strided 3D copies much (if at all)
 		cudaMemcpy3DParms parms = {};
 		parms.srcPos = make_cudaPos(source_offset[2] * elem_size, source_offset[1], source_offset[0]);

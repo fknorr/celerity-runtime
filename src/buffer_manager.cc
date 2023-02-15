@@ -12,6 +12,7 @@ namespace detail {
 		// NOCOMMIT
 		for(device_id did = 0; did < devices.num_compute_devices(); ++did) {
 			cudaStream_t s;
+			cudaSetDevice(did);
 			cudaStreamCreate(&s);
 			m_cuda_copy_streams.emplace(did, std::unique_ptr<CUstream_st, delete_cuda_stream>(s));
 		}
@@ -116,7 +117,7 @@ namespace detail {
 		auto& staging_buf = get_free_staging_buffer(sr.range.size() * m_buffer_infos[bid].element_size);
 		auto evt = memcpy_strided_device(staging_buf.buffer.get_owning_queue(), in_linearized.get_pointer(), staging_buf.buffer.get_pointer(),
 		    m_buffer_infos[bid].element_size, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()), id<1>{}, range<1>(sr.range.size()),
-		    m_cuda_copy_streams.at(m_next_staging_allocation_device).get());
+		    m_next_staging_allocation_device, m_cuda_copy_streams.at(m_next_staging_allocation_device).get());
 		evt.wait(); // FIXME This should be async as well...
 		m_scheduled_transfers[bid].push_back(buffer_manager::transfer{staging_buf, sr});
 	}
@@ -461,7 +462,7 @@ namespace detail {
 						// auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(sr.offset), sr.range}, tmp.get_pointer());
 						// target_buffer.storage->copy(, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range)
 						auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range,
-						    sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range, t.get_buffer().m_copy_stream);
+						    sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range, t.get_buffer().m_did, t.get_buffer().m_copy_stream);
 						// auto evt = target_buffer.storage->copy(t.get_buffer(), sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
 						// evt.hack_attach_payload(std::move(tmp)); // FIXME
 						pending_transfers.merge(std::move(evt));
@@ -482,7 +483,7 @@ namespace detail {
 				remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, t.unconsumed);
 				// auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(t.sr.offset), t.sr.range}, t.linearized.get_pointer());
 				auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range, id<3>{},
-				    target_buffer.get_local_offset(t.sr.offset), t.sr.range, t.get_buffer().m_copy_stream);
+				    target_buffer.get_local_offset(t.sr.offset), t.sr.range, t.get_buffer().m_did, t.get_buffer().m_copy_stream);
 				// auto evt = target_buffer.storage->copy(t.get_buffer(), id<3>{}, target_buffer.get_local_offset(t.sr.offset), t.sr.range);
 				// evt.hack_attach_payload(std::move(t.linearized)); // FIXME
 				pending_transfers.merge(std::move(evt));
