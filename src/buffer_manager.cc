@@ -42,52 +42,87 @@ namespace detail {
 	}
 
 	async_event buffer_manager::get_buffer_data(buffer_id bid, const subrange<3>& sr, void* out_linearized) {
+		ZoneScoped;
+
 		std::unique_lock lock(m_mutex);
-		// assert(m_buffers.count(bid) == 1 && (m_buffers.at(bid).device_buf.is_allocated() || m_buffers.at(bid).host_buf.is_allocated())); // NOCOMMIT
-		auto data_locations = m_newest_data_location.at(bid).get_region_values(subrange_to_grid_box(sr));
+		const auto& buffer_info = m_buffer_infos.at(bid);
 
-		// Slow path: We (may) need to obtain current data from multiple memories.
-		// FIXME: We probably run into this more frequently with multi-GPU support. In particular after a horizon.
-		if(data_locations.size() > 1) {
-			auto& existing_buf = m_buffers.at(bid).get(m_local_devices.get_host_memory_id());
+#if TRACY_ENABLE
+		auto zone_sr_text = fmt::format("B{} {}", bid, sr);
+#endif
 
-			// Make sure newest data resides on the host.
-			// But first, we need to check whether the current host buffer is able to hold the full data range.
-			const auto info = is_resize_required(existing_buf, sr.range, sr.offset);
-			backing_buffer replacement_buf;
-			if(info.resize_required) {
-				// TODO: Do we really want to allocate host memory for this..? We could also make the buffer storage "coherent" directly.
-				replacement_buf = backing_buffer{m_buffer_infos.at(bid).construct_host(info.new_range), info.new_offset};
+		async_event pending_fast_transfers;
+		std::vector<std::tuple<subrange<3>, async_event, unique_payload_ptr>> pending_slow_transfers;
+		for(const auto& [box, location] : m_newest_data_location.at(bid).get_region_values(subrange_to_grid_box(sr))) {
+			const auto part_sr = grid_box_to_subrange(box);
+
+			memory_id source_mid = host_memory_id;
+			for(memory_id mid = 1 /* prefer copying from a device for asynchronicity */; mid < max_memories; ++mid) {
+				if(location.test(mid)) {
+					source_mid = mid;
+					break;
+				}
 			}
-			auto [coherent_buf, pending_transfers] = make_buffer_subrange_coherent(
-			    m_local_devices.get_host_memory_id(), bid, access_mode::read, std::move(existing_buf), sr, std::move(replacement_buf));
-			existing_buf = std::move(coherent_buf);
-			while(!pending_transfers.is_done()) {} // NOCOMMIT Add wait()?
+			assert(location.test(source_mid));
+			auto& source = m_buffers.at(bid).get(source_mid);
+			// TODO if source_mid == host_memory_id, async transfers won't actually be async - we want to instead begin start all async d2h transfers first
 
-			data_locations = {{subrange_to_grid_box(sr), data_location{}.set(m_local_devices.get_host_memory_id())}};
+			const bool part_has_output_stride =
+			    part_sr.offset[1] == sr.offset[1] && part_sr.range[1] == sr.range[1] && part_sr.offset[2] == sr.offset[2] && part_sr.range[2] == sr.range[2];
+
+			if(part_has_output_stride) {
+				// Fast path: We can linearize this box right into the output
+				const auto part_offset = (part_sr.offset[0] - sr.offset[0]) * sr.range[1] * sr.range[2];
+				const auto part_linearized = static_cast<std::byte*>(out_linearized) + part_offset * buffer_info.element_size;
+				pending_fast_transfers.merge(source.storage->get_data({source.get_local_offset(part_sr.offset), part_sr.range}, part_linearized));
+			} else {
+				// Slow path: Copy into a temporary buffer, linearize afterwards
+				// TODO evolve get_data() to deal with output strides, otherwise we give up too much memory bandwidth for these temporary copies
+				auto temp = make_uninitialized_payload<std::byte>(part_sr.range.size() * buffer_info.element_size);
+				auto done = source.storage->get_data({source.get_local_offset(part_sr.offset), part_sr.range}, temp.get_pointer());
+				pending_slow_transfers.emplace_back(part_sr, std::move(done), std::move(temp));
+			}
+#if TRACY_ENABLE
+			fmt::format_to(std::back_inserter(zone_sr_text), "\n{} path from M{}: {}", part_has_output_stride ? "fast" : "slow", source_mid, part_sr);
+#endif
 		}
 
-		// get_buffer_data will race with pending transfers for the same subrange. In case there are pending transfers and a host buffer does not exist yet,
-		// these transfers cannot easily be flushed here as creating a host buffer requires a templated context that knows about DataT.
-		assert(std::none_of(m_scheduled_transfers[bid].begin(), m_scheduled_transfers[bid].end(),
-		    [&](const transfer& t) { return !GridRegion<3>::intersect(subrange_to_grid_box(sr), t.unconsumed).empty(); }));
+#if TRACY_ENABLE
+		ZoneText(zone_sr_text.data(), zone_sr_text.size());
+#endif
 
-		if(data_locations[0].second.test(m_local_devices.get_host_memory_id())) {
-			return m_buffers.at(bid)
-			    .get(m_local_devices.get_host_memory_id())
-			    .storage->get_data({m_buffers.at(bid).get(m_local_devices.get_host_memory_id()).get_local_offset(sr.offset), sr.range}, out_linearized);
+		while(!pending_slow_transfers.empty()) {
+			if(const auto done_it = std::find_if(pending_slow_transfers.begin(), pending_slow_transfers.end(), //
+			       [](const auto& tuple) { return std::get<async_event>(tuple).is_done(); });
+			    done_it != pending_slow_transfers.end()) {
+				auto& [part_sr, done, temp] = *done_it;
+
+#if TRACY_ENABLE
+				ZoneScopedN("linearize");
+				const auto zone_linearize_text = fmt::to_string(part_sr);
+				ZoneText(zone_linearize_text.data(), zone_linearize_text.size());
+#endif
+
+				switch(buffer_info.dims) {
+				case 1:
+					memcpy_strided(temp.get_pointer(), out_linearized, buffer_info.element_size, range_cast<1>(part_sr.range), id<1>(0),
+					    range_cast<1>(sr.range), id_cast<1>(part_sr.offset - sr.offset), range_cast<1>(part_sr.range));
+					break;
+				case 2:
+					memcpy_strided(temp.get_pointer(), out_linearized, buffer_info.element_size, range_cast<2>(part_sr.range), id<2>(0, 0),
+					    range_cast<2>(sr.range), id_cast<2>(part_sr.offset - sr.offset), range_cast<2>(part_sr.range));
+					break;
+				case 3:
+					memcpy_strided(temp.get_pointer(), out_linearized, buffer_info.element_size, part_sr.range, id<3>(0, 0, 0), sr.range,
+					    part_sr.offset - sr.offset, part_sr.range);
+					break;
+				}
+
+				pending_slow_transfers.erase(done_it);
+			}
 		}
 
-		const memory_id source_mid = ([this, &data_locations] {
-			for(memory_id mid = 0; mid < m_local_devices.num_memories(); ++mid) {
-				// FIXME: We currently choose the first available memory as a source, should use a better strategy here (maybe random or based on current load)
-				if(data_locations[0].second.test(mid)) return mid;
-			}
-			assert(false && "Data region requested that is not available locally");
-			return memory_id(-1);
-		})(); // IIFE
-
-		return m_buffers.at(bid).get(source_mid).storage->get_data({m_buffers.at(bid).get(source_mid).get_local_offset(sr.offset), sr.range}, out_linearized);
+		return pending_fast_transfers;
 	}
 
 	buffer_manager::staging_buffer& buffer_manager::get_free_staging_buffer(const size_t size) {
