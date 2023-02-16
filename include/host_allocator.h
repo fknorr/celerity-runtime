@@ -116,42 +116,36 @@ class host_allocator {
 
 	void* allocate(const size_t size) {
 		// TODO: Make this templated to get alignof(T)?
-		const auto alignment = 1;
-		const auto node_size = get_pool_node_size();
+		// const auto alignment = 1;
+		const auto node_size = m_allocator.node_size();
 		const auto count = (size + node_size - 1) / node_size;
-		return m_allocator.allocate_array(count, node_size, alignment);
+		return m_allocator.allocate_array(count);
 	}
 
 	void free(void* ptr, const size_t size) {
-		const auto alignment = 1;
-		const auto node_size = get_pool_node_size();
+		// const auto alignment = 1;
+		const auto node_size = m_allocator.node_size();
 		const auto count = (size + node_size - 1) / node_size;
-		m_allocator.deallocate_array(ptr, count, node_size, alignment);
+		m_allocator.deallocate_array(ptr, count);
 	}
 
   private:
 	using memory_pool_t = foonathan::memory::memory_pool<foonathan::memory::node_pool, cuda_pinned_memory_allocator>;
-	using fallback_allocator_t = foonathan::memory::fallback_allocator<memory_pool_t, foonathan::memory::null_allocator>;
+	// TODO fallback should use the cuda_pinned_memory_allocator directly for sizes > block_size, but we must not hide allocator bugs that way
+	// using fallback_allocator_t = foonathan::memory::fallback_allocator<memory_pool_t, foonathan::memory::null_allocator>;
 
 	inline static std::unique_ptr<host_allocator> instance;
 
-	static size_t get_pool_node_size() {
+	static memory_pool_t construct_allocator() {
 		using namespace foonathan::memory::literals;
-		return 10_MiB; // TODO: Figure out a good tradeoff here
-	}
-
-	static fallback_allocator_t construct_allocator() {
-		using namespace foonathan::memory::literals;
+		const auto pool_node_size = 1_MiB;      // pool returns memory in this granularity
+		const auto block_size = 2_GiB;          // pool allocates backing memory in this granularity (will be the maximum allocation size!)
 		const auto max_pinned_memory = 256_GiB; // FIXME: This should be a configurable percentage of total host memory
-		auto pool = memory_pool_t(get_pool_node_size(), 2_GiB /* this will be the maximum allocation size! */, max_pinned_memory);
-		// null_allocator causes the program to fail if the memory pool is exhausted or an allocation above its maximum size is requested. We could (should?)
-		// include a fallback here, but having a default_allocator can introduce hard to debug performance regressions.
-		// TODO get rid of the fallback_allocator entirely (needs some different API on cuda_pinned_memory_allocator?)
-		return fallback_allocator_t{std::move(pool), foonathan::memory::null_allocator{}};
+		return memory_pool_t(pool_node_size, block_size, max_pinned_memory);
 	}
 
   private:
-	fallback_allocator_t m_allocator = construct_allocator();
+	memory_pool_t m_allocator = construct_allocator();
 };
 
 } // namespace celerity::detail
