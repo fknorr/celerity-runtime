@@ -97,10 +97,12 @@ namespace detail {
 		    [](const range_mapper_base* const lhs, const range_mapper_base* const rhs) { return lhs->function_equals(*rhs); });
 	}
 
+	bool task_manager::generate_collectives = getenv("CELERITY_NO_COLLECTIVES") == nullptr;
+
 	void task_manager::generate_forward_tasks(const command_group_task* consumer) {
 		// Allow disabling collectives at runtime using env var
 		// TODO NOCOMMIT (at least the env var handling)
-		if(nullptr != getenv("CELERITY_NO_COLLECTIVES")) return;
+		if(!generate_collectives) return;
 
 		struct dataflow {
 			command_group_task* producer;

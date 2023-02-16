@@ -172,6 +172,9 @@ namespace detail {
 		 */
 		size_t get_current_task_count() const { return m_task_buffer.get_current_task_count(); }
 
+		// NOCOMMIT
+		static bool generate_collectives;
+
 	  private:
 		struct buffer_info { // TODO only required for TDAG collectives
 			int dimensions;

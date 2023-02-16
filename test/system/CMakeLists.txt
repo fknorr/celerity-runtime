@@ -14,10 +14,8 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
 endif()
 
 
-# v--- NOCOMMIT copy-pasta
+# v--- NOCOMMIT partial copy-pasta
 add_executable(synthetic_collective_benchmarks synthetic_collective_benchmarks.cc)
-
-target_link_libraries(synthetic_collective_benchmarks PRIVATE test_main)
 
 set_property(TARGET synthetic_collective_benchmarks PROPERTY CXX_STANDARD 17)
 set_property(TARGET synthetic_collective_benchmarks PROPERTY FOLDER "tests/system")

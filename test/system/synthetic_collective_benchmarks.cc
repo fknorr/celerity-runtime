@@ -1,145 +1,183 @@
-#include "../test_utils.h"
-
 #include <algorithm>
 
-#include <catch2/catch_template_test_macros.hpp>
-#include <catch2/catch_test_macros.hpp>
-#include <catch2/generators/catch_generators.hpp>
-#include <catch2/matchers/catch_matchers_string.hpp>
-
+#include <celerity.h>
 #include <mpi.h>
 
-#include <celerity.h>
 
-#include "../log_test_utils.h"
+// To avoid having to come up with tons of unique kernel names, we simply use the CPP counter.
+// This is non-standard but widely supported.
+// TODO HACK copy-pasted from test_utils so we don't have to draw in Catch2 here
+#define _UKN_CONCAT2(x, y) x##_##y
+#define _UKN_CONCAT(x, y) _UKN_CONCAT2(x, y)
+#define UKN(name) _UKN_CONCAT(name, __COUNTER__)
+
 
 using namespace celerity;
-using namespace celerity::test_utils;
+
+class benchmark_runner {
+  public:
+	explicit benchmark_runner(size_t total_num_devices, size_t n_warmup, size_t n_passes, const std::optional<std::string>& csv_file_name)
+	    : m_total_num_devices(total_num_devices), m_n_warmup(n_warmup), m_n_passes(n_passes) {
+		if(csv_file_name.has_value()) {
+			m_csv = fopen(csv_file_name->c_str(), "wb");
+			if(!m_csv) {
+				perror("fopen");
+				abort();
+			}
+			fprintf(m_csv, "devices;benchmark;range;configuration;nanoseconds\n");
+			fflush(m_csv);
+		}
+	}
+
+	benchmark_runner(benchmark_runner&&) = delete;
+	benchmark_runner& operator=(benchmark_runner&&) = delete;
+
+	~benchmark_runner() {
+		if(m_csv) { fclose(m_csv); }
+	}
+
+	template <typename F>
+	void run(const char* name, size_t range, F&& f) {
+		for(const bool collectives : {false, true}) {
+			celerity::detail::task_manager::generate_collectives = collectives;
+			const auto configuration = collectives ? "collectives" : "p2p";
+
+			for(size_t i = 0; i < m_n_warmup + m_n_passes; ++i) {
+				m_q.slow_full_sync();
+				const auto start = std::chrono::steady_clock::now();
+				f(m_q);
+				m_q.slow_full_sync();
+				const auto end = std::chrono::steady_clock::now();
+
+				if(i > m_n_warmup && m_csv) {
+					const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+					fmt::print(m_csv, "{};{};{};{};{}\n", m_total_num_devices, name, range, configuration, ns.count());
+					fflush(m_csv);
+				}
+			}
+		}
+	}
+
+  private:
+	celerity::distr_queue m_q;
+	size_t m_total_num_devices;
+	size_t m_n_warmup;
+	size_t m_n_passes;
+	FILE* m_csv = nullptr;
+};
+
 
 size_t operator""_i(unsigned long long v) { return v; }
 size_t operator""_Ki(unsigned long long v) { return v << 10; }
 size_t operator""_Mi(unsigned long long v) { return v << 20; }
 size_t operator""_Gi(unsigned long long v) { return v << 30; }
 
-template <typename F>
-std::chrono::microseconds run_distributed_benchmark(size_t n_warmup, size_t n_passes, F&& f) {
-	celerity::distr_queue q;
-	q.slow_full_sync();
 
-	std::chrono::microseconds time{};
-	for(size_t i = 0; i < n_warmup + n_passes; ++i) {
-		const auto start = std::chrono::steady_clock::now();
-		f(q);
-		q.slow_full_sync();
-		const auto end = std::chrono::steady_clock::now();
+void allgather_benchmark(benchmark_runner& runner) {
+	const size_t n_iters = 10;
 
-		if(i > n_warmup) { time += std::chrono::duration_cast<std::chrono::microseconds>(end - start); }
+	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
+		celerity::buffer<int> buf(range);
+
+		runner.run("Allgather", range, [&](celerity::distr_queue& q) {
+			q.submit([=](celerity::handler& cgh) {
+				accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
+				cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { (void)write_acc; });
+			});
+
+			for(size_t i = 0; i < n_iters; ++i) {
+				q.submit([=](celerity::handler& cgh) {
+					accessor read_acc(buf, cgh, access::all(), read_only);
+					accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
+					cgh.parallel_for<class UKN(allgather)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)read_acc, (void)write_acc; });
+				});
+			}
+		});
 	}
-	return time / n_passes;
 }
 
-bool is_master_node() {
-	int rank;
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	return rank == 0;
-}
 
-// TODO this turns out to be really slow on Marconi with collectives enabled for 2 and 4 nodes.
-//	- run again with device broadcast enabled
-//  - is there a way to get_buffer_data() from multiple devices without the host-buffer hop?
-TEST_CASE_METHOD(runtime_fixture, "Allgather") {
-	const size_t n_warmup = 2;
-	const size_t n_passes = 20;
+void gather_scatter_benchmark(benchmark_runner& runner) {
 	const size_t n_iters = 10;
-	const size_t range = GENERATE(values({4_Ki, 256_Ki, 16_Mi, 256_Mi}));
+	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
+		celerity::buffer<int> buf(range);
 
-	celerity::buffer<int> buf(range);
-
-	const auto time = run_distributed_benchmark(n_warmup, n_passes, [&](celerity::distr_queue& q) mutable {
-		q.submit([=](celerity::handler& cgh) {
-			accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
-			cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { //
-				(void)write_acc;
-			});
-		});
-
-		for(size_t i = 0; i < n_iters; ++i) {
+		runner.run("Gather-Scatter", range, [&](celerity::distr_queue& q) {
 			q.submit([=](celerity::handler& cgh) {
-				accessor read_acc(buf, cgh, access::all(), read_only);
 				accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
-				cgh.parallel_for<class UKN(allgather)>(celerity::range<1>(range), [=](celerity::item<1>) {
-					(void)read_acc;
-					(void)write_acc;
-				});
+				cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { (void)write_acc; });
 			});
-		}
-	});
 
-	if(is_master_node()) { fmt::print("Allgather;{};{}\n", range, time.count()); }
+			for(size_t i = 0; i < n_iters; ++i) {
+				q.submit([=](celerity::handler& cgh) {
+					accessor acc(buf, cgh, access::all(), read_write);
+					cgh.parallel_for<class UKN(gather)>(celerity::range<1>(1), [=](celerity::item<1>) { (void)acc; });
+				});
+
+				q.submit([=](celerity::handler& cgh) {
+					accessor read_acc(buf, cgh, access::fixed<1>({0, 1}), read_only);
+					accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
+					cgh.parallel_for<class UKN(scatter)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)read_acc, (void)write_acc; });
+				});
+			}
+		});
+	}
 }
 
-TEST_CASE_METHOD(runtime_fixture, "Gather-Scatter") {
-	const size_t n_warmup = 2;
-	const size_t n_passes = 20;
+
+void alltoall_benchmark(benchmark_runner& runner) {
 	const size_t n_iters = 10;
-	const size_t range = GENERATE(values({4_Ki, 256_Ki, 16_Mi, 256_Mi}));
 
-	celerity::buffer<int> buf(range);
+	for(auto size : {64_i, 512_i, 4_Ki, 16_Ki}) {
+		const range<2> range(size, size);
 
-	const auto time = run_distributed_benchmark(n_warmup, n_passes, [&](celerity::distr_queue& q) mutable {
-		q.submit([=](celerity::handler& cgh) {
-			accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
-			cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { (void)write_acc; });
+		celerity::buffer<int, 2> buf_a(range);
+		celerity::buffer<int, 2> buf_b(range);
+
+		runner.run("Alltoall", range.size(), [&](celerity::distr_queue& q) {
+			q.submit([=](celerity::handler& cgh) {
+				accessor write_acc(buf_a, cgh, access::one_to_one(), write_only, no_init);
+				cgh.parallel_for<class UKN(init)>(range, [=](celerity::item<2> it) { (void)write_acc; });
+			});
+
+			for(size_t i = 0; i < n_iters; ++i) {
+				q.submit([=](celerity::handler& cgh) {
+					accessor read_acc(buf_a, cgh, experimental::access::transposed<1, 0>(), read_only);
+					accessor write_acc(buf_b, cgh, access::one_to_one(), write_only, no_init);
+					cgh.parallel_for<class UKN(gather)>(range, [=](celerity::item<2>) { (void)read_acc, (void)write_acc; });
+				});
+
+				std::swap(buf_a, buf_b);
+			}
 		});
-
-		for(size_t i = 0; i < n_iters; ++i) {
-			q.submit([=](celerity::handler& cgh) {
-				accessor acc(buf, cgh, access::all(), read_write);
-				cgh.parallel_for<class UKN(gather)>(celerity::range<1>(1), [=](celerity::item<1>) { (void)acc; });
-			});
-
-			q.submit([=](celerity::handler& cgh) {
-				accessor read_acc(buf, cgh, access::fixed<1>({0, 1}), read_only);
-				accessor write_acc(buf, cgh, access::one_to_one(), write_only, no_init);
-				cgh.parallel_for<class UKN(scatter)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)read_acc, (void) write_acc; });
-			});
-		}
-	});
-
-	if(is_master_node()) { fmt::print("Gather-Bcast;{};{}\n", range, time.count()); }
+	}
 }
 
-TEST_CASE_METHOD(runtime_fixture, "Alltoall") {
+
+int main(int argc, char** argv) {
+	celerity::runtime::init(&argc, &argv);
+
+	int comm_size, comm_rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &comm_rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
+
+	const size_t total_num_devices = comm_size * celerity::detail::runtime::get_instance().get_local_devices().num_compute_devices();
+
+	std::optional<std::string> csv_name;
+	if(comm_rank == 0) {
+		if(const char* job_id = getenv("SLURM_JOB_ID")) {
+			csv_name = fmt::format("celerity-scb-{}-{}.csv", total_num_devices, job_id);
+		} else {
+			csv_name = fmt::format("celerity-scb-{}.csv", total_num_devices);
+		}
+		CELERITY_INFO("Writing to {}", *csv_name);
+	}
+
 	const size_t n_warmup = 2;
 	const size_t n_passes = 20;
-	const size_t n_iters = 10;
-	const size_t size = GENERATE(values({64_i, 512_i, 4_Ki, 16_Ki}));
-	const range<2> range(size, size);
 
-	celerity::buffer<int, 2> buf_a(range);
-	celerity::buffer<int, 2> buf_b(range);
-
-	const auto time = run_distributed_benchmark(n_warmup, n_passes, [&](celerity::distr_queue& q) mutable {
-		q.submit([=](celerity::handler& cgh) {
-			accessor write_acc(buf_a, cgh, access::one_to_one(), write_only, no_init);
-			cgh.parallel_for<class UKN(init)>(range, [=](celerity::item<2> it) { //
-				(void)write_acc;
-			});
-		});
-
-		for(size_t i = 0; i < n_iters; ++i) {
-			q.submit([=](celerity::handler& cgh) {
-				accessor read_acc(buf_a, cgh, experimental::access::transposed<1, 0>(), read_only);
-				accessor write_acc(buf_b, cgh, access::one_to_one(), write_only, no_init);
-				cgh.parallel_for<class UKN(gather)>(range, [=](celerity::item<2>) {
-					(void)read_acc;
-					(void)write_acc;
-				});
-			});
-
-			std::swap(buf_a, buf_b);
-		}
-	});
-
-	if(is_master_node()) { fmt::print("Alltoall;{};{}\n", range.size(), time.count()); }
+	benchmark_runner runner(total_num_devices, n_warmup, n_passes, csv_name);
+	allgather_benchmark(runner);
+	// gather_scatter_benchmark(runner);
+	// alltoall_benchmark(runner);
 }
