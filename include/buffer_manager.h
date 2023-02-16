@@ -334,33 +334,23 @@ namespace detail {
 			std::vector<backing_buffer> m_backing_buffers;
 		};
 
-		struct staging_buffer {
-			staging_buffer(const size_t size, device_queue& queue, cudaStream_t stream) : buffer(range<1>(size), queue, stream) {}
-
-			bool is_free = false;
-			device_buffer_storage<std::byte, 1> buffer;
-		};
-
 		struct transfer {
-			transfer(staging_buffer& buf, subrange<3> sr) : unconsumed(subrange_to_grid_box(sr)), sr(sr), m_buf(buf) {}
+			transfer(unique_payload_ptr linearized, subrange<3> sr) : unconsumed(subrange_to_grid_box(sr)), sr(sr), linearized(std::move(linearized)) {}
 
-			transfer(const transfer&) = delete;
-			transfer(transfer&& other) : unconsumed(std::move(other.unconsumed)), sr(std::move(other.sr)), m_buf(other.m_buf) { other.sr = {}; }
+			transfer(transfer&& other) noexcept : unconsumed(std::move(other.unconsumed)), sr(other.sr), linearized(std::move(other.linearized)) {
+				other.sr = {};
+			}
 
-			~transfer() {
-				if(sr.range.size() != 0) {
-					// CELERITY_WARN("Marking staging buffer as free {}", (void*)m_buf.buffer.get_pointer());
-					m_buf.is_free = true;
-				}
+			transfer& operator=(transfer&& other) noexcept {
+				unconsumed = std::move(other.unconsumed);
+				sr = other.sr, other.sr = {};
+				linearized = std::move(other.linearized);
+				return *this;
 			}
 
 			GridRegion<3> unconsumed; // which parts of it haven't been ingested onto a target memory yet
 			subrange<3> sr;           // where this transfer fits into the virtual buffer
-
-			device_buffer_storage<std::byte, 1>& get_buffer() { return m_buf.buffer; }
-
-		  private:
-			staging_buffer& m_buf;
+			unique_payload_ptr linearized;
 		};
 
 		struct resize_info {
@@ -404,12 +394,6 @@ namespace detail {
 		std::unordered_map<buffer_id, buffer_info> m_buffer_infos;
 		std::unordered_map<buffer_id, virtual_buffer> m_buffers;
 		std::unordered_map<buffer_id, region_map<data_location>> m_newest_data_location;
-
-		// FIXME: Extremely crude and stupid
-		std::vector<std::unique_ptr<staging_buffer>> m_staging_buffers;
-		device_id m_next_staging_allocation_device = 0;
-		staging_buffer& get_free_staging_buffer(const size_t size);
-
 		std::unordered_map<buffer_id, std::vector<transfer>> m_scheduled_transfers; // references on m_staging_buffers
 
 		std::unordered_map<std::pair<buffer_id, memory_id>, buffer_lock_info, utils::pair_hash> m_buffer_lock_infos;
