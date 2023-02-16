@@ -33,7 +33,10 @@ class cuda_pinned_memory_allocator {
 		// FIXME: We just assume that we're in a compatible CUDA context
 		const auto ret = cudaHostAlloc(&ptr, size, cudaHostAllocDefault | cudaHostAllocPortable);
 		if(ret != cudaSuccess) {
-			if(ret != cudaErrorMemoryAllocation) { CELERITY_ERROR("Call to cudaAllocHost failed due to unknown error"); }
+			if(ret != cudaErrorMemoryAllocation) {
+				CELERITY_CRITICAL("cudaHostAlloc: {}", cudaGetErrorString(ret));
+				abort();
+			}
 			return nullptr;
 		}
 		assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
@@ -42,8 +45,10 @@ class cuda_pinned_memory_allocator {
 	}
 
 	bool try_deallocate_node(void* node, const std::size_t size, const std::size_t alignment) {
-		const auto ret = cudaFreeHost(node);
-		if(ret != cudaSuccess) return false; // This might not have been a pinned allocation
+		if(const auto ret = cudaFreeHost(node); ret != cudaSuccess) {
+			fprintf(stderr, "cudaFreeHost: %s\n", cudaGetErrorString(ret));
+			return false; // This might not have been a pinned allocation
+		}
 		m_current_allocation -= size;
 		return true;
 	}
@@ -59,7 +64,11 @@ class cuda_pinned_memory_allocator {
 		// FIXME: We just assume that we're in a compatible CUDA context
 		const auto ret = cudaHostAlloc(&ptr, size, cudaHostAllocDefault | cudaHostAllocPortable);
 		if(ret != cudaSuccess) {
-			CELERITY_ERROR("Call to cudaAllocHost failed ({})", ret == cudaErrorMemoryAllocation ? "out of memory" : "unknown error");
+			if(ret != cudaErrorMemoryAllocation) {
+				CELERITY_CRITICAL("cudaHostAlloc: {}", cudaGetErrorString(ret));
+				abort();
+			}
+			CELERITY_ERROR("cudaHostAlloc", cudaGetErrorString(ret));
 			throw std::bad_alloc();
 		}
 		assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
@@ -70,9 +79,10 @@ class cuda_pinned_memory_allocator {
 	void deallocate_node(void* node, const std::size_t size, const std::size_t alignment) noexcept {
 		// FIXME: Can't log here because of static destruction order (spdlog no longer exists). => Don't use singleton for this.
 		// CELERITY_TRACE("Freeing {} bytes of pinned memory", size);
-		const auto ret = cudaFreeHost(node);
-		if(ret != cudaSuccess) {
+		if(const auto ret = cudaFreeHost(node); ret != cudaSuccess) {
 			// CELERITY_ERROR("Call to cudaFreeHost failed");
+			fprintf(stderr, "cudaFreeHost: %s\n", cudaGetErrorString(ret));
+			abort();
 		} else {
 			m_current_allocation -= size;
 		}

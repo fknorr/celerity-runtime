@@ -424,7 +424,7 @@ namespace detail {
 
 		// NOCOMMIT
 		struct delete_cuda_stream {
-			void operator()(cudaStream_t s) { cudaStreamDestroy(s); }
+			void operator()(cudaStream_t s) { CELERITY_CUDA_CHECK(cudaStreamDestroy, s); }
 		};
 		std::unordered_map<device_id, std::unique_ptr<CUstream_st, delete_cuda_stream>> m_cuda_copy_streams;
 

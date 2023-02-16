@@ -48,10 +48,9 @@ namespace detail {
 	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range, device_id did, cudaStream_t stream) {
 		const size_t line_size = elem_size * copy_range[0];
 #if defined(__HIPSYCL__)
-		cudaSetDevice(did);
-		const auto ret = cudaMemcpyAsync(reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
+		CELERITY_CUDA_CHECK(cudaSetDevice, did);
+		CELERITY_CUDA_CHECK(cudaMemcpyAsync, reinterpret_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault, stream);
-		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpyAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
 		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream), stream)};
@@ -71,11 +70,10 @@ namespace detail {
 
 // NOCOMMIT Move into backend-specific module
 #if defined(__HIPSYCL__)
-		cudaSetDevice(did);
-		const auto ret = cudaMemcpy2DAsync(reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
+		CELERITY_CUDA_CHECK(cudaSetDevice, did);
+		CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, reinterpret_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
 		    reinterpret_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size,
 		    copy_range[0], cudaMemcpyDefault, stream);
-		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy2DAsync failed");
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
 		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream), stream)};
@@ -102,7 +100,7 @@ namespace detail {
 	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range, device_id did, cudaStream_t stream) {
 // NOCOMMIT Move into backend-specific module
 #if defined(__HIPSYCL__)
-		cudaSetDevice(did);
+		CELERITY_CUDA_CHECK(cudaSetDevice, did);
 		// NOCOMMIT TODO This needs thorough testing. I don't think current unit tests exercise strided 3D copies much (if at all)
 		cudaMemcpy3DParms parms = {};
 		parms.srcPos = make_cudaPos(source_offset[2] * elem_size, source_offset[1], source_offset[0]);
@@ -111,8 +109,7 @@ namespace detail {
 		parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
 		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
 		parms.kind = cudaMemcpyDefault;
-		const auto ret = cudaMemcpy3DAsync(&parms, stream);
-		if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy3DAsync failed");
+		CELERITY_CUDA_CHECK(cudaMemcpy3DAsync, &parms, stream);
 		// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
 		// cudaStreamSynchronize(0);
 		return async_event{std::make_shared<cuda_event_wrapper>(create_and_record_cuda_event(stream), stream)};

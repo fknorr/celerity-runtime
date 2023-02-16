@@ -7,6 +7,16 @@
 #include <CL/sycl.hpp>
 #include <gch/small_vector.hpp>
 
+// clang-format off
+#define CELERITY_STRINGIFY2(f) #f
+#define CELERITY_STRINGIFY(f) CELERITY_STRINGIFY2(f)
+#define CELERITY_CUDA_CHECK(f, ...)                                                               \
+	if (const auto cuda_check_result = (f)(__VA_ARGS__); cuda_check_result != cudaSuccess) {      \
+		CELERITY_CRITICAL(CELERITY_STRINGIFY(f) ": {}", cudaGetErrorString(cuda_check_result));   \
+		abort();                                                                                  \
+	}
+// clang-format on
+
 #define USE_NDVBUFFER 0
 
 // TODO: Works for now, but really needs to be a runtime switch depending on selected device
@@ -47,19 +57,22 @@ namespace detail {
 	inline cudaEvent_t create_and_record_cuda_event(cudaStream_t stream) {
 		// TODO: Perf considerations - we should probably have an event pool
 		cudaEvent_t result;
-		cudaEventCreateWithFlags(&result, cudaEventDisableTiming);
-		cudaEventRecord(result, stream);
+		CELERITY_CUDA_CHECK(cudaEventCreateWithFlags, &result, cudaEventDisableTiming);
+		CELERITY_CUDA_CHECK(cudaEventRecord, result, stream);
 		return result;
 	}
 
 	class cuda_event_wrapper final : public native_event_wrapper {
 	  public:
 		cuda_event_wrapper(cudaEvent_t evt, cudaStream_t stream) : m_event(evt) {}
-		~cuda_event_wrapper() { cudaEventDestroy(m_event); }
+		~cuda_event_wrapper() { CELERITY_CUDA_CHECK(cudaEventDestroy, m_event); }
 
 		bool is_done() const override {
 			const auto ret = cudaEventQuery(m_event);
-			assert(ret == cudaSuccess || ret == cudaErrorNotReady);
+			if(ret != cudaSuccess && ret != cudaErrorNotReady) {
+				CELERITY_CRITICAL("cudaEventQuery: {}", cudaGetErrorString(ret));
+				abort();
+			}
 			return ret == cudaSuccess;
 		}
 
@@ -267,8 +280,8 @@ namespace detail {
 #else
 		      m_device_buf(range, owning_queue)
 #endif
-		      , m_did(owning_queue.get_id())
-			  , m_copy_stream(copy_stream) {
+		      ,
+		      m_did(owning_queue.get_id()), m_copy_stream(copy_stream) {
 		}
 
 		~device_buffer_storage() {

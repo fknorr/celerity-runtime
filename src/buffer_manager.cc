@@ -12,8 +12,8 @@ namespace detail {
 		// NOCOMMIT
 		for(device_id did = 0; did < devices.num_compute_devices(); ++did) {
 			cudaStream_t s;
-			cudaSetDevice(did);
-			cudaStreamCreate(&s);
+			CELERITY_CUDA_CHECK(cudaSetDevice, did);
+			CELERITY_CUDA_CHECK(cudaStreamCreate, &s);
 			m_cuda_copy_streams.emplace(did, std::unique_ptr<CUstream_st, delete_cuda_stream>(s));
 		}
 	}
