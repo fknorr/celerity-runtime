@@ -417,8 +417,10 @@ namespace detail {
 
 		if(source.get_type() == buffer_type::device_buffer) {
 			auto& device_source = dynamic_cast<const device_buffer_storage<DataT, Dims>&>(source);
+#if TRACY_ENABLE
 			const auto msg = fmt::format("d2d {}", copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
+#endif
 
 #if USE_NDVBUFFER
 			m_device_buf.copy_from(device_source.m_device_buf,
@@ -434,8 +436,10 @@ namespace detail {
 		// TODO: Optimize for contiguous copies - we could do a single SYCL H->D copy directly.
 		else if(source.get_type() == buffer_type::host_buffer) {
 			auto& host_source = dynamic_cast<const host_buffer_storage<DataT, Dims>&>(source);
+#if TRACY_ENABLE
 			const auto msg = fmt::format("h2d {}", copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
+#endif
 
 #if USE_NDVBUFFER
 			m_device_buf.copy_from(static_cast<const DataT*>(host_source.get_pointer()), ndv::extent<Dims>::make_from(host_source.get_range()),

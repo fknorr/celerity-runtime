@@ -147,7 +147,7 @@ namespace detail {
 
 	void buffer_manager::immediately_broadcast_data(buffer_id bid, const subrange<3>& sr, void* const in_linearized) {
 		ZoneScoped;
-#ifdef TRACY_ENABLE
+#if TRACY_ENABLE
 		const auto msg = fmt::format("broadcast bid {} - {}", bid, sr);
 		ZoneText(msg.c_str(), msg.size());
 #endif
@@ -164,7 +164,7 @@ namespace detail {
 			all_loc.set(mem_id);
 			auto& storage = buff.get(mem_id).storage;
 			transfer_events[device_id] = storage->set_data(sr, in_linearized);
-#ifdef TRACY_ENABLE
+#if TRACY_ENABLE
 			const auto msg = fmt::format("Broadcast set_data started for device {}", device_id);
 			TracyMessage(msg.c_str(), msg.size());
 #endif
@@ -173,7 +173,7 @@ namespace detail {
 		// wait for uploads to complete
 		for(size_t device_id = 0; device_id < num_devices; ++device_id) {
 			transfer_events[device_id].wait();
-#ifdef TRACY_ENABLE
+#if TRACY_ENABLE
 			const auto msg = fmt::format("Broadcast set_data completed for device {}", device_id);
 			TracyMessage(msg.c_str(), msg.size());
 #endif
