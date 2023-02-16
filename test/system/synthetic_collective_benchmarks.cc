@@ -24,7 +24,7 @@ class benchmark_runner {
 				perror("fopen");
 				abort();
 			}
-			fprintf(m_csv, "devices;benchmark;range;configuration;nanoseconds\n");
+			fprintf(m_csv, "devices;benchmark;range;system;configuration;nanoseconds\n");
 			fflush(m_csv);
 		}
 	}
@@ -51,7 +51,7 @@ class benchmark_runner {
 
 				if(i > m_n_warmup && m_csv) {
 					const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-					fmt::print(m_csv, "{};{};{};{};{}\n", m_total_num_devices, name, range, configuration, ns.count());
+					fmt::print(m_csv, "{};{};{};Celerity;{};{}\n", m_total_num_devices, name, range, configuration, ns.count());
 					fflush(m_csv);
 				}
 			}
