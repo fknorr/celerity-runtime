@@ -106,11 +106,10 @@ static_assert(foonathan::memory::is_raw_allocator<cuda_pinned_memory_allocator>:
 static_assert(foonathan::memory::is_composable_allocator<cuda_pinned_memory_allocator>::value);
 
 // FIXME: Ideally this shouldn't be a singleton; should probably be somehow tied to host_queue and/or buffer_manager. Works for now.
-// TODO: If remains a singleton it shouldn't be constructible :P
 class host_allocator {
   public:
 	static host_allocator& get_instance() {
-		if(instance == nullptr) { instance = std::make_unique<host_allocator>(); }
+		if(instance == nullptr) { instance = new host_allocator(); }
 		return *instance;
 	}
 
@@ -134,7 +133,9 @@ class host_allocator {
 	// TODO fallback should use the cuda_pinned_memory_allocator directly for sizes > block_size, but we must not hide allocator bugs that way
 	// using fallback_allocator_t = foonathan::memory::fallback_allocator<memory_pool_t, foonathan::memory::null_allocator>;
 
-	inline static std::unique_ptr<host_allocator> instance;
+	inline static host_allocator* instance = nullptr; // singleton - leak on purpose to avoid static destruction order issues
+
+	host_allocator() = default;
 
 	static memory_pool_t construct_allocator() {
 		using namespace foonathan::memory::literals;
