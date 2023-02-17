@@ -197,17 +197,22 @@ namespace detail {
 	template <typename DataT, int Dims>
 	class host_buffer {
 	  public:
-		explicit host_buffer(celerity::range<Dims> range) : m_range(range) { m_data = make_uninitialized_payload<DataT>(range.size()); }
+		explicit host_buffer(cl::sycl::range<Dims> range) : m_range(range) {
+			auto r3 = range_cast<3>(range);
+			m_data = std::make_unique<DataT[]>(r3[0] * r3[1] * r3[2]);
+		}
 
-		celerity::range<Dims> get_range() const { return m_range; };
+		cl::sycl::range<Dims> get_range() const { return m_range; };
 
-		DataT* get_pointer() { return static_cast<DataT*>(m_data.get_pointer()); }
+		DataT* get_pointer() { return m_data.get(); }
 
-		const DataT* get_pointer() const { return static_cast<const DataT*>(m_data.get_pointer()); }
+		const DataT* get_pointer() const { return m_data.get(); }
+
+		bool operator==(const host_buffer& rhs) const { return m_data.get() == rhs.m_data.get(); }
 
 	  private:
 		cl::sycl::range<Dims> m_range;
-		unique_payload_ptr m_data;
+		std::unique_ptr<DataT[]> m_data;
 	};
 
 	enum class buffer_type { device_buffer, host_buffer };
