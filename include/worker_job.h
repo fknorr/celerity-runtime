@@ -227,11 +227,12 @@ namespace detail {
 
 	class allgather_job : public worker_job {
 	  public:
-		allgather_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid);
+		allgather_job(const command_pkg& pkg, buffer_manager& bm, node_id local_nid, size_t num_local_devices);
 
 	  private:
 		buffer_manager& m_buffer_mngr;
 		node_id m_local_nid;
+		size_t m_num_local_devices;
 
 		bool execute(const command_pkg& pkg) override;
 		std::string get_description(const command_pkg& pkg) override;
