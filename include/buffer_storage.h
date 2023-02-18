@@ -434,7 +434,7 @@ namespace detail {
 #else
 			return memcpy_strided_device(m_owning_queue, device_source.m_device_buf.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
 			    device_source.m_device_buf.get_range(), id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset),
-			    range_cast<Dims>(copy_range), m_did, m_copy_stream);
+			    range_cast<Dims>(copy_range), device_source.m_did, device_source.m_copy_stream);
 #endif
 		}
 
