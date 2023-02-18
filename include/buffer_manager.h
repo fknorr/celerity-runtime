@@ -111,7 +111,7 @@ namespace detail {
 		/**
 		 * When requesting access to a host or device buffer through the buffer_manager, this is what is returned.
 		 */
-		struct access_info {
+		struct [[nodiscard("contains an async_event")]] access_info {
 			/**
 			 * This is a pointer into the *currently used* backing buffer for the requested virtual buffer.
 			 * This reference can become stale if the backing buffer needs to be resized by a subsequent access.
@@ -151,6 +151,7 @@ namespace detail {
 				m_buffer_infos.emplace(
 				    bid, buffer_info{Dims, range, sizeof(DataT), is_host_initialized, {}, std::move(device_factory), std::move(host_factory)});
 				m_newest_data_location.emplace(bid, region_map<data_location>(range, data_location{}));
+				m_authoritative_source.emplace(bid, region_map<std::optional<memory_id>>(range, std::nullopt));
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 				m_buffer_types.emplace(bid, new buffer_type_guard<DataT, Dims>());
@@ -394,6 +395,7 @@ namespace detail {
 		std::unordered_map<buffer_id, buffer_info> m_buffer_infos;
 		std::unordered_map<buffer_id, virtual_buffer> m_buffers;
 		std::unordered_map<buffer_id, region_map<data_location>> m_newest_data_location;
+		std::unordered_map<buffer_id, region_map<std::optional<memory_id>>> m_authoritative_source;
 		std::unordered_map<buffer_id, std::vector<transfer>> m_scheduled_transfers; // references on m_staging_buffers
 
 		std::unordered_map<std::pair<buffer_id, memory_id>, buffer_lock_info, utils::pair_hash> m_buffer_lock_infos;

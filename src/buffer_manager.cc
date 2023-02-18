@@ -53,18 +53,10 @@ namespace detail {
 
 		async_event pending_fast_transfers;
 		std::vector<std::tuple<subrange<3>, async_event, unique_payload_ptr>> pending_slow_transfers;
-		for(const auto& [box, location] : m_newest_data_location.at(bid).get_region_values(subrange_to_grid_box(sr))) {
+		for(const auto& [box, source_mid] : m_authoritative_source.at(bid).get_region_values(subrange_to_grid_box(sr))) {
 			const auto part_sr = grid_box_to_subrange(box);
 
-			memory_id source_mid = host_memory_id;
-			for(memory_id mid = 1 /* prefer copying from a device for asynchronicity */; mid < max_memories; ++mid) {
-				if(location.test(mid)) {
-					source_mid = mid;
-					break;
-				}
-			}
-			assert(location.test(source_mid));
-			auto& source = m_buffers.at(bid).get(source_mid);
+			auto& source = m_buffers.at(bid).get(source_mid.value());
 			// TODO if source_mid == host_memory_id, async transfers won't actually be async - we want to instead begin start all async d2h transfers first
 
 			const bool part_has_output_stride =
@@ -181,6 +173,7 @@ namespace detail {
 
 		// update data availability
 		m_newest_data_location.at(bid).update_region(subrange_to_grid_box(sr), all_loc);
+		m_authoritative_source.at(bid).update_region(subrange_to_grid_box(sr), m_local_devices.get_memory_id(0) /* arbitrary */);
 	}
 
 	buffer_manager::access_info buffer_manager::access_device_buffer(
@@ -270,7 +263,7 @@ namespace detail {
 					}
 					retain_region.scanByBoxes([&](const GridBox<3>& box) {
 						const auto sr = grid_box_to_subrange(box);
-						access_host_buffer_impl(bid, access_mode::read, sr.range, sr.offset);
+						access_host_buffer_impl(bid, access_mode::read, sr.range, sr.offset).pending_transfers.wait();
 					});
 
 					// We now have all data "backed up" on the host, so we may deallocate the device buffer (via destructor).
@@ -286,6 +279,12 @@ namespace detail {
 					replacement_buf = backing_buffer{
 					    m_buffer_infos.at(bid).construct_device(spill_to_host ? range : info.new_range, device_queue, m_cuda_copy_streams.at(mid - 1).get()),
 					    spill_to_host ? offset : info.new_offset};
+
+					// We have wait()ed for the copy to host, so the host can be safely copied from later
+					auto& authorative_source = m_authoritative_source.at(bid);
+					for(auto& [box, source] : authorative_source.get_region_values(retain_region)) {
+						if(source == mid) { authorative_source.update_region(retain_region, host_memory_id); }
+					}
 				}
 			}
 #endif
@@ -501,12 +500,9 @@ namespace detail {
 			}
 			// The target buffer now has the newest data in this region.
 			{
-				// FIXME: DRY below
-				const auto locations = m_newest_data_location.at(bid).get_region_values(updated_region);
-				for(auto& [box, _] : locations) {
-					// NOCOMMIT TODO: Add regression test: This used to be data_location{locs}.set(mid), i.e., the previous location remained valid.
-					m_newest_data_location.at(bid).update_region(box, data_location{}.set(mid));
-				}
+				// NOCOMMIT TODO: Add regression test: This used to be data_location{locs}.set(mid), i.e., the previous location remained valid.
+				m_newest_data_location.at(bid).update_region(updated_region, data_location{}.set(mid));
+				m_authoritative_source.at(bid).update_region(updated_region, mid);
 			}
 			scheduled_buffer_transfers = std::move(remaining_transfers);
 		}
@@ -533,8 +529,7 @@ namespace detail {
 			};
 
 			GridRegion<3> replicated_region;
-			auto& buffer_data_locations = m_newest_data_location.at(bid);
-			const auto data_locations = buffer_data_locations.get_region_values(remaining_region_after_transfers);
+			const auto data_locations = m_newest_data_location.at(bid).get_region_values(remaining_region_after_transfers);
 			for(auto& [box, locs] : data_locations) {
 				// Note that this assertion can fail in legitimate cases, e.g.
 				// when users manually handle uninitialized reads in the first iteration of some loop.
@@ -550,24 +545,17 @@ namespace detail {
 				// No need to copy data from a different memory if we are not going to read it.
 				if(!detail::access::mode_traits::is_consumer(mode)) { continue; }
 
-				const memory_id source_mid = ([this, locs = &locs] {
-					for(memory_id m = m_local_devices.num_memories() - 1; m >= 0; --m) {
-						// FIXME: We currently choose the first available memory as a source (starting from the back to use host memory as a last resort),
-						// should use a better strategy here (maybe random or based on current load)
-						if(locs->test(m)) return m;
-					}
-					assert(false && "Data region requested that is not available locally");
-					return memory_id(-1);
-				})(); // IIFE
+				replicated_region = GridRegion<3>::merge(replicated_region, box);
+			}
 
-				assert(source_mid != mid);
-				assert(m_buffers.at(bid).get(source_mid).is_allocated());
+			for(auto& [box, source_mid] : m_authoritative_source.at(bid).get_region_values(replicated_region)) {
+				assert(source_mid.value() != mid);
+				assert(m_buffers.at(bid).get(source_mid.value()).is_allocated());
 				const auto box_sr = grid_box_to_subrange(box);
-				const auto& source_buffer = m_buffers.at(bid).get(source_mid);
+				const auto& source_buffer = m_buffers.at(bid).get(source_mid.value());
 				auto evt = target_buffer.storage->copy(
 				    *source_buffer.storage, source_buffer.get_local_offset(box_sr.offset), target_buffer.get_local_offset(box_sr.offset), box_sr.range);
 				pending_transfers.merge(std::move(evt));
-				replicated_region = GridRegion<3>::merge(replicated_region, box);
 			}
 
 			// Finally, remember the fact that we replicated some regions to the new target location.
@@ -580,7 +568,10 @@ namespace detail {
 			}
 		}
 
-		if(detail::access::mode_traits::is_producer(mode)) { m_newest_data_location.at(bid).update_region(coherent_box, data_location{}.set(mid)); }
+		if(detail::access::mode_traits::is_producer(mode)) {
+			m_newest_data_location.at(bid).update_region(coherent_box, data_location{}.set(mid));
+			m_authoritative_source.at(bid).update_region(coherent_box, mid);
+		}
 
 		return std::pair{std::move(target_buffer), std::move(pending_transfers)};
 	}
