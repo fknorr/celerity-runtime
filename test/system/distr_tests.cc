@@ -439,7 +439,7 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "NBody gather pattern", "[gather]") {
-		constexpr size_t n_bodies = 65536;
+		constexpr size_t n_bodies = 1048576;
 		constexpr size_t block_size = 256;
 		constexpr size_t n_iter = 3;
 
@@ -459,14 +459,13 @@ namespace detail {
 				accessor readPos(posBuff, cgh, celerity::access::all(), read_only); // Allgather
 				accessor rwVel(velBuff, cgh, celerity::access::one_to_one(), read_write);
 				cgh.parallel_for<class UKN(body_force)>(
-				    nd_range<1>(n_bodies, block_size), [=](nd_item<1> it) { rwVel[it.get_global_id()] += readPos[it.get_global_id()]; });
+				    nd_range<1>(n_bodies, block_size), [=](nd_item<1> it) { rwVel[it.get_global_id()] += readPos[n_bodies - 1 - it.get_global_id()]; });
 			});
 
 			q.submit([=](handler& cgh) {
-				accessor readVel(velBuff, cgh, celerity::access::one_to_one(), read_only);
 				accessor rwPos(posBuff, cgh, celerity::access::one_to_one(), read_write);
-				cgh.parallel_for<class UKN(body_pos_update)>(
-				    nd_range<1>(n_bodies, block_size), [=](nd_item<1> it) { rwPos[it.get_global_id()] += readVel[it.get_global_id()]; });
+				accessor readVel(velBuff, cgh, celerity::access::one_to_one(), read_only);
+				cgh.parallel_for<class UKN(body_pos_update)>(range<1>(n_bodies), [=](item<1> it) { rwPos[it] += readVel[it]; });
 			});
 		}
 
@@ -474,16 +473,24 @@ namespace detail {
 			accessor readPos{posBuff, cgh, celerity::access::all{}, read_only_host_task}; // Gather
 			accessor readVel{velBuff, cgh, celerity::access::all{}, read_only_host_task}; // Gather
 			cgh.host_task(celerity::on_master_node, [=] {
+				std::vector<sycl::float4> posCheck(n_bodies);
+				std::vector<sycl::float4> velCheck(n_bodies);
 				for(size_t i = 0; i < n_bodies; ++i) {
-					float vel = 0;
-					float pos = i;
-					for(size_t j = 0; j < n_iter; ++j) {
-						vel += pos;
-						pos += vel;
+					posCheck[i] = sycl::float4(i, i, i, i);
+					velCheck[i] = sycl::float4(0, 0, 0, 0);
+				}
+				for(size_t j = 0; j < n_iter; ++j) {
+					for(size_t i = 0; i < n_bodies; ++i) {
+						velCheck[i] += posCheck[n_bodies - 1 - i];
 					}
+					for(size_t i = 0; i < n_bodies; ++i) {
+						posCheck[i] += velCheck[i];
+					}
+				}
+				for(size_t i = 0; i < n_bodies; ++i) {
 					for(size_t j = 0; j < 4; ++j) {
-						REQUIRE_LOOP(readVel[i][j] == vel);
-						REQUIRE_LOOP(readPos[i][j] == pos);
+						REQUIRE_LOOP(readVel[i][j] == velCheck[i][j]);
+						REQUIRE_LOOP(readPos[i][j] == posCheck[i][j]);
 					}
 				}
 			});
