@@ -75,7 +75,7 @@ namespace detail {
 				pending_slow_transfers.emplace_back(part_sr, std::move(done), std::move(temp));
 			}
 #if TRACY_ENABLE
-			fmt::format_to(std::back_inserter(zone_sr_text), "\n{} path from M{}: {}", part_has_output_stride ? "fast" : "slow", source_mid, part_sr);
+			fmt::format_to(std::back_inserter(zone_sr_text), "\n{} path from M{}: {}", part_has_output_stride ? "fast" : "slow", source_mid.value(), part_sr);
 #endif
 		}
 
@@ -512,6 +512,11 @@ namespace detail {
 				if(detail::access::mode_traits::is_consumer(mode)) {
 					// If we are accessing the buffer using a consumer mode, we have to retain the full previous contents, otherwise...
 					const auto box_sr = grid_box_to_subrange(box);
+#if TRACY_ENABLE
+					ZoneScopedN("consumer retain");
+					const auto zone_text = fmt::format("copy {}", box_sr);
+					ZoneText(zone_text.c_str(), zone_text.size());
+#endif
 					auto evt = target_buffer.storage->copy(
 					    *previous_buffer.storage, previous_buffer.get_local_offset(box_sr.offset), target_buffer.get_local_offset(box_sr.offset), box_sr.range);
 					pending_transfers.merge(std::move(evt));
@@ -521,6 +526,11 @@ namespace detail {
 					const auto remaining_region = GridRegion<3>::difference(box, coherent_box);
 					remaining_region.scanByBoxes([&](const GridBox<3>& small_box) {
 						const auto small_box_sr = grid_box_to_subrange(small_box);
+#if TRACY_ENABLE
+						ZoneScopedN("pure-producer retain");
+						const auto zone_text = fmt::format("copy {}", small_box_sr);
+						ZoneText(zone_text.c_str(), zone_text.size());
+#endif
 						auto evt = target_buffer.storage->copy(*previous_buffer.storage, previous_buffer.get_local_offset(small_box_sr.offset),
 						    target_buffer.get_local_offset(small_box_sr.offset), small_box_sr.range);
 						pending_transfers.merge(std::move(evt));
@@ -553,6 +563,11 @@ namespace detail {
 				assert(m_buffers.at(bid).get(source_mid.value()).is_allocated());
 				const auto box_sr = grid_box_to_subrange(box);
 				const auto& source_buffer = m_buffers.at(bid).get(source_mid.value());
+#if TRACY_ENABLE
+				ZoneScopedN("replicate");
+				const auto zone_text = fmt::format("copy {}", box_sr);
+				ZoneText(zone_text.c_str(), zone_text.size());
+#endif
 				auto evt = target_buffer.storage->copy(
 				    *source_buffer.storage, source_buffer.get_local_offset(box_sr.offset), target_buffer.get_local_offset(box_sr.offset), box_sr.range);
 				pending_transfers.merge(std::move(evt));

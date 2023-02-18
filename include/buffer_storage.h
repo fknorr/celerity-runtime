@@ -423,7 +423,7 @@ namespace detail {
 		if(source.get_type() == buffer_type::device_buffer) {
 			auto& device_source = dynamic_cast<const device_buffer_storage<DataT, Dims>&>(source);
 #if TRACY_ENABLE
-			const auto msg = fmt::format("d2d {} -> {}, [{},{},{}] ({} bytes)", device_source.m_did, m_did, copy_range[0], copy_range[1], copy_range[2], copy_range.size() * sizeof(DataT));
+			const auto msg = fmt::format("d2d {} -> {}, {} bytes", device_source.m_did, m_did, copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
 #endif
 
@@ -442,7 +442,7 @@ namespace detail {
 		else if(source.get_type() == buffer_type::host_buffer) {
 			auto& host_source = dynamic_cast<const host_buffer_storage<DataT, Dims>&>(source);
 #if TRACY_ENABLE
-			const auto msg = fmt::format("h2d -> {}, [{},{},{}] ({} bytes)", m_did, copy_range[0], copy_range[1], copy_range[2], copy_range.size() * sizeof(DataT));
+			const auto msg = fmt::format("h2d -> {}, {} bytes", m_did, copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
 #endif
 
