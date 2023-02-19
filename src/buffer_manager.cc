@@ -178,8 +178,13 @@ namespace detail {
 
 	buffer_manager::access_info buffer_manager::access_device_buffer(
 	    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
-		std::unique_lock lock(m_mutex);
+#if TRACY_ENABLE
 		ZoneScopedN("access_device_buffer");
+		const auto zone_text = fmt::format("B{} on M{}, mode {}, {}", bid, mid, (int) mode, subrange<3>{offset, range});
+		ZoneText(zone_text.data(), zone_text.size());
+#endif
+
+		std::unique_lock lock(m_mutex);
 		assert((range_cast<3>(offset + range) <= m_buffer_infos.at(bid).range) == cl::sycl::range<3>(true, true, true));
 
 		auto& device_queue = m_local_devices.get_close_device_queue(mid);
@@ -379,7 +384,13 @@ namespace detail {
 	// TODO: Something we could look into is to dispatch all memory copies concurrently and wait for them in the end.
 	std::pair<buffer_manager::backing_buffer, async_event> buffer_manager::make_buffer_subrange_coherent(const memory_id mid, buffer_id bid,
 	    cl::sycl::access::mode mode, backing_buffer existing_buffer, const subrange<3>& coherent_sr, backing_buffer replacement_buffer) {
+#if TRACY_ENABLE
 		ZoneScopedN("make_buffer_subrange_coherent");
+		{
+			const auto zone_text = fmt::format("B{} on M{}, mode {}, {}", bid, mid, (int) mode, coherent_sr);
+			ZoneText(zone_text.data(), zone_text.size());
+		}
+#endif
 		backing_buffer target_buffer, previous_buffer;
 		if(replacement_buffer.is_allocated()) {
 			assert(!existing_buffer.is_allocated() || replacement_buffer.storage->get_type() == existing_buffer.storage->get_type());
@@ -461,8 +472,12 @@ namespace detail {
 					remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, intersection);
 					const auto element_size = m_buffer_infos.at(bid).element_size;
 					intersection.scanByBoxes([&](const GridBox<3>& box) {
-						ZoneScopedN("ingest transfer (partial)");
 						const auto sr = grid_box_to_subrange(box);
+#if TRACY_ENABLE
+						ZoneScopedN("ingest transfer (partial)");
+						const auto zone_text = fmt::format("{}", sr);
+						ZoneText(zone_text.data(), zone_text.size());
+#endif
 						// TODO can this temp buffer be avoided?
 						auto tmp = make_uninitialized_payload<std::byte>(sr.range.size() * element_size);
 						// FIXME: THIS MUST BE AVOIDED AT ALL COSTS! On Marconi-100 I've seen this take ~100ms for a 16 MiB buffer ?!
@@ -487,7 +502,11 @@ namespace detail {
 					continue;
 				}
 
+#if TRACY_ENABLE
 				ZoneScopedN("ingest transfer (full)");
+				const auto zone_text = fmt::format("{}", t.sr);
+				ZoneText(zone_text.data(), zone_text.size());
+#endif
 				// Transfer applies fully.
 				remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, t.unconsumed);
 				auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(t.sr.offset), t.sr.range}, t.linearized.get_pointer());
