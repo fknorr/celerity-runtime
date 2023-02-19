@@ -154,8 +154,8 @@ namespace detail {
 		for(size_t device_id = 0; device_id < num_devices; ++device_id) {
 			auto mem_id = m_local_devices.get_memory_id(device_id);
 			all_loc.set(mem_id);
-			auto& storage = buff.get(mem_id).storage;
-			transfer_events[device_id] = storage->set_data(sr, in_linearized);
+			auto& buffer = buff.get(mem_id);
+			transfer_events[device_id] = buffer.storage->set_data(in_linearized, sr.range, id<3>(0, 0, 0), buffer.get_local_offset(sr.offset), sr.range);
 #if TRACY_ENABLE
 			const auto msg = fmt::format("Broadcast set_data started for device {}", device_id);
 			TracyMessage(msg.c_str(), msg.size());
@@ -180,7 +180,7 @@ namespace detail {
 	    const memory_id mid, buffer_id bid, cl::sycl::access::mode mode, const cl::sycl::range<3>& range, const cl::sycl::id<3>& offset) {
 #if TRACY_ENABLE
 		ZoneScopedN("access_device_buffer");
-		const auto zone_text = fmt::format("B{} on M{}, mode {}, {}", bid, mid, (int) mode, subrange<3>{offset, range});
+		const auto zone_text = fmt::format("B{} on M{}, mode {}, {}", bid, mid, (int)mode, subrange<3>{offset, range});
 		ZoneText(zone_text.data(), zone_text.size());
 #endif
 
@@ -387,7 +387,7 @@ namespace detail {
 #if TRACY_ENABLE
 		ZoneScopedN("make_buffer_subrange_coherent");
 		{
-			const auto zone_text = fmt::format("B{} on M{}, mode {}, {}", bid, mid, (int) mode, coherent_sr);
+			const auto zone_text = fmt::format("B{} on M{}, mode {}, {}", bid, mid, (int)mode, coherent_sr);
 			ZoneText(zone_text.data(), zone_text.size());
 		}
 #endif
@@ -478,17 +478,8 @@ namespace detail {
 						const auto zone_text = fmt::format("{}", sr);
 						ZoneText(zone_text.data(), zone_text.size());
 #endif
-						// TODO can this temp buffer be avoided?
-						auto tmp = make_uninitialized_payload<std::byte>(sr.range.size() * element_size);
-						// FIXME: THIS MUST BE AVOIDED AT ALL COSTS! On Marconi-100 I've seen this take ~100ms for a 16 MiB buffer ?!
-						linearize_subrange(t.linearized.get_pointer(), tmp.get_pointer(), element_size, t.sr.range, {sr.offset - t.sr.offset, sr.range});
-						auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(sr.offset), sr.range}, tmp.get_pointer());
-						// target_buffer.storage->copy(, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range)
-						// auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range,
-						//     sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range, t.get_buffer().m_did,
-						//     t.get_buffer().m_copy_stream);
-						// auto evt = target_buffer.storage->copy(t.get_buffer(), sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
-						evt.hack_attach_payload(std::move(tmp)); // FIXME
+						auto evt = target_buffer.storage->set_data(
+						    t.linearized.get_pointer(), t.sr.range, sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
 						pending_transfers.merge(std::move(evt));
 						updated_region = GridRegion<3>::merge(updated_region, box);
 					});
@@ -509,7 +500,8 @@ namespace detail {
 #endif
 				// Transfer applies fully.
 				remaining_region_after_transfers = GridRegion<3>::difference(remaining_region_after_transfers, t.unconsumed);
-				auto evt = target_buffer.storage->set_data({target_buffer.get_local_offset(t.sr.offset), t.sr.range}, t.linearized.get_pointer());
+				auto evt = target_buffer.storage->set_data(
+				    t.linearized.get_pointer(), t.sr.range, id<3>(0, 0, 0), target_buffer.get_local_offset(t.sr.offset), t.sr.range);
 				// auto evt = target_buffer.storage->copy_from_device_raw(t.get_buffer().get_owning_queue(), t.get_buffer().get_pointer(), t.sr.range, id<3>{},
 				//     target_buffer.get_local_offset(t.sr.offset), t.sr.range, t.get_buffer().m_did, t.get_buffer().m_copy_stream);
 				// auto evt = target_buffer.storage->copy(t.get_buffer(), id<3>{}, target_buffer.get_local_offset(t.sr.offset), t.sr.range);

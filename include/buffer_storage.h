@@ -245,7 +245,8 @@ namespace detail {
 
 		virtual async_event get_data(const subrange<3>& sr, void* out_linearized) const = 0;
 
-		virtual async_event set_data(const subrange<3>& sr, const void* in_linearized) = 0;
+		virtual async_event set_data(
+		    const void* in_base_ptr, const range<3>& in_range, const id<3>& in_offset, const id<3>& local_offset, const range<3>& copy_range) = 0;
 
 		/**
 		 * Copy data from the given source buffer into this buffer.
@@ -290,7 +291,7 @@ namespace detail {
 #endif
 		}
 
-		sycl::queue& get_owning_queue() { return m_owning_queue; }
+		sycl::queue& get_owning_queue() const { return m_owning_queue; }
 
 		// FIXME: This is no longer accurate for (sparsely allocated) ndv buffers (only an upper bound).
 		size_t get_size() const override { return get_range().size() * sizeof(DataT); };
@@ -323,9 +324,10 @@ namespace detail {
 #endif
 		}
 
-		async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
-			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
-			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
+		async_event set_data(
+		    const void* in_base_ptr, const range<3>& in_range, const id<3>& in_offset, const id<3>& local_offset, const range<3>& copy_range) override {
+			assert(Dims > 1 || (in_offset[1] == 0 && in_range[1] == 1 && local_offset[1] == 0 && copy_range[1] == 1));
+			assert(Dims > 2 || (in_offset[2] == 0 && in_range[2] == 1 && local_offset[2] == 0 && copy_range[2] == 1));
 #if USE_NDVBUFFER
 			const ndv::box<Dims> src_box = {{}, ndv::point<Dims>::make_from(sr.range)};
 			const ndv::box<Dims> dst_box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
@@ -333,9 +335,9 @@ namespace detail {
 			assert(false && "Figure out how to integrate with async_event");
 #else
 			// NOCOMMIT Use assert_copy_is_in_range from below?
-			assert((id_cast<Dims>(sr.offset) + range_cast<Dims>(sr.range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
-			return memcpy_strided_device(m_owning_queue, in_linearized, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id<Dims>{},
-			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), m_did, m_copy_stream);
+			assert((id_cast<Dims>(local_offset) + range_cast<Dims>(copy_range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
+			return memcpy_strided_device(m_owning_queue, in_base_ptr, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(in_range),
+			    range_cast<Dims>(in_offset), m_device_buf.get_range(), id_cast<Dims>(local_offset), range_cast<Dims>(copy_range), m_did, m_copy_stream);
 #endif
 		}
 
@@ -383,12 +385,13 @@ namespace detail {
 			return async_event{};
 		}
 
-		async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
-			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
-			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
-
-			memcpy_strided(in_linearized, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id_cast<Dims>(cl::sycl::id<3>(0, 0, 0)),
-			    range_cast<Dims>(m_host_buf.get_range()), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
+		async_event set_data(
+		    const void* in_base_ptr, const range<3>& in_range, const id<3>& in_offset, const id<3>& local_offset, const range<3>& copy_range) override {
+			assert(Dims > 1 || (in_offset[1] == 0 && in_range[1] == 1 && local_offset[1] == 0 && copy_range[1] == 1));
+			assert(Dims > 2 || (in_offset[2] == 0 && in_range[2] == 1 && local_offset[2] == 0 && copy_range[2] == 1));
+			assert((id_cast<Dims>(local_offset) + range_cast<Dims>(copy_range) <= m_host_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
+			memcpy_strided(in_base_ptr, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(in_range), range_cast<Dims>(in_offset),
+			    m_host_buf.get_range(), id_cast<Dims>(local_offset), range_cast<Dims>(copy_range));
 			return async_event{};
 		}
 
@@ -451,13 +454,9 @@ namespace detail {
 			    {ndv::point<Dims>::make_from(source_offset), ndv::point<Dims>::make_from(source_offset + copy_range)},
 			    {ndv::point<Dims>::make_from(target_offset), ndv::point<Dims>::make_from(target_offset + copy_range)});
 #else
-			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
-			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
-			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
-			const auto evt1 = host_source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			evt1.wait();
-			const auto evt2 = set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
-			evt2.wait();
+			return memcpy_strided_device(m_owning_queue, host_source.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
+			    range_cast<Dims>(host_source.get_range()), id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset),
+			    range_cast<Dims>(copy_range), m_did, m_copy_stream);
 #endif
 		}
 
@@ -485,6 +484,7 @@ namespace detail {
 		// TODO: Optimize for contiguous copies - we could do a single SYCL D->H copy directly.
 		// NOCOMMIT This is USM - can't we just call memcpy here as well?
 		if(source.get_type() == buffer_type::device_buffer) {
+			auto& device_source = dynamic_cast<const device_buffer_storage<DataT, Dims>&>(source);
 			const auto msg = fmt::format("d2h {}", copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
 
@@ -495,14 +495,9 @@ namespace detail {
 			    {ndv::point<Dims>::make_from(source_offset), ndv::point<Dims>::make_from(source_offset + copy_range)},
 			    {ndv::point<Dims>::make_from(target_offset), ndv::point<Dims>::make_from(target_offset + copy_range)});
 #else
-			// This looks more convoluted than using a vector<DataT>, but that would break if DataT == bool
-			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
-			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
-			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
-			const auto evt1 = source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			evt1.wait();
-			const auto evt2 = set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
-			evt2.wait();
+			return memcpy_strided_device(device_source.get_owning_queue(), device_source.get_pointer(), m_host_buf.get_pointer(), sizeof(DataT),
+			    range_cast<Dims>(device_source.get_range()), id_cast<Dims>(source_offset), range_cast<Dims>(m_host_buf.get_range()),
+			    range_cast<Dims>(target_offset), range_cast<Dims>(copy_range), device_source.m_did, device_source.m_copy_stream);
 #endif
 		}
 
