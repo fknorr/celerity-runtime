@@ -107,6 +107,11 @@ namespace detail {
 			CELERITY_DEBUG("Allocating {} bytes on device {} (memory {})", count * sizeof(T), m_did, m_mid);
 			T* ptr = nullptr;
 			try {
+				// FIXME Hideous: The fact that we are calling cudaSetDevice for event recording and stream creation seems
+				// to mess with hipSYCL's own tracking of the active device. This manifested as out-of-bonds access since
+				// memory was allocated on the wrong device.
+				cudaSetDevice(m_did);
+
 				// TODO Use aligned allocation?
 				ptr = sycl::malloc_device<T>(count, *m_sycl_queue);
 				// m_device_ptr = sycl::aligned_alloc_device<DataT>(alignof(DataT), m_range.size(), m_queue);
