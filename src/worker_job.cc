@@ -764,8 +764,6 @@ namespace detail {
 		ZoneScoped;
 		const auto data = std::get<gather_data>(pkg.data);
 
-		// TODO usually we do not want lock host memory, but all device memories here
-		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		const bool is_receiver = m_local_nid == data.root;
@@ -806,7 +804,6 @@ namespace detail {
 		assert(is_receiver || buffer.get_update_boxes().empty());
 		if(is_receiver) commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer));
 
-		m_buffer_mngr.unlock(pkg.cid);
 		return true;
 	}
 
@@ -825,8 +822,6 @@ namespace detail {
 		ZoneScoped;
 		const auto data = std::get<allgather_data>(pkg.data);
 
-		// TODO usually we do not want lock host memory, but all device memories here
-		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		std::vector<collective_buffer::region_spec> collective_regions(data.source_regions.size());
@@ -858,7 +853,6 @@ namespace detail {
 
 		commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer));
 
-		m_buffer_mngr.unlock(pkg.cid);
 		return true;
 	}
 
@@ -878,7 +872,6 @@ namespace detail {
 	bool broadcast_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<broadcast_data>(pkg.data);
 
-		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		const bool sends_data = data.root == m_local_nid;
@@ -911,7 +904,6 @@ namespace detail {
 
 		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ true); }
 
-		m_buffer_mngr.unlock(pkg.cid);
 		return true;
 	}
 
@@ -935,7 +927,6 @@ namespace detail {
 	bool scatter_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<scatter_data>(pkg.data);
 
-		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		const bool sends_data = data.root == m_local_nid;
@@ -968,7 +959,6 @@ namespace detail {
 
 		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ false); }
 
-		m_buffer_mngr.unlock(pkg.cid);
 		return true;
 	}
 
@@ -988,7 +978,6 @@ namespace detail {
 	bool alltoall_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<alltoall_data>(pkg.data);
 
-		if(!m_buffer_mngr.try_lock(pkg.cid, host_memory_id, {data.bid})) return false;
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		collective_send_buffer send_buffer;
@@ -1017,7 +1006,6 @@ namespace detail {
 
 		commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ false);
 
-		m_buffer_mngr.unlock(pkg.cid);
 		return true;
 	}
 
