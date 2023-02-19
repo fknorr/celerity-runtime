@@ -698,7 +698,7 @@ namespace detail {
 		bool used_broadcast = false;
 		if(device_broadcast_enabled && buffer.broadcast_covers_all_updates()) {
 			bool lock_success = true;
-			auto& local_devices = runtime::get_instance().get_local_devices();
+			auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 			auto num_devices = local_devices.num_compute_devices();
 			std::vector<bool> mem_locked(num_devices, false);
 			for(size_t device_id = 0; device_id < num_devices; ++device_id) {
@@ -889,7 +889,7 @@ namespace detail {
 			}
 			buffer = send_buffer.get_pointer();
 			byte_size = send_buffer.get_size_bytes();
-		} else {
+		} else /* receives_data */ {
 			ZoneScopedN("alloc output");
 			recv_buffer = collective_receive_buffer({data.region}, buffer_info.element_size);
 			buffer = recv_buffer.get_pointer();
@@ -897,9 +897,27 @@ namespace detail {
 		}
 
 		{
-			ZoneScopedN("Bcast");
-			CELERITY_TRACE("MPI_Bcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD)", byte_size, data.root);
-			MPI_Bcast(buffer, static_cast<int>(byte_size), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD);
+			ZoneScopedN("Ibcast");
+			CELERITY_TRACE("MPI_Ibcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD, &request)", byte_size, data.root);
+			MPI_Request request;
+			MPI_Ibcast(buffer, static_cast<int>(byte_size), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD, &request);
+
+			if(sends_data) {
+				// Overlap async MPI_Ibcast with a broadcast to sibling devices by triggering make_buffer_subrange_coherent
+				ZoneScopedN("d2d broadcast");
+				const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
+				async_event pending_local_broadcast;
+				data.region.scanByBoxes([&](const GridBox<3>& box) {
+					const auto sr = grid_box_to_subrange(box);
+					for(device_id did = 0; did < local_devices.num_compute_devices(); ++did) {
+						auto info = m_buffer_mngr.access_device_buffer(local_devices.get_memory_id(did), data.bid, access_mode::read, sr.range, sr.offset);
+						pending_local_broadcast.merge(std::move(info.pending_transfers));
+					}
+				});
+				pending_local_broadcast.wait();
+			}
+
+			MPI_Wait(&request, MPI_STATUS_IGNORE);
 		}
 
 		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ true); }
