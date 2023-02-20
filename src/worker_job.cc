@@ -829,9 +829,11 @@ namespace detail {
 
 		{
 			ZoneScopedN("fetch input");
+			async_event fetch_complete;
 			for(auto& [box, offset_bytes, size_bytes] : buffer.get_fetch_boxes()) {
-				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), buffer.get_payload(offset_bytes)).wait();
+				fetch_complete.merge(m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), buffer.get_payload(offset_bytes)));
 			}
+			fetch_complete.wait();
 		}
 
 		{
@@ -869,30 +871,29 @@ namespace detail {
 		const bool sends_data = data.root == m_local_nid;
 		const bool receives_data = !sends_data;
 
-		collective_send_buffer send_buffer;
-		collective_receive_buffer recv_buffer;
-		size_t byte_size;
-		void* buffer;
+		collective_buffer::region_spec region_spec;
+		region_spec.region = data.region;
+		region_spec.fetch = sends_data;
+		region_spec.update = region_spec.broadcast = receives_data;
+
+		collective_buffer buffer({std::move(region_spec)}, buffer_info.element_size);
+		assert(buffer.get_chunk_byte_sizes().size() == 1);
+		const int byte_size = buffer.get_chunk_byte_sizes().front();
+
 		if(sends_data) {
 			ZoneScopedN("fetch input");
-			send_buffer = collective_send_buffer({data.region}, buffer_info.element_size);
-			for(auto& [box, pointer] : send_buffer.get_boxes()) {
-				m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), pointer).wait();
+			async_event pending_fetch;
+			for(auto& [box, offset_bytes, size_bytes] : buffer.get_fetch_boxes()) {
+				pending_fetch.merge(m_buffer_mngr.get_buffer_data(data.bid, grid_box_to_subrange(box), buffer.get_payload(offset_bytes)));
 			}
-			buffer = send_buffer.get_pointer();
-			byte_size = send_buffer.get_size_bytes();
-		} else /* receives_data */ {
-			ZoneScopedN("alloc output");
-			recv_buffer = collective_receive_buffer({data.region}, buffer_info.element_size);
-			buffer = recv_buffer.get_pointer();
-			byte_size = recv_buffer.get_size_bytes();
+			pending_fetch.wait();
 		}
 
 		{
 			ZoneScopedN("Ibcast");
 			CELERITY_TRACE("MPI_Ibcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD, &request)", byte_size, data.root);
 			MPI_Request request;
-			MPI_Ibcast(buffer, static_cast<int>(byte_size), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD, &request);
+			MPI_Ibcast(buffer.get_payload(), byte_size, MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD, &request);
 
 			if(sends_data) {
 				// Overlap async MPI_Ibcast with a broadcast to sibling devices by triggering make_buffer_subrange_coherent
@@ -912,7 +913,7 @@ namespace detail {
 			MPI_Wait(&request, MPI_STATUS_IGNORE);
 		}
 
-		if(receives_data) { commit_collective_receive(m_buffer_mngr, data.bid, std::move(recv_buffer), /* attempt_broadcast= */ true); }
+		if(receives_data) { commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer)); }
 
 		return true;
 	}
