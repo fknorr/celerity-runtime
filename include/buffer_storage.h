@@ -126,13 +126,13 @@ namespace detail {
 		}
 
 		// FIXME: Workaround to extend lifetime of temporary staging copies for asynchronous transfers
-		void hack_attach_payload(unique_payload_ptr ptr) { m_attached_payloads.emplace_back(std::move(ptr)); }
+		void hack_attach_payload(shared_payload_ptr ptr) { m_attached_payloads.emplace_back(std::move(ptr)); }
 
 	  private:
 		mutable gch::small_vector<bool> m_done_cache;
 		gch::small_vector<std::shared_ptr<native_event_wrapper>> m_native_events;
 		// FIXME: For some reason (old libstdc++?) this doesn't compile as a gch::small_vector on Marconi-100...
-		std::vector<unique_payload_ptr> m_attached_payloads;
+		std::vector<shared_payload_ptr> m_attached_payloads;
 	};
 
 	void memcpy_strided(const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const cl::sycl::range<1>& source_range,

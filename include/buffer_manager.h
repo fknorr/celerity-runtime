@@ -218,7 +218,7 @@ namespace detail {
 		 * - Host buffer might not be large enough.
 		 * - H->D transfers currently work better for contiguous copies.
 		 */
-		void set_buffer_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized);
+		void set_buffer_data(buffer_id bid, const subrange<3>& sr, shared_payload_ptr in_linearized);
 
 		/**
 		 * Checks whether a broadcast for the given buffer and subrange is possible (i.e. all device memory is already allocated).
@@ -336,7 +336,7 @@ namespace detail {
 		};
 
 		struct transfer {
-			transfer(unique_payload_ptr linearized, subrange<3> sr) : unconsumed(subrange_to_grid_box(sr)), sr(sr), linearized(std::move(linearized)) {}
+			transfer(shared_payload_ptr linearized, subrange<3> sr) : unconsumed(subrange_to_grid_box(sr)), sr(sr), linearized(std::move(linearized)) {}
 
 			transfer(transfer&& other) noexcept : unconsumed(std::move(other.unconsumed)), sr(other.sr), linearized(std::move(other.linearized)) {
 				other.sr = {};
@@ -351,7 +351,7 @@ namespace detail {
 
 			GridRegion<3> unconsumed; // which parts of it haven't been ingested onto a target memory yet
 			subrange<3> sr;           // where this transfer fits into the virtual buffer
-			unique_payload_ptr linearized;
+			shared_payload_ptr linearized;
 		};
 
 		struct resize_info {

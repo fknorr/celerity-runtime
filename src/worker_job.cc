@@ -734,19 +734,11 @@ namespace detail {
 		}
 
 		if(!used_broadcast) {
-			if(buffer.payload_is_single_contiguous_update()) {
-				auto& [box, offset_bytes, size_bytes] = buffer.get_update_boxes().front();
+			const shared_payload_ptr payload = buffer.take_payload();
+			for(auto& [box, offset_bytes, size_bytes] : buffer.get_update_boxes()) {
 				const auto sr = grid_box_to_subrange(box);
-				CELERITY_TRACE("non-broadcast set_buffer_data({}, {}, take_payload())", (int)bid, sr);
-				bm.set_buffer_data(bid, sr, buffer.take_payload());
-			} else {
-				for(auto& [box, offset_bytes, size_bytes] : buffer.get_update_boxes()) {
-					const auto sr = grid_box_to_subrange(box);
-					CELERITY_TRACE("non-broadcast set_buffer_data({}, {}, get_payload({}))", (int)bid, sr, offset_bytes);
-					auto payload = make_uninitialized_payload<std::byte>(size_bytes);
-					memcpy(payload.get_pointer(), buffer.get_payload(offset_bytes), size_bytes);
-					bm.set_buffer_data(bid, sr, std::move(payload));
-				}
+				CELERITY_TRACE("non-broadcast set_buffer_data({}, {}, payload+{})", (int)bid, sr, offset_bytes);
+				bm.set_buffer_data(bid, sr, shared_payload_ptr(payload, offset_bytes));
 			}
 		}
 	}

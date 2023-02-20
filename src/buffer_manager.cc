@@ -117,7 +117,7 @@ namespace detail {
 		return pending_fast_transfers;
 	}
 
-	void buffer_manager::set_buffer_data(buffer_id bid, const subrange<3>& sr, unique_payload_ptr in_linearized) {
+	void buffer_manager::set_buffer_data(buffer_id bid, const subrange<3>& sr, shared_payload_ptr in_linearized) {
 		std::unique_lock lock(m_mutex);
 		assert(m_buffer_infos.count(bid) == 1);
 		m_scheduled_transfers[bid].push_back(buffer_manager::transfer{std::move(in_linearized), sr});
@@ -480,6 +480,7 @@ namespace detail {
 #endif
 						auto evt = target_buffer.storage->set_data(
 						    t.linearized.get_pointer(), t.sr.range, sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
+						evt.hack_attach_payload(std::move(t.linearized)); // FIXME
 						pending_transfers.merge(std::move(evt));
 						updated_region = GridRegion<3>::merge(updated_region, box);
 					});
