@@ -480,7 +480,6 @@ namespace detail {
 #endif
 						auto evt = target_buffer.storage->set_data(
 						    t.linearized.get_pointer(), t.sr.range, sr.offset - t.sr.offset, target_buffer.get_local_offset(sr.offset), sr.range);
-						evt.hack_attach_payload(std::move(t.linearized)); // FIXME
 						pending_transfers.merge(std::move(evt));
 						updated_region = GridRegion<3>::merge(updated_region, box);
 					});
