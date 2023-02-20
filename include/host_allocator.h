@@ -114,6 +114,7 @@ class host_allocator {
 	}
 
 	void* allocate(const size_t size) {
+		CELERITY_TRACE("allocating {} bytes on pinned memory pool, capacity left {} bytes", size, m_allocator.capacity_left());
 		// TODO: Make this templated to get alignof(T)?
 		// const auto alignment = 1;
 		const auto node_size = m_allocator.node_size();
@@ -126,10 +127,11 @@ class host_allocator {
 		const auto node_size = m_allocator.node_size();
 		const auto count = (size + node_size - 1) / node_size;
 		m_allocator.deallocate_array(ptr, count);
+		CELERITY_TRACE("deallocated {} bytes from pinned memory pool, capacity left {} bytes", size, m_allocator.capacity_left());
 	}
 
   private:
-	using memory_pool_t = foonathan::memory::memory_pool<foonathan::memory::node_pool, cuda_pinned_memory_allocator>;
+	using memory_pool_t = foonathan::memory::memory_pool<foonathan::memory::array_pool, cuda_pinned_memory_allocator>;
 	// TODO fallback should use the cuda_pinned_memory_allocator directly for sizes > block_size, but we must not hide allocator bugs that way
 	// using fallback_allocator_t = foonathan::memory::fallback_allocator<memory_pool_t, foonathan::memory::null_allocator>;
 
@@ -140,7 +142,7 @@ class host_allocator {
 	static memory_pool_t construct_allocator() {
 		using namespace foonathan::memory::literals;
 		const auto pool_node_size = 1_MiB;      // pool returns memory in this granularity
-		const auto block_size = 2_GiB;          // pool allocates backing memory in this granularity (will be the maximum allocation size!)
+		const auto block_size = 256_MiB;          // pool allocates backing memory in this granularity (will be the maximum allocation size!)
 		const auto max_pinned_memory = 256_GiB; // FIXME: This should be a configurable percentage of total host memory
 		return memory_pool_t(pool_node_size, block_size, max_pinned_memory);
 	}
