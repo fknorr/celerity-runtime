@@ -346,27 +346,34 @@ void distributed_graph_generator::generate_gather_command(const forward_task& ts
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
 
+	std::optional<node_id> gather_root;
+	bool is_local_writer;
+	if(num_consumer_chunks == 1) {
+		const node_id root = 0;
+		gather_root = root;
+		is_local_writer = m_local_nid == root;
+	} else {
+		gather_root = std::nullopt;
+		is_local_writer = true;
+	}
+
 	std::vector<GridRegion<3>> source_regions(m_num_nodes);
 	for(node_id nid = 0; nid < std::min(m_num_nodes, producer_chunks.size()); ++nid) {
+		if(nid == gather_root) continue; // do not receive from self in non-all Gather
+
 		auto& node_region = source_regions[nid];
 		for(const auto& prm : producer_rms) {
 			node_region = GridRegion<3>::merge(node_region, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[nid], producer_dims)));
 		}
 		node_region = GridRegion<3>::intersect(node_region, forward_region);
 	}
+
 	const auto local_input_region = source_regions[m_local_nid];
-	std::optional<node_id> gather_root;
 	abstract_command* gather_cmd;
-	bool is_local_writer;
-	if(num_consumer_chunks == 1) {
-		const auto root = node_id{0};
-		gather_root = root;
-		gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), forward_region, root);
-		is_local_writer = m_local_nid == root;
+	if(gather_root.has_value()) {
+		gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), *gather_root);
 	} else {
-		gather_root = std::nullopt;
-		gather_cmd = create_command<allgather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), forward_region);
-		is_local_writer = true;
+		gather_cmd = create_command<allgather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions));
 	}
 
 	auto& buffer_state = m_buffer_states.at(bid);
@@ -452,12 +459,12 @@ void distributed_graph_generator::generate_scatter_command(const forward_task& t
 	const auto& forward_region = tsk.get_region();
 	const auto bid = tsk.get_bid();
 
-	const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
+	const node_id root = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
 
 	GridRegion<3> source_region;
 	std::vector<GridRegion<3>> dest_regions(m_num_nodes);
 	for(node_id nid = 0; nid < std::min(m_num_nodes, consumer_chunks.size()); ++nid) {
-		if(nid == source_nid) continue; // do not send to self
+		if(nid == root) continue; // do not send to self
 
 		auto& node_region = dest_regions[nid];
 		for(const auto& crm : consumer_rms) {
@@ -467,10 +474,10 @@ void distributed_graph_generator::generate_scatter_command(const forward_task& t
 		source_region = GridRegion<3>::merge(source_region, node_region);
 	}
 
-	const auto scatter_cmd = create_command<scatter_command>(m_local_nid, bid, source_nid, source_region, dest_regions /* TODO eliminate copy? */);
+	const auto scatter_cmd = create_command<scatter_command>(m_local_nid, bid, root, dest_regions /* TODO eliminate copy? */);
 
 	auto& buffer_state = m_buffer_states.at(bid);
-	if(m_local_nid == source_nid) {
+	if(m_local_nid == root) {
 		// Store the read access for determining anti-dependencies later on
 		m_command_buffer_reads[scatter_cmd->get_cid()][bid] = forward_region;
 
@@ -575,7 +582,6 @@ void distributed_graph_generator::generate_collective_commands(const forward_tas
 	// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
 	const auto num_producer_chunks = split_task(tsk.get_producer().constraints).size();
 	const auto num_consumer_chunks = split_task(tsk.get_consumer().constraints).size();
-	const auto bid = tsk.get_bid();
 
 	const bool combined_consumers_constant = combined_range_mappers_constant(tsk.get_consumer());
 	if(num_producer_chunks > 1 && (num_consumer_chunks == 1 || combined_consumers_constant)) {

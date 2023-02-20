@@ -592,44 +592,49 @@ namespace detail {
 
 	bool gather_job::execute(const command_pkg& pkg) {
 		ZoneScoped;
+
 		const auto data = std::get<gather_data>(pkg.data);
+		assert(data.source_regions[data.root].empty());
 
 		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
 		const bool receives_data = m_local_nid == data.root;
 		const bool sends_data = !receives_data;
 
-		std::vector<collective_buffer::region_spec> collective_regions(data.source_regions.size());
-		for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
-			auto& r = collective_regions[nid];
-			r.region = data.source_regions[nid];
-			r.fetch = nid == m_local_nid && nid != data.root;
-			r.update = m_local_nid == data.root && nid != m_local_nid;
-			r.broadcast = false; // usually consumed only on host or one device
+		collective_buffer send_buffer;
+		if(sends_data) {
+			collective_buffer::region_spec region_spec;
+			region_spec.region = data.source_regions[m_local_nid];
+			region_spec.fetch = true;
+			region_spec.update = false;
+			region_spec.broadcast = false;
+			send_buffer = collective_buffer({region_spec}, buffer_info.element_size);
+			fetch_collective_input(m_buffer_mngr, data.bid, send_buffer);
 		}
 
-		collective_buffer buffer(collective_regions, buffer_info.element_size);
-
-		fetch_collective_input(m_buffer_mngr, data.bid, buffer);
+		collective_buffer recv_buffer;
+		if(receives_data) {
+			std::vector<collective_buffer::region_spec> collective_regions(data.source_regions.size());
+			for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
+				auto& r = collective_regions[nid];
+				r.region = data.source_regions[nid];
+				r.fetch = false;
+				r.update = true; // usually consumed only on host or one device
+				r.broadcast = false;
+			}
+			recv_buffer = collective_buffer(collective_regions, buffer_info.element_size);
+		}
 
 		{
 			ZoneScopedN("Gatherv");
-			if(m_local_nid == data.root) {
-				MPI_Gatherv(MPI_IN_PLACE, 0, MPI_BYTE, buffer.get_payload(), buffer.get_chunk_byte_sizes().data(), buffer.get_chunk_byte_offsets().data(),
-				    MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD);
-				CELERITY_TRACE("MPI_Gatherv(MPI_IN_PLACE, 0, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
-				    buffer.get_payload_size_bytes(), fmt::join(buffer.get_chunk_byte_sizes(), ", "), fmt::join(buffer.get_chunk_byte_offsets(), ", "),
-				    data.root);
-			} else {
-				MPI_Gatherv(buffer.get_payload(), buffer.get_chunk_byte_sizes()[m_local_nid], MPI_BYTE, nullptr, nullptr, nullptr, MPI_BYTE,
-				    static_cast<int>(data.root), MPI_COMM_WORLD);
-				CELERITY_TRACE("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, nullptr, nullptr, nullptr, MPI_BYTE, {}, MPI_COMM_WORLD)",
-				    buffer.get_payload_size_bytes(), buffer.get_chunk_byte_sizes()[m_local_nid], data.root);
-			}
+			CELERITY_TRACE("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
+			    send_buffer.get_payload_size_bytes(), send_buffer.get_payload_size_bytes(), recv_buffer.get_payload_size_bytes(),
+			    fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "), data.root);
+			MPI_Gatherv(send_buffer.get_payload(), send_buffer.get_payload_size_bytes(), MPI_BYTE, recv_buffer.get_payload(),
+			    recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD);
 		}
 
-		assert(receives_data || buffer.get_update_boxes().empty());
-		if(receives_data) commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer));
+		if(receives_data) commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer));
 
 		return true;
 	}
@@ -749,7 +754,7 @@ namespace detail {
 	std::string scatter_job::get_description(const command_pkg& pkg) {
 		const auto data = std::get<scatter_data>(pkg.data);
 		if(data.root == m_local_nid) {
-			return fmt::format("scatter {} of buffer {} to all", data.source_region, data.bid);
+			return fmt::format("scatter {} of buffer {} to all others", merge_regions(data.dest_regions), data.bid);
 		} else {
 			return fmt::format("scatter {} of buffer {} from {}", data.dest_regions[m_local_nid], data.bid, data.root);
 		}
@@ -764,30 +769,42 @@ namespace detail {
 		const bool receives_data = !data.dest_regions[m_local_nid].empty();
 		assert(!receives_data || !sends_data);
 
-		std::vector<collective_buffer::region_spec> collective_regions(data.dest_regions.size());
-		for(node_id nid = 0; nid < data.dest_regions.size(); ++nid) {
-			auto& r = collective_regions[nid];
-			r.region = data.dest_regions[nid];
-			r.fetch = data.root == m_local_nid;
-			r.update = nid == m_local_nid && nid != data.root;
-			r.broadcast = false; // usually consumed only on host or a single device
+		collective_buffer send_buffer;
+		if(sends_data) {
+			std::vector<collective_buffer::region_spec> send_regions(data.dest_regions.size());
+			for(node_id nid = 0; nid < data.dest_regions.size(); ++nid) {
+				auto& r = send_regions[nid];
+				r.region = data.dest_regions[nid];
+				r.fetch = true;
+				r.update = false;
+				r.broadcast = false; // usually consumed only on host or a single device
+			}
+			send_buffer = collective_buffer(send_regions, buffer_info.element_size);
+			fetch_collective_input(m_buffer_mngr, data.bid, send_buffer);
 		}
 
-		collective_buffer buffer(collective_regions, buffer_info.element_size);
-
-		if(sends_data) { fetch_collective_input(m_buffer_mngr, data.bid, buffer); }
+		collective_buffer recv_buffer;
+		if(receives_data) {
+			collective_buffer::region_spec recv_region;
+			recv_region.region = data.dest_regions[m_local_nid];
+			recv_region.fetch = false;
+			recv_region.update = true;
+			recv_region.broadcast = false;
+			recv_buffer = collective_buffer({recv_region}, buffer_info.element_size);
+		}
 
 		{
 			ZoneScopedN("Scatterv");
 			const auto root = static_cast<int>(data.root);
 			CELERITY_TRACE("MPI_Scatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD)",
-			    buffer.get_payload_size_bytes(), fmt::join(buffer.get_chunk_byte_sizes(), ", "), fmt::join(buffer.get_chunk_byte_offsets(), ", "),
-			    static_cast<int>(buffer.get_payload_size_bytes()), buffer.get_payload_size_bytes(), root);
-			MPI_Scatterv(buffer.get_payload(), buffer.get_chunk_byte_sizes().data(), buffer.get_chunk_byte_offsets().data(), MPI_BYTE, buffer.get_payload(),
-			    buffer.get_payload_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD);
+			    send_buffer.get_payload_size_bytes(), fmt::join(send_buffer.get_chunk_byte_sizes(), ", "),
+			    fmt::join(send_buffer.get_chunk_byte_offsets(), ", "), static_cast<int>(recv_buffer.get_payload_size_bytes()),
+			    recv_buffer.get_payload_size_bytes(), root);
+			MPI_Scatterv(send_buffer.get_payload(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
+			    recv_buffer.get_payload(), recv_buffer.get_payload_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD);
 		}
 
-		if(receives_data) { commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer)); }
+		if(receives_data) { commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
 
 		return true;
 	}

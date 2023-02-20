@@ -1,5 +1,6 @@
 #pragma once
 
+#include "grid.h"
 #include "ranges.h"
 
 namespace celerity {
@@ -20,3 +21,15 @@ std::ostream& operator<<(std::ostream& os, subrange<Dims> subr) {
 }
 
 } // namespace celerity
+
+namespace celerity::detail {
+
+inline GridRegion<3> merge_regions(const std::vector<GridRegion<3>>& regions) {
+	GridRegion<3> merged;
+	for(const auto& r : regions) {
+		merged = GridRegion<3>::merge(merged, r);
+	}
+	return merged;
+}
+
+} // namespace celerity::detail

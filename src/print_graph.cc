@@ -148,14 +148,14 @@ namespace detail {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), source_region);
 			}
 			if(gcmd->get_root() == gcmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", gcmd->get_bid(), gcmd->get_dest_region());
+				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", gcmd->get_bid(), merge_regions(gcmd->get_source_regions()));
 			}
 		} else if(const auto agcmd = dynamic_cast<const allgather_command*>(&cmd)) {
 			label += "<b>all-gather</b>";
 			if(const auto& source_region = agcmd->get_source_regions()[agcmd->get_nid()]; !source_region.empty()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", agcmd->get_bid(), source_region);
 			}
-			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", agcmd->get_bid(), agcmd->get_dest_region());
+			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", agcmd->get_bid(), merge_regions(agcmd->get_source_regions()));
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
 			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_root());
 			if(bcmd->get_root() == bcmd->get_nid()) {
@@ -165,7 +165,7 @@ namespace detail {
 		} else if(const auto scmd = dynamic_cast<const scatter_command*>(&cmd)) {
 			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_root());
 			if(scmd->get_root() == scmd->get_nid()) {
-				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), scmd->get_source_region());
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), merge_regions(scmd->get_dest_regions()));
 			} else if(const auto& dest_region = scmd->get_dest_regions()[scmd->get_nid()]; !dest_region.empty()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
 			}
