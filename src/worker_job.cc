@@ -831,7 +831,7 @@ namespace detail {
 		for(node_id nid = 0; nid < data.send_regions.size(); ++nid) {
 			auto& r = collective_regions[nid];
 			r.region = data.send_regions[nid];
-			r.fetch = nid == true;
+			r.fetch = true;
 			r.update = r.broadcast = false;
 		}
 		collective_buffer send_buffer(collective_regions, buffer_info.element_size);
@@ -842,7 +842,7 @@ namespace detail {
 		for(node_id nid = 0; nid < data.recv_regions.size(); ++nid) {
 			auto& r = collective_regions[nid];
 			r.region = data.recv_regions[nid];
-			r.fetch = nid == false;
+			r.fetch = false;
 			r.update = true;
 			r.broadcast = false;
 		}
