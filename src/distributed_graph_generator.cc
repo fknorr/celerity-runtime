@@ -545,14 +545,40 @@ void distributed_graph_generator::generate_alltoall_command(const forward_task& 
 		recv_from_node = GridRegion<3>::intersect(recv_from_node, local_consumer_region);
 		local_write_set = GridRegion<3>::merge(local_write_set, recv_from_node);
 	}
-	assert(GridRegion<3>::intersect(local_read_set, local_write_set).empty());
+	assert(GridRegion<3>::intersect(local_read_set, local_write_set).empty()); // this will not hold after we insert intra-node device coherence below --v
 
-	const auto alltoall_cmd = create_command<alltoall_command>(m_local_nid, bid, send_regions, recv_regions); // TODO eliminate copies
+	// To overlap MPI_Alltoall with intra-node d2d communication necessary for the local chunk, we enumerate the regions each device can make_coherent
+	// from regions its sibling devices have produced before.
+	GridRegion<3> local_coherence_region;
+	std::vector<GridRegion<3>> local_coherence_regions_per_device(m_num_local_devices);
+	if(m_num_local_devices > 1) {
+		// TODO this is in part duplicated from generate_execution_commands
+		// ... but we do not have to worry about oversubscription here since that will just mean further intra-device subdivision without affecting the
+		// inter-device communication pattern.
+		const auto& consumer_constraints = tsk.get_consumer().constraints;
+		assert(consumer_constraints.is_splittable()); // otherwise how would we end up generating an alltoall?
+		const auto& consumer_geometry = consumer_constraints.get_task_geometry();
+		const auto split = consumer_constraints.requires_tiled_split() ? split_2d : split_1d;
+		const auto consumer_device_chunks = split(consumer_chunks[m_local_nid], consumer_geometry.granularity, m_num_local_devices);
+
+		for(device_id did = 0; did < consumer_device_chunks.size(); ++did) {
+			GridRegion<3> device_consumer_region;
+			for(const auto& crm : consumer_rms) {
+				device_consumer_region =
+				    GridRegion<3>::merge(device_consumer_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_device_chunks[did], consumer_dims)));
+			}
+			local_coherence_regions_per_device[did] = GridRegion<3>::intersect(device_consumer_region, local_producer_region);
+		}
+
+		local_coherence_region = GridRegion<3>::intersect(local_producer_region, local_consumer_region);
+		local_read_set = GridRegion<3>::merge(local_read_set, local_coherence_region);
+		local_write_set = GridRegion<3>::merge(local_write_set, local_coherence_region);
+	}
+
+	const auto alltoall_cmd = create_command<alltoall_command>(m_local_nid, bid, send_regions, recv_regions, // TODO eliminate copies
+	    std::move(local_coherence_regions_per_device));
 
 	auto& buffer_state = m_buffer_states.at(bid);
-
-	// Store the read access for determining anti-dependencies later on
-	m_command_buffer_reads[alltoall_cmd->get_cid()][bid] = local_read_set;
 
 	for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(local_read_set)) {
 		assert(wcs.is_fresh());
@@ -565,6 +591,9 @@ void distributed_graph_generator::generate_alltoall_command(const forward_task& 
 	}
 
 	generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, local_write_set, alltoall_cmd);
+
+	// Store the read access for determining anti-dependencies later on
+	m_command_buffer_reads[alltoall_cmd->get_cid()][bid] = local_read_set;
 
 	buffer_state.local_last_writer.update_region(local_write_set, write_command_state(alltoall_cmd->get_cid(), true /* is_replicated */));
 

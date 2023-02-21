@@ -904,7 +904,7 @@ TEST_CASE("graph generator no collectives for stencil", "[distributed_graph_gene
 }
 
 TEST_CASE("graph generator generates alltoalls for transposition pattern", "[distributed_graph_generator][gather]") {
-	dist_cdag_test_context dctx(4);
+	dist_cdag_test_context dctx(4, 4);
 	celerity::range<2> range(1000, 1000);
 	auto buf = dctx.create_buffer(range);
 

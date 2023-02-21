@@ -122,7 +122,12 @@ namespace detail {
 			if(ecmd->get_epoch_action() == epoch_action::barrier) { label += " (barrier)"; }
 			if(ecmd->get_epoch_action() == epoch_action::shutdown) { label += " (shutdown)"; }
 		} else if(const auto xcmd = dynamic_cast<const execution_command*>(&cmd)) {
-			fmt::format_to(std::back_inserter(label), "<b>execution</b> {}", subrange_to_grid_box(xcmd->get_execution_range()));
+			const auto xbox = subrange_to_grid_box(xcmd->get_execution_range());
+			if(const auto tsk = tm.find_task(xcmd->get_tid()); tsk && tsk->get_execution_target() == execution_target::device) {
+				fmt::format_to(std::back_inserter(label), "<b>execution</b> on D{} {}", xcmd->get_device_id(), xbox);
+			} else {
+				fmt::format_to(std::back_inserter(label), "<b>execution</b> {}", xbox);
+			}
 		} else if(const auto pcmd = dynamic_cast<const push_command*>(&cmd)) {
 			if(pcmd->get_rid()) { fmt::format_to(std::back_inserter(label), "(R{}) ", pcmd->get_rid()); }
 			const std::string bl = get_buffer_label(bm, pcmd->get_bid());
@@ -173,13 +178,15 @@ namespace detail {
 			fmt::format_to(std::back_inserter(label), "<b>all-to-all</b> B{}", a2acmd->get_bid());
 			for(node_id from_nid = 0; from_nid < a2acmd->get_send_regions().size(); ++from_nid) {
 				const auto& sends = a2acmd->get_send_regions()[from_nid];
-				if(!sends.empty()) {
-					fmt::format_to(std::back_inserter(label), "<br/>N{} &lt;- <i>read</i> {}", from_nid, a2acmd->get_send_regions()[from_nid]);
-				}
+				if(!sends.empty()) { fmt::format_to(std::back_inserter(label), "<br/>N{} &lt;- <i>read</i> {}", from_nid, sends); }
 			}
 			for(node_id to_nid = 0; to_nid < a2acmd->get_recv_regions().size(); ++to_nid) {
-				const auto& sends = a2acmd->get_recv_regions()[to_nid];
-				if(!sends.empty()) { fmt::format_to(std::back_inserter(label), "<br/>N{} -&gt; <i>write</i> {}", to_nid, a2acmd->get_recv_regions()[to_nid]); }
+				const auto& recvs = a2acmd->get_recv_regions()[to_nid];
+				if(!recvs.empty()) { fmt::format_to(std::back_inserter(label), "<br/>N{} -&gt; <i>write</i> {}", to_nid, recvs); }
+			}
+			for(device_id did = 0; did < a2acmd->get_local_device_coherence_regions().size(); ++did) {
+				const auto& coherence = a2acmd->get_local_device_coherence_regions()[did];
+				if(!coherence.empty()) { fmt::format_to(std::back_inserter(label), "<br/>D{} <i>make coherent</i> {}", did, coherence); }
 			}
 		} else {
 			assert(!"Unkown command");

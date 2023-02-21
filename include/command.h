@@ -241,19 +241,22 @@ namespace detail {
 
 	class alltoall_command final : public abstract_command {
 		friend class command_graph;
-		alltoall_command(
-		    const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> send_regions, std::vector<GridRegion<3>> recv_regions)
-		    : abstract_command(cid, nid), m_bid(bid), m_send_regions(std::move(send_regions)), m_recv_regions(std::move(recv_regions)) {}
+		alltoall_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> send_regions,
+		    std::vector<GridRegion<3>> recv_regions, std::vector<GridRegion<3>> local_device_coherence_regions)
+		    : abstract_command(cid, nid), m_bid(bid), m_send_regions(std::move(send_regions)), m_recv_regions(std::move(recv_regions)),
+		      m_local_device_coherence_regions(std::move(local_device_coherence_regions)) {}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		const std::vector<GridRegion<3>>& get_send_regions() const { return m_send_regions; }
 		const std::vector<GridRegion<3>>& get_recv_regions() const { return m_recv_regions; }
+		const std::vector<GridRegion<3>>& get_local_device_coherence_regions() const { return m_local_device_coherence_regions; }
 
 	  private:
 		buffer_id m_bid;
 		std::vector<GridRegion<3>> m_send_regions;
 		std::vector<GridRegion<3>> m_recv_regions;
+		std::vector<GridRegion<3>> m_local_device_coherence_regions;
 	};
 
 	// ----------------------------------------------------------------------------------------------------------------
@@ -332,6 +335,7 @@ namespace detail {
 		buffer_id bid;
 		std::vector<GridRegion<3>> send_regions;
 		std::vector<GridRegion<3>> recv_regions;
+		std::vector<GridRegion<3>> local_device_coherence_regions;
 	};
 
 	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,

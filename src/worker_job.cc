@@ -849,13 +849,34 @@ namespace detail {
 		collective_buffer recv_buffer(collective_regions, buffer_info.element_size);
 
 		{
-			ZoneScopedN("Alltoallv");
-			CELERITY_TRACE("MPI_Alltoallv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
+			ZoneScopedN("Ialltoallv");
+			CELERITY_TRACE(
+			    "MPI_Ialltoallv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD, &request)",
 			    send_buffer.get_payload_size_bytes(), fmt::join(send_buffer.get_chunk_byte_sizes(), ", "),
 			    fmt::join(send_buffer.get_chunk_byte_offsets(), ", "), recv_buffer.get_payload_size_bytes(),
 			    fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "));
-			MPI_Alltoallv(send_buffer.get_payload(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
-			    recv_buffer.get_payload(), recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, MPI_COMM_WORLD);
+			MPI_Request request;
+			MPI_Ialltoallv(send_buffer.get_payload(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
+			    recv_buffer.get_payload(), recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, MPI_COMM_WORLD,
+			    &request);
+
+			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
+			assert(local_devices.num_compute_devices() == data.local_device_coherence_regions.size());
+			if(data.local_device_coherence_regions.size() > 1) {
+				// Overlap async MPI_Ibcast with a broadcast to sibling devices by triggering make_buffer_subrange_coherent
+				ZoneScopedN("d2d alltoall");
+				async_event pending_local_alltoall;
+				for(device_id did = 0; did < data.local_device_coherence_regions.size(); ++did) {
+					data.local_device_coherence_regions[did].scanByBoxes([&](const GridBox<3>& box) {
+						const auto sr = grid_box_to_subrange(box);
+						auto info = m_buffer_mngr.access_device_buffer(local_devices.get_memory_id(did), data.bid, access_mode::read, sr.range, sr.offset);
+						pending_local_alltoall.merge(std::move(info.pending_transfers));
+					});
+				}
+				pending_local_alltoall.wait();
+			}
+
+			MPI_Wait(&request, MPI_STATUS_IGNORE);
 		}
 
 		commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer));
