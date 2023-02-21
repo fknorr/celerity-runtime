@@ -586,14 +586,19 @@ namespace detail {
 	}
 
 	async_event make_buffer_region_coherent_on_device(buffer_manager& bm, const buffer_id bid, const GridRegion<3>& region, const device_id did) {
-		async_event pending_transfers;
 		const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
+		const auto mid = local_devices.get_memory_id(did);
+		const buffer_manager::buffer_lock_id lid = 1000000 + bid; // FIXME?
+		if(!bm.try_lock(lid, mid, {bid})) return {};              // skip eager coherence update if locking the buffer fails
+
+		async_event pending_transfers;
 		region.scanByBoxes([&](const GridBox<3>& box) {
 			const auto sr = grid_box_to_subrange(box);
-			const auto mid = local_devices.get_memory_id(did);
 			auto info = bm.access_device_buffer(mid, bid, access_mode::read, sr.range, sr.offset); // triggers make_buffer_subrange_coherent
 			pending_transfers.merge(std::move(info.pending_transfers));
 		});
+
+		bm.unlock(lid);
 		return pending_transfers;
 	}
 
