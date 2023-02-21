@@ -531,17 +531,13 @@ namespace detail {
 		fetch_complete.wait();
 	}
 
-	// try to immediately upload allgather data to all device memories
-	// TODO NOCOMMIT (at least the env var handling)
-	const bool device_broadcast_enabled = getenv("CELERITY_USE_ALLGATHER_BROADCAST");
-
 	void commit_collective_update(buffer_manager& bm, const buffer_id bid, collective_buffer&& buffer) {
 		ZoneScopedN("commit");
 
 		assert(buffer.broadcast_covers_all_updates() || buffer.get_broadcast_boxes().empty()); // if not we definitely messed up region_spec::update/broadcast
 
 		bool used_broadcast = false;
-		if(device_broadcast_enabled && buffer.broadcast_covers_all_updates()) {
+		if(buffer.broadcast_covers_all_updates()) {
 			bool lock_success = true;
 			auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 			auto num_devices = local_devices.num_compute_devices();
