@@ -310,7 +310,7 @@ bool is_non_trivial_transposition(const forward_task::access& producer, const fo
 	const auto consumer_rm = consumer.range_mappers.front();
 
 	const auto produced_sr = apply_range_mapper(producer_rm, producer.constraints.get_task_geometry());
-	const auto consumed_sr = apply_range_mapper(consumer_rm, producer.constraints.get_task_geometry());
+	const auto consumed_sr = apply_range_mapper(consumer_rm, consumer.constraints.get_task_geometry());
 	if(produced_sr != consumed_sr) return false;
 
 	const auto producer_properties = producer.range_mappers.front()->get_properties(producer.constraints.get_split_geometry());
