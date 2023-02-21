@@ -54,7 +54,7 @@ class benchmark_runner {
 				m_q.slow_full_sync();
 				const auto end = std::chrono::steady_clock::now();
 
-				if(i > m_n_warmup && m_csv) {
+				if(i >= m_n_warmup && m_csv) {
 					const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
 					fmt::print(m_csv, "{};{};{};Celerity;{};{}\n", m_total_num_devices, name, range, configuration, ns.count());
 					fflush(m_csv);
