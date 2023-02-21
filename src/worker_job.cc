@@ -585,6 +585,18 @@ namespace detail {
 		}
 	}
 
+	async_event make_buffer_region_coherent_on_device(buffer_manager& bm, const buffer_id bid, const GridRegion<3>& region, const device_id did) {
+		async_event pending_transfers;
+		const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
+		region.scanByBoxes([&](const GridBox<3>& box) {
+			const auto sr = grid_box_to_subrange(box);
+			const auto mid = local_devices.get_memory_id(did);
+			auto info = bm.access_device_buffer(mid, bid, access_mode::read, sr.range, sr.offset); // triggers make_buffer_subrange_coherent
+			pending_transfers.merge(std::move(info.pending_transfers));
+		});
+		return pending_transfers;
+	}
+
 	gather_job::gather_job(const command_pkg& pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
 		assert(std::holds_alternative<gather_data>(pkg.data));
 	}
@@ -630,12 +642,25 @@ namespace detail {
 		}
 
 		{
-			ZoneScopedN("Gatherv");
-			CELERITY_TRACE("MPI_Gatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD)",
+			ZoneScopedN("Igatherv");
+			MPI_Request request;
+			CELERITY_TRACE("MPI_Igatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD, &request)",
 			    send_buffer.get_payload_size_bytes(), send_buffer.get_payload_size_bytes(), recv_buffer.get_payload_size_bytes(),
 			    fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "), data.root);
-			MPI_Gatherv(send_buffer.get_payload(), send_buffer.get_payload_size_bytes(), MPI_BYTE, recv_buffer.get_payload(),
-			    recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD);
+			MPI_Igatherv(send_buffer.get_payload(), send_buffer.get_payload_size_bytes(), MPI_BYTE, recv_buffer.get_payload(),
+			    recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD,
+			    &request);
+
+			// Overlap async MPI_Igatherv with a gather to device 0
+			// TODO this is suboptimal if the gathered data is to be used in a (master-node) host task instead of an unsplittable device task.
+			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
+			if(!data.local_coherence_region.empty() && local_devices.num_compute_devices() > 1) {
+				ZoneScopedN("d2d gather");
+				auto pending_transfers = make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_coherence_region, device_id(0));
+				pending_transfers.wait();
+			}
+
+			MPI_Wait(&request, MPI_STATUS_IGNORE);
 		}
 
 		if(receives_data) commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer));
@@ -666,7 +691,7 @@ namespace detail {
 			r.region = data.source_regions[nid];
 			r.fetch = nid == m_local_nid;
 			r.update = nid != m_local_nid;
-			r.broadcast = nid != m_local_nid || /* always h2d-broadcast locally */ m_num_local_devices > 1;
+			r.broadcast = nid != m_local_nid;
 		}
 
 		collective_buffer buffer(collective_regions, buffer_info.element_size);
@@ -674,12 +699,25 @@ namespace detail {
 		fetch_collective_input(m_buffer_mngr, data.bid, buffer);
 
 		{
-			ZoneScopedN("Allgatherv");
-			// TODO make asynchronous?
-			MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_BYTE, buffer.get_payload(), buffer.get_chunk_byte_sizes().data(), buffer.get_chunk_byte_offsets().data(),
-			    MPI_BYTE, MPI_COMM_WORLD);
-			CELERITY_TRACE("MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD)",
+			ZoneScopedN("Iallgatherv");
+			MPI_Request request;
+			MPI_Iallgatherv(MPI_IN_PLACE, 0, MPI_BYTE, buffer.get_payload(), buffer.get_chunk_byte_sizes().data(), buffer.get_chunk_byte_offsets().data(),
+			    MPI_BYTE, MPI_COMM_WORLD, &request);
+			CELERITY_TRACE("MPI_Iallgatherv(MPI_IN_PLACE, 0, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD, &request)",
 			    buffer.get_payload_size_bytes(), fmt::join(buffer.get_chunk_byte_sizes(), ", "), fmt::join(buffer.get_chunk_byte_offsets(), ", "));
+
+			// Overlap async MPI_Iallgatherv with an allgather between local devices
+			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
+			if(!data.local_coherence_region.empty() && local_devices.num_compute_devices() > 1) {
+				ZoneScopedN("d2d allgather");
+				async_event pending_transfers;
+				for(device_id did = 0; did < local_devices.num_compute_devices(); ++did) {
+					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_coherence_region, did));
+				}
+				pending_transfers.wait();
+			}
+
+			MPI_Wait(&request, MPI_STATUS_IGNORE);
 		}
 
 		commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer));
@@ -725,18 +763,14 @@ namespace detail {
 			    buffer.get_payload(), static_cast<int>(buffer.get_payload_size_bytes()), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD, &request);
 
 			if(sends_data) {
-				// Overlap async MPI_Ibcast with a broadcast to sibling devices by triggering make_buffer_subrange_coherent
+				// Overlap async MPI_Ibcast with a broadcast to sibling devices
 				ZoneScopedN("d2d broadcast");
 				const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
-				async_event pending_local_broadcast;
-				data.region.scanByBoxes([&](const GridBox<3>& box) {
-					const auto sr = grid_box_to_subrange(box);
-					for(device_id did = 0; did < local_devices.num_compute_devices(); ++did) {
-						auto info = m_buffer_mngr.access_device_buffer(local_devices.get_memory_id(did), data.bid, access_mode::read, sr.range, sr.offset);
-						pending_local_broadcast.merge(std::move(info.pending_transfers));
-					}
-				});
-				pending_local_broadcast.wait();
+				async_event pending_transfers;
+				for(device_id did = 0; did < local_devices.num_compute_devices(); ++did) {
+					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.region, did));
+				}
+				pending_transfers.wait();
 			}
 
 			MPI_Wait(&request, MPI_STATUS_IGNORE);
@@ -798,14 +832,29 @@ namespace detail {
 		}
 
 		{
-			ZoneScopedN("Scatterv");
+			ZoneScopedN("Iscatterv");
 			const auto root = static_cast<int>(data.root);
-			CELERITY_TRACE("MPI_Scatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD)",
+			MPI_Request request;
+			CELERITY_TRACE("MPI_Iscatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD, &request)",
 			    send_buffer.get_payload_size_bytes(), fmt::join(send_buffer.get_chunk_byte_sizes(), ", "),
 			    fmt::join(send_buffer.get_chunk_byte_offsets(), ", "), static_cast<int>(recv_buffer.get_payload_size_bytes()),
 			    recv_buffer.get_payload_size_bytes(), root);
-			MPI_Scatterv(send_buffer.get_payload(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
-			    recv_buffer.get_payload(), recv_buffer.get_payload_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD);
+			MPI_Iscatterv(send_buffer.get_payload(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
+			    recv_buffer.get_payload(), recv_buffer.get_payload_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD, &request);
+
+			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
+			assert(local_devices.num_compute_devices() == data.local_device_coherence_regions.size());
+			if(data.local_device_coherence_regions.size() > 1) {
+				// Overlap async MPI_Iscatter with a scatter to sibling devices
+				ZoneScopedN("d2d scatter");
+				async_event pending_transfers;
+				for(device_id did = 0; did < data.local_device_coherence_regions.size(); ++did) {
+					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_device_coherence_regions[did], did));
+				}
+				pending_transfers.wait();
+			}
+
+			MPI_Wait(&request, MPI_STATUS_IGNORE);
 		}
 
 		if(receives_data) { commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
@@ -867,17 +916,13 @@ namespace detail {
 			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 			assert(local_devices.num_compute_devices() == data.local_device_coherence_regions.size());
 			if(data.local_device_coherence_regions.size() > 1) {
-				// Overlap async MPI_Ibcast with a broadcast to sibling devices by triggering make_buffer_subrange_coherent
+				// Overlap async MPI_Ibcast with a broadcast to sibling devices
 				ZoneScopedN("d2d alltoall");
-				async_event pending_local_alltoall;
+				async_event pending_transfers;
 				for(device_id did = 0; did < data.local_device_coherence_regions.size(); ++did) {
-					data.local_device_coherence_regions[did].scanByBoxes([&](const GridBox<3>& box) {
-						const auto sr = grid_box_to_subrange(box);
-						auto info = m_buffer_mngr.access_device_buffer(local_devices.get_memory_id(did), data.bid, access_mode::read, sr.range, sr.offset);
-						pending_local_alltoall.merge(std::move(info.pending_transfers));
-					});
+					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_device_coherence_regions[did], did));
 				}
-				pending_local_alltoall.wait();
+				pending_transfers.wait();
 			}
 
 			MPI_Wait(&request, MPI_STATUS_IGNORE);

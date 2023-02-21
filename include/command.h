@@ -175,34 +175,42 @@ namespace detail {
 
 	class gather_command final : public abstract_command {
 		friend class command_graph;
-		gather_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions, const node_id root)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_root(root) {
+		gather_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions,
+		    GridRegion<3> local_coherence_region, const node_id root)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_local_coherence_region(std::move(local_coherence_region)),
+		      m_root(root) {
 			assert(m_source_regions[root].empty());
 		}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
+		const GridRegion<3>& get_local_coherence_region() const { return m_local_coherence_region; }
 		node_id get_root() const { return m_root; }
 
 	  private:
 		buffer_id m_bid;
 		std::vector<GridRegion<3>> m_source_regions;
+		GridRegion<3> m_local_coherence_region;
 		node_id m_root;
 	};
 
 	class allgather_command final : public abstract_command {
 		friend class command_graph;
-		allgather_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions)
-		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)) {}
+		allgather_command(
+		    const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions, GridRegion<3> local_coherence_region)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_local_coherence_region(std::move(local_coherence_region)) {
+		}
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
+		const GridRegion<3>& get_local_coherence_region() const { return m_local_coherence_region; }
 
 	  private:
 		buffer_id m_bid;
 		std::vector<GridRegion<3>> m_source_regions;
+		GridRegion<3> m_local_coherence_region;
 	};
 
 	class broadcast_command final : public abstract_command {
@@ -223,8 +231,10 @@ namespace detail {
 
 	class scatter_command final : public abstract_command {
 		friend class command_graph;
-		scatter_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id root, std::vector<GridRegion<3>> dest_regions)
-		    : abstract_command(cid, nid), m_bid(bid), m_root(root), m_dest_regions(std::move(dest_regions)) {
+		scatter_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id root, std::vector<GridRegion<3>> dest_regions,
+		    std::vector<GridRegion<3>> local_device_coherence_regions)
+		    : abstract_command(cid, nid), m_bid(bid), m_root(root), m_dest_regions(std::move(dest_regions)),
+		      m_local_device_coherence_regions(std::move(local_device_coherence_regions)) {
 			assert(m_dest_regions[root].empty());
 		}
 
@@ -232,11 +242,13 @@ namespace detail {
 		buffer_id get_bid() const { return m_bid; }
 		node_id get_root() const { return m_root; }
 		const std::vector<GridRegion<3>>& get_dest_regions() const { return m_dest_regions; }
+		const std::vector<GridRegion<3>>& get_local_device_coherence_regions() const { return m_local_device_coherence_regions; }
 
 	  private:
 		buffer_id m_bid;
 		node_id m_root;
 		std::vector<GridRegion<3>> m_dest_regions;
+		std::vector<GridRegion<3>> m_local_device_coherence_regions;
 	};
 
 	class alltoall_command final : public abstract_command {
@@ -311,12 +323,14 @@ namespace detail {
 	struct gather_data {
 		buffer_id bid;
 		std::vector<GridRegion<3>> source_regions;
+		GridRegion<3> local_coherence_region;
 		node_id root;
 	};
 
 	struct allgather_data {
 		buffer_id bid;
 		std::vector<GridRegion<3>> source_regions;
+		GridRegion<3> local_coherence_region;
 	};
 
 	struct broadcast_data {
@@ -329,6 +343,7 @@ namespace detail {
 		buffer_id bid;
 		node_id root;
 		std::vector<GridRegion<3>> dest_regions;
+		std::vector<GridRegion<3>> local_device_coherence_regions;
 	};
 
 	struct alltoall_data {

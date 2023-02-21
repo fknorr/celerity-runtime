@@ -368,12 +368,23 @@ void distributed_graph_generator::generate_gather_command(const forward_task& ts
 		node_region = GridRegion<3>::intersect(node_region, forward_region);
 	}
 
-	const auto local_input_region = source_regions[m_local_nid];
+	GridRegion<3> local_coherence_region;
+	if(!gather_root.has_value() || gather_root == m_local_nid) {
+		GridRegion<3> local_producer_region;
+		for(const auto& prm : producer_rms) {
+			local_producer_region =
+			    GridRegion<3>::merge(local_producer_region, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[m_local_nid], producer_dims)));
+		}
+		local_coherence_region = GridRegion<3>::intersect(local_producer_region, forward_region);
+	}
+
+	const auto local_input_region = GridRegion<3>::merge(source_regions[m_local_nid], local_coherence_region);
+
 	abstract_command* gather_cmd;
 	if(gather_root.has_value()) {
-		gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), *gather_root);
+		gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), std::move(local_coherence_region), *gather_root);
 	} else {
-		gather_cmd = create_command<allgather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions));
+		gather_cmd = create_command<allgather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), std::move(local_coherence_region));
 	}
 
 	auto& buffer_state = m_buffer_states.at(bid);
@@ -474,7 +485,29 @@ void distributed_graph_generator::generate_scatter_command(const forward_task& t
 		source_region = GridRegion<3>::merge(source_region, node_region);
 	}
 
-	const auto scatter_cmd = create_command<scatter_command>(m_local_nid, bid, root, dest_regions /* TODO eliminate copy? */);
+	// To overlap MPI_Alltoall with intra-node d2d communication necessary for the local chunk, we enumerate the regions each device can make_coherent
+	// from regions its sibling devices have produced before.
+	// TODO this is copied almost verbatim from generate_alltoall_commands.
+	std::vector<GridRegion<3>> local_coherence_regions_per_device(m_num_local_devices);
+	if(m_local_nid == root && m_num_local_devices > 1) {
+		const auto& consumer_constraints = tsk.get_consumer().constraints;
+		assert(consumer_constraints.is_splittable()); // otherwise how would we end up generating an alltoall?
+		const auto& consumer_geometry = consumer_constraints.get_task_geometry();
+		const auto split = consumer_constraints.requires_tiled_split() ? split_2d : split_1d;
+		const auto consumer_device_chunks = split(consumer_chunks[m_local_nid], consumer_geometry.granularity, m_num_local_devices);
+
+		for(device_id did = 0; did < consumer_device_chunks.size(); ++did) {
+			GridRegion<3> device_consumer_region;
+			for(const auto& crm : consumer_rms) {
+				device_consumer_region =
+				    GridRegion<3>::merge(device_consumer_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_device_chunks[did], consumer_dims)));
+			}
+			local_coherence_regions_per_device[did] = GridRegion<3>::intersect(device_consumer_region, forward_region);
+		}
+	}
+
+	const auto scatter_cmd =
+	    create_command<scatter_command>(m_local_nid, bid, root, dest_regions /* TODO eliminate copy? */, std::move(local_coherence_regions_per_device));
 
 	auto& buffer_state = m_buffer_states.at(bid);
 	if(m_local_nid == root) {

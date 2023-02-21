@@ -155,12 +155,18 @@ namespace detail {
 			if(gcmd->get_root() == gcmd->get_nid()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", gcmd->get_bid(), merge_regions(gcmd->get_source_regions()));
 			}
+			if(const auto& coherence = gcmd->get_local_coherence_region(); !coherence.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/>D0 <i>make coherent</i> {}", coherence);
+			}
 		} else if(const auto agcmd = dynamic_cast<const allgather_command*>(&cmd)) {
 			label += "<b>all-gather</b>";
 			if(const auto& source_region = agcmd->get_source_regions()[agcmd->get_nid()]; !source_region.empty()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", agcmd->get_bid(), source_region);
 			}
 			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", agcmd->get_bid(), merge_regions(agcmd->get_source_regions()));
+			if(const auto& coherence = agcmd->get_local_coherence_region(); !coherence.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/>D* <i>make coherent</i> {}", coherence);
+			}
 		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
 			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_root());
 			if(bcmd->get_root() == bcmd->get_nid()) {
@@ -173,6 +179,10 @@ namespace detail {
 				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), merge_regions(scmd->get_dest_regions()));
 			} else if(const auto& dest_region = scmd->get_dest_regions()[scmd->get_nid()]; !dest_region.empty()) {
 				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
+			}
+			for(device_id did = 0; did < scmd->get_local_device_coherence_regions().size(); ++did) {
+				const auto& coherence = scmd->get_local_device_coherence_regions()[did];
+				if(!coherence.empty()) { fmt::format_to(std::back_inserter(label), "<br/>D{} <i>make coherent</i> {}", did, coherence); }
 			}
 		} else if(const auto a2acmd = dynamic_cast<const alltoall_command*>(&cmd)) {
 			fmt::format_to(std::back_inserter(label), "<b>all-to-all</b> B{}", a2acmd->get_bid());
