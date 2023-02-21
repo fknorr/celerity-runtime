@@ -307,7 +307,10 @@ namespace detail {
 	}
 
 	bool device_execute_job::execute(const command_pkg& pkg) {
-		if(NOMERGE_skip_device_kernel_execution) return true;
+		if(NOMERGE_skip_device_kernel_execution) {
+			m_buffer_mngr.unlock(pkg.cid);
+			return true;
+		}
 
 		if(!m_submitted) {
 			const auto data = std::get<execution_data>(pkg.data);
