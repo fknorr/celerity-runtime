@@ -19,6 +19,8 @@
 namespace celerity {
 namespace detail {
 
+	bool NOMERGE_skip_device_kernel_execution = false;
+
 	// --------------------------------------------------------------------------------------------------------------------
 	// ----------------------------------------------------- GENERAL ------------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
@@ -305,6 +307,8 @@ namespace detail {
 	}
 
 	bool device_execute_job::execute(const command_pkg& pkg) {
+		if(NOMERGE_skip_device_kernel_execution) return true;
+
 		if(!m_submitted) {
 			const auto data = std::get<execution_data>(pkg.data);
 			const auto& tsk = dynamic_cast<const command_group_task&>(*m_task_mngr.get_task(data.tid));

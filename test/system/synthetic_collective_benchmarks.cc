@@ -12,6 +12,11 @@
 #define UKN(name) _UKN_CONCAT(name, __COUNTER__)
 
 
+namespace celerity::detail {
+extern bool NOMERGE_skip_device_kernel_execution;
+}
+
+
 using namespace celerity;
 
 class benchmark_runner {
@@ -39,7 +44,7 @@ class benchmark_runner {
 	template <typename F>
 	void run(const char* name, size_t range, F&& f) {
 		for(const bool collectives : {false, true}) {
-			celerity::detail::task_manager::generate_collectives = collectives;
+			celerity::detail::task_manager::NOMERGE_generate_collectives = collectives;
 			const auto configuration = collectives ? "collectives" : "p2p";
 
 			for(size_t i = 0; i < m_n_warmup + m_n_passes; ++i) {
@@ -206,6 +211,7 @@ int main(int argc, char** argv) {
 	const size_t n_warmup = 2;
 	const size_t n_passes = 10;
 
+	celerity::detail::NOMERGE_skip_device_kernel_execution = true;
 	benchmark_runner runner(total_num_devices, n_warmup, n_passes, csv_name);
 
 	allgather_benchmark(runner);
