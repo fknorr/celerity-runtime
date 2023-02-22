@@ -385,9 +385,8 @@ template <tree_topology Topology, typename BenchmarkContext>
 
 // graphs identical to the wave_sim example
 template <typename BenchmarkContext>
-[[gnu::noinline]] BenchmarkContext&& generate_wave_sim_graph(BenchmarkContext&& ctx, const float T) {
+[[gnu::noinline]] BenchmarkContext&& generate_wave_sim_graph(BenchmarkContext&& ctx, const int steps) {
 	constexpr int N = 512;
-	constexpr float dt = 0.25f;
 
 	const auto fill = [&](test_utils::mock_buffer<2> u) {
 		ctx.parallel_for(u.get_range(), [&](celerity::handler& cgh) { u.get_access<access_mode::discard_write>(cgh, celerity::access::one_to_one{}); });
@@ -407,12 +406,9 @@ template <typename BenchmarkContext>
 	fill(up);
 	step(up, u);
 
-	auto t = 0.0;
-	size_t i = 0;
-	while(t < T) {
+	for(int i = 0; i < steps; ++i) {
 		step(up, u);
 		std::swap(u, up);
-		t += dt;
 	}
 
 	return std::forward<BenchmarkContext>(ctx);
