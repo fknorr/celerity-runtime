@@ -104,65 +104,56 @@ void allgather_benchmark(benchmark_runner& runner) {
 }
 
 
-void gather_benchmark(benchmark_runner& runner) {
+void gather_broadcast_benchmark(benchmark_runner& runner) {
 	const size_t n_iters = 10;
 	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
-		celerity::buffer<int> buf(range);
+		celerity::buffer<int> buf_a(range);
+		celerity::buffer<int> buf_b(range);
 
-		runner.run("Gather", range, [&](celerity::distr_queue& q) {
+		runner.run("Gather-Bcast", range, [&](celerity::distr_queue& q) {
+			q.submit([=](celerity::handler& cgh) {
+				accessor write_acc(buf_a, cgh, access::one_to_one(), write_only, no_init);
+				cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { (void)write_acc; });
+			});
+
 			for(size_t i = 0; i < n_iters; ++i) {
 				q.submit([=](celerity::handler& cgh) {
-					accessor acc(buf, cgh, access::one_to_one(), write_only, no_init);
-					cgh.parallel_for<class UKN(fill)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)acc; });
-				});
-
-				q.submit([=](celerity::handler& cgh) {
-					accessor acc(buf, cgh, access::all(), read_only);
+					accessor acc(buf_a, cgh, access::all(), read_write);
 					cgh.parallel_for<class UKN(gather)>(celerity::range<1>(1), [=](celerity::item<1>) { (void)acc; });
 				});
+
+				q.submit([=](celerity::handler& cgh) {
+					accessor read_acc(buf_a, cgh, access::all(), read_only);
+					accessor write_acc(buf_b, cgh, access::one_to_one(), write_only, no_init);
+					cgh.parallel_for<class UKN(scatter)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)read_acc, (void)write_acc; });
+				});
+				std::swap(buf_a, buf_b);
 			}
 		});
 	}
 }
 
 
-void scatter_benchmark(benchmark_runner& runner) {
+void gather_scatter_benchmark(benchmark_runner& runner) {
 	const size_t n_iters = 10;
 	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
 		celerity::buffer<int> buf(range);
 
-		runner.run("Scatter", range, [&](celerity::distr_queue& q) {
+		runner.run("Gather-Scatter", range, [&](celerity::distr_queue& q) {
+			q.submit([=](celerity::handler& cgh) {
+				accessor acc(buf, cgh, access::one_to_one(), write_only, no_init);
+				cgh.parallel_for<class UKN(init)>(celerity::range<1>(range), [=](celerity::item<1> it) { (void)acc; });
+			});
+
 			for(size_t i = 0; i < n_iters; ++i) {
 				q.submit([=](celerity::handler& cgh) {
-					accessor acc(buf, cgh, access::all(), write_only, no_init);
-					cgh.parallel_for<class UKN(fill)>(celerity::range<1>(1), [=](celerity::item<1>) { (void)acc; });
+					accessor acc(buf, cgh, access::all(), read_write);
+					cgh.parallel_for<class UKN(gather)>(celerity::range<1>(1), [=](celerity::item<1>) { (void)acc; });
 				});
 
 				q.submit([=](celerity::handler& cgh) {
-					accessor acc(buf, cgh, access::one_to_one(), read_only);
+					accessor acc(buf, cgh, access::one_to_one(), read_write);
 					cgh.parallel_for<class UKN(scatter)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)acc; });
-				});
-			}
-		});
-	}
-}
-
-
-void broadcast_benchmark(benchmark_runner& runner) {
-	const size_t n_iters = 10;
-	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
-		celerity::buffer<int> buf(range);
-
-		runner.run("Bcast", range, [&](celerity::distr_queue& q) {
-			for(size_t i = 0; i < n_iters; ++i) {
-				q.submit([=](celerity::handler& cgh) {
-					accessor acc(buf, cgh, access::all(), write_only, no_init);
-					cgh.parallel_for<class UKN(fill)>(celerity::range<1>(1), [=](celerity::item<1>) { (void)acc; });
-				});
-
-				q.submit([=](celerity::handler& cgh) {
-					accessor acc(buf, cgh, access::all(), read_only);
-					cgh.parallel_for<class UKN(broadcast)>(celerity::range<1>(range), [=](celerity::item<1>) { (void)acc; });
 				});
 			}
 		});
@@ -224,8 +215,7 @@ int main(int argc, char** argv) {
 	benchmark_runner runner(total_num_devices, n_warmup, n_passes, csv_name);
 
 	allgather_benchmark(runner);
-	gather_benchmark(runner);
-	scatter_benchmark(runner);
-	broadcast_benchmark(runner);
+	gather_scatter_benchmark(runner);
+	gather_broadcast_benchmark(runner);
 	alltoall_benchmark(runner);
 }
