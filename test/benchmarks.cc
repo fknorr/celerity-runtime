@@ -583,7 +583,7 @@ void run_benchmarks(BenchmarkContextFactory&& make_ctx) {
 	// BENCHMARK("chain topology") { generate_chain_graph(make_ctx(), 30); };
 	// BENCHMARK("expanding tree topology") { generate_tree_graph<tree_topology::expanding>(make_ctx(), 30); };
 	// BENCHMARK("contracting tree topology") { generate_tree_graph<tree_topology::contracting>(make_ctx(), 30); };
-	BENCHMARK("wave_sim topology") { generate_wave_sim_graph(make_ctx(), 50); };
+	BENCHMARK("wave_sim topology") { generate_wave_sim_graph(make_ctx(), 100); };
 	// BENCHMARK("jacobi topology") { generate_jacobi_graph(make_ctx(), 50); };
 	BENCHMARK("nbody topology") { generate_nbody_graph(make_ctx(), 100); };
 	BENCHMARK("rsim topology") { generate_rsim_graph(make_ctx(), 100); };
