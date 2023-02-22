@@ -464,6 +464,41 @@ template <typename BenchmarkContext>
 }
 
 template <typename BenchmarkContext>
+[[gnu::noinline]] BenchmarkContext&& generate_synthetic_gather_scatter_graph(BenchmarkContext&& ctx, const int steps) {
+	const celerity::range<1> large_range(262144);
+	const celerity::range<1> small_range(1);
+
+	test_utils::mock_buffer<1> large_buf = ctx.mbf.create_buffer(large_range, true);
+
+	for(int i = 0; i < steps; ++i) {
+		ctx.parallel_for(large_range, [&](handler& cgh) { large_buf.get_access<access_mode::read_write>(cgh, celerity::access::one_to_one()); });
+		ctx.parallel_for(small_range, [&](handler& cgh) { large_buf.get_access<access_mode::read_write>(cgh, celerity::access::all()); });
+	}
+
+	return std::forward<BenchmarkContext>(ctx);
+}
+
+template <typename BenchmarkContext>
+[[gnu::noinline]] BenchmarkContext&& generate_synthetic_gather_broadcast_graph(BenchmarkContext&& ctx, const int steps) {
+	const celerity::range<1> large_range(262144);
+	const celerity::range<1> small_range(1);
+
+	test_utils::mock_buffer<1> buf_a = ctx.mbf.create_buffer(large_range, true);
+	test_utils::mock_buffer<1> buf_b = ctx.mbf.create_buffer(large_range, false);
+
+	for(int i = 0; i < steps; ++i) {
+		ctx.parallel_for(small_range, [&](handler& cgh) { buf_a.get_access<access_mode::read_write>(cgh, celerity::access::all()); });
+		ctx.parallel_for(large_range, [&](handler& cgh) {
+			buf_a.get_access<access_mode::read>(cgh, celerity::access::all());
+			buf_b.get_access<access_mode::discard_write>(cgh, celerity::access::one_to_one());
+		});
+		std::swap(buf_a, buf_b);
+	}
+
+	return std::forward<BenchmarkContext>(ctx);
+}
+
+template <typename BenchmarkContext>
 [[gnu::noinline]] BenchmarkContext&& generate_synthetic_gather_graph(BenchmarkContext&& ctx, const int steps) {
 	const celerity::range<1> large_range(262144);
 	const celerity::range<1> small_range(1);
@@ -583,11 +618,13 @@ void run_benchmarks(BenchmarkContextFactory&& make_ctx) {
 	// BENCHMARK("jacobi topology") { generate_jacobi_graph(make_ctx(), 50); };
 	BENCHMARK("nbody topology") { generate_nbody_graph(make_ctx(), 100); };
 	BENCHMARK("rsim topology") { generate_rsim_graph(make_ctx(), 100); };
-	BENCHMARK("allgather topology") { generate_synthetic_allgather_graph(make_ctx(), 100); };
-	BENCHMARK("gather topology") { generate_synthetic_gather_graph(make_ctx(), 100); };
-	BENCHMARK("scatter topology") { generate_synthetic_scatter_graph(make_ctx(), 100); };
-	BENCHMARK("broadcast topology") { generate_synthetic_broadcast_graph(make_ctx(), 100); };
-	BENCHMARK("alltoall topology") { generate_synthetic_alltoall_graph(make_ctx(), 100); };
+	BENCHMARK("synthetic allgather loop") { generate_synthetic_allgather_graph(make_ctx(), 100); };
+	BENCHMARK("synthetic gather-scatter loop") { generate_synthetic_gather_scatter_graph(make_ctx(), 100); };
+	BENCHMARK("synthetic gather-broadcast loop") { generate_synthetic_gather_broadcast_graph(make_ctx(), 100); };
+	BENCHMARK("synthetic gather loop") { generate_synthetic_gather_graph(make_ctx(), 100); };
+	BENCHMARK("synthetic scatter loop") { generate_synthetic_scatter_graph(make_ctx(), 100); };
+	BENCHMARK("synthetic broadcast loop") { generate_synthetic_broadcast_graph(make_ctx(), 100); };
+	BENCHMARK("synthetic alltoall loop") { generate_synthetic_alltoall_graph(make_ctx(), 100); };
 }
 
 TEST_CASE("generating large task graphs", "[benchmark][task-graph]") {
@@ -628,6 +665,8 @@ void debug_graphs(BenchmarkContextFactory&& make_ctx, BenchmarkContextConsumer&&
 	debug_ctx(generate_nbody_graph(make_ctx(), 5));
 	debug_ctx(generate_rsim_graph(make_ctx(), 5));
 	debug_ctx(generate_synthetic_allgather_graph(make_ctx(), 5));
+	debug_ctx(generate_synthetic_gather_scatter_graph(make_ctx(), 5));
+	debug_ctx(generate_synthetic_gather_broadcast_graph(make_ctx(), 5));
 	debug_ctx(generate_synthetic_gather_graph(make_ctx(), 5));
 	debug_ctx(generate_synthetic_scatter_graph(make_ctx(), 5));
 	debug_ctx(generate_synthetic_broadcast_graph(make_ctx(), 5));
