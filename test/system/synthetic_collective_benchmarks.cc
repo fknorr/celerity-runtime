@@ -189,6 +189,35 @@ void alltoall_benchmark(benchmark_runner& runner) {
 }
 
 
+void control_benchmark(benchmark_runner& runner) {
+	const size_t n_iters = 10;
+
+	for(auto size : {64_i, 512_i, 4_Ki, 16_Ki}) {
+		const range<2> range(size, size);
+
+		celerity::buffer<int, 2> buf_a(range);
+		celerity::buffer<int, 2> buf_b(range);
+
+		// stencil without collective communication
+		runner.run("Control", range.size(), [&](celerity::distr_queue& q) {
+			q.submit([=](celerity::handler& cgh) {
+				accessor write_acc(buf_a, cgh, access::one_to_one(), write_only, no_init);
+				cgh.parallel_for<class UKN(init)>(range, [=](celerity::item<2> it) { (void)write_acc; });
+			});
+
+			for(size_t i = 0; i < n_iters; ++i) {
+				q.submit([=](celerity::handler& cgh) {
+					accessor read_acc(buf_a, cgh, access::neighborhood(1, 1), read_only);
+					accessor write_acc(buf_b, cgh, access::one_to_one(), write_only, no_init);
+					cgh.parallel_for<class UKN(gather)>(range, [=](celerity::item<2>) { (void)read_acc, (void)write_acc; });
+				});
+				std::swap(buf_a, buf_b);
+			}
+		});
+	}
+}
+
+
 int main(int argc, char** argv) {
 	celerity::runtime::init(&argc, &argv);
 
@@ -218,4 +247,5 @@ int main(int argc, char** argv) {
 	gather_scatter_benchmark(runner);
 	gather_broadcast_benchmark(runner);
 	alltoall_benchmark(runner);
+	control_benchmark(runner);
 }
