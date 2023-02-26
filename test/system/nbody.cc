@@ -142,59 +142,108 @@ int main(const int argc, const char** argv) {
 	const int nIters = (argc > 2) ? atoi(argv[2]) : 10; // simulation iterations
 	const bool debug = false && nBodies <= 32;
 
-	const int bytes = nBodies * sizeof(VAL4_TYPE) * 2;
-	std::vector<char> h_buf(bytes);
-	VAL_TYPE* const buf = (VAL_TYPE*)(h_buf.data());
-	const BodySystem p = {(VAL4_TYPE*)buf, ((VAL4_TYPE*)buf) + nBodies};
-
-	randomizeBodies(buf, 8 * nBodies); // init pos / vel data
-	if(debug) print_system(p, nBodies);
+	printf("Tiling %s, block size %d, data type: %s.\n", USE_TILED == 1 ? "enabled" : "disabled", BLOCK_SIZE, USE_FLOAT == 1 ? "float" : "double");
 
 	celerity::distr_queue queue;
-	celerity::buffer<VAL4_TYPE, 1> posBuff(p.pos, nBodies);
-	celerity::buffer<VAL4_TYPE, 1> velBuff(p.vel, nBodies);
+
+	const int total_num_devices =
+	    celerity::detail::runtime::get_instance().get_local_devices().num_compute_devices() * celerity::detail::runtime::get_instance().get_num_nodes();
+
+	celerity::experimental::host_object<FILE*> csv_obj;
+	queue.submit([=](celerity::handler& cgh) {
+		celerity::experimental::side_effect csv(csv_obj, cgh);
+		cgh.host_task(celerity::on_master_node, [=] {
+			char csv_name[100];
+			const char* job_id = getenv("SLURM_JOB_ID");
+			if(job_id) {
+				snprintf(csv_name, sizeof csv_name, "celerity-nbody-%d-%s.csv", total_num_devices, job_id);
+			} else {
+				snprintf(csv_name, sizeof csv_name, "celerity-nbody-%d.csv", total_num_devices);
+			}
+			*csv = fopen(csv_name, "wb");
+			if(!*csv) {
+				fprintf(stderr, "error opening output file: %s: %s\n", csv_name, strerror(errno));
+				abort();
+			}
+			fprintf(*csv, "devices;benchmark;range;system;configuration;nanoseconds\n");
+			fflush(*csv);
+		});
+	});
 
 	const int nBlocks = (nBodies + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-	std::chrono::steady_clock::time_point start;
-	for(int iter = 1; iter <= nIters; iter++) {
-		if(iter == 2) start = std::chrono::steady_clock::now(); // skip first iteration in measurement
+	const int n_warmup = 2;
+	const int n_passes = 10;
 
-		bodyForce(queue, posBuff, velBuff);
+	for(const bool collectives : {false, true}) {
+		celerity::detail::task_manager::NOMERGE_generate_collectives = collectives;
+		const auto configuration = collectives ? "collectives" : "p2p";
 
-		queue.submit([=](celerity::handler& cgh) {
-			celerity::accessor rwPos{posBuff, cgh, celerity::access::one_to_one{}, celerity::read_write};
-			celerity::accessor readVel{velBuff, cgh, celerity::access::one_to_one{}, celerity::read_only};
-			cgh.parallel_for<class BodyPosUpdate>(celerity::range<1>(nBodies), [=](celerity::item<1> i) {
-				rwPos[i].x() += readVel[i].x() * DT;
-				rwPos[i].y() += readVel[i].y() * DT;
-				rwPos[i].z() += readVel[i].z() * DT;
+		const int bytes = nBodies * sizeof(VAL4_TYPE) * 2;
+		std::vector<char> h_buf(bytes);
+		VAL_TYPE* const buf = (VAL_TYPE*)(h_buf.data());
+		const BodySystem p = {(VAL4_TYPE*)buf, ((VAL4_TYPE*)buf) + nBodies};
+
+		randomizeBodies(buf, 8 * nBodies); // init pos / vel data
+		if(debug) print_system(p, nBodies);
+
+		for(int i = 0; i < n_warmup + n_passes; ++i) {
+			celerity::buffer<VAL4_TYPE, 1> posBuff(p.pos, nBodies);
+			celerity::buffer<VAL4_TYPE, 1> velBuff(p.vel, nBodies);
+			queue.slow_full_sync();
+
+			const auto start = std::chrono::steady_clock::now();
+			for(int iter = 1; iter <= nIters; iter++) {
+				bodyForce(queue, posBuff, velBuff);
+
+				queue.submit([=](celerity::handler& cgh) {
+					celerity::accessor rwPos{posBuff, cgh, celerity::access::one_to_one{}, celerity::read_write};
+					celerity::accessor readVel{velBuff, cgh, celerity::access::one_to_one{}, celerity::read_only};
+					cgh.parallel_for<class BodyPosUpdate>(celerity::range<1>(nBodies), [=](celerity::item<1> i) {
+						rwPos[i].x() += readVel[i].x() * DT;
+						rwPos[i].y() += readVel[i].y() * DT;
+						rwPos[i].z() += readVel[i].z() * DT;
+					});
+				});
+			}
+			queue.slow_full_sync();
+			const auto end = std::chrono::steady_clock::now();
+
+			queue.submit([=](celerity::handler& cgh) {
+				celerity::experimental::side_effect csv(csv_obj, cgh);
+				cgh.host_task(celerity::on_master_node, [=] {
+					const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+					fprintf(*csv, "%d;%s;%d;MPI+CUDA;%s;%llu\n", total_num_devices, "NBody", nBodies, configuration, (unsigned long long)ns.count());
+					fflush(*csv);
+				});
 			});
-		});
+
+			if(i == n_warmup + n_passes - 1) {
+				queue.submit([=](celerity::handler& cgh) {
+					celerity::accessor readPos{posBuff, cgh, celerity::access::all{}, celerity::read_only_host_task};
+					celerity::accessor readVel{velBuff, cgh, celerity::access::all{}, celerity::read_only_host_task};
+					cgh.host_task(celerity::on_master_node, [=] {
+						double sum = 0.0;
+						for(int i = 0; i < nBodies; ++i) {
+							p.pos[i] = readPos[i];
+							sum += p.pos[i].x() + p.pos[i].y() + p.pos[i].z();
+							p.vel[i] = readVel[i];
+						}
+						printf("%12s result hash: %16lX, position avg: %15.8f\n", configuration, wyhash(buf, bytes, 0, _wyp), sum / nBodies);
+						if(debug) print_system(p, nBodies);
+					});
+				});
+			}
+
+			// TODO: workaround for current experimental Celerity branch, remove when no longer needed
+			queue.slow_full_sync();
+		}
 	}
 
 	queue.submit([=](celerity::handler& cgh) {
-		celerity::accessor readPos{posBuff, cgh, celerity::access::all{}, celerity::read_only_host_task};
-		celerity::accessor readVel{velBuff, cgh, celerity::access::all{}, celerity::read_only_host_task};
-		cgh.host_task(celerity::on_master_node, [=] {
-			const double totalTime = (std::chrono::steady_clock::now() - start) / 1.0s;
-			const double avgTime = totalTime / (double)(nIters - 1);
-			double sum = 0.0;
-
-			printf("Tiling %s, block size %d, data type: %s.\n", USE_TILED == 1 ? "enabled" : "disabled", BLOCK_SIZE, USE_FLOAT == 1 ? "float" : "double");
-			printf("Average rate for iterations 2 through %d: %.3f steps per second.\n", nIters, (double)(nIters - 1) / totalTime);
-			const double interactionsPerSec = 1e-9 * nBodies * nBodies / avgTime;
-			printf("%d Bodies: average %0.3f Billion Interactions / second\n", nBodies, interactionsPerSec);
-			constexpr int flopsPerInteraction = 21; // rsqrtf = 4 flops for the purpose of this rough estimation
-			printf("Estimated GLOPS/s: %10.2f\n", interactionsPerSec * flopsPerInteraction);
-			for(int i = 0; i < nBodies; ++i) {
-				p.pos[i] = readPos[i];
-				sum += p.pos[i].x() + p.pos[i].y() + p.pos[i].z();
-				p.vel[i] = readVel[i];
-			}
-			printf("Result hash: %16lX\n", wyhash(buf, bytes, 0, _wyp));
-			printf("Position avg: %15.8f\n", sum / nBodies);
-			if(debug) print_system(p, nBodies);
+		celerity::experimental::side_effect csv(csv_obj, cgh);
+		cgh.host_task(celerity::on_master_node, [=] { //
+			fclose(*csv);
 		});
 	});
 
