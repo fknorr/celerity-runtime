@@ -27,3 +27,18 @@ if(MSVC)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
   target_compile_options(synthetic_collective_benchmarks PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable)
 endif()
+
+
+# v--- NOCOMMIT partial copy-pasta
+add_executable(nbody nbody.cc)
+
+set_property(TARGET nbody PROPERTY CXX_STANDARD 17)
+set_property(TARGET nbody PROPERTY FOLDER "tests/system")
+
+add_celerity_to_target(TARGET nbody SOURCES nbody.cc)
+
+if(MSVC)
+  target_compile_options(nbody PRIVATE /D_CRT_SECURE_NO_WARNINGS /MP /W3 /bigobj)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+  target_compile_options(nbody PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable)
+endif()
