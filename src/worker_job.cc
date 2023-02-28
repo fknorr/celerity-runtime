@@ -422,8 +422,9 @@ namespace detail {
 		}
 	}
 
+	static const bool NOMERGE_disable_eager_coherence_updates = getenv("CELERITY_NO_EAGER_COHERENCE_UPDATES") != nullptr;
+
 	async_event make_buffer_region_coherent_on_device(buffer_manager& bm, const buffer_id bid, const GridRegion<3>& region, const device_id did) {
-		static const bool NOMERGE_disable_eager_coherence_updates = getenv("CELERITY_NO_EAGER_COHERENCE_UPDATES") != nullptr;
 		if(NOMERGE_disable_eager_coherence_updates) return {};
 
 		const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
@@ -560,8 +561,8 @@ namespace detail {
 				auto& r = collective_regions[nid];
 				r.region = data.source_regions[nid];
 				r.fetch = nid == m_local_nid;
-				r.update = nid != m_local_nid;
-				r.broadcast = nid != m_local_nid;
+				r.update = nid != m_local_nid || NOMERGE_disable_eager_coherence_updates;
+				r.broadcast = nid != m_local_nid || NOMERGE_disable_eager_coherence_updates;
 			}
 
 			m_buffer = collective_buffer(collective_regions, buffer_info.element_size);
