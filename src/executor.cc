@@ -64,6 +64,10 @@ namespace detail {
 		    m_metrics.device_idle.get().count(), m_metrics.starvation.get().count());
 	}
 
+	bool HACK_is_collective_job(const worker_job* job) {
+		return isa<gather_job>(job) || isa<allgather_job>(job) || isa<scatter_job>(job) || isa<broadcast_job>(job) || isa<alltoall_job>(job);
+	}
+
 	void executor::run() {
 		closure_hydrator::enable();
 		bool done = false;
@@ -115,6 +119,7 @@ namespace detail {
 
 				for(const auto& d : job_handle.dependents) {
 					assert(m_jobs.count(d) == 1);
+					if(HACK_is_collective_job(job_handle.job.get()) && HACK_is_collective_job(m_jobs.at(d).job.get())) continue;
 					m_jobs[d].unsatisfied_dependencies--;
 					if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
 				}
@@ -159,6 +164,17 @@ namespace detail {
 
 					job->start();
 					job->update();
+
+					if(HACK_is_collective_job(job)) {
+						for(const auto& d : m_jobs.at(cid).dependents) {
+							assert(m_jobs.count(d) == 1);
+							const auto d_job = m_jobs.at(d).job.get();
+							if(HACK_is_collective_job(d_job)) {
+								m_jobs[d].unsatisfied_dependencies--;
+								if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
+							}
+						}
+					}
 				}
 			}
 
