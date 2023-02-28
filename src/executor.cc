@@ -118,10 +118,12 @@ namespace detail {
 				}
 
 				for(const auto& d : job_handle.dependents) {
-					assert(m_jobs.count(d) == 1);
-					if(HACK_is_collective_job(job_handle.job.get()) && HACK_is_collective_job(m_jobs.at(d).job.get())) continue;
-					m_jobs[d].unsatisfied_dependencies--;
-					if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
+					// NOCOMMIT HACK -- assert(m_jobs.count(d) == 1);
+					if(const auto d_job = m_jobs.find(d); d_job != m_jobs.end()) {
+						if(HACK_is_collective_job(job_handle.job.get()) && HACK_is_collective_job(d_job->second.job.get())) continue;
+						m_jobs[d].unsatisfied_dependencies--;
+						if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
+					}
 				}
 
 				if(isa<device_execute_job>(job_handle.job.get())) {
