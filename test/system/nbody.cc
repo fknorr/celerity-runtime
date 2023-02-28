@@ -114,11 +114,21 @@ void bodyForce(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_
 	});
 }
 
-void bodyPos(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_buf, celerity::buffer<VAL_TYPE, 1>& vel_buf) {
+void bodyPos(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_x_buf, celerity::buffer<VAL_TYPE, 1>& pos_y_buf,
+		celerity::buffer<VAL_TYPE, 1>& pos_z_buf, celerity::buffer<VAL_TYPE, 1>& vel_x_buf, celerity::buffer<VAL_TYPE, 1>& vel_y_buf,
+		celerity::buffer<VAL_TYPE, 1>& vel_z_buf) {
 	queue.submit([=](celerity::handler& cgh) {
-		celerity::accessor pos{pos_buf, cgh, celerity::access::one_to_one{}, celerity::read_write};
-		celerity::accessor vel{vel_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
-		cgh.parallel_for<class BodyPos>(pos_buf.get_range(), [=](celerity::item<1> i) { pos[i] += vel[i] * DT; });
+		celerity::accessor pos_x{pos_x_buf, cgh, celerity::access::one_to_one{}, celerity::read_write};
+		celerity::accessor pos_y{pos_y_buf, cgh, celerity::access::one_to_one{}, celerity::read_write};
+		celerity::accessor pos_z{pos_z_buf, cgh, celerity::access::one_to_one{}, celerity::read_write};
+		celerity::accessor vel_x{vel_x_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
+		celerity::accessor vel_y{vel_y_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
+		celerity::accessor vel_z{vel_z_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
+		cgh.parallel_for<class BodyPos>(pos_x_buf.get_range(), [=](celerity::item<1> i) {
+			pos_x[i] += vel_x[i] * DT;
+			pos_y[i] += vel_y[i] * DT;
+			pos_z[i] += vel_z[i] * DT;
+		});
 	});
 }
 
@@ -181,9 +191,7 @@ int main(const int argc, const char** argv) {
 			const auto start = std::chrono::steady_clock::now();
 			for(int iter = 1; iter <= nIters; iter++) {
 				bodyForce(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
-				bodyPos(queue, pos_x_buf, vel_x_buf);
-				bodyPos(queue, pos_y_buf, vel_y_buf);
-				bodyPos(queue, pos_z_buf, vel_z_buf);
+				bodyPos(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
 			}
 			queue.slow_full_sync();
 			const auto end = std::chrono::steady_clock::now();
