@@ -585,6 +585,9 @@ namespace detail {
 	}
 
 	async_event make_buffer_region_coherent_on_device(buffer_manager& bm, const buffer_id bid, const GridRegion<3>& region, const device_id did) {
+		static const bool NOMERGE_disable_eager_coherence_updates = getenv("CELERITY_NO_EAGER_COHERENCE_UPDATES") != nullptr;
+		if (NOMERGE_disable_eager_coherence_updates) return {};
+
 		const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 		const auto mid = local_devices.get_memory_id(did);
 		const buffer_manager::buffer_lock_id lid = 1000000 + bid; // FIXME?
