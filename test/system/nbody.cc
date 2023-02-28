@@ -7,9 +7,6 @@ using namespace std::chrono_literals;
 
 #include "utils/wyhash.h"
 
-#ifndef USE_TILED
-#define USE_TILED 1
-#endif
 #ifndef USE_FLOAT
 #define USE_FLOAT 1
 #endif
@@ -23,6 +20,7 @@ using namespace std::chrono_literals;
 #endif
 
 constexpr int BLOCK_SIZE = 256;
+constexpr int WARP_SIZE = 32;
 constexpr VAL_TYPE SOFTENING = 1e-9f;
 constexpr VAL_TYPE DT = 0.01f;
 
@@ -60,33 +58,42 @@ void print_system(const BodySystem& p, int nBodies) {
 	}
 }
 
-#if USE_TILED == 1
+struct n_to_one {
+	size_t n;
+	celerity::subrange<1> operator()(const celerity::chunk<1>& ck) const { return {ck.offset[0] / n, ck.range[0] / n}; }
+};
+
 void bodyForce(celerity::distr_queue& queue, celerity::buffer<VAL4_TYPE, 1>& posBuff, celerity::buffer<VAL4_TYPE, 1>& velBuff) {
-	int nBodies = posBuff.get_range()[0];
+	const int nBodies = posBuff.get_range()[0];
 	queue.submit([=](celerity::handler& cgh) {
 		celerity::accessor readPos{posBuff, cgh, celerity::access::all{}, celerity::read_only};
-		celerity::accessor rwVel{velBuff, cgh, celerity::access::one_to_one{}, celerity::read_write};
-		celerity::local_accessor<VAL4_TYPE> localMem(BLOCK_SIZE, cgh);
-		cgh.parallel_for<class BodyForce>(celerity::nd_range<1>(nBodies, BLOCK_SIZE), [=](celerity::nd_item<1> item) {
-			const size_t i = item.get_global_id(0);
-			const size_t threadIdx = item.get_local_id(0);
-			const size_t gridDimx = item.get_group_range(0);
-			if(i < nBodies) {
+		celerity::accessor rwVel{velBuff, cgh, n_to_one{WARP_SIZE}, celerity::read_write};
+		celerity::local_accessor<VAL_TYPE> stage{3 * BLOCK_SIZE, cgh};
+		cgh.parallel_for<class BodyForce>(celerity::nd_range<1>(nBodies * WARP_SIZE, BLOCK_SIZE), [=](celerity::nd_item<1> item) {
+			const int input_tid = item.get_local_id(0);
+			const int output_item = item.get_global_id(0) / WARP_SIZE;
+			const int output_tid = item.get_local_id(0) % WARP_SIZE;
+
+			const auto out_pos = readPos[output_item];
+
+			if(output_item < nBodies) {
 				VAL_TYPE Fx = 0.0f;
 				VAL_TYPE Fy = 0.0f;
 				VAL_TYPE Fz = 0.0f;
 
-				for(size_t tile = 0; tile < gridDimx; tile++) {
-					localMem[threadIdx] = readPos[tile * BLOCK_SIZE + threadIdx];
+				for(int input_item = input_tid; input_item < nBodies; input_item += BLOCK_SIZE) {
+					stage[0 * BLOCK_SIZE + input_tid] = readPos[input_item].x();
+					stage[1 * BLOCK_SIZE + input_tid] = readPos[input_item].y();
+					stage[2 * BLOCK_SIZE + input_tid] = readPos[input_item].z();
 					celerity::group_barrier(item.get_group());
 
-					for(size_t j = 0; j < BLOCK_SIZE; j++) {
-						const VAL_TYPE dx = localMem[j].x() - readPos[i].x();
-						const VAL_TYPE dy = localMem[j].y() - readPos[i].y();
-						const VAL_TYPE dz = localMem[j].z() - readPos[i].z();
+					for(int stage_item = output_tid; stage_item < BLOCK_SIZE; stage_item += WARP_SIZE) {
+						const VAL_TYPE dx = stage[0 * BLOCK_SIZE + stage_item] - out_pos.x();
+						const VAL_TYPE dy = stage[1 * BLOCK_SIZE + stage_item] - out_pos.y();
+						const VAL_TYPE dz = stage[2 * BLOCK_SIZE + stage_item] - out_pos.z();
 						const VAL_TYPE distSqr = dx * dx + dy * dy + dz * dz + SOFTENING;
 						const VAL_TYPE invDist = r_sqrt(distSqr);
-						const VAL_TYPE invDist3 = invDist * invDist * invDist;
+						const VAL_TYPE invDist3 = -invDist * invDist * invDist;
 
 						Fx += dx * invDist3;
 						Fy += dy * invDist3;
@@ -95,54 +102,39 @@ void bodyForce(celerity::distr_queue& queue, celerity::buffer<VAL4_TYPE, 1>& pos
 					celerity::group_barrier(item.get_group());
 				}
 
-				rwVel[i].x() += DT * Fx;
-				rwVel[i].y() += DT * Fy;
-				rwVel[i].z() += DT * Fz;
+				Fx = sycl::reduce_over_group(item.get_sub_group(), Fx, sycl::plus<VAL_TYPE>());
+				Fy = sycl::reduce_over_group(item.get_sub_group(), Fy, sycl::plus<VAL_TYPE>());
+				Fz = sycl::reduce_over_group(item.get_sub_group(), Fz, sycl::plus<VAL_TYPE>());
+
+				if(output_tid == 0) {
+					rwVel[output_item].x() += DT * Fx;
+					rwVel[output_item].y() += DT * Fy;
+					rwVel[output_item].z() += DT * Fz;
+				}
 			}
 		});
 	});
 }
-#else  // USE_TILED == 1
-void bodyForce(celerity::distr_queue& queue, celerity::buffer<VAL4_TYPE, 1>& posBuff, celerity::buffer<VAL4_TYPE, 1>& velBuff) {
+
+void bodyPos(celerity::distr_queue& queue, celerity::buffer<VAL4_TYPE, 1>& posBuff, celerity::buffer<VAL4_TYPE, 1>& velBuff) {
 	int nBodies = posBuff.get_range()[0];
 	queue.submit([=](celerity::handler& cgh) {
-		celerity::accessor readPos{posBuff, cgh, celerity::access::all{}, celerity::read_only};
-		celerity::accessor rwVel{velBuff, cgh, celerity::access::one_to_one{}, celerity::read_write};
-		cgh.parallel_for<class BodyForce>(celerity::nd_range<1>(nBodies, BLOCK_SIZE), [=](celerity::nd_item<1> item) {
-			const size_t i = item.get_global_id(0);
-			if(i < nBodies) {
-				VAL_TYPE Fx = 0.0f;
-				VAL_TYPE Fy = 0.0f;
-				VAL_TYPE Fz = 0.0f;
-
-				for(size_t j = 0; j < nBodies; j++) {
-					const VAL_TYPE dx = readPos[j].x() - readPos[i].x();
-					const VAL_TYPE dy = readPos[j].y() - readPos[i].y();
-					const VAL_TYPE dz = readPos[j].z() - readPos[i].z();
-					const VAL_TYPE distSqr = dx * dx + dy * dy + dz * dz + SOFTENING;
-					const VAL_TYPE invDist = r_sqrt(distSqr);
-					const VAL_TYPE invDist3 = invDist * invDist * invDist;
-
-					Fx += dx * invDist3;
-					Fy += dy * invDist3;
-					Fz += dz * invDist3;
-				}
-
-				rwVel[i].x() += DT * Fx;
-				rwVel[i].y() += DT * Fy;
-				rwVel[i].z() += DT * Fz;
-			}
+		celerity::accessor rwPos{posBuff, cgh, celerity::access::one_to_one{}, celerity::read_write};
+		celerity::accessor readVel{velBuff, cgh, celerity::access::one_to_one{}, celerity::read_only};
+		cgh.parallel_for<class BodyPos>(celerity::range<1>(nBodies), [=](celerity::item<1> i) {
+			rwPos[i].x() += readVel[i].x() * DT;
+			rwPos[i].y() += readVel[i].y() * DT;
+			rwPos[i].z() += readVel[i].z() * DT;
 		});
 	});
 }
-#endif // USE_TILED == 1
 
 int main(const int argc, const char** argv) {
 	const int nBodies = (argc > 1) ? atoi(argv[1]) : 262144;
 	const int nIters = (argc > 2) ? atoi(argv[2]) : 10; // simulation iterations
 	const bool debug = false && nBodies <= 32;
 
-	printf("Tiling %s, block size %d, data type: %s.\n", USE_TILED == 1 ? "enabled" : "disabled", BLOCK_SIZE, USE_FLOAT == 1 ? "float" : "double");
+	printf("Block size %d, data type: %s.\n", BLOCK_SIZE, USE_FLOAT == 1 ? "float" : "double");
 
 	celerity::distr_queue queue;
 
@@ -195,16 +187,7 @@ int main(const int argc, const char** argv) {
 			const auto start = std::chrono::steady_clock::now();
 			for(int iter = 1; iter <= nIters; iter++) {
 				bodyForce(queue, posBuff, velBuff);
-
-				queue.submit([=](celerity::handler& cgh) {
-					celerity::accessor rwPos{posBuff, cgh, celerity::access::one_to_one{}, celerity::read_write};
-					celerity::accessor readVel{velBuff, cgh, celerity::access::one_to_one{}, celerity::read_only};
-					cgh.parallel_for<class BodyPosUpdate>(celerity::range<1>(nBodies), [=](celerity::item<1> i) {
-						rwPos[i].x() += readVel[i].x() * DT;
-						rwPos[i].y() += readVel[i].y() * DT;
-						rwPos[i].z() += readVel[i].z() * DT;
-					});
-				});
+				bodyPos(queue, posBuff, velBuff);
 			}
 			queue.slow_full_sync();
 			const auto end = std::chrono::steady_clock::now();
