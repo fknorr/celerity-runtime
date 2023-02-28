@@ -75,6 +75,11 @@ namespace detail {
 		case command_type::execution: m_tracy_lane.begin_phase("execution", desc, tracy::Color::ColorType::Blue); break;
 		case command_type::push: m_tracy_lane.begin_phase("push", desc, tracy::Color::ColorType::Red); break;
 		case command_type::await_push: m_tracy_lane.begin_phase("await push", desc, tracy::Color::ColorType::Yellow); break;
+		case command_type::broadcast: m_tracy_lane.begin_phase("broadcast", desc, tracy::Color::ColorType::Purple); break;
+		case command_type::scatter: m_tracy_lane.begin_phase("scatter", desc, tracy::Color::ColorType::Purple); break;
+		case command_type::gather: m_tracy_lane.begin_phase("gather", desc, tracy::Color::ColorType::Purple); break;
+		case command_type::allgather: m_tracy_lane.begin_phase("allgather", desc, tracy::Color::ColorType::Purple); break;
+		case command_type::alltoall: m_tracy_lane.begin_phase("alltoall", desc, tracy::Color::ColorType::Purple); break;
 		default: m_tracy_lane.begin_phase("other", desc, tracy::Color::ColorType::Gray); break;
 		}
 		CELERITY_DEBUG("Starting job: {}", desc);
@@ -354,173 +359,6 @@ namespace detail {
 	// ------------------------------------------------------ GATHER ------------------------------------------------------
 	// --------------------------------------------------------------------------------------------------------------------
 
-	struct contiguous_box {
-		GridBox<3> box;
-		size_t offset_bytes;
-		size_t size_bytes;
-	};
-
-	class contiguous_box_builder {
-	  public:
-		contiguous_box_builder(const size_t element_size_bytes) : m_element_size_bytes(element_size_bytes) {}
-
-		void reserve(const size_t capacity) { m_complete_boxes.reserve(capacity); }
-
-		void push_box(const GridBox<3>& new_box, bool include) {
-			if(new_box.empty()) return;
-			const auto new_box_size_bytes = new_box.area() * m_element_size_bytes;
-			if(m_ongoing_merge) {
-				assert(m_ongoing_merge->box.area() > 0);
-				if(include && GridBox<3>::areFusable<0>(m_ongoing_merge->box, new_box)) {
-					m_ongoing_merge->box = GridBox<3>::fuse<0>(m_ongoing_merge->box, new_box);
-					m_ongoing_merge->size_bytes += new_box_size_bytes;
-				} else {
-					commit();
-					if(include) { begin_new_merge(new_box); }
-				}
-			} else if(include) {
-				begin_new_merge(new_box);
-			}
-			m_current_offset_bytes += new_box_size_bytes;
-		}
-
-		void push_padding(const size_t padding_bytes) {
-			if(padding_bytes == 0) return;
-			if(m_ongoing_merge) { commit(); }
-			m_current_offset_bytes += padding_bytes;
-		}
-
-		std::vector<contiguous_box> finish([[maybe_unused]] const size_t expected_total_size_bytes) {
-			if(m_ongoing_merge) { commit(); }
-			assert(m_current_offset_bytes == expected_total_size_bytes);
-			m_current_offset_bytes = 0;
-			return std::move(m_complete_boxes);
-		}
-
-	  private:
-		size_t m_element_size_bytes;
-		std::vector<contiguous_box> m_complete_boxes;
-		std::optional<contiguous_box> m_ongoing_merge;
-		size_t m_current_offset_bytes = 0;
-
-		void commit() {
-			assert(m_ongoing_merge);
-			m_complete_boxes.push_back(*m_ongoing_merge);
-			m_ongoing_merge.reset();
-		}
-
-		void begin_new_merge(const GridBox<3>& new_box) {
-			assert(!m_ongoing_merge);
-			const auto new_box_size_bytes = new_box.area() * m_element_size_bytes;
-			m_ongoing_merge = contiguous_box{new_box, m_current_offset_bytes, new_box_size_bytes};
-		}
-	};
-
-	class collective_buffer {
-	  public:
-		struct region_spec {
-			GridRegion<3> region;
-			bool fetch = false;     // will be either communicated to other ranks or broadcast locally (local get_buffer_data)
-			bool update = false;    // will invalidate data present on all memories (local set_buffer_data OR broadcast_immediately)
-			bool broadcast = false; // will be consumed by all local devices (local broadcast_immediately, implies `update`)
-		};
-
-		collective_buffer() = default;
-
-		collective_buffer(const std::vector<region_spec>& peer_regions, const size_t element_size_bytes)
-		    : m_chunk_byte_sizes(peer_regions.size()), m_chunk_byte_offsets(peer_regions.size()) {
-			ZoneScopedN("alloc collective buffer");
-
-			size_t current_offset_bytes = 0;
-			contiguous_box_builder fetch_builder(element_size_bytes);
-			contiguous_box_builder update_builder(element_size_bytes);
-			contiguous_box_builder broadcast_builder(element_size_bytes);
-
-			for(size_t i = 0; i < peer_regions.size(); ++i) {
-				const auto& r = peer_regions[i];
-				size_t chunk_size_bytes = 0;
-				if(r.fetch | r.update | r.broadcast) {
-					r.region.scanByBoxes([&](const GridBox<3>& box) {
-						fetch_builder.push_box(box, r.fetch);
-						update_builder.push_box(box, r.update);
-						broadcast_builder.push_box(box, r.broadcast);
-					});
-					chunk_size_bytes = r.region.area() * element_size_bytes;
-				}
-				m_chunk_byte_offsets[i] = static_cast<int>(current_offset_bytes);
-				m_chunk_byte_sizes[i] = static_cast<int>(chunk_size_bytes);
-				current_offset_bytes += chunk_size_bytes;
-				m_broadcast_covers_all_updates &= !r.update | r.broadcast;
-			}
-
-			m_fetch_boxes = fetch_builder.finish(current_offset_bytes);
-			m_update_boxes = update_builder.finish(current_offset_bytes);
-			m_broadcast_boxes = broadcast_builder.finish(current_offset_bytes);
-
-			m_payload_size_bytes = current_offset_bytes;
-			m_payload = make_uninitialized_payload<std::byte>(m_payload_size_bytes);
-
-			if(::spdlog::should_log(spdlog::level::trace)) {
-				std::string log;
-				log += "peer regions:";
-				for(auto& r : peer_regions) {
-					log += fmt::format("\n    {} (", r.region);
-					if(r.fetch) log += "fetch ";
-					if(r.update) log += "update ";
-					if(r.broadcast) log += "broadcast";
-					log += ")";
-				}
-				log += "\nfetch boxes:";
-				for(auto& b : m_fetch_boxes) {
-					log += fmt::format("\n    {} @{} +{}", b.box, b.offset_bytes, b.size_bytes);
-				}
-				log += "\nupdate boxes:";
-				for(auto& b : m_update_boxes) {
-					log += fmt::format("\n    {} @{} +{}", b.box, b.offset_bytes, b.size_bytes);
-				}
-				log += "\nbroadcast boxes:";
-				for(auto& b : m_broadcast_boxes) {
-					log += fmt::format("\n    {} @{} +{}", b.box, b.offset_bytes, b.size_bytes);
-				}
-				log += fmt::format("\npayload: {} bytes", m_payload_size_bytes);
-				CELERITY_TRACE("collective buffer\n{}", log);
-			}
-		}
-
-		const auto& get_fetch_boxes() const { return m_fetch_boxes; }
-		const auto& get_update_boxes() const { return m_update_boxes; }
-		const auto& get_broadcast_boxes() const { return m_broadcast_boxes; }
-		const auto& get_chunk_byte_sizes() const { return m_chunk_byte_sizes; }
-		const auto& get_chunk_byte_offsets() const { return m_chunk_byte_offsets; }
-		size_t get_payload_size_bytes() const { return m_payload_size_bytes; }
-		void* get_payload(size_t offset_bytes = 0) { return static_cast<std::byte*>(m_payload.get_pointer()) + offset_bytes; }
-		bool payload_is_single_contiguous_update() const { return m_update_boxes.size() == 1 && !has_multiple_boxes(); }
-		bool broadcast_covers_all_updates() const { return m_broadcast_covers_all_updates; }
-		unique_payload_ptr take_payload() { return std::move(m_payload); };
-
-	  private:
-		std::vector<contiguous_box> m_fetch_boxes;
-		std::vector<contiguous_box> m_update_boxes;
-		std::vector<contiguous_box> m_broadcast_boxes;
-		std::vector<int> m_chunk_byte_sizes;
-		std::vector<int> m_chunk_byte_offsets;
-		size_t m_payload_size_bytes = 0;
-		unique_payload_ptr m_payload;
-		bool m_broadcast_covers_all_updates = true;
-
-		bool has_multiple_boxes() const {
-			const GridBox<3>* single_box = nullptr;
-			for(const auto vec : {&m_fetch_boxes, &m_update_boxes, &m_broadcast_boxes}) {
-				if(vec->size() > 1) return true;
-				if(vec->size() == 1) {
-					if(single_box && vec->front().box != *single_box) return true;
-					single_box = &vec->front().box;
-				}
-			}
-			return false;
-		}
-	};
-
 	void fetch_collective_input(buffer_manager& bm, const buffer_id bid, collective_buffer& buffer) {
 		ZoneScopedN("fetch input");
 
@@ -586,7 +424,7 @@ namespace detail {
 
 	async_event make_buffer_region_coherent_on_device(buffer_manager& bm, const buffer_id bid, const GridRegion<3>& region, const device_id did) {
 		static const bool NOMERGE_disable_eager_coherence_updates = getenv("CELERITY_NO_EAGER_COHERENCE_UPDATES") != nullptr;
-		if (NOMERGE_disable_eager_coherence_updates) return {};
+		if(NOMERGE_disable_eager_coherence_updates) return {};
 
 		const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 		const auto mid = local_devices.get_memory_id(did);
@@ -614,69 +452,93 @@ namespace detail {
 	}
 
 	bool gather_job::execute(const command_pkg& pkg) {
-		ZoneScoped;
-
 		const auto data = std::get<gather_data>(pkg.data);
-		assert(data.source_regions[data.root].empty());
-
-		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
-
 		const bool receives_data = m_local_nid == data.root;
 		const bool sends_data = !receives_data;
 
-		collective_buffer send_buffer;
-		if(sends_data) {
-			collective_buffer::region_spec region_spec;
-			region_spec.region = data.source_regions[m_local_nid];
-			region_spec.fetch = true;
-			region_spec.update = false;
-			region_spec.broadcast = false;
-			send_buffer = collective_buffer({region_spec}, buffer_info.element_size);
-			fetch_collective_input(m_buffer_mngr, data.bid, send_buffer);
-		}
+		if(!m_started) {
+			ZoneScoped;
+			assert(data.source_regions[data.root].empty());
 
-		collective_buffer recv_buffer;
-		if(receives_data) {
-			std::vector<collective_buffer::region_spec> collective_regions(data.source_regions.size());
-			for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
-				auto& r = collective_regions[nid];
-				r.region = data.source_regions[nid];
-				r.fetch = false;
-				r.update = true; // usually consumed only on host or one device
-				r.broadcast = false;
+			const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
+
+			if(sends_data) {
+				collective_buffer::region_spec region_spec;
+				region_spec.region = data.source_regions[m_local_nid];
+				region_spec.fetch = true;
+				region_spec.update = false;
+				region_spec.broadcast = false;
+				m_send_buffer = collective_buffer({region_spec}, buffer_info.element_size);
+				fetch_collective_input(m_buffer_mngr, data.bid, m_send_buffer);
 			}
-			recv_buffer = collective_buffer(collective_regions, buffer_info.element_size);
-		}
 
-		{
-			ZoneScopedN("Igatherv");
-			MPI_Request request;
-			CELERITY_TRACE("MPI_Igatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD, &request)",
-			    send_buffer.get_payload_size_bytes(), send_buffer.get_payload_size_bytes(), recv_buffer.get_payload_size_bytes(),
-			    fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "), data.root);
-			MPI_Igatherv(send_buffer.get_payload(), send_buffer.get_payload_size_bytes(), MPI_BYTE, recv_buffer.get_payload(),
-			    recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD,
-			    &request);
+			if(receives_data) {
+				std::vector<collective_buffer::region_spec> collective_regions(data.source_regions.size());
+				for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
+					auto& r = collective_regions[nid];
+					r.region = data.source_regions[nid];
+					r.fetch = false;
+					r.update = true; // usually consumed only on host or one device
+					r.broadcast = false;
+				}
+				m_recv_buffer = collective_buffer(collective_regions, buffer_info.element_size);
+			}
+
+			{
+#if TRACY_ENABLE
+				ZoneScopedN("Igatherv");
+				const auto req_msg =
+				    fmt::format("B{}, {} -> {} bytes", data.bid, m_send_buffer.get_payload_size_bytes(), m_recv_buffer.get_payload_size_bytes());
+				ZoneText(req_msg.data(), req_msg.size());
+#endif
+				CELERITY_TRACE("MPI_Igatherv([buffer of size {}], {}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, {}, MPI_COMM_WORLD, &request)",
+				    m_send_buffer.get_payload_size_bytes(), m_send_buffer.get_payload_size_bytes(), m_recv_buffer.get_payload_size_bytes(),
+				    fmt::join(m_recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(m_recv_buffer.get_chunk_byte_offsets(), ", "), data.root);
+				MPI_Igatherv(m_send_buffer.get_payload(), m_send_buffer.get_payload_size_bytes(), MPI_BYTE, m_recv_buffer.get_payload(),
+				    m_recv_buffer.get_chunk_byte_sizes().data(), m_recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, static_cast<int>(data.root),
+				    MPI_COMM_WORLD, &m_request);
+			}
 
 			// Overlap async MPI_Igatherv with a gather to device 0
 			// TODO this is suboptimal if the gathered data is to be used in a (master-node) host task instead of an unsplittable device task.
 			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 			if(!data.local_coherence_region.empty() && local_devices.num_compute_devices() > 1) {
 				ZoneScopedN("d2d gather");
-				auto pending_transfers = make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_coherence_region, device_id(0));
-				pending_transfers.wait();
+				m_d2d_gather = make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_coherence_region, device_id(0));
 			}
 
-			MPI_Wait(&request, MPI_STATUS_IGNORE);
+			m_started = true;
 		}
 
-		if(receives_data) commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer));
+		if(m_request != MPI_REQUEST_NULL) {
+			int mpi_done;
+			MPI_Test(&m_request, &mpi_done, MPI_STATUS_IGNORE);
+			if(mpi_done) {
+#if TRACY_ENABLE
+				const std::string_view msg_done = "Igatherv complete";
+				TracyMessage(msg_done.data(), msg_done.size());
+#endif
+				m_request = MPI_REQUEST_NULL;
+			}
+		}
 
-		return true;
+		if(m_d2d_gather.has_value() && m_d2d_gather->is_done()) {
+#if TRACY_ENABLE
+			const std::string_view msg_done = "d2d gather complete";
+			TracyMessage(msg_done.data(), msg_done.size());
+#endif
+			m_d2d_gather.reset();
+		}
+
+		if(m_request == MPI_REQUEST_NULL && !m_d2d_gather.has_value()) {
+			if(receives_data) commit_collective_update(m_buffer_mngr, data.bid, std::move(m_recv_buffer));
+			return true;
+		} else {
+			return false;
+		}
 	}
 
-	allgather_job::allgather_job(const command_pkg& pkg, buffer_manager& bm, node_id nid, size_t num_local_devices)
-	    : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid), m_num_local_devices(num_local_devices) {
+	allgather_job::allgather_job(const command_pkg& pkg, buffer_manager& bm, node_id nid) : worker_job(pkg), m_buffer_mngr(bm), m_local_nid(nid) {
 		assert(std::holds_alternative<allgather_data>(pkg.data));
 	}
 
@@ -687,31 +549,36 @@ namespace detail {
 
 
 	bool allgather_job::execute(const command_pkg& pkg) {
-		ZoneScoped;
 		const auto data = std::get<allgather_data>(pkg.data);
 
-		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
+		if(!m_started) {
+			ZoneScoped;
+			const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-		std::vector<collective_buffer::region_spec> collective_regions(data.source_regions.size());
-		for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
-			auto& r = collective_regions[nid];
-			r.region = data.source_regions[nid];
-			r.fetch = nid == m_local_nid;
-			r.update = nid != m_local_nid;
-			r.broadcast = nid != m_local_nid;
-		}
+			std::vector<collective_buffer::region_spec> collective_regions(data.source_regions.size());
+			for(node_id nid = 0; nid < data.source_regions.size(); ++nid) {
+				auto& r = collective_regions[nid];
+				r.region = data.source_regions[nid];
+				r.fetch = nid == m_local_nid;
+				r.update = nid != m_local_nid;
+				r.broadcast = nid != m_local_nid;
+			}
 
-		collective_buffer buffer(collective_regions, buffer_info.element_size);
+			m_buffer = collective_buffer(collective_regions, buffer_info.element_size);
 
-		fetch_collective_input(m_buffer_mngr, data.bid, buffer);
+			fetch_collective_input(m_buffer_mngr, data.bid, m_buffer);
 
-		{
-			ZoneScopedN("Iallgatherv");
-			MPI_Request request;
-			MPI_Iallgatherv(MPI_IN_PLACE, 0, MPI_BYTE, buffer.get_payload(), buffer.get_chunk_byte_sizes().data(), buffer.get_chunk_byte_offsets().data(),
-			    MPI_BYTE, MPI_COMM_WORLD, &request);
-			CELERITY_TRACE("MPI_Iallgatherv(MPI_IN_PLACE, 0, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD, &request)",
-			    buffer.get_payload_size_bytes(), fmt::join(buffer.get_chunk_byte_sizes(), ", "), fmt::join(buffer.get_chunk_byte_offsets(), ", "));
+			{
+#if TRACY_ENABLE
+				ZoneScopedN("Iallgatherv");
+				const auto req_msg = fmt::format("B{}, {} bytes", data.bid, m_buffer.get_payload_size_bytes());
+				ZoneText(req_msg.data(), req_msg.size());
+#endif
+				CELERITY_TRACE("MPI_Iallgatherv(MPI_IN_PLACE, 0, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD, &request)",
+				    m_buffer.get_payload_size_bytes(), fmt::join(m_buffer.get_chunk_byte_sizes(), ", "), fmt::join(m_buffer.get_chunk_byte_offsets(), ", "));
+				MPI_Iallgatherv(MPI_IN_PLACE, 0, MPI_BYTE, m_buffer.get_payload(), m_buffer.get_chunk_byte_sizes().data(),
+				    m_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, MPI_COMM_WORLD, &m_request);
+			}
 
 			// Overlap async MPI_Iallgatherv with an allgather between local devices
 			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
@@ -721,15 +588,38 @@ namespace detail {
 				for(device_id did = 0; did < local_devices.num_compute_devices(); ++did) {
 					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_coherence_region, did));
 				}
-				pending_transfers.wait();
+				m_d2d_allgather = std::move(pending_transfers);
 			}
 
-			MPI_Wait(&request, MPI_STATUS_IGNORE);
+			m_started = true;
 		}
 
-		commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer));
+		if(m_request != MPI_REQUEST_NULL) {
+			int mpi_done;
+			MPI_Test(&m_request, &mpi_done, MPI_STATUS_IGNORE);
+			if(mpi_done) {
+#if TRACY_ENABLE
+				const std::string_view msg_done = "Iallgatherv complete";
+				TracyMessage(msg_done.data(), msg_done.size());
+#endif
+				m_request = MPI_REQUEST_NULL;
+			}
+		}
 
-		return true;
+		if(m_d2d_allgather.has_value() && m_d2d_allgather->is_done()) {
+#if TRACY_ENABLE
+			const std::string_view msg_done = "d2d allgather complete";
+			TracyMessage(msg_done.data(), msg_done.size());
+#endif
+			m_d2d_allgather.reset();
+		}
+
+		if(m_request == MPI_REQUEST_NULL && !m_d2d_allgather.has_value()) {
+			commit_collective_update(m_buffer_mngr, data.bid, std::move(m_buffer));
+			return true;
+		} else {
+			return false;
+		}
 	}
 
 	// --------------------------------------------------------------------------------------------------------------------
@@ -747,27 +637,31 @@ namespace detail {
 
 	bool broadcast_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<broadcast_data>(pkg.data);
-
-		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
-
 		const bool sends_data = data.root == m_local_nid;
 		const bool receives_data = !sends_data;
 
-		collective_buffer::region_spec region_spec;
-		region_spec.region = data.region;
-		region_spec.fetch = sends_data;
-		region_spec.update = region_spec.broadcast = receives_data;
+		if(!m_started) {
+			const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-		collective_buffer buffer({std::move(region_spec)}, buffer_info.element_size);
+			collective_buffer::region_spec region_spec;
+			region_spec.region = data.region;
+			region_spec.fetch = sends_data;
+			region_spec.update = region_spec.broadcast = receives_data;
 
-		if(sends_data) { fetch_collective_input(m_buffer_mngr, data.bid, buffer); }
+			m_buffer = collective_buffer({std::move(region_spec)}, buffer_info.element_size);
 
-		{
-			ZoneScopedN("Ibcast");
-			CELERITY_TRACE("MPI_Ibcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD, &request)", buffer.get_payload_size_bytes(), data.root);
-			MPI_Request request;
-			MPI_Ibcast(
-			    buffer.get_payload(), static_cast<int>(buffer.get_payload_size_bytes()), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD, &request);
+			if(sends_data) { fetch_collective_input(m_buffer_mngr, data.bid, m_buffer); }
+
+			{
+#if TRACY_ENABLE
+				ZoneScopedN("Ibcast");
+				const auto req_msg = fmt::format("B{}, {} bytes", data.bid, m_buffer.get_payload_size_bytes());
+				ZoneText(req_msg.data(), req_msg.size());
+#endif
+				CELERITY_TRACE("MPI_Ibcast([buffer of size {0}], {0}, MPI_BYTE, {1}, MPI_COMM_WORLD, &request)", m_buffer.get_payload_size_bytes(), data.root);
+				MPI_Ibcast(m_buffer.get_payload(), static_cast<int>(m_buffer.get_payload_size_bytes()), MPI_BYTE, static_cast<int>(data.root), MPI_COMM_WORLD,
+				    &m_request);
+			}
 
 			if(sends_data) {
 				// Overlap async MPI_Ibcast with a broadcast to sibling devices
@@ -777,15 +671,38 @@ namespace detail {
 				for(device_id did = 0; did < local_devices.num_compute_devices(); ++did) {
 					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.region, did));
 				}
-				pending_transfers.wait();
+				m_d2d_broadcast = std::move(pending_transfers);
 			}
 
-			MPI_Wait(&request, MPI_STATUS_IGNORE);
+			m_started = true;
 		}
 
-		if(receives_data) { commit_collective_update(m_buffer_mngr, data.bid, std::move(buffer)); }
+		if(m_request != MPI_REQUEST_NULL) {
+			int mpi_done;
+			MPI_Test(&m_request, &mpi_done, MPI_STATUS_IGNORE);
+			if(mpi_done) {
+#if TRACY_ENABLE
+				const std::string_view msg_done = "Ibcast complete";
+				TracyMessage(msg_done.data(), msg_done.size());
+#endif
+				m_request = MPI_REQUEST_NULL;
+			}
+		}
 
-		return true;
+		if(m_d2d_broadcast.has_value() && m_d2d_broadcast->is_done()) {
+#if TRACY_ENABLE
+			const std::string_view msg_done = "d2d broadcast complete";
+			TracyMessage(msg_done.data(), msg_done.size());
+#endif
+			m_d2d_broadcast.reset();
+		}
+
+		if(m_request == MPI_REQUEST_NULL && !m_d2d_broadcast.has_value()) {
+			if(receives_data) commit_collective_update(m_buffer_mngr, data.bid, std::move(m_buffer));
+			return true;
+		} else {
+			return false;
+		}
 	}
 
 	// --------------------------------------------------------------------------------------------------------------------
@@ -807,47 +724,51 @@ namespace detail {
 
 	bool scatter_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<scatter_data>(pkg.data);
-
-		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
-
 		const bool sends_data = data.root == m_local_nid;
 		const bool receives_data = !data.dest_regions[m_local_nid].empty();
-		assert(!receives_data || !sends_data);
 
-		collective_buffer send_buffer;
-		if(sends_data) {
-			std::vector<collective_buffer::region_spec> send_regions(data.dest_regions.size());
-			for(node_id nid = 0; nid < data.dest_regions.size(); ++nid) {
-				auto& r = send_regions[nid];
-				r.region = data.dest_regions[nid];
-				r.fetch = true;
-				r.update = false;
-				r.broadcast = false; // usually consumed only on host or a single device
+		if(!m_started) {
+			const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
+
+			assert(!receives_data || !sends_data);
+
+			if(sends_data) {
+				std::vector<collective_buffer::region_spec> send_regions(data.dest_regions.size());
+				for(node_id nid = 0; nid < data.dest_regions.size(); ++nid) {
+					auto& r = send_regions[nid];
+					r.region = data.dest_regions[nid];
+					r.fetch = true;
+					r.update = false;
+					r.broadcast = false; // usually consumed only on host or a single device
+				}
+				m_send_buffer = collective_buffer(send_regions, buffer_info.element_size);
+				fetch_collective_input(m_buffer_mngr, data.bid, m_send_buffer);
 			}
-			send_buffer = collective_buffer(send_regions, buffer_info.element_size);
-			fetch_collective_input(m_buffer_mngr, data.bid, send_buffer);
-		}
 
-		collective_buffer recv_buffer;
-		if(receives_data) {
-			collective_buffer::region_spec recv_region;
-			recv_region.region = data.dest_regions[m_local_nid];
-			recv_region.fetch = false;
-			recv_region.update = true;
-			recv_region.broadcast = false;
-			recv_buffer = collective_buffer({recv_region}, buffer_info.element_size);
-		}
+			if(receives_data) {
+				collective_buffer::region_spec recv_region;
+				recv_region.region = data.dest_regions[m_local_nid];
+				recv_region.fetch = false;
+				recv_region.update = true;
+				recv_region.broadcast = false;
+				m_recv_buffer = collective_buffer({recv_region}, buffer_info.element_size);
+			}
 
-		{
-			ZoneScopedN("Iscatterv");
-			const auto root = static_cast<int>(data.root);
-			MPI_Request request;
-			CELERITY_TRACE("MPI_Iscatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD, &request)",
-			    send_buffer.get_payload_size_bytes(), fmt::join(send_buffer.get_chunk_byte_sizes(), ", "),
-			    fmt::join(send_buffer.get_chunk_byte_offsets(), ", "), static_cast<int>(recv_buffer.get_payload_size_bytes()),
-			    recv_buffer.get_payload_size_bytes(), root);
-			MPI_Iscatterv(send_buffer.get_payload(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
-			    recv_buffer.get_payload(), recv_buffer.get_payload_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD, &request);
+			{
+#if TRACY_ENABLE
+				ZoneScopedN("Iscatterv");
+				const auto req_msg =
+				    fmt::format("B{}, {} -> {} bytes", data.bid, m_send_buffer.get_payload_size_bytes(), m_recv_buffer.get_payload_size_bytes());
+				ZoneText(req_msg.data(), req_msg.size());
+#endif
+				const auto root = static_cast<int>(data.root);
+				CELERITY_TRACE("MPI_Iscatterv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {}, MPI_BYTE, {}, MPI_COMM_WORLD, &request)",
+				    m_send_buffer.get_payload_size_bytes(), fmt::join(m_send_buffer.get_chunk_byte_sizes(), ", "),
+				    fmt::join(m_send_buffer.get_chunk_byte_offsets(), ", "), static_cast<int>(m_recv_buffer.get_payload_size_bytes()),
+				    m_recv_buffer.get_payload_size_bytes(), root);
+				MPI_Iscatterv(m_send_buffer.get_payload(), m_send_buffer.get_chunk_byte_sizes().data(), m_send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
+				    m_recv_buffer.get_payload(), m_recv_buffer.get_payload_size_bytes(), MPI_BYTE, root, MPI_COMM_WORLD, &m_request);
+			}
 
 			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 			assert(local_devices.num_compute_devices() == data.local_device_coherence_regions.size());
@@ -858,15 +779,38 @@ namespace detail {
 				for(device_id did = 0; did < data.local_device_coherence_regions.size(); ++did) {
 					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_device_coherence_regions[did], did));
 				}
-				pending_transfers.wait();
+				m_d2d_scatter = std::move(pending_transfers);
 			}
 
-			MPI_Wait(&request, MPI_STATUS_IGNORE);
+			m_started = true;
 		}
 
-		if(receives_data) { commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer)); }
+		if(m_request != MPI_REQUEST_NULL) {
+			int mpi_done;
+			MPI_Test(&m_request, &mpi_done, MPI_STATUS_IGNORE);
+			if(mpi_done) {
+#if TRACY_ENABLE
+				const std::string_view msg_done = "Iscatterv complete";
+				TracyMessage(msg_done.data(), msg_done.size());
+#endif
+				m_request = MPI_REQUEST_NULL;
+			}
+		}
 
-		return true;
+		if(m_d2d_scatter.has_value() && m_d2d_scatter->is_done()) {
+#if TRACY_ENABLE
+			const std::string_view msg_done = "d2d scatter complete";
+			TracyMessage(msg_done.data(), msg_done.size());
+#endif
+			m_d2d_scatter.reset();
+		}
+
+		if(m_request == MPI_REQUEST_NULL && !m_d2d_scatter.has_value()) {
+			if(receives_data) commit_collective_update(m_buffer_mngr, data.bid, std::move(m_recv_buffer));
+			return true;
+		} else {
+			return false;
+		}
 	}
 
 	// --------------------------------------------------------------------------------------------------------------------
@@ -885,59 +829,89 @@ namespace detail {
 	bool alltoall_job::execute(const command_pkg& pkg) {
 		const auto data = std::get<alltoall_data>(pkg.data);
 
-		const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
+		if(!m_started) {
+			const auto buffer_info = m_buffer_mngr.get_buffer_info(data.bid);
 
-		std::vector<collective_buffer::region_spec> collective_regions(data.send_regions.size());
-		for(node_id nid = 0; nid < data.send_regions.size(); ++nid) {
-			auto& r = collective_regions[nid];
-			r.region = data.send_regions[nid];
-			r.fetch = true;
-			r.update = r.broadcast = false;
-		}
-		collective_buffer send_buffer(collective_regions, buffer_info.element_size);
+			std::vector<collective_buffer::region_spec> collective_regions(data.send_regions.size());
+			for(node_id nid = 0; nid < data.send_regions.size(); ++nid) {
+				auto& r = collective_regions[nid];
+				r.region = data.send_regions[nid];
+				r.fetch = true;
+				r.update = r.broadcast = false;
+			}
+			m_send_buffer = collective_buffer(collective_regions, buffer_info.element_size);
 
-		fetch_collective_input(m_buffer_mngr, data.bid, send_buffer);
+			fetch_collective_input(m_buffer_mngr, data.bid, m_send_buffer);
 
-		collective_regions.resize(data.recv_regions.size());
-		for(node_id nid = 0; nid < data.recv_regions.size(); ++nid) {
-			auto& r = collective_regions[nid];
-			r.region = data.recv_regions[nid];
-			r.fetch = false;
-			r.update = true;
-			r.broadcast = false;
-		}
-		collective_buffer recv_buffer(collective_regions, buffer_info.element_size);
+			collective_regions.resize(data.recv_regions.size());
+			for(node_id nid = 0; nid < data.recv_regions.size(); ++nid) {
+				auto& r = collective_regions[nid];
+				r.region = data.recv_regions[nid];
+				r.fetch = false;
+				r.update = true;
+				r.broadcast = false;
+			}
+			m_recv_buffer = collective_buffer(collective_regions, buffer_info.element_size);
 
-		{
-			ZoneScopedN("Ialltoallv");
-			CELERITY_TRACE(
-			    "MPI_Ialltoallv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD, &request)",
-			    send_buffer.get_payload_size_bytes(), fmt::join(send_buffer.get_chunk_byte_sizes(), ", "),
-			    fmt::join(send_buffer.get_chunk_byte_offsets(), ", "), recv_buffer.get_payload_size_bytes(),
-			    fmt::join(recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(recv_buffer.get_chunk_byte_offsets(), ", "));
-			MPI_Request request;
-			MPI_Ialltoallv(send_buffer.get_payload(), send_buffer.get_chunk_byte_sizes().data(), send_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
-			    recv_buffer.get_payload(), recv_buffer.get_chunk_byte_sizes().data(), recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE, MPI_COMM_WORLD,
-			    &request);
+			{
+#if TRACY_ENABLE
+				ZoneScopedN("Ialltoallv");
+				const auto req_msg =
+				    fmt::format("B{}, {} -> {} bytes", data.bid, m_send_buffer.get_payload_size_bytes(), m_recv_buffer.get_payload_size_bytes());
+				ZoneText(req_msg.data(), req_msg.size());
+#endif
+				CELERITY_TRACE(
+				    "MPI_Ialltoallv([buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, [buffer of size {}], {{{}}}, {{{}}}, MPI_BYTE, MPI_COMM_WORLD, &request)",
+				    m_send_buffer.get_payload_size_bytes(), fmt::join(m_send_buffer.get_chunk_byte_sizes(), ", "),
+				    fmt::join(m_send_buffer.get_chunk_byte_offsets(), ", "), m_recv_buffer.get_payload_size_bytes(),
+				    fmt::join(m_recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(m_recv_buffer.get_chunk_byte_offsets(), ", "));
+				MPI_Request request;
+				MPI_Ialltoallv(m_send_buffer.get_payload(), m_send_buffer.get_chunk_byte_sizes().data(), m_send_buffer.get_chunk_byte_offsets().data(),
+				    MPI_BYTE, m_recv_buffer.get_payload(), m_recv_buffer.get_chunk_byte_sizes().data(), m_recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
+				    MPI_COMM_WORLD, &request);
+			}
 
 			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
 			assert(local_devices.num_compute_devices() == data.local_device_coherence_regions.size());
 			if(data.local_device_coherence_regions.size() > 1) {
-				// Overlap async MPI_Ibcast with a broadcast to sibling devices
+				// Overlap async MPI_Ialltoallv with a broadcast to sibling devices
 				ZoneScopedN("d2d alltoall");
 				async_event pending_transfers;
 				for(device_id did = 0; did < data.local_device_coherence_regions.size(); ++did) {
 					pending_transfers.merge(make_buffer_region_coherent_on_device(m_buffer_mngr, data.bid, data.local_device_coherence_regions[did], did));
 				}
-				pending_transfers.wait();
+				m_d2d_alltoall = std::move(pending_transfers);
 			}
 
-			MPI_Wait(&request, MPI_STATUS_IGNORE);
+			m_started = true;
 		}
 
-		commit_collective_update(m_buffer_mngr, data.bid, std::move(recv_buffer));
+		if(m_request != MPI_REQUEST_NULL) {
+			int mpi_done;
+			MPI_Test(&m_request, &mpi_done, MPI_STATUS_IGNORE);
+			if(mpi_done) {
+#if TRACY_ENABLE
+				const std::string_view msg_done = "Ialltoallv complete";
+				TracyMessage(msg_done.data(), msg_done.size());
+#endif
+				m_request = MPI_REQUEST_NULL;
+			}
+		}
 
-		return true;
+		if(m_d2d_alltoall.has_value() && m_d2d_alltoall->is_done()) {
+#if TRACY_ENABLE
+			const std::string_view msg_done = "d2d alltoall complete";
+			TracyMessage(msg_done.data(), msg_done.size());
+#endif
+			m_d2d_alltoall.reset();
+		}
+
+		if(m_request == MPI_REQUEST_NULL && !m_d2d_alltoall.has_value()) {
+			commit_collective_update(m_buffer_mngr, data.bid, std::move(m_recv_buffer));
+			return true;
+		} else {
+			return false;
+		}
 	}
 
 } // namespace detail
