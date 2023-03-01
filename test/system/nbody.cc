@@ -65,26 +65,36 @@ void bodyForce(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_
 		celerity::accessor vel_y{vel_y_buf, cgh, n_to_one{WARP_SIZE}, celerity::read_write};
 		celerity::accessor vel_z{vel_z_buf, cgh, n_to_one{WARP_SIZE}, celerity::read_write};
 		celerity::local_accessor<VAL_TYPE[BLOCK_SIZE]> stage(3, cgh);
-		cgh.parallel_for<class BodyForce>(celerity::nd_range<1>(n_bodies * WARP_SIZE, BLOCK_SIZE), [=](celerity::nd_item<1> item) {
+		const auto group_range = (n_bodies * WARP_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		cgh.parallel_for<class BodyForce>(celerity::nd_range<1>(group_range * BLOCK_SIZE, BLOCK_SIZE), [=](celerity::nd_item<1> item) {
 			const int input_tid = item.get_local_id(0);
 			const int output_item = item.get_global_id(0) / WARP_SIZE;
 			const int output_tid = item.get_local_id(0) % WARP_SIZE;
 
-			const auto out_pos_x = pos_x[output_item];
-			const auto out_pos_y = pos_y[output_item];
-			const auto out_pos_z = pos_z[output_item];
+			VAL_TYPE out_pos_x;
+			VAL_TYPE out_pos_y;
+			VAL_TYPE out_pos_z;
+			VAL_TYPE force_x = 0.0f;
+			VAL_TYPE force_y = 0.0f;
+			VAL_TYPE force_z = 0.0f;
 
 			if(output_item < n_bodies) {
-				VAL_TYPE force_x = 0.0f;
-				VAL_TYPE force_y = 0.0f;
-				VAL_TYPE force_z = 0.0f;
+				out_pos_x = pos_x[output_item];
+				out_pos_y = pos_y[output_item];
+				out_pos_z = pos_z[output_item];
+			}
 
-				for(int input_item = input_tid; input_item < n_bodies; input_item += BLOCK_SIZE) {
+			for(int input_offset = 0; input_offset < n_bodies; input_offset += BLOCK_SIZE) {
+				const int input_item = input_tid + input_offset;
+
+				if(input_item < n_bodies) {
 					stage[0][input_tid] = pos_x[input_item];
 					stage[1][input_tid] = pos_y[input_item];
 					stage[2][input_tid] = pos_z[input_item];
-					celerity::group_barrier(item.get_group());
+				}
+				celerity::group_barrier(item.get_group());
 
+				if(input_item < n_bodies) {
 					for(int stage_item = output_tid; stage_item < BLOCK_SIZE; stage_item += WARP_SIZE) {
 						const VAL_TYPE dx = stage[0][stage_item] - out_pos_x;
 						const VAL_TYPE dy = stage[1][stage_item] - out_pos_y;
@@ -97,26 +107,26 @@ void bodyForce(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_
 						force_y += dy * invDist3;
 						force_z += dz * invDist3;
 					}
-					celerity::group_barrier(item.get_group());
 				}
+				celerity::group_barrier(item.get_group());
+			}
 
-				force_x = sycl::reduce_over_group(item.get_sub_group(), force_x, sycl::plus<VAL_TYPE>());
-				force_y = sycl::reduce_over_group(item.get_sub_group(), force_y, sycl::plus<VAL_TYPE>());
-				force_z = sycl::reduce_over_group(item.get_sub_group(), force_z, sycl::plus<VAL_TYPE>());
+			force_x = sycl::reduce_over_group(item.get_sub_group(), force_x, sycl::plus<VAL_TYPE>());
+			force_y = sycl::reduce_over_group(item.get_sub_group(), force_y, sycl::plus<VAL_TYPE>());
+			force_z = sycl::reduce_over_group(item.get_sub_group(), force_z, sycl::plus<VAL_TYPE>());
 
-				if(output_tid == 0) {
-					vel_x[output_item] += DT * force_x;
-					vel_y[output_item] += DT * force_y;
-					vel_z[output_item] += DT * force_z;
-				}
+			if(output_item < n_bodies && output_tid == 0) {
+				vel_x[output_item] += DT * force_x;
+				vel_y[output_item] += DT * force_y;
+				vel_z[output_item] += DT * force_z;
 			}
 		});
 	});
 }
 
 void bodyPos(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_x_buf, celerity::buffer<VAL_TYPE, 1>& pos_y_buf,
-		celerity::buffer<VAL_TYPE, 1>& pos_z_buf, celerity::buffer<VAL_TYPE, 1>& vel_x_buf, celerity::buffer<VAL_TYPE, 1>& vel_y_buf,
-		celerity::buffer<VAL_TYPE, 1>& vel_z_buf) {
+    celerity::buffer<VAL_TYPE, 1>& pos_z_buf, celerity::buffer<VAL_TYPE, 1>& vel_x_buf, celerity::buffer<VAL_TYPE, 1>& vel_y_buf,
+    celerity::buffer<VAL_TYPE, 1>& vel_z_buf) {
 	queue.submit([=](celerity::handler& cgh) {
 		celerity::accessor pos_x{pos_x_buf, cgh, celerity::access::one_to_one{}, celerity::read_write};
 		celerity::accessor pos_y{pos_y_buf, cgh, celerity::access::one_to_one{}, celerity::read_write};
