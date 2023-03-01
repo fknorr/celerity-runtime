@@ -8,6 +8,8 @@
 #include <cuda_runtime.h>
 #include <memory>
 #include <mpi.h>
+#include <tracy/Tracy.hpp>
+#include <tracy/TracyC.h>
 
 #define STRINGIFY2(x) #x
 #define STRINGIFY(x) STRINGIFY2(x)
@@ -44,13 +46,18 @@ using comm_func = void (*)(int comm_rank, int comm_size, int* buffer, size_t ran
 using alltoall_func = void (*)(int comm_rank, int comm_size, int*& buffer, int*& aux, size_t rank_range);
 
 struct collective_host_allgather {
-	void operator()(int, int, int* buffer, size_t rank_range) const { MPI_Allgather(MPI_IN_PLACE, 0, MPI_INT, buffer, rank_range, MPI_INT, MPI_COMM_WORLD); }
+	void operator()(int, int, int* buffer, size_t rank_range) const {
+		ZoneScopedN("collective_host_allgather");
+		MPI_Allgather(MPI_IN_PLACE, 0, MPI_INT, buffer, rank_range, MPI_INT, MPI_COMM_WORLD);
+	}
 
 	static constexpr const char* configuration = "collective";
 };
 
 struct p2p_host_allgather {
 	void operator()(int comm_rank, int comm_size, int* buffer, size_t rank_range) const {
+		ZoneScopedN("p2p_host_allgather");
+
 		MPI_Request sends[max_comm_size];
 		MPI_Request recvs[max_comm_size];
 		for(int other_rank = 0; other_rank < comm_size; ++other_rank) {
@@ -72,17 +79,28 @@ struct p2p_host_allgather {
 template <typename HostAllgather>
 struct device_allgather {
 	void operator()(int comm_rank, int comm_size, int* device_buffer, int* host_buffer, size_t buffer_range) const {
+		ZoneScopedN("device_allgather");
+
 		const size_t rank_range = buffer_range / comm_size;
 		const size_t rank_offset = rank_range * comm_rank;
-		CUDA_CHECK(cudaMemcpy, host_buffer + rank_offset, device_buffer + rank_offset, rank_range * sizeof(int), cudaMemcpyDefault);
+		{
+			ZoneScopedN("d2h");
+			CUDA_CHECK(cudaMemcpy, host_buffer + rank_offset, device_buffer + rank_offset, rank_range * sizeof(int), cudaMemcpyDefault);
+		}
 
 		HostAllgather{}(comm_rank, comm_size, host_buffer, rank_range);
 
 		const size_t range_before = rank_offset;
 		const size_t offset_after = rank_offset + rank_range;
 		const size_t range_after = buffer_range - offset_after;
-		if(range_before > 0) { CUDA_CHECK(cudaMemcpy, device_buffer, host_buffer, range_before * sizeof(int), cudaMemcpyDefault); }
-		if(range_after > 0) { CUDA_CHECK(cudaMemcpy, device_buffer + offset_after, host_buffer + offset_after, range_after * sizeof(int), cudaMemcpyDefault); }
+		if(range_before > 0) {
+			ZoneScopedN("h2d");
+			CUDA_CHECK(cudaMemcpy, device_buffer, host_buffer, range_before * sizeof(int), cudaMemcpyDefault);
+		}
+		if(range_after > 0) {
+			ZoneScopedN("h2d");
+			CUDA_CHECK(cudaMemcpy, device_buffer + offset_after, host_buffer + offset_after, range_after * sizeof(int), cudaMemcpyDefault);
+		}
 	}
 
 	static constexpr const char* configuration = HostAllgather::configuration;
@@ -91,8 +109,11 @@ struct device_allgather {
 template <typename DeviceAllgather>
 struct allgather_pass {
 	void operator()(size_t range, int comm_rank, int comm_size, int* host_buffer, int*, int* device_buffer) {
+		ZoneScopedN("allgather_pass");
+
 		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
+			ZoneScopedN("iter");
 			// imagine a no-op kernel here
 			DeviceAllgather{}(comm_rank, comm_size, device_buffer, host_buffer, range);
 		}
@@ -104,6 +125,8 @@ struct allgather_pass {
 
 struct collective_host_gather {
 	void operator()(int comm_rank, int, int* buffer, size_t rank_range) const {
+		ZoneScopedN("collective_host_gather");
+
 		if(comm_rank == 0) {
 			MPI_Gather(MPI_IN_PLACE, 0, MPI_INT, buffer, rank_range, MPI_INT, 0, MPI_COMM_WORLD);
 		} else {
@@ -116,6 +139,8 @@ struct collective_host_gather {
 
 struct p2p_host_gather {
 	void operator()(int comm_rank, int comm_size, int* buffer, size_t rank_range) const {
+		ZoneScopedN("p2p_host_gather");
+
 		if(comm_rank == 0) {
 			MPI_Request recvs[max_comm_size];
 			recvs[0] = MPI_REQUEST_NULL;
@@ -134,11 +159,19 @@ struct p2p_host_gather {
 template <typename HostGather>
 struct device_gather {
 	void operator()(int comm_rank, int comm_size, int* device_buffer, int* host_buffer, size_t buffer_range) const {
+		ZoneScopedN("device_gather");
+
 		const size_t rank_range = buffer_range / comm_size;
 		const size_t rank_offset = rank_range * comm_rank;
-		if(comm_rank > 0) { CUDA_CHECK(cudaMemcpy, host_buffer + rank_offset, device_buffer + rank_offset, rank_range * sizeof(int), cudaMemcpyDefault); }
+		if(comm_rank > 0) {
+			ZoneScopedN("d2h");
+			CUDA_CHECK(cudaMemcpy, host_buffer + rank_offset, device_buffer + rank_offset, rank_range * sizeof(int), cudaMemcpyDefault);
+		}
+
 		HostGather{}(comm_rank, comm_size, host_buffer, rank_range);
+
 		if(comm_rank == 0) {
+			ZoneScopedN("h2d");
 			CUDA_CHECK(cudaMemcpy, device_buffer + rank_range, host_buffer + rank_range, rank_range * (comm_size - 1) * sizeof(int), cudaMemcpyDefault);
 		}
 	}
@@ -148,6 +181,8 @@ struct device_gather {
 
 struct collective_host_scatter {
 	void operator()(int comm_rank, int, int* buffer, size_t rank_range) const {
+		ZoneScopedN("collective_host_scatter");
+
 		if(comm_rank == 0) {
 			MPI_Scatter(buffer, rank_range, MPI_INT, MPI_IN_PLACE, 0, MPI_INT, 0, MPI_COMM_WORLD);
 		} else {
@@ -160,6 +195,8 @@ struct collective_host_scatter {
 
 struct p2p_host_scatter {
 	void operator()(int comm_rank, int comm_size, int* buffer, size_t rank_range) const {
+		ZoneScopedN("p2p_host_scatter");
+
 		if(comm_rank == 0) {
 			MPI_Request sends[max_comm_size];
 			sends[0] = MPI_REQUEST_NULL;
@@ -178,13 +215,21 @@ struct p2p_host_scatter {
 template <typename HostScatter>
 struct device_scatter {
 	void operator()(int comm_rank, int comm_size, int* device_buffer, int* host_buffer, size_t buffer_range) const {
+		ZoneScopedN("device_scatter");
+
 		const size_t rank_range = buffer_range / comm_size;
 		const size_t rank_offset = rank_range * comm_rank;
 		if(comm_rank == 0) {
+			ZoneScopedN("d2h");
 			CUDA_CHECK(cudaMemcpy, host_buffer + rank_range, device_buffer + rank_range, rank_range * (comm_size - 1) * sizeof(int), cudaMemcpyDefault);
 		}
+
 		HostScatter{}(comm_rank, comm_size, host_buffer, rank_range);
-		if(comm_rank > 0) { CUDA_CHECK(cudaMemcpy, device_buffer + rank_offset, host_buffer + rank_offset, rank_range * sizeof(int), cudaMemcpyDefault); }
+
+		if(comm_rank > 0) {
+			ZoneScopedN("h2d");
+			CUDA_CHECK(cudaMemcpy, device_buffer + rank_offset, host_buffer + rank_offset, rank_range * sizeof(int), cudaMemcpyDefault);
+		}
 	}
 
 	static constexpr const char* configuration = HostScatter::configuration;
@@ -193,8 +238,11 @@ struct device_scatter {
 template <typename DeviceGather, typename DeviceScatter>
 struct gather_scatter_pass {
 	void operator()(size_t range, int comm_rank, int comm_size, int* host_buffer, int*, int* device_buffer) const {
+		ZoneScopedN("gather_scatter_pass");
+
 		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
+			ZoneScopedN("iter");
 			// imagine a kernel here
 			DeviceGather{}(comm_rank, comm_size, device_buffer, host_buffer, range);
 			// imagine a kernel here
@@ -207,13 +255,18 @@ struct gather_scatter_pass {
 };
 
 struct collective_host_bcast {
-	void operator()(int, int, int* buffer, size_t buffer_range) const { MPI_Bcast(buffer, buffer_range, MPI_INT, 0, MPI_COMM_WORLD); }
+	void operator()(int, int, int* buffer, size_t buffer_range) const {
+		ZoneScopedN("collective_host_bcast");
+		MPI_Bcast(buffer, buffer_range, MPI_INT, 0, MPI_COMM_WORLD);
+	}
 
 	static constexpr const char* configuration = "collective";
 };
 
 struct p2p_host_bcast {
 	void operator()(int comm_rank, int comm_size, int* buffer, size_t buffer_range) const {
+		ZoneScopedN("p2p_host_bcast");
+
 		if(comm_rank == 0) {
 			MPI_Request sends[max_comm_size];
 			sends[0] = MPI_REQUEST_NULL;
@@ -232,9 +285,18 @@ struct p2p_host_bcast {
 template <typename HostBcast>
 struct device_bcast {
 	void operator()(int comm_rank, int comm_size, int* device_buffer, int* host_buffer, size_t buffer_range) const {
-		if(comm_rank == 0) { CUDA_CHECK(cudaMemcpy, host_buffer, device_buffer, buffer_range * sizeof(int), cudaMemcpyDefault); }
+		ZoneScopedN("device_bcast");
+		if(comm_rank == 0) {
+			ZoneScopedN("d2h");
+			CUDA_CHECK(cudaMemcpy, host_buffer, device_buffer, buffer_range * sizeof(int), cudaMemcpyDefault);
+		}
+
 		HostBcast{}(comm_rank, comm_size, host_buffer, buffer_range);
-		if(comm_rank > 0) { CUDA_CHECK(cudaMemcpy, device_buffer, host_buffer, buffer_range * sizeof(int), cudaMemcpyDefault); }
+
+		if(comm_rank > 0) {
+			ZoneScopedN("h2d");
+			CUDA_CHECK(cudaMemcpy, device_buffer, host_buffer, buffer_range * sizeof(int), cudaMemcpyDefault);
+		}
 	}
 
 	static constexpr const char* configuration = HostBcast::configuration;
@@ -243,8 +305,11 @@ struct device_bcast {
 template <typename DeviceGather, typename DeviceBcast>
 struct gather_bcast_pass {
 	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int*, int* device_alloc) const {
+		ZoneScopedN("gather_bcast_pass");
+
 		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
+			ZoneScopedN("iter");
 			// imagine a kernel here
 			DeviceGather{}(comm_rank, comm_size, device_alloc, host_alloc, range);
 			// imagine a kernel here
@@ -258,6 +323,7 @@ struct gather_bcast_pass {
 
 struct collective_host_alltoall {
 	void operator()(int, int, int* buffer, int*, size_t rank_range) const {
+		ZoneScopedN("collective_host_alltoall");
 		MPI_Alltoall(MPI_IN_PLACE, 0, MPI_INT, buffer, rank_range, MPI_INT, MPI_COMM_WORLD);
 	}
 
@@ -266,6 +332,8 @@ struct collective_host_alltoall {
 
 struct p2p_host_alltoall {
 	void operator()(int comm_rank, int comm_size, int*& buffer, int*& aux_buffer, size_t rank_range) const {
+		ZoneScopedN("p2p_host_alltoall");
+
 		MPI_Request sends[max_comm_size];
 		MPI_Request recvs[max_comm_size];
 		for(int other_rank = 0; other_rank < comm_size; ++other_rank) {
@@ -288,19 +356,33 @@ struct p2p_host_alltoall {
 template <typename HostAlltoall>
 struct device_alltoall {
 	void operator()(int comm_rank, int comm_size, int* device_buffer, int*& host_buffer, int*& aux_buffer, size_t buffer_range) const {
+		ZoneScopedN("device_alltoall");
+
 		const size_t rank_range = buffer_range / comm_size;
 		const size_t rank_offset = rank_range * comm_rank;
 		const size_t range_before = rank_offset;
 		const size_t offset_after = rank_offset + rank_range;
 		const size_t range_after = buffer_range - offset_after;
 
-		if(range_before > 0) { CUDA_CHECK(cudaMemcpy, host_buffer, device_buffer, range_before * sizeof(int), cudaMemcpyDefault); }
-		if(range_after > 0) { CUDA_CHECK(cudaMemcpy, host_buffer + offset_after, device_buffer + offset_after, range_after * sizeof(int), cudaMemcpyDefault); }
+		if(range_before > 0) {
+			ZoneScopedN("d2h");
+			CUDA_CHECK(cudaMemcpy, host_buffer, device_buffer, range_before * sizeof(int), cudaMemcpyDefault);
+		}
+		if(range_after > 0) {
+			ZoneScopedN("d2h");
+			CUDA_CHECK(cudaMemcpy, host_buffer + offset_after, device_buffer + offset_after, range_after * sizeof(int), cudaMemcpyDefault);
+		}
 
 		HostAlltoall{}(comm_rank, comm_size, host_buffer, aux_buffer, rank_range);
 
-		if(range_before > 0) { CUDA_CHECK(cudaMemcpy, device_buffer, host_buffer, range_before * sizeof(int), cudaMemcpyDefault); }
-		if(range_after > 0) { CUDA_CHECK(cudaMemcpy, device_buffer + offset_after, host_buffer + offset_after, range_after * sizeof(int), cudaMemcpyDefault); }
+		if(range_before > 0) {
+			ZoneScopedN("h2d");
+			CUDA_CHECK(cudaMemcpy, device_buffer, host_buffer, range_before * sizeof(int), cudaMemcpyDefault);
+		}
+		if(range_after > 0) {
+			ZoneScopedN("h2d");
+			CUDA_CHECK(cudaMemcpy, device_buffer + offset_after, host_buffer + offset_after, range_after * sizeof(int), cudaMemcpyDefault);
+		}
 	}
 
 	static constexpr const char* configuration = HostAlltoall::configuration;
@@ -309,8 +391,11 @@ struct device_alltoall {
 template <typename DeviceAlltoall>
 struct alltoall_pass {
 	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int* aux_alloc, int* device_alloc) const {
+		ZoneScopedN("alltoall_pass");
+
 		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
+			ZoneScopedN("iter");
 			// imagine a no-op kernel here
 			DeviceAlltoall{}(comm_rank, comm_size, device_alloc, host_alloc, aux_alloc, range);
 		}
@@ -322,6 +407,8 @@ struct alltoall_pass {
 
 struct p2p_host_boundex {
 	void operator()(int comm_rank, int comm_size, int* buffer, size_t rank_range, size_t boundary_range) const {
+		ZoneScopedN("p2p_host_boundex");
+
 		MPI_Request reqs[4];
 		if(comm_rank > 0) {
 			MPI_Isend(buffer + comm_rank * rank_range, boundary_range, MPI_INT, comm_rank - 1, 0, MPI_COMM_WORLD, &reqs[0]);
@@ -344,15 +431,19 @@ struct p2p_host_boundex {
 template <typename HostBoundex>
 struct device_boundex {
 	void operator()(int comm_rank, int comm_size, int* device_buffer, int* host_buffer, size_t buffer_range) const {
+		ZoneScopedN("device_boundex");
+
 		const size_t rank_range = buffer_range / comm_size;
 		const size_t boundary_range = static_cast<size_t>(sqrt(buffer_range));
 		assert(boundary_range * boundary_range == buffer_range);
 
 		if(comm_rank > 0) {
+			ZoneScopedN("d2h");
 			CUDA_CHECK(
 			    cudaMemcpy, host_buffer + comm_rank * rank_range, device_buffer + comm_rank * rank_range, boundary_range * sizeof(int), cudaMemcpyDefault);
 		}
 		if(comm_rank + 1 < comm_size) {
+			ZoneScopedN("d2h");
 			CUDA_CHECK(cudaMemcpy, host_buffer + (comm_rank + 1) * rank_range - boundary_range, device_buffer + (comm_rank + 1) * rank_range - boundary_range,
 			    boundary_range * sizeof(int), cudaMemcpyDefault);
 		}
@@ -360,10 +451,12 @@ struct device_boundex {
 		HostBoundex{}(comm_rank, comm_size, host_buffer, rank_range, boundary_range);
 
 		if(comm_rank > 0) {
+			ZoneScopedN("h2d");
 			CUDA_CHECK(cudaMemcpy, device_buffer + comm_rank * rank_range - boundary_range, host_buffer + comm_rank * rank_range - boundary_range,
 			    boundary_range * sizeof(int), cudaMemcpyDefault);
 		}
 		if(comm_rank + 1 < comm_size) {
+			ZoneScopedN("h2d");
 			CUDA_CHECK(cudaMemcpy, device_buffer + (comm_rank + 1) * rank_range, host_buffer + (comm_rank + 1) * rank_range, boundary_range * sizeof(int),
 			    cudaMemcpyDefault);
 		}
@@ -375,8 +468,11 @@ struct device_boundex {
 template <typename DeviceBoundex>
 struct stencil_pass {
 	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int*, int* device_alloc) const {
+		ZoneScopedN("stencil_pass");
+
 		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
+			ZoneScopedN("iter");
 			// imagine a no-op kernel here
 			DeviceBoundex{}(comm_rank, comm_size, device_alloc, host_alloc, range);
 		}
@@ -421,6 +517,10 @@ void benchmark(FILE* csv, size_t range, int comm_rank, int comm_size) {
 
 int main(int argc, char** argv) {
 	MPI_Init(&argc, &argv);
+
+#if TRACY_ENABLE
+	tracy::StartupProfiler();
+#endif
 
 	int comm_size, comm_rank;
 	MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
@@ -468,5 +568,10 @@ int main(int argc, char** argv) {
 	}
 
 	if(comm_rank == 0) fclose(csv);
+
+#if TRACY_ENABLE
+	tracy::ShutdownProfiler();
+#endif
+
 	MPI_Finalize();
 }
