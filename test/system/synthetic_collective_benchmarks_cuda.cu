@@ -444,8 +444,11 @@ int main(int argc, char** argv) {
 	if(comm_rank == 0) {
 		char csv_name[100];
 		const char* job_id = getenv("SLURM_JOB_ID");
-		if(!job_id) panic("SLURM_JOB_ID not set");
-		snprintf(csv_name, sizeof csv_name, "scb-%d-%s.csv", comm_size, job_id);
+		if(job_id) {
+			snprintf(csv_name, sizeof csv_name, "scb-%d-%s.csv", comm_size, job_id);
+		} else {
+			snprintf(csv_name, sizeof csv_name, "scb-%d.csv", comm_size);
+		}
 		csv = fopen(csv_name, "wb");
 		if(!csv) panic("error opening output file: %s: %s", csv_name, strerror(errno));
 		fprintf(csv, "devices;benchmark;range;system;configuration;nanoseconds\n");
