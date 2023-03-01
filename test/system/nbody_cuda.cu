@@ -143,20 +143,26 @@ constexpr int max_num_devices = 4;
 constexpr int max_comm_size = 64;
 
 struct collective_host_allgather {
-	void operator()(int, int, VAL_TYPE* buffer, size_t rank_range) const {
+	MPI_Request req;
+
+	void begin(int, int, VAL_TYPE* buffer, size_t rank_range) {
 		ZoneScopedN("Allgather");
-		MPI_Allgather(MPI_IN_PLACE, 0, MPI_VAL_TYPE, buffer, rank_range, MPI_VAL_TYPE, MPI_COMM_WORLD);
+		MPI_Iallgather(MPI_IN_PLACE, 0, MPI_VAL_TYPE, buffer, rank_range, MPI_VAL_TYPE, MPI_COMM_WORLD, &req);
 	}
+
+	void end() { MPI_Wait(&req, MPI_STATUS_IGNORE); }
 
 	static constexpr const char* configuration = "collective";
 };
 
 struct p2p_host_allgather {
-	void operator()(int comm_rank, int comm_size, VAL_TYPE* buffer, size_t rank_range) const {
+	int comm_size;
+	MPI_Request sends[max_comm_size];
+	MPI_Request recvs[max_comm_size];
+
+	void begin(int comm_rank, int comm_size, VAL_TYPE* buffer, size_t rank_range) {
 		ZoneScopedN("Send/Recv");
 
-		MPI_Request sends[max_comm_size];
-		MPI_Request recvs[max_comm_size];
 		for(int other_rank = 0; other_rank < comm_size; ++other_rank) {
 			if(other_rank != comm_rank) {
 				MPI_Isend(buffer + comm_rank * rank_range, rank_range, MPI_VAL_TYPE, other_rank, 0, MPI_COMM_WORLD, &sends[other_rank]);
@@ -166,6 +172,10 @@ struct p2p_host_allgather {
 				recvs[other_rank] = MPI_REQUEST_NULL;
 			}
 		}
+		this->comm_size = comm_size;
+	}
+
+	void end() {
 		MPI_Waitall(comm_size, recvs, MPI_STATUSES_IGNORE);
 		MPI_Waitall(comm_size, sends, MPI_STATUSES_IGNORE);
 	}
@@ -175,14 +185,27 @@ struct p2p_host_allgather {
 
 template <typename HostAllgather>
 struct device_allgather {
-	void operator()(int comm_rank, int comm_size, VAL_TYPE* device_buffer, VAL_TYPE* host_buffer, size_t buffer_range) const {
+	HostAllgather h2h;
+	size_t rank_range, rank_offset, buffer_range;
+	VAL_TYPE* device_buffer;
+	VAL_TYPE* host_buffer;
+
+	void begin(int comm_rank, int comm_size, VAL_TYPE* device_buffer, VAL_TYPE* host_buffer, size_t buffer_range) {
 		ZoneScopedN("device_allgather");
 
-		const size_t rank_range = buffer_range / comm_size;
-		const size_t rank_offset = rank_range * comm_rank;
+		rank_range = buffer_range / comm_size;
+		rank_offset = rank_range * comm_rank;
 		CUDA_CHECK(cudaMemcpy, host_buffer + rank_offset, device_buffer + rank_offset, rank_range * sizeof(VAL_TYPE), cudaMemcpyDefault);
 
-		HostAllgather{}(comm_rank, comm_size, host_buffer, rank_range);
+		h2h.begin(comm_rank, comm_size, host_buffer, rank_range);
+
+		this->buffer_range = buffer_range;
+		this->host_buffer = host_buffer;
+		this->device_buffer = device_buffer;
+	}
+
+	void end() {
+		h2h.end();
 
 		const size_t range_before = rank_offset;
 		const size_t offset_after = rank_offset + rank_range;
@@ -224,9 +247,13 @@ struct nbody_pass {
 			bodyForce<<<body_force_blocks, BLOCK_SIZE>>>(d_pos_x, d_pos_y, d_pos_z, d_vel_x, d_vel_y, d_vel_z, n, rank_offset, rank_range);
 			bodyPos<<<body_pos_blocks, BLOCK_SIZE>>>(d_pos_x, d_pos_y, d_pos_z, d_vel_x, d_vel_y, d_vel_z, rank_offset, rank_range);
 
-			DeviceAllgather{}(comm_rank, comm_size, d_pos_x, h_pos_x, n);
-			DeviceAllgather{}(comm_rank, comm_size, d_pos_y, h_pos_y, n);
-			DeviceAllgather{}(comm_rank, comm_size, d_pos_z, h_pos_z, n);
+			DeviceAllgather allgather_x, allgather_y, allgather_z;
+			allgather_x.begin(comm_rank, comm_size, d_pos_x, h_pos_x, n);
+			allgather_y.begin(comm_rank, comm_size, d_pos_y, h_pos_y, n);
+			allgather_z.begin(comm_rank, comm_size, d_pos_z, h_pos_z, n);
+			allgather_x.end();
+			allgather_y.end();
+			allgather_z.end();
 		}
 
 		MPI_Barrier(MPI_COMM_WORLD);
@@ -277,9 +304,13 @@ void benchmark(FILE* csv, int comm_rank, int comm_size, int n, int nIters) {
 	const auto d_vel_y = d_buf + 4 * n;
 	const auto d_vel_z = d_buf + 5 * n;
 
-	DeviceAllgather{}(comm_rank, comm_size, d_vel_x, h_vel_x, n);
-	DeviceAllgather{}(comm_rank, comm_size, d_vel_y, h_vel_y, n);
-	DeviceAllgather{}(comm_rank, comm_size, d_vel_z, h_vel_z, n);
+	DeviceAllgather allgather_x, allgather_y, allgather_z;
+	allgather_x.begin(comm_rank, comm_size, d_vel_x, h_vel_x, n);
+	allgather_y.begin(comm_rank, comm_size, d_vel_y, h_vel_y, n);
+	allgather_z.begin(comm_rank, comm_size, d_vel_z, h_vel_z, n);
+	allgather_x.end();
+	allgather_y.end();
+	allgather_z.end();
 
 	if(comm_rank == 0) {
 		CUDA_CHECK(cudaMemcpy, h_buf, d_buf, 2 * n * sizeof(VAL_TYPE), cudaMemcpyDeviceToHost);
