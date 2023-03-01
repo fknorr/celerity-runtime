@@ -208,15 +208,17 @@ int main(const int argc, const char** argv) {
 			queue.slow_full_sync();
 			const auto end = std::chrono::steady_clock::now();
 
-			queue.submit([=](celerity::handler& cgh) {
-				celerity::experimental::side_effect csv(csv_obj, cgh);
-				cgh.host_task(celerity::on_master_node, [=] {
-					const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-					fprintf(*csv, "%d;%s;%d;Celerity;%s;%s;%d;%llu\n", total_num_devices, "NBody", nBodies, configuration,
-							USE_FLOAT ? "single" : "double", nIters, (unsigned long long)ns.count());
-					fflush(*csv);
+			if(i >= n_warmup) {
+				queue.submit([=](celerity::handler& cgh) {
+					celerity::experimental::side_effect csv(csv_obj, cgh);
+					cgh.host_task(celerity::on_master_node, [=] {
+						const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+						fprintf(*csv, "%d;%s;%d;Celerity;%s;%s;%d;%llu\n", total_num_devices, "NBody", nBodies, configuration, USE_FLOAT ? "single" : "double",
+						    nIters, (unsigned long long)ns.count());
+						fflush(*csv);
+					});
 				});
-			});
+			}
 
 			if(i == n_warmup + n_passes - 1) {
 				queue.submit([=](celerity::handler& cgh) {
