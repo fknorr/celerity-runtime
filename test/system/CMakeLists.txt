@@ -42,3 +42,12 @@ if(MSVC)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
   target_compile_options(nbody PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable)
 endif()
+
+
+# NOCOMMIT
+enable_language(CUDA)
+add_executable(nbody_cuda nbody_cuda.cu)
+target_link_libraries(nbody_cuda
+  MPI::MPI_CXX
+  Tracy::TracyClient
+  )

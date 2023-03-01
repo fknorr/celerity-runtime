@@ -13,10 +13,8 @@ using namespace std::chrono_literals;
 
 #if USE_FLOAT == 1
 #define VAL_TYPE float
-#define VAL4_TYPE sycl::float4
 #else
 #define VAL_TYPE double
-#define VAL4_TYPE sycl::double4
 #endif
 
 constexpr int BLOCK_SIZE = 256;
