@@ -132,10 +132,16 @@ void bodyPos(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_x_
 		celerity::accessor vel_x{vel_x_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
 		celerity::accessor vel_y{vel_y_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
 		celerity::accessor vel_z{vel_z_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
-		cgh.parallel_for<class BodyPos>(pos_x_buf.get_range(), [=](celerity::item<1> i) {
-			pos_x[i] += vel_x[i] * DT;
-			pos_y[i] += vel_y[i] * DT;
-			pos_z[i] += vel_z[i] * DT;
+		const int n_bodies = pos_x_buf.get_range()[0];
+		const int local_range = BLOCK_SIZE / WARP_SIZE;
+		const int group_range = (n_bodies + local_range - 1) / local_range;
+		cgh.parallel_for<class BodyPos>(celerity::nd_range<1>(group_range * local_range, local_range), [=](celerity::nd_item<1> item) {
+			const int i = item.get_global_id(0);
+			if (i < n_bodies) {
+				pos_x[i] += vel_x[i] * DT;
+				pos_y[i] += vel_y[i] * DT;
+				pos_z[i] += vel_z[i] * DT;
+			}
 		});
 	});
 }
