@@ -184,7 +184,8 @@ struct collective_host_scatter {
 		ZoneScopedN("collective_host_scatter");
 
 		if(comm_rank == 0) {
-			MPI_Scatter(buffer, rank_range, MPI_INT, MPI_IN_PLACE, 0, MPI_INT, 0, MPI_COMM_WORLD);
+			// TODO Spectrum MPI does not seem to recognize recvBuffer == MPI_IN_PLACE
+			MPI_Scatter(buffer, rank_range, MPI_INT, buffer, rank_range, MPI_INT, 0, MPI_COMM_WORLD);
 		} else {
 			MPI_Scatter(nullptr, 0, MPI_INT, buffer + comm_rank * rank_range, rank_range, MPI_INT, 0, MPI_COMM_WORLD);
 		}
