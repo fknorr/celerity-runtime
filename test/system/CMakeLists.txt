@@ -46,8 +46,18 @@ endif()
 
 # NOCOMMIT
 enable_language(CUDA)
+set(CMAKE_CUDA_STANDARD 17)
+
+# NOCOMMIT
 add_executable(nbody_cuda nbody_cuda.cu)
 target_link_libraries(nbody_cuda
+  MPI::MPI_CXX
+  Tracy::TracyClient
+  )
+
+# NOCOMMIT
+add_executable(synthetic_collective_benchmarks_cuda synthetic_collective_benchmarks_cuda.cu)
+target_link_libraries(synthetic_collective_benchmarks_cuda
   MPI::MPI_CXX
   Tracy::TracyClient
   )
