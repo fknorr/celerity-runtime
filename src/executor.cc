@@ -64,10 +64,6 @@ namespace detail {
 		    m_metrics.device_idle.get().count(), m_metrics.starvation.get().count());
 	}
 
-	bool HACK_is_collective_job(const worker_job* job) {
-		return isa<gather_job>(job) || isa<allgather_job>(job) || isa<scatter_job>(job) || isa<broadcast_job>(job) || isa<alltoall_job>(job);
-	}
-
 	void executor::run() {
 		closure_hydrator::enable();
 		bool done = false;
@@ -118,12 +114,9 @@ namespace detail {
 				}
 
 				for(const auto& d : job_handle.dependents) {
-					// NOCOMMIT HACK -- assert(m_jobs.count(d) == 1);
-					if(const auto d_job = m_jobs.find(d); d_job != m_jobs.end()) {
-						if(HACK_is_collective_job(job_handle.job.get()) && HACK_is_collective_job(d_job->second.job.get())) continue;
-						m_jobs[d].unsatisfied_dependencies--;
-						if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
-					}
+					assert(m_jobs.count(d) == 1);
+					m_jobs[d].unsatisfied_dependencies--;
+					if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
 				}
 
 				if(isa<device_execute_job>(job_handle.job.get())) {
@@ -147,6 +140,7 @@ namespace detail {
 				// also reading it from within a kernel is not supported. To avoid stalling other nodes, we thus perform the push first.
 				std::sort(ready_jobs.begin(), ready_jobs.end(),
 				    [this](command_id a, command_id b) { return m_jobs[a].cmd == command_type::push && m_jobs[b].cmd != command_type::push; });
+				std::vector<command_id> HACK_new_ready_jobs_after_collective_start;
 				for(command_id cid : ready_jobs) {
 #if ATTEMPT_DEADLOCK_DETECTION
 					ts_last_change = chr::steady_clock::now();
@@ -167,17 +161,14 @@ namespace detail {
 					job->start();
 					job->update();
 
-					if(HACK_is_collective_job(job)) {
-						for(const auto& d : m_jobs.at(cid).dependents) {
-							assert(m_jobs.count(d) == 1);
-							const auto d_job = m_jobs.at(d).job.get();
-							if(HACK_is_collective_job(d_job)) {
-								m_jobs[d].unsatisfied_dependencies--;
-								if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
-							}
-						}
+					for(const auto& d : m_jobs.at(cid).HACK_collective_order_dependents) {
+						assert(m_jobs.count(d) == 1);
+						m_jobs[d].unsatisfied_dependencies--;
+						if(m_jobs[d].unsatisfied_dependencies == 0) { HACK_new_ready_jobs_after_collective_start.push_back(d); }
 					}
 				}
+
+				ready_jobs.insert(ready_jobs.end(), HACK_new_ready_jobs_after_collective_start.begin(), HACK_new_ready_jobs_after_collective_start.end());
 			}
 
 			if(m_jobs.size() < MAX_CONCURRENT_JOBS) {
