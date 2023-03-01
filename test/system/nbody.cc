@@ -170,7 +170,7 @@ int main(const int argc, const char** argv) {
 				fprintf(stderr, "error opening output file: %s: %s\n", csv_name, strerror(errno));
 				abort();
 			}
-			fprintf(*csv, "devices;benchmark;range;system;configuration;nanoseconds\n");
+			fprintf(*csv, "devices;benchmark;range;system;configuration;precision;iterations;nanoseconds\n");
 			fflush(*csv);
 		});
 	});
@@ -210,7 +210,8 @@ int main(const int argc, const char** argv) {
 				celerity::experimental::side_effect csv(csv_obj, cgh);
 				cgh.host_task(celerity::on_master_node, [=] {
 					const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-					fprintf(*csv, "%d;%s;%d;Celerity;%s;%llu\n", total_num_devices, "NBody", nBodies, configuration, (unsigned long long)ns.count());
+					fprintf(*csv, "%d;%s;%d;Celerity;%s;%s;%d;%llu\n", total_num_devices, "NBody", nBodies, configuration,
+							USE_FLOAT ? "single" : "double", nIters, (unsigned long long)ns.count());
 					fflush(*csv);
 				});
 			});
