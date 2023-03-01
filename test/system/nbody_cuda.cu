@@ -47,8 +47,6 @@ __device__ static inline void inplace_warp_sum(VAL_TYPE& val) {
 
 __global__ void bodyForce(
     VAL_TYPE* pos_x, VAL_TYPE* pos_y, VAL_TYPE* pos_z, VAL_TYPE* vel_x, VAL_TYPE* vel_y, VAL_TYPE* vel_z, int n_bodies, int rank_offset, int rank_range) {
-	const int grid_size = (rank_range * WARP_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
 	__shared__ VAL_TYPE stage[3][BLOCK_SIZE];
 
 	const int input_tid = threadIdx.x;
@@ -106,12 +104,12 @@ __global__ void bodyForce(
 	}
 }
 
-__global__ void bodyPos(VAL_TYPE* pos_x, VAL_TYPE* pos_y, VAL_TYPE* pos_z, VAL_TYPE* vel_x, VAL_TYPE* vel_y, VAL_TYPE* vel_z, int rank_range) {
+__global__ void bodyPos(VAL_TYPE* pos_x, VAL_TYPE* pos_y, VAL_TYPE* pos_z, VAL_TYPE* vel_x, VAL_TYPE* vel_y, VAL_TYPE* vel_z, int rank_offset, int rank_range) {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if(i < rank_range) {
-		pos_x[i] += vel_x[i] * DT;
-		pos_y[i] += vel_y[i] * DT;
-		pos_z[i] += vel_z[i] * DT;
+		pos_x[rank_offset + i] += vel_x[rank_offset + i] * DT;
+		pos_y[rank_offset + i] += vel_y[rank_offset + i] * DT;
+		pos_z[rank_offset + i] += vel_z[rank_offset + i] * DT;
 	}
 }
 
@@ -218,13 +216,13 @@ struct nbody_pass {
 		const auto d_vel_y = d_buf + 4 * n;
 		const auto d_vel_z = d_buf + 5 * n;
 
-		const int nBlocks = (rank_range + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		const auto body_force_blocks = (rank_range * WARP_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		const auto body_pos_blocks = (rank_range + BLOCK_SIZE - 1) / BLOCK_SIZE;
 		for(int iter = 0; iter < nIters; iter++) {
 			ZoneScopedN("iter");
 
-			bodyForce<<<nBlocks, BLOCK_SIZE>>>(d_pos_x, d_pos_y, d_pos_z, d_vel_x, d_vel_y, d_vel_z, n, rank_offset, rank_range);
-			bodyPos<<<nBlocks, BLOCK_SIZE>>>(d_pos_x + rank_offset, d_pos_y + rank_offset, d_pos_z + rank_offset, d_vel_x + rank_offset, d_vel_y + rank_offset,
-			    d_vel_z + rank_offset, rank_range);
+			bodyForce<<<body_force_blocks, BLOCK_SIZE>>>(d_pos_x, d_pos_y, d_pos_z, d_vel_x, d_vel_y, d_vel_z, n, rank_offset, rank_range);
+			bodyPos<<<body_pos_blocks, BLOCK_SIZE>>>(d_pos_x, d_pos_y, d_pos_z, d_vel_x, d_vel_y, d_vel_z, rank_offset, rank_range);
 
 			DeviceAllgather{}(comm_rank, comm_size, d_pos_x, h_pos_x, n);
 			DeviceAllgather{}(comm_rank, comm_size, d_pos_y, h_pos_y, n);
@@ -305,6 +303,10 @@ void benchmark(FILE* csv, int comm_rank, int comm_size, int n, int nIters) {
 int main(int argc, char** argv) {
 	MPI_Init(&argc, &argv);
 
+#if TRACY_ENABLE
+	tracy::StartupProfiler();
+#endif
+
 	int comm_size, comm_rank;
 	MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &comm_rank);
@@ -347,5 +349,10 @@ int main(int argc, char** argv) {
 	benchmark<device_allgather<collective_host_allgather>>(csv, comm_rank, comm_size, n, nIters);
 
 	if(comm_rank == 0) fclose(csv);
+
+#if TRACY_ENABLE
+	tracy::ShutdownProfiler();
+#endif
+
 	MPI_Finalize();
 }

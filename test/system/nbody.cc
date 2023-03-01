@@ -179,8 +179,6 @@ int main(const int argc, const char** argv) {
 		});
 	});
 
-	const int nBlocks = (nBodies + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
 	const int n_warmup = 2;
 	const int n_passes = 10;
 
