@@ -135,7 +135,7 @@ namespace detail {
 			}
 
 			// Process newly available jobs
-			if(!ready_jobs.empty()) {
+			while(!ready_jobs.empty()) { // HACK "while" because we make new jobs ready in the loop
 				// Make sure to start any push jobs before other jobs, as on some platforms copying data from a compute device while
 				// also reading it from within a kernel is not supported. To avoid stalling other nodes, we thus perform the push first.
 				std::sort(ready_jobs.begin(), ready_jobs.end(),
@@ -168,7 +168,7 @@ namespace detail {
 					}
 				}
 
-				ready_jobs.insert(ready_jobs.end(), HACK_new_ready_jobs_after_collective_start.begin(), HACK_new_ready_jobs_after_collective_start.end());
+				ready_jobs = std::move(HACK_new_ready_jobs_after_collective_start);
 			}
 
 			if(m_jobs.size() < MAX_CONCURRENT_JOBS) {
