@@ -40,7 +40,7 @@ template <typename... Printf>
 	if(const cudaError_t cuda_error = (f)(__VA_ARGS__); cuda_error != cudaSuccess) { panic(STRINGIFY(f), cuda_error); }
 
 constexpr int max_num_devices = 4;
-constexpr int max_comm_size = 64;
+constexpr int max_comm_size = 256;
 
 using comm_func = void (*)(int comm_rank, int comm_size, int* buffer, size_t rank_range);
 using alltoall_func = void (*)(int comm_rank, int comm_size, int*& buffer, int*& aux, size_t rank_range);
@@ -558,8 +558,12 @@ int main(int argc, char** argv) {
 		benchmark<allgather_pass<device_allgather<p2p_host_allgather>>>(csv, range, comm_rank, comm_size);
 		benchmark<gather_scatter_pass<device_gather<collective_host_gather>, device_scatter<collective_host_scatter>>>(csv, range, comm_rank, comm_size);
 		benchmark<gather_scatter_pass<device_gather<p2p_host_gather>, device_scatter<p2p_host_scatter>>>(csv, range, comm_rank, comm_size);
+	}
+	for(auto range : {256_i, 32_Ki, 128_Ki, 2_Mi, 32_Mi}) {
 		benchmark<gather_bcast_pass<device_gather<collective_host_gather>, device_bcast<collective_host_bcast>>>(csv, range, comm_rank, comm_size);
 		benchmark<gather_bcast_pass<device_gather<p2p_host_gather>, device_bcast<p2p_host_bcast>>>(csv, range, comm_rank, comm_size);
+	}
+	for(auto range : {4_Ki, 256_Ki, 1_Mi, 16_Mi, 256_Mi}) {
 		benchmark<alltoall_pass<device_alltoall<collective_host_alltoall>>>(csv, range, comm_rank, comm_size);
 		benchmark<alltoall_pass<device_alltoall<p2p_host_alltoall>>>(csv, range, comm_rank, comm_size);
 		benchmark<stencil_pass<device_boundex<p2p_host_boundex>>>(csv, range, comm_rank, comm_size);

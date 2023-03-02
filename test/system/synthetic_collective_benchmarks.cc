@@ -81,7 +81,7 @@ size_t operator""_Gi(unsigned long long v) { return v << 30; }
 
 
 void allgather_benchmark(benchmark_runner& runner) {
-	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
+	for(const auto range : {4_Ki, 256_Ki, 1_Mi, 16_Mi, 256_Mi}) {
 		celerity::buffer<int> buf_a(range);
 		celerity::buffer<int> buf_b(range);
 
@@ -105,7 +105,7 @@ void allgather_benchmark(benchmark_runner& runner) {
 
 
 void gather_broadcast_benchmark(benchmark_runner& runner) {
-	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
+	for(const auto range : {4_Ki, 256_Ki, 1_Mi, 16_Mi, 256_Mi}) {
 		celerity::buffer<int> buf_a(range);
 		celerity::buffer<int> buf_b(range);
 
@@ -134,7 +134,7 @@ void gather_broadcast_benchmark(benchmark_runner& runner) {
 
 
 void gather_scatter_benchmark(benchmark_runner& runner) {
-	for(const auto range : {4_Ki, 256_Ki, 16_Mi, 256_Mi}) {
+	for(const auto range : {4_Ki, 256_Ki, 1_Mi, 16_Mi, 256_Mi}) {
 		celerity::buffer<int> buf(range);
 
 		runner.run("Gather-Scatter", range, [&](celerity::distr_queue& q, int n_iters) {
@@ -160,7 +160,7 @@ void gather_scatter_benchmark(benchmark_runner& runner) {
 
 
 void alltoall_benchmark(benchmark_runner& runner) {
-	for(auto size : {64_i, 512_i, 4_Ki, 16_Ki}) {
+	for(auto size : {64_i, 512_i, 1_Ki, 4_Ki, 16_Ki}) {
 		const range<2> range(size, size);
 
 		celerity::buffer<int, 2> buf_a(range);
@@ -186,7 +186,7 @@ void alltoall_benchmark(benchmark_runner& runner) {
 
 
 void control_benchmark(benchmark_runner& runner) {
-	for(auto size : {64_i, 512_i, 4_Ki, 16_Ki}) {
+	for(auto size : {64_i, 512_i, 1_Ki, 4_Ki, 16_Ki}) {
 		const range<2> range(size, size);
 
 		celerity::buffer<int, 2> buf_a(range);

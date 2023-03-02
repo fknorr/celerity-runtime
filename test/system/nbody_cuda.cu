@@ -140,7 +140,7 @@ template <typename... Printf>
 	if(const cudaError_t cuda_error = (f)(__VA_ARGS__); cuda_error != cudaSuccess) { panic(STRINGIFY(f), cuda_error); }
 
 constexpr int max_num_devices = 4;
-constexpr int max_comm_size = 64;
+constexpr int max_comm_size = 256;
 
 struct collective_host_allgather {
 	MPI_Request req;
