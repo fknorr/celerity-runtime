@@ -108,10 +108,9 @@ struct device_allgather {
 
 template <typename DeviceAllgather>
 struct allgather_pass {
-	void operator()(size_t range, int comm_rank, int comm_size, int* host_buffer, int*, int* device_buffer) {
+	void operator()(size_t range, int comm_rank, int comm_size, int* host_buffer, int*, int* device_buffer, int n_iter) {
 		ZoneScopedN("allgather_pass");
 
-		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
 			ZoneScopedN("iter");
 			// imagine a no-op kernel here
@@ -238,10 +237,9 @@ struct device_scatter {
 
 template <typename DeviceGather, typename DeviceScatter>
 struct gather_scatter_pass {
-	void operator()(size_t range, int comm_rank, int comm_size, int* host_buffer, int*, int* device_buffer) const {
+	void operator()(size_t range, int comm_rank, int comm_size, int* host_buffer, int*, int* device_buffer, int n_iter) const {
 		ZoneScopedN("gather_scatter_pass");
 
-		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
 			ZoneScopedN("iter");
 			// imagine a kernel here
@@ -305,10 +303,9 @@ struct device_bcast {
 
 template <typename DeviceGather, typename DeviceBcast>
 struct gather_bcast_pass {
-	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int*, int* device_alloc) const {
+	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int*, int* device_alloc, int n_iter) const {
 		ZoneScopedN("gather_bcast_pass");
 
-		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
 			ZoneScopedN("iter");
 			// imagine a kernel here
@@ -391,10 +388,9 @@ struct device_alltoall {
 
 template <typename DeviceAlltoall>
 struct alltoall_pass {
-	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int* aux_alloc, int* device_alloc) const {
+	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int* aux_alloc, int* device_alloc, int n_iter) const {
 		ZoneScopedN("alltoall_pass");
 
-		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
 			ZoneScopedN("iter");
 			// imagine a no-op kernel here
@@ -468,10 +464,9 @@ struct device_boundex {
 
 template <typename DeviceBoundex>
 struct stencil_pass {
-	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int*, int* device_alloc) const {
+	void operator()(size_t range, int comm_rank, int comm_size, int* host_alloc, int*, int* device_alloc, int n_iter) const {
 		ZoneScopedN("stencil_pass");
 
-		const int n_iter = 10;
 		for(int j = 0; j < n_iter; ++j) {
 			ZoneScopedN("iter");
 			// imagine a no-op kernel here
@@ -493,21 +488,23 @@ void benchmark(FILE* csv, size_t range, int comm_rank, int comm_size) {
 	int* device_alloc;
 	CUDA_CHECK(cudaMalloc, (void**)&device_alloc, range * sizeof(int));
 
-	const int n_warmup = 2;
-	const int n_passes = 10;
+	const int n_warmup_iters = 2;
+	const int n_measured_iters = 20;
 
-	for(int i = 0; i < n_warmup + n_passes; ++i) {
-		MPI_Barrier(MPI_COMM_WORLD);
+	Pass{}(range, comm_rank, comm_size, host_alloc, host_alloc_aux, device_alloc, n_warmup_iters);
 
-		const auto start = std::chrono::steady_clock::now();
-		Pass{}(range, comm_rank, comm_size, host_alloc, host_alloc_aux, device_alloc);
-		const auto end = std::chrono::steady_clock::now();
+	MPI_Barrier(MPI_COMM_WORLD);
+	const auto start = std::chrono::steady_clock::now();
 
-		if(comm_rank == 0 && i >= n_warmup) {
-			const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-			fprintf(csv, "%d;%s;%zu;MPI+CUDA;%s;%llu\n", comm_size, Pass::benchmark, range, Pass::configuration, (unsigned long long)ns.count());
-			fflush(csv);
-		}
+	Pass{}(range, comm_rank, comm_size, host_alloc, host_alloc_aux, device_alloc, n_measured_iters);
+
+	MPI_Barrier(MPI_COMM_WORLD);
+	const auto end = std::chrono::steady_clock::now();
+
+	if(comm_rank == 0) {
+		const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+		fprintf(csv, "%d;%s;%zu;MPI+CUDA;%s;%llu\n", comm_size, Pass::benchmark, range, Pass::configuration, (unsigned long long)ns.count());
+		fflush(csv);
 	}
 
 	CUDA_CHECK(cudaFree, device_alloc);

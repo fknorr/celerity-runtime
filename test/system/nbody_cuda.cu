@@ -255,8 +255,6 @@ struct nbody_pass {
 			allgather_y.end();
 			allgather_z.end();
 		}
-
-		MPI_Barrier(MPI_COMM_WORLD);
 	}
 
 	static constexpr const char* benchmark = "NBody";
@@ -277,23 +275,25 @@ void benchmark(FILE* csv, int comm_rank, int comm_size, int n, int nIters) {
 	VAL_TYPE* d_buf;
 	CUDA_CHECK(cudaMalloc, &d_buf, buf_count * sizeof(VAL_TYPE));
 
-	const int n_warmup = 2;
-	const int n_passes = 10;
+	const int n_warmup_iters = 2;
+	const int n_measured_iters = 20;
 
-	for(int i = 0; i < n_warmup + n_passes; ++i) {
-		CUDA_CHECK(cudaMemcpy, d_buf, h_buf, buf_count * sizeof(VAL_TYPE), cudaMemcpyHostToDevice);
+	CUDA_CHECK(cudaMemcpy, d_buf, h_buf, buf_count * sizeof(VAL_TYPE), cudaMemcpyHostToDevice);
+	pass{}(comm_rank, comm_size, d_buf, h_buf, n, n_warmup_iters);
 
-		MPI_Barrier(MPI_COMM_WORLD);
-		const auto start = std::chrono::steady_clock::now();
-		pass{}(comm_rank, comm_size, d_buf, h_buf, n, nIters);
-		const auto end = std::chrono::steady_clock::now();
+	MPI_Barrier(MPI_COMM_WORLD);
+	const auto start = std::chrono::steady_clock::now();
 
-		if(comm_rank == 0 && i >= n_warmup) {
-			const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-			fprintf(csv, "%d;%s;%d;CUDA+MPI;%s;%s;%d;%llu\n", comm_size, pass::benchmark, n, pass::configuration, USE_FLOAT ? "single" : "double", nIters,
-			    (unsigned long long)ns.count());
-			fflush(csv);
-		}
+	pass{}(comm_rank, comm_size, d_buf, h_buf, n, n_measured_iters);
+
+	MPI_Barrier(MPI_COMM_WORLD);
+	const auto end = std::chrono::steady_clock::now();
+
+	if(comm_rank == 0) {
+		const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+		fprintf(csv, "%d;%s;%d;CUDA+MPI;%s;%s;%d;%llu\n", comm_size, pass::benchmark, n, pass::configuration, USE_FLOAT ? "single" : "double", nIters,
+		    (unsigned long long)ns.count());
+		fflush(csv);
 	}
 
 	const auto h_vel_x = h_buf + 3 * n;

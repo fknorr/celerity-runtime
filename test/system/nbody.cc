@@ -137,7 +137,7 @@ void bodyPos(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_x_
 		const int group_range = (n_bodies + local_range - 1) / local_range;
 		cgh.parallel_for<class BodyPos>(celerity::nd_range<1>(group_range * local_range, local_range), [=](celerity::nd_item<1> item) {
 			const int i = item.get_global_id(0);
-			if (i < n_bodies) {
+			if(i < n_bodies) {
 				pos_x[i] += vel_x[i] * DT;
 				pos_y[i] += vel_y[i] * DT;
 				pos_z[i] += vel_z[i] * DT;
@@ -148,7 +148,6 @@ void bodyPos(celerity::distr_queue& queue, celerity::buffer<VAL_TYPE, 1>& pos_x_
 
 int main(const int argc, const char** argv) {
 	const int nBodies = (argc > 1) ? atoi(argv[1]) : 262144;
-	const int nIters = (argc > 2) ? atoi(argv[2]) : 10; // simulation iterations
 	const bool debug = false && nBodies <= 32;
 
 	printf("Block size %d, data type: %s.\n", BLOCK_SIZE, USE_FLOAT == 1 ? "float" : "double");
@@ -179,8 +178,8 @@ int main(const int argc, const char** argv) {
 		});
 	});
 
-	const int n_warmup = 2;
-	const int n_passes = 10;
+	const int n_warmup_iters = 2;
+	const int n_measured_iters = 20;
 
 	for(const bool collectives : {false, true}) {
 		celerity::detail::task_manager::NOMERGE_generate_collectives = collectives;
@@ -191,63 +190,64 @@ int main(const int argc, const char** argv) {
 		VAL_TYPE* const buf = h_buf.data();
 		randomizeBodies(buf, buf_count); // init pos / vel data
 
-		for(int i = 0; i < n_warmup + n_passes; ++i) {
-			celerity::buffer<VAL_TYPE, 1> pos_x_buf(buf + 0 * nBodies, nBodies);
-			celerity::buffer<VAL_TYPE, 1> pos_y_buf(buf + 1 * nBodies, nBodies);
-			celerity::buffer<VAL_TYPE, 1> pos_z_buf(buf + 2 * nBodies, nBodies);
-			celerity::buffer<VAL_TYPE, 1> vel_x_buf(buf + 3 * nBodies, nBodies);
-			celerity::buffer<VAL_TYPE, 1> vel_y_buf(buf + 4 * nBodies, nBodies);
-			celerity::buffer<VAL_TYPE, 1> vel_z_buf(buf + 5 * nBodies, nBodies);
-			queue.slow_full_sync();
+		celerity::buffer<VAL_TYPE, 1> pos_x_buf(buf + 0 * nBodies, nBodies);
+		celerity::buffer<VAL_TYPE, 1> pos_y_buf(buf + 1 * nBodies, nBodies);
+		celerity::buffer<VAL_TYPE, 1> pos_z_buf(buf + 2 * nBodies, nBodies);
+		celerity::buffer<VAL_TYPE, 1> vel_x_buf(buf + 3 * nBodies, nBodies);
+		celerity::buffer<VAL_TYPE, 1> vel_y_buf(buf + 4 * nBodies, nBodies);
+		celerity::buffer<VAL_TYPE, 1> vel_z_buf(buf + 5 * nBodies, nBodies);
 
-			const auto start = std::chrono::steady_clock::now();
-			for(int iter = 1; iter <= nIters; iter++) {
-				bodyForce(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
-				bodyPos(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
-			}
-			queue.slow_full_sync();
-			const auto end = std::chrono::steady_clock::now();
-
-			if(i >= n_warmup) {
-				queue.submit([=](celerity::handler& cgh) {
-					celerity::experimental::side_effect csv(csv_obj, cgh);
-					cgh.host_task(celerity::on_master_node, [=] {
-						const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-						fprintf(*csv, "%d;%s;%d;Celerity;%s;%s;%d;%llu\n", total_num_devices, "NBody", nBodies, configuration, USE_FLOAT ? "single" : "double",
-						    nIters, (unsigned long long)ns.count());
-						fflush(*csv);
-					});
-				});
-			}
-
-			if(i == n_warmup + n_passes - 1) {
-				queue.submit([=](celerity::handler& cgh) {
-					celerity::accessor pos_x{pos_x_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
-					celerity::accessor pos_y{pos_y_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
-					celerity::accessor pos_z{pos_z_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
-					celerity::accessor vel_x{vel_x_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
-					celerity::accessor vel_y{vel_y_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
-					celerity::accessor vel_z{vel_z_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
-					cgh.host_task(celerity::on_master_node, [=] {
-						double sum = 0.0;
-						for(int i = 0; i < nBodies; ++i) {
-							sum += pos_x[i] + pos_y[i] + pos_z[i];
-							buf[6 * i + 0] = pos_x[i];
-							buf[6 * i + 1] = pos_y[i];
-							buf[6 * i + 2] = pos_z[i];
-							buf[6 * i + 3] = vel_x[i];
-							buf[6 * i + 4] = vel_y[i];
-							buf[6 * i + 5] = vel_z[i];
-						}
-						const auto hash = wyhash(buf, buf_count * sizeof(VAL_TYPE), 0, _wyp);
-						printf("%12s result hash: %16lX, position avg: %15.8f\n", configuration, hash, sum / nBodies);
-					});
-				});
-			}
-
-			// TODO: workaround for current experimental Celerity branch, remove when no longer needed
-			queue.slow_full_sync();
+		for(int i = 0; i < n_warmup_iters; i++) {
+			bodyForce(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
+			bodyPos(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
 		}
+
+		queue.slow_full_sync();
+		const auto start = std::chrono::steady_clock::now();
+
+		for(int i = 0; i < n_measured_iters; i++) {
+			bodyForce(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
+			bodyPos(queue, pos_x_buf, pos_y_buf, pos_z_buf, vel_x_buf, vel_y_buf, vel_z_buf);
+		}
+
+		queue.slow_full_sync();
+		const auto end = std::chrono::steady_clock::now();
+
+		queue.submit([=](celerity::handler& cgh) {
+			celerity::experimental::side_effect csv(csv_obj, cgh);
+			cgh.host_task(celerity::on_master_node, [=] {
+				const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+				fprintf(*csv, "%d;%s;%d;Celerity;%s;%s;%d;%llu\n", total_num_devices, "NBody", nBodies, configuration, USE_FLOAT ? "single" : "double",
+				    n_measured_iters, (unsigned long long)ns.count());
+				fflush(*csv);
+			});
+		});
+
+		queue.submit([=](celerity::handler& cgh) {
+			celerity::accessor pos_x{pos_x_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
+			celerity::accessor pos_y{pos_y_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
+			celerity::accessor pos_z{pos_z_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
+			celerity::accessor vel_x{vel_x_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
+			celerity::accessor vel_y{vel_y_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
+			celerity::accessor vel_z{vel_z_buf, cgh, celerity::access::all{}, celerity::read_only_host_task};
+			cgh.host_task(celerity::on_master_node, [=] {
+				double sum = 0.0;
+				for(int i = 0; i < nBodies; ++i) {
+					sum += pos_x[i] + pos_y[i] + pos_z[i];
+					buf[6 * i + 0] = pos_x[i];
+					buf[6 * i + 1] = pos_y[i];
+					buf[6 * i + 2] = pos_z[i];
+					buf[6 * i + 3] = vel_x[i];
+					buf[6 * i + 4] = vel_y[i];
+					buf[6 * i + 5] = vel_z[i];
+				}
+				const auto hash = wyhash(buf, buf_count * sizeof(VAL_TYPE), 0, _wyp);
+				printf("%12s result hash: %16lX, position avg: %15.8f\n", configuration, hash, sum / nBodies);
+			});
+		});
+
+		// TODO: workaround for current experimental Celerity branch, remove when no longer needed
+		queue.slow_full_sync();
 	}
 
 	queue.submit([=](celerity::handler& cgh) {
