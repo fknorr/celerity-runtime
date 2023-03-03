@@ -105,7 +105,7 @@ void allgather_benchmark(benchmark_runner& runner) {
 
 
 void gather_broadcast_benchmark(benchmark_runner& runner) {
-	for(const auto range : {4_Ki, 256_Ki, 1_Mi, 16_Mi, 256_Mi}) {
+	for(const auto range : {256_i, 32_Ki, 128_Ki, 2_Mi, 32_Mi}) {
 		celerity::buffer<int> buf_a(range);
 		celerity::buffer<int> buf_b(range);
 
