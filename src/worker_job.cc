@@ -866,10 +866,9 @@ namespace detail {
 				    m_send_buffer.get_payload_size_bytes(), fmt::join(m_send_buffer.get_chunk_byte_sizes(), ", "),
 				    fmt::join(m_send_buffer.get_chunk_byte_offsets(), ", "), m_recv_buffer.get_payload_size_bytes(),
 				    fmt::join(m_recv_buffer.get_chunk_byte_sizes(), ", "), fmt::join(m_recv_buffer.get_chunk_byte_offsets(), ", "));
-				MPI_Request request;
 				MPI_Ialltoallv(m_send_buffer.get_payload(), m_send_buffer.get_chunk_byte_sizes().data(), m_send_buffer.get_chunk_byte_offsets().data(),
 				    MPI_BYTE, m_recv_buffer.get_payload(), m_recv_buffer.get_chunk_byte_sizes().data(), m_recv_buffer.get_chunk_byte_offsets().data(), MPI_BYTE,
-				    MPI_COMM_WORLD, &request);
+				    MPI_COMM_WORLD, &m_request);
 			}
 
 			const auto& local_devices = runtime::get_instance().get_local_devices(); // TODO do not get_instance()
