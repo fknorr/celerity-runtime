@@ -431,8 +431,7 @@ struct device_boundex {
 		ZoneScopedN("device_boundex");
 
 		const size_t rank_range = buffer_range / comm_size;
-		const size_t boundary_range = static_cast<size_t>(sqrt(buffer_range));
-		assert(boundary_range * boundary_range == buffer_range);
+		const size_t boundary_range = std::min(static_cast<size_t>(sqrt(buffer_range)), rank_range);
 
 		if(comm_rank > 0) {
 			ZoneScopedN("d2h");
