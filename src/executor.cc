@@ -118,6 +118,11 @@ namespace detail {
 					m_jobs[d].unsatisfied_dependencies--;
 					if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
 				}
+				for(const auto& d : job_handle.HACK_collective_order_dependents) {
+					assert(m_jobs.count(d) == 1);
+					m_jobs[d].unsatisfied_dependencies--;
+					if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
+				}
 
 				if(isa<device_execute_job>(job_handle.job.get())) {
 					const device_id did = static_cast<device_execute_job*>(job_handle.job.get())->get_device_id();
@@ -166,6 +171,7 @@ namespace detail {
 						m_jobs[d].unsatisfied_dependencies--;
 						if(m_jobs[d].unsatisfied_dependencies == 0) { HACK_new_ready_jobs_after_collective_start.push_back(d); }
 					}
+					m_jobs.at(cid).HACK_collective_order_dependents.clear();
 				}
 
 				ready_jobs = std::move(HACK_new_ready_jobs_after_collective_start);
