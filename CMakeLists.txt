@@ -34,6 +34,8 @@ set(CELERITY_CMAKE_DIR "${PROJECT_SOURCE_DIR}/cmake")
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CELERITY_CMAKE_DIR}")
 find_package(MPI 2.0 REQUIRED)
 find_package(Threads REQUIRED)
+# TODO: Make optional
+find_package(CUDAToolkit REQUIRED)
 
 set(CELERITY_SYCL_IMPL "OFF" CACHE STRING "hipSYCL|DPC++")
 
@@ -257,6 +259,7 @@ target_link_libraries(celerity_runtime PUBLIC
   gch::small_vector
   libenvpp::libenvpp
   ${SYCL_LIB}
+  CUDA::cuda_driver
   # TODO: This seems to prevent mixing debug/release builds of celerity and user applications
   foonathan_memory
 )
