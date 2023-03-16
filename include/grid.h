@@ -29,6 +29,8 @@ namespace detail {
 
 		template <int Dims>
 		subrange<Dims> grid_box_to_subrange(const GridBox<Dims>& box) {
+			if(box.empty()) return {}; // an empty GridBox can have min > max, which would result in an invalid subrange
+
 			const auto& box_min = box.get_min();
 			const auto& box_max = box.get_max();
 			cl::sycl::id<Dims> min;

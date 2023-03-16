@@ -128,7 +128,7 @@ namespace detail {
 
 		q.submit([=](handler& cgh) {
 			accessor acc{sum, cgh, celerity::access::all{}, celerity::read_only_host_task};
-			cgh.host_task(experimental::collective, [=](experimental::collective_partition p) {
+			cgh.host_task(experimental::host_collective, [=](experimental::collective_partition p) {
 				INFO("Node " << p.get_node_index());
 				CHECK(acc[0] == expected);
 			});
@@ -258,8 +258,11 @@ namespace detail {
 				}
 			});
 		});
+
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
+	// TODO fails with distr-gathers on an assertion due to overlapping writes. We should detect those in the frontend!
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "generating same task graph on different nodes", "[task-graph]") {
 		distr_queue q;
 		REQUIRE(runtime::get_instance().get_num_nodes() > 1);
@@ -269,29 +272,32 @@ namespace detail {
 		buffer<int, 1> buff_a(cl::sycl::range<1>{1});
 		q.submit([=](handler& cgh) {
 			accessor write_a{buff_a, cgh, celerity::access::all{}, celerity::write_only, celerity::no_init};
-			cgh.parallel_for<class UKN(write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)write_a; });
 		});
 
 		buffer<int, 1> buff_b(cl::sycl::range<1>{1});
 		q.submit([=](handler& cgh) {
 			accessor write_b{buff_b, cgh, celerity::access::all{}, celerity::write_only, celerity::no_init};
-			cgh.parallel_for<class UKN(write_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(write_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)write_b; });
 		});
 
 		q.submit([=](handler& cgh) {
 			accessor read_write_a{buff_a, cgh, celerity::access::all{}, celerity::read_write};
-			cgh.parallel_for<class UKN(read_write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(read_write_a)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)read_write_a; });
 		});
 
 		q.submit([=](handler& cgh) {
 			accessor read_write_a{buff_a, cgh, celerity::access::all{}, celerity::read_write};
 			accessor read_write_b{buff_b, cgh, celerity::access::all{}, celerity::read_write};
-			cgh.parallel_for<class UKN(read_write_a_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(read_write_a_b)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {
+				(void)read_write_a;
+				(void)read_write_b;
+			});
 		});
 
 		q.submit([=](handler& cgh) {
 			accessor write_a{buff_a, cgh, celerity::access::all{}, celerity::write_only, celerity::no_init};
-			cgh.parallel_for<class UKN(write_a_again)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) {});
+			cgh.parallel_for<class UKN(write_a_again)>(cl::sycl::range<1>{N}, [=](celerity::item<1> item) { (void)write_a; });
 		});
 
 		q.slow_full_sync();
@@ -321,6 +327,8 @@ namespace detail {
 			MPI_Recv(received_graph.data(), rec_graph_str_length, MPI_BYTE, 1, 0, test_communicator, MPI_STATUS_IGNORE);
 			CHECK(received_graph == graph_str);
 		}
+
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "nodes do not receive commands for empty chunks", "[command-graph]") {
@@ -341,7 +349,277 @@ namespace detail {
 			// more than one chunk (assuming current naive split behavior).
 			cgh.parallel_for<class UKN(kernel)>(buf.get_range(), [=](item<2> it) { acc[it] = 0; });
 		});
+
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Gather produces the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(producer)>(range<1>(1000), [=](item<1> it) { acc[it] = it.get_linear_id(); });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task); // Gather
+			cgh.host_task(range<1>(1), [=](partition<1> part) {
+				for(size_t i = 200; i < 200 + 500; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Allgather produces the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(producer)>(range<1>(1000), [=](item<1> it) { acc[it] = it.get_linear_id(); });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task); // Allgather
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				for(size_t i = 200; i < 200 + 500; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Bcast produces the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::fixed<1>({200, 500}), read_only_host_task); // Bcast
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				for(size_t i = 200; i < 200 + 500; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit Scatter produces the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), read_only_host_task); // Bcast
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				const auto sr = part.get_subrange();
+				for(size_t i = sr.offset[0]; i < sr.offset[0] + sr.range[0]; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "NBody gather pattern", "[gather]") {
+		constexpr size_t n_bodies = 1048576;
+		constexpr size_t block_size = 256;
+		constexpr size_t n_iter = 3;
+
+		std::vector<sycl::float4> posHost(n_bodies);
+		std::vector<sycl::float4> velHost(n_bodies);
+		for(size_t i = 0; i < n_bodies; ++i) {
+			posHost[i] = sycl::float4(i, i, i, i);
+			velHost[i] = sycl::float4(0, 0, 0, 0);
+		}
+
+		buffer<sycl::float4> posBuff(posHost.data(), n_bodies);
+		buffer<sycl::float4> velBuff(velHost.data(), n_bodies);
+		distr_queue q;
+
+		for(size_t i = 0; i < n_iter; ++i) {
+			q.submit([=](handler& cgh) {
+				accessor readPos(posBuff, cgh, celerity::access::all(), read_only); // Allgather
+				accessor rwVel(velBuff, cgh, celerity::access::one_to_one(), read_write);
+				cgh.parallel_for<class UKN(body_force)>(
+				    nd_range<1>(n_bodies, block_size), [=](nd_item<1> it) { rwVel[it.get_global_id()] += readPos[n_bodies - 1 - it.get_global_id()]; });
+			});
+
+			q.submit([=](handler& cgh) {
+				accessor rwPos(posBuff, cgh, celerity::access::one_to_one(), read_write);
+				accessor readVel(velBuff, cgh, celerity::access::one_to_one(), read_only);
+				cgh.parallel_for<class UKN(body_pos_update)>(range<1>(n_bodies), [=](item<1> it) { rwPos[it] += readVel[it]; });
+			});
+		}
+
+		q.submit([=](handler& cgh) {
+			accessor readPos{posBuff, cgh, celerity::access::all{}, read_only_host_task}; // Gather
+			accessor readVel{velBuff, cgh, celerity::access::all{}, read_only_host_task}; // Gather
+			cgh.host_task(celerity::on_master_node, [=] {
+				std::vector<sycl::float4> posCheck(n_bodies);
+				std::vector<sycl::float4> velCheck(n_bodies);
+				for(size_t i = 0; i < n_bodies; ++i) {
+					posCheck[i] = sycl::float4(i, i, i, i);
+					velCheck[i] = sycl::float4(0, 0, 0, 0);
+				}
+				for(size_t j = 0; j < n_iter; ++j) {
+					for(size_t i = 0; i < n_bodies; ++i) {
+						velCheck[i] += posCheck[n_bodies - 1 - i];
+					}
+					for(size_t i = 0; i < n_bodies; ++i) {
+						posCheck[i] += velCheck[i];
+					}
+				}
+				for(size_t i = 0; i < n_bodies; ++i) {
+					for(size_t j = 0; j < 4; ++j) {
+						REQUIRE_LOOP(readVel[i][j] == velCheck[i][j]);
+						REQUIRE_LOOP(readPos[i][j] == posCheck[i][j]);
+					}
+				}
+			});
+		});
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "Gather from a strided non-dim0 split", "[gather]") {
+		constexpr size_t grid_size = 256;
+		const range<2> range = {grid_size, grid_size};
+
+		celerity::buffer<int, 2> buf_a(range);
+		celerity::buffer<int, 2> buf_b(range);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor a(buf_a, cgh, celerity::access::one_to_one(), write_only, no_init);
+			experimental::hint(cgh, experimental::hints::tiled_split()); // requires num_nodes >= 4
+			cgh.parallel_for<class UKN(producer)>(range, [=](celerity::item<2> it) { a[it] = it.get_linear_id(); });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor a(buf_a, cgh, celerity::access::all(), read_only); // overgenerous read to trigger an Allgather
+			accessor b(buf_b, cgh, celerity::access::one_to_one(), write_only, no_init);
+			cgh.parallel_for<class UKN(producer)>(range, [=](celerity::item<2> it) { b[it] = a[it]; });
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor b{buf_b, cgh, celerity::access::all{}, read_only_host_task}; // Gather
+			cgh.host_task(celerity::on_master_node, [=] {
+				for(int i = 0; size_t(i) < range.size(); ++i) {
+					REQUIRE_LOOP(b.get_pointer()[i] == i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit broadcasts produce the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), read_only_host_task); // Broadcast
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				for(size_t i = 0; i < 1000; ++i) {
+					REQUIRE_LOOP(acc[i] == i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit scatters produce the expected data distribution", "[gather]") {
+		buffer<size_t> buf(1000);
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+			cgh.host_task(on_master_node, [=] {
+				for(size_t i = 0; i < 1000; ++i) {
+					acc[i] = i;
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), read_only_host_task); // Scatter
+			cgh.host_task(range<1>(1000), [=](partition<1> part) {
+				const auto& sr = part.get_subrange();
+				for(size_t i = 0; i < sr.range[0]; ++i) {
+					REQUIRE_LOOP(acc[sr.offset[0] + i] == sr.offset[0] + i);
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "implicit alltoall produces the expected data distribution", "[gather]") {
+		buffer<sycl::int2, 2> buf({100, 100});
+		distr_queue q;
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::access::one_to_one(), write_only_host_task, no_init);
+			cgh.host_task(buf.get_range(), [acc](partition<2> part) {
+				const auto& sr = part.get_subrange();
+				for(size_t i = 0; i < sr.range[0]; ++i) {
+					for(size_t j = 0; j < sr.range[1]; ++j) {
+						const size_t x = sr.offset[0] + i;
+						const size_t y = sr.offset[1] + j;
+						acc[x][y] = sycl::int2{static_cast<int>(x), static_cast<int>(y)};
+					}
+				}
+			});
+		});
+
+		q.submit([=](handler& cgh) {
+			accessor acc(buf, cgh, celerity::experimental::access::transposed<1, 0>(), read_only_host_task);
+			cgh.host_task(buf.get_range(), [acc](partition<2> part) {
+				const auto& sr = part.get_subrange();
+				for(size_t i = 0; i < sr.range[0]; ++i) {
+					for(size_t j = 0; j < sr.range[1]; ++j) {
+						const size_t x = sr.offset[0] + i;
+						const size_t y = sr.offset[1] + j;
+						const auto got = acc[x][y];
+						const auto expected = sycl::int2{static_cast<int>(x), static_cast<int>(y)};
+						REQUIRE_LOOP(got[0] == expected[0]);
+						REQUIRE_LOOP(got[1] == expected[1]);
+					}
+				}
+			});
+		});
+
+		// TODO can we somehow verify that a gather took place in place of a push-await cascade?
+		q.slow_full_sync(); // NOCOMMIT keep the buffer around until the queue has been drained
+	}
 } // namespace detail
 } // namespace celerity

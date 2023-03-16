@@ -72,7 +72,7 @@ namespace detail {
 
 		// TODO: For now we can only handle newly created tasks (i.e. no existing dependencies/dependents)
 		assert(std::distance(original->get_dependencies().begin(), original->get_dependencies().end()) == 0);
-		assert(std::distance(original->get_dependents().begin(), original->get_dependents().end()) == 0);
+		assert(std::distance(original->get_dependent_nodes().begin(), original->get_dependent_nodes().end()) == 0);
 
 		chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
 		const auto chunks = split_equal(full_chunk, tsk.get_granularity(), m_num_chunks, tsk.get_dimensions());

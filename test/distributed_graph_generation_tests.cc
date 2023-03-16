@@ -6,6 +6,7 @@
 #include <type_traits>
 #include <unordered_set>
 
+#include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
 
@@ -224,12 +225,13 @@ class command_query {
 		return for_all_commands([&successors, &kind](const node_id nid, const abstract_command* cmd) {
 			for(const auto* expected : successors.m_commands_by_node[nid]) {
 				bool found = false;
-				for(const auto received : cmd->get_dependents()) {
-					if(received.node == expected) {
+				for(const auto received : cmd->get_dependent_nodes()) {
+					if(received == expected) {
 						found = true;
-						if(kind.has_value() && received.kind != *kind) {
+						const auto& dependency = received->get_dependency(cmd);
+						if(kind.has_value() && dependency.kind != *kind) {
 							UNSCOPED_INFO(fmt::format("Expected command {} on node {} to have successor {} with kind {}, but found kind {}", cmd->get_cid(),
-							    nid, expected->get_cid(), *kind, received.kind));
+							    nid, expected->get_cid(), *kind, dependency.kind));
 							return false;
 						}
 					}
@@ -284,10 +286,19 @@ class command_query {
 
 		std::vector<std::unordered_set<const abstract_command*>> adjacent(m_commands_by_node.size());
 		for_all_commands([&adjacent, find_predecessors, kind_filter](const node_id nid, const abstract_command* cmd) {
-			const auto iterable = find_predecessors ? cmd->get_dependencies() : cmd->get_dependents();
-			for(auto it = iterable.begin(); it != iterable.end(); ++it) {
-				if(kind_filter.has_value() && it->kind != *kind_filter) continue;
-				adjacent[nid].insert(it->node);
+			if(find_predecessors) {
+				for(const auto& dep : cmd->get_dependencies()) {
+					if(kind_filter.has_value() && dep.kind != *kind_filter) continue;
+					adjacent[nid].insert(dep.node);
+				}
+			} else {
+				for(const auto node : cmd->get_dependent_nodes()) {
+					if(kind_filter.has_value()) {
+						const auto& dep = node->get_dependency(cmd);
+						if(dep.kind != *kind_filter) continue;
+					}
+					adjacent[nid].insert(node);
+				}
 			}
 		});
 
@@ -348,6 +359,11 @@ class command_query {
 		if(isa<push_command>(cmd)) return command_type::push;
 		if(isa<await_push_command>(cmd)) return command_type::await_push;
 		if(isa<reduction_command>(cmd)) return command_type::reduction;
+		if(isa<gather_command>(cmd)) return command_type::gather;
+		if(isa<allgather_command>(cmd)) return command_type::allgather;
+		if(isa<broadcast_command>(cmd)) return command_type::broadcast;
+		if(isa<scatter_command>(cmd)) return command_type::scatter;
+		if(isa<alltoall_command>(cmd)) return command_type::alltoall;
 		throw query_exception("Unknown command type");
 	}
 
@@ -360,6 +376,11 @@ class command_query {
 		case command_type::push: return "push";
 		case command_type::await_push: return "await_push";
 		case command_type::reduction: return "reduction";
+		case command_type::gather: return "gather";
+		case command_type::allgather: return "allgather";
+		case command_type::broadcast: return "broadcast";
+		case command_type::scatter: return "scatter";
+		case command_type::alltoall: return "alltoall";
 		default: return "<unknown>";
 		}
 	}
@@ -377,6 +398,14 @@ class dist_cdag_test_context {
 			m_cdags.emplace_back(std::make_unique<command_graph>());
 			m_dggens.emplace_back(std::make_unique<distributed_graph_generator>(num_nodes, devices_per_node, nid, *m_cdags[nid], *m_tm));
 		}
+
+		m_tm->register_task_callback([this](const task* const tsk) {
+			if(tsk->get_type() == task_type::forward) {
+				for(auto& dggen : m_dggens) {
+					dggen->build_task(*tsk);
+				}
+			}
+		});
 	}
 
 	~dist_cdag_test_context() { maybe_print_graphs(); }
@@ -385,7 +414,7 @@ class dist_cdag_test_context {
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
-		m_tm->add_buffer(bid, range_cast<3>(size), mark_as_host_initialized);
+		m_tm->add_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		for(auto& dggen : m_dggens) {
 			dggen->add_buffer(bid, range_cast<3>(size), Dims);
 		}
@@ -770,4 +799,175 @@ TEST_CASE("per-device 2d oversubscribed chunks cover the same region as the corr
 	for(size_t i = 0; i < 4; ++i) {
 		REQUIRE_LOOP(full_chunks_by_device[i].empty());
 	}
+}
+
+TEMPLATE_TEST_CASE_SIG(
+    "graph generator generates push-/await-push-free gather commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+	const subrange<Dims> consumer_subrange{id_cast<Dims>(id<3>(110, 120, 130)), range_cast<Dims>(range<3>(400, 500, 600))};
+
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(producer_range);
+
+	// Allgather access pattern - see task_graph_tests "task manager detects gather pattern between dependent tasks"
+	const auto tid_producer =
+	    dctx.device_compute<class UKN(producer)>(producer_range).discard_write(buf, acc::one_to_one()).hint(experimental::hints::tiled_split()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
+}
+
+TEMPLATE_TEST_CASE_SIG("graph generator does not duplicate gather commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+	const subrange<Dims> consumer_subrange{id_cast<Dims>(id<3>(110, 120, 130)), range_cast<Dims>(range<3>(400, 500, 600))};
+
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(producer_range);
+
+	// Allgather access pattern - see task_graph_tests "task manager detects gather pattern between dependent tasks"
+	const auto tid_producer =
+	    dctx.device_compute<class UKN(producer)>(producer_range).discard_write(buf, acc::one_to_one()).hint(experimental::hints::tiled_split()).submit();
+	const auto tid_consumer_1 = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
+	const auto tid_consumer_2 = dctx.device_compute<class UKN(consumer)>(sycl::range<1>(1000)).read(buf, acc::fixed(consumer_subrange)).submit();
+}
+
+TEMPLATE_TEST_CASE_SIG(
+    "graph generator generates push-/await-push-free broadcast commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+	const subrange<Dims> consumer_subrange{id_cast<Dims>(id<3>(110, 120, 130)), range_cast<Dims>(range<3>(400, 500, 600))};
+
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(producer_range);
+
+	const auto tid_producer = dctx.host_task(range<1>(1)).discard_write(buf, acc::all()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(producer_range).read(buf, acc::all()).submit();
+}
+
+TEST_CASE("graph generator gather outbound anti-dependencies", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(range<1>(1000));
+
+	const auto tid_producer = dctx.device_compute<class UKN(producer)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(range<1>(1)).read(buf, acc::all()).submit(); // Gather
+	const auto tid_overwriter = dctx.device_compute<class UKN(overwriter)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+}
+
+TEST_CASE("graph generator broadcast inbound anti-dependencies", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(range<1>(1000));
+
+	const auto tid_init = dctx.device_compute<class UKN(init)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_producer = dctx.device_compute<class UKN(producer)>(range<1>(1)).discard_write(buf, acc::all()).submit(); // Gather
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(buf.get_range()).read(buf, acc::all()).submit();
+}
+
+TEMPLATE_TEST_CASE_SIG(
+    "graph generator generates push-/await-push-free scatter commands", "[distributed_graph_generator][gather]", ((int Dims), Dims), 1, 2, 3) {
+	const auto producer_range = range_cast<Dims>(range<3>(1000, 1000, 1000));
+
+	dist_cdag_test_context dctx(4, 2);
+	auto buf = dctx.create_buffer(producer_range);
+
+	const auto tid_producer = dctx.host_task(range<1>(1)).discard_write(buf, acc::all()).submit();
+	const auto tid_consumer = dctx.device_compute<class UKN(consumer)>(buf.get_range()).read(buf, acc::one_to_one()).submit();
+}
+
+TEST_CASE("graph generator generates allgathers for RSim pattern", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	size_t width = 1000;
+	size_t n_iters = 3;
+	auto buf = dctx.create_buffer(range<2>(n_iters, width));
+
+	const auto access_up_to_ith_line_all = [&](size_t i) { //
+		return celerity::access::fixed<2>({{0, 0}, {i, width}});
+	};
+	const auto access_ith_line_1to1 = [](size_t i) {
+		return [i](celerity::chunk<2> chnk) { return celerity::subrange<2>({i, chnk.offset[0]}, {1, chnk.range[0]}); };
+	};
+
+	for(size_t i = 0; i < n_iters; ++i) {
+		dctx.device_compute<class UKN(rsim)>(range<2>(width, width))
+		    .read(buf, access_up_to_ith_line_all(i))
+		    .discard_write(buf, access_ith_line_1to1(i))
+		    .submit();
+	}
+}
+
+TEST_CASE("graph generator no collectives for stencil", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(2);
+	auto buf = dctx.create_buffer(range<2>(1000, 1000));
+
+	const auto tid_init = dctx.device_compute<class UKN(init)>(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_step_1 =
+	    dctx.device_compute<class UKN(step)>(buf.get_range()).read(buf, acc::neighborhood(1, 1)).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_step_2 =
+	    dctx.device_compute<class UKN(step)>(buf.get_range()).read(buf, acc::neighborhood(1, 1)).discard_write(buf, acc::one_to_one()).submit();
+	const auto tid_consume = dctx.device_compute<class UKN(consume)>(buf.get_range()).read(buf, acc::one_to_one()).submit();
+}
+
+TEST_CASE("graph generator generates alltoalls for transposition pattern", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4, 4);
+	celerity::range<2> range(1000, 1000);
+	auto buf = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(producer)>(range).discard_write(buf, celerity::access::one_to_one()).submit();
+	dctx.device_compute<class UKN(consumer)>(range).read(buf, experimental::access::transposed<1, 0>()).submit();
+}
+
+TEST_CASE("graph generator generates allgathers for striped chain-matrix-multiply", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	celerity::range<2> range(1000, 1000);
+	auto buf_a = dctx.create_buffer(range);
+	auto buf_b = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(init)>(celerity::range<1>(1)) //
+	    .discard_write(buf_a, celerity::access::all())
+	    .submit();
+
+	for(int i = 0; i < 3; ++i) {
+		dctx.device_compute<class UKN(mul)>(range)
+		    .read(buf_a, celerity::access::slice<2>(0))
+		    .read(buf_a, celerity::access::slice<2>(1))
+		    .discard_write(buf_b, celerity::access::one_to_one())
+		    .submit();
+
+		std::swap(buf_a, buf_b);
+	}
+}
+
+TEST_CASE("graph generator generates no collectives for tiled chain-matrix-transpose-multiply", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	celerity::range<2> range(1000, 1000);
+	auto buf_a = dctx.create_buffer(range);
+	auto buf_at = dctx.create_buffer(range);
+	auto buf_b = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(init)>(range) //
+	    .discard_write(buf_a, celerity::access::one_to_one())
+	    .hint(experimental::hints::tiled_split())
+	    .submit();
+
+	for(int i = 0; i < 3; ++i) {
+		dctx.device_compute<class UKN(transpose)>(range)
+		    .read(buf_a, experimental::access::transposed<1, 0>())
+		    .discard_write(buf_at, celerity::access::one_to_one())
+		    .hint(experimental::hints::tiled_split())
+		    .submit();
+
+		dctx.device_compute<class UKN(mul)>(range)
+		    .read(buf_at, celerity::access::slice<2>(0))
+		    .read(buf_a, celerity::access::slice<2>(1))
+		    .discard_write(buf_b, celerity::access::one_to_one())
+		    .hint(experimental::hints::tiled_split())
+		    .submit();
+
+		std::swap(buf_a, buf_b);
+	}
+}
+
+TEST_CASE("graph generator generates alltoalls for transposed-write/slice-read pattern that depends on split", "[distributed_graph_generator][gather]") {
+	dist_cdag_test_context dctx(4);
+	celerity::range<2> range(1000, 1000);
+	auto buf = dctx.create_buffer(range);
+
+	dctx.device_compute<class UKN(producer)>(range).discard_write(buf, experimental::access::transposed<1, 0>()).submit();
+	dctx.device_compute<class UKN(consumer)>(range).read(buf, celerity::access::slice<2>(1)).submit();
 }

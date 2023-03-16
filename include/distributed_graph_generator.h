@@ -94,20 +94,29 @@ class distributed_graph_generator {
 		return cmd;
 	}
 
-	void generate_execution_commands(const task& tsk);
+	std::vector<chunk<3>> split_task(const split_constraints& constraints) const;
+
+	void generate_execution_commands(const command_group_task& tsk);
 
 	void generate_anti_dependencies(
 	    task_id tid, buffer_id bid, const region_map_t<write_command_state>& last_writers_map, const GridRegion<3>& write_req, abstract_command* write_cmd);
 
-	void process_task_side_effect_requirements(const task& tsk);
+	void process_task_side_effect_requirements(const command_group_task& tsk);
 
 	void set_epoch_for_new_commands(const abstract_command* const epoch_or_horizon);
 
 	void reduce_execution_front_to(abstract_command* const new_front);
 
-	void generate_epoch_command(const task& tsk);
+	void generate_gather_command(const forward_task& tsk);
+	void generate_broadcast_command(const forward_task& tsk);
+	void generate_scatter_command(const forward_task& tsk);
+	void generate_alltoall_command(const forward_task& tsk);
 
-	void generate_horizon_command(const task& tsk);
+	void generate_collective_commands(const forward_task& tsk);
+
+	void generate_epoch_command(const epoch_task& tsk);
+
+	void generate_horizon_command(const horizon_task& tsk);
 
 	void generate_epoch_dependencies(abstract_command* cmd);
 
@@ -137,6 +146,8 @@ class distributed_graph_generator {
 
 	// Side effects on the same host object create true dependencies between task commands, so we track the last effect per host object.
 	side_effect_map m_host_object_last_effects;
+
+	std::unordered_map<collective_group_id, command_id> m_last_collective_commands;
 };
 
 } // namespace celerity::detail

@@ -193,7 +193,7 @@ std::vector<chunk<3>> split_2d(const chunk<3>& full_chunk, const range<3>& granu
 
 using buffer_requirements_map = std::unordered_map<buffer_id, std::unordered_map<access_mode, GridRegion<3>>>;
 
-static buffer_requirements_map get_buffer_requirements_for_mapped_access(const task& tsk, subrange<3> sr, const range<3> global_size) {
+static buffer_requirements_map get_buffer_requirements_for_mapped_access(const command_group_task& tsk, subrange<3> sr, const range<3> global_size) {
 	buffer_requirements_map result;
 	const auto& access_map = tsk.get_buffer_access_map();
 	const auto buffers = access_map.get_accessed_buffers();
@@ -223,11 +223,13 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	const auto epoch_to_prune_before = m_epoch_for_new_commands;
 
 	if(tsk.get_type() == task_type::epoch) {
-		generate_epoch_command(tsk);
+		generate_epoch_command(dynamic_cast<const epoch_task&>(tsk));
 	} else if(tsk.get_type() == task_type::horizon) {
-		generate_horizon_command(tsk);
+		generate_horizon_command(dynamic_cast<const horizon_task&>(tsk));
 	} else if(tsk.get_type() == task_type::device_compute || tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::master_node) {
-		generate_execution_commands(tsk);
+		generate_execution_commands(dynamic_cast<const command_group_task&>(tsk));
+	} else if(tsk.get_type() == task_type::forward) {
+		generate_collective_commands(dynamic_cast<const forward_task&>(tsk));
 	} else {
 		throw std::runtime_error("Task type NYI");
 	}
@@ -245,28 +247,420 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	// If a new epoch was completed in the CDAG before the current task, prune all predecessor commands of that epoch.
 	prune_commands_before(epoch_to_prune_before);
 
-	assert(!m_current_cmd_batch.empty() || (tsk.get_type() == task_type::master_node && m_local_nid != 0));
+	// TODO assert(!m_current_cmd_batch.empty() || (!tsk.has_variable_split() && m_local_nid != 0));
 	return std::move(m_current_cmd_batch);
 }
 
-void distributed_graph_generator::generate_execution_commands(const task& tsk) {
+
+std::vector<chunk<3>> distributed_graph_generator::split_task(const split_constraints& constraints) const {
 	// TODO: Pieced together from naive_split_transformer. We can probably do without creating all chunks and discarding everything except our own.
 	// TODO: Or - maybe - we actually want to store all chunks somewhere b/c we'll probably need them frequently for lookups later on?
-	chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
+	const auto& geometry = constraints.get_task_geometry();
+	chunk<3> full_chunk{geometry.global_offset, geometry.global_size, geometry.global_size};
 	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable (oversubscription - although we probably only want to do this for local chunks)
-	const auto distributed_chunks = ([&] {
-		if(tsk.has_variable_split()) {
-			if(tsk.get_hint<experimental::hints::tiled_split>() != nullptr) {
-				return split_2d(full_chunk, tsk.get_granularity(), num_chunks);
-			} else {
-				return split_1d(full_chunk, tsk.get_granularity(), num_chunks);
-			}
-		} else {
-			return std::vector<chunk<3>>{full_chunk};
+
+	std::vector<chunk<3>> chunks;
+	if(constraints.is_splittable()) {
+		const auto split = constraints.requires_tiled_split() ? split_2d : split_1d;
+		chunks = split(full_chunk, geometry.granularity, num_chunks);
+	} else {
+		chunks = {full_chunk};
+	}
+	assert(chunks.size() <= num_chunks); // We may have created less than requested
+	assert(!chunks.empty());
+	return chunks;
+}
+
+
+bool combined_range_mappers_constant(const forward_task::access& access) {
+	GridRegion<3> combined_region, const_region;
+	for(const auto rm : access.range_mappers) {
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.constraints.get_task_geometry()));
+		combined_region = GridRegion<3>::merge(combined_region, rm_box);
+		if(rm->get_properties(access.constraints.get_split_geometry()).is_constant) { const_region = GridRegion<3>::merge(const_region, rm_box); }
+	}
+	return combined_region == const_region;
+}
+
+
+bool combined_range_mappers_non_overlapping(const forward_task::access& access) {
+	if(!std::all_of(access.range_mappers.begin(), access.range_mappers.end(),
+	       [&](const range_mapper_base* const rm) { return rm->get_properties(access.constraints.get_split_geometry()).is_non_overlapping; })) {
+		return false;
+	}
+
+	GridRegion<3> combined_region;
+	for(const auto rm : access.range_mappers) {
+		const auto rm_box = subrange_to_grid_box(apply_range_mapper(rm, access.constraints.get_task_geometry()));
+		if(!GridRegion<3>::intersect(combined_region, rm_box).empty()) return false;
+		combined_region = GridRegion<3>::merge(combined_region, rm_box);
+	}
+	return true;
+}
+
+
+// split or an experimental::transposed<0, 1> RM would be considered a "trivial transposition"
+bool is_non_trivial_transposition(const forward_task::access& producer, const forward_task::access& consumer) {
+	// TODO relax: if there are more than one consumer RMs but some are dataflow-free, this can still be a transposition
+	// (think producer_rms={split}, consumer_rms={split, transposed}
+	if(producer.range_mappers.size() != 1) return false;
+	if(consumer.range_mappers.size() != 1) return false;
+
+	const auto producer_rm = producer.range_mappers.front();
+	const auto consumer_rm = consumer.range_mappers.front();
+
+	const auto produced_sr = apply_range_mapper(producer_rm, producer.constraints.get_task_geometry());
+	const auto consumed_sr = apply_range_mapper(consumer_rm, consumer.constraints.get_task_geometry());
+	if(produced_sr != consumed_sr) return false;
+
+	const auto producer_properties = producer.range_mappers.front()->get_properties(producer.constraints.get_split_geometry());
+	const auto consumer_properties = consumer.range_mappers.front()->get_properties(consumer.constraints.get_split_geometry());
+
+	// producer RMs must always be non-overlapping, but the default range_mapper_traits implementation will return false for custom RMs
+	if(!producer_properties.is_non_overlapping || !consumer_properties.is_non_overlapping) return false;
+
+	assert(producer_properties.access_geometry.size() == consumer_properties.access_geometry.size());
+	bool have_unknown_geometry = false; // all bets are off if there is a dimension with access_geometry::other
+	bool have_split_producer_const_consumer = false;
+	bool have_const_producer_split_consumer = false;
+	for(size_t i = 0; i < producer_properties.access_geometry.size(); ++i) {
+		const auto const_producer = std::get_if<experimental::access_geometry::constant>(&producer_properties.access_geometry[i]);
+		const auto const_consumer = std::get_if<experimental::access_geometry::constant>(&consumer_properties.access_geometry[i]);
+		const auto split_producer = std::get_if<experimental::access_geometry::split>(&producer_properties.access_geometry[i]);
+		const auto split_consumer = std::get_if<experimental::access_geometry::split>(&consumer_properties.access_geometry[i]);
+
+		if((!const_producer && !split_producer) || (!const_consumer && !split_consumer)) have_unknown_geometry = true;
+		if(split_producer && const_consumer) have_split_producer_const_consumer = true;
+		if(const_producer && split_consumer) have_const_producer_split_consumer = true;
+	}
+
+	return !have_unknown_geometry && have_split_producer_const_consumer && have_const_producer_split_consumer;
+}
+
+
+void distributed_graph_generator::generate_gather_command(const forward_task& tsk) {
+	const auto producer_chunks = split_task(tsk.get_producer().constraints);
+	const auto num_consumer_chunks = split_task(tsk.get_consumer().constraints).size();
+	const auto producer_dims = tsk.get_producer().constraints.get_task_geometry().dimensions;
+	const auto& producer_rms = tsk.get_producer().range_mappers;
+	const auto& forward_region = tsk.get_region();
+	const auto bid = tsk.get_bid();
+
+	std::optional<node_id> gather_root;
+	bool is_local_writer;
+	if(num_consumer_chunks == 1) {
+		const node_id root = 0;
+		gather_root = root;
+		is_local_writer = m_local_nid == root;
+	} else {
+		gather_root = std::nullopt;
+		is_local_writer = true;
+	}
+
+	std::vector<GridRegion<3>> source_regions(m_num_nodes);
+	for(node_id nid = 0; nid < std::min(m_num_nodes, producer_chunks.size()); ++nid) {
+		if(nid == gather_root) continue; // do not receive from self in non-all Gather
+
+		auto& node_region = source_regions[nid];
+		for(const auto& prm : producer_rms) {
+			node_region = GridRegion<3>::merge(node_region, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[nid], producer_dims)));
 		}
-	})();
-	assert(distributed_chunks.size() <= num_chunks); // We may have created less than requested
-	assert(!distributed_chunks.empty());
+		node_region = GridRegion<3>::intersect(node_region, forward_region);
+	}
+
+	GridRegion<3> local_coherence_region;
+	if(!gather_root.has_value() || gather_root == m_local_nid) {
+		GridRegion<3> local_producer_region;
+		for(const auto& prm : producer_rms) {
+			local_producer_region =
+			    GridRegion<3>::merge(local_producer_region, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[m_local_nid], producer_dims)));
+		}
+		local_coherence_region = GridRegion<3>::intersect(local_producer_region, forward_region);
+	}
+
+	const auto local_input_region = GridRegion<3>::merge(source_regions[m_local_nid], local_coherence_region);
+
+	abstract_command* gather_cmd;
+	if(gather_root.has_value()) {
+		gather_cmd = create_command<gather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), std::move(local_coherence_region), *gather_root);
+	} else {
+		gather_cmd = create_command<allgather_command>(m_local_nid, tsk.get_bid(), std::move(source_regions), std::move(local_coherence_region));
+	}
+
+	auto& buffer_state = m_buffer_states.at(bid);
+	if(is_local_writer) { generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, forward_region, gather_cmd); }
+
+	if(!local_input_region.empty()) {
+		// Store the read access for determining anti-dependencies later on
+		m_command_buffer_reads[gather_cmd->get_cid()][bid] = local_input_region;
+
+		for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(local_input_region)) {
+			assert(wcs.is_fresh());
+			m_cdag.add_dependency(gather_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+		}
+	}
+
+	if(m_local_nid == 0) {
+		// we treat an Allgather result has having been produced by node 0 and replicated to all other nodes
+		const auto replicated_to = gather_root.has_value() ? node_bitset().set(*gather_root) : node_bitset().set(/* all */);
+		buffer_state.replicated_regions.update_region(forward_region, replicated_to);
+	}
+
+	if(is_local_writer) {
+		const auto is_replicated = m_local_nid != 0;
+		buffer_state.local_last_writer.update_region(forward_region, write_command_state(gather_cmd->get_cid(), is_replicated));
+	} else {
+		// TODO: We need a way of updating regions in place!
+		for(auto& [last_box, wcs] : buffer_state.local_last_writer.get_region_values(forward_region)) {
+			if(wcs.is_fresh()) {
+				wcs.mark_as_stale();
+				buffer_state.local_last_writer.update_region(last_box, wcs);
+			}
+		}
+	}
+
+	if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+		m_cdag.add_dependency(gather_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+	}
+	m_last_collective_commands[implicit_collective] = gather_cmd->get_cid();
+
+	generate_epoch_dependencies(gather_cmd);
+}
+
+
+void distributed_graph_generator::generate_broadcast_command(const forward_task& tsk) {
+	const auto& forward_region = tsk.get_region();
+	const auto bid = tsk.get_bid();
+
+	const node_id source_nid = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
+	const auto broadcast_cmd = create_command<broadcast_command>(m_local_nid, bid, source_nid, forward_region);
+
+	auto& buffer_state = m_buffer_states.at(bid);
+
+	generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, forward_region, broadcast_cmd);
+
+	if(m_local_nid == source_nid) {
+		// Store the read access for determining anti-dependencies later on
+		m_command_buffer_reads[broadcast_cmd->get_cid()][bid] = forward_region;
+
+		for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(forward_region)) {
+			assert(wcs.is_fresh());
+			m_cdag.add_dependency(broadcast_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+		}
+
+		buffer_state.replicated_regions.update_region(forward_region, node_bitset().set(/* all nodes */));
+	} else {
+		buffer_state.local_last_writer.update_region(
+		    forward_region, write_command_state(broadcast_cmd->get_cid(), m_local_nid != source_nid /* is_replicated */));
+	}
+
+	if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+		m_cdag.add_dependency(broadcast_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+	}
+	m_last_collective_commands[implicit_collective] = broadcast_cmd->get_cid();
+
+	generate_epoch_dependencies(broadcast_cmd);
+}
+
+
+void distributed_graph_generator::generate_scatter_command(const forward_task& tsk) {
+	const auto consumer_chunks = split_task(tsk.get_consumer().constraints);
+	const auto consumer_dims = tsk.get_consumer().constraints.get_task_geometry().dimensions;
+	const auto& consumer_rms = tsk.get_consumer().range_mappers;
+	const auto& forward_region = tsk.get_region();
+	const auto bid = tsk.get_bid();
+
+	const node_id root = 0; // follows from producer_chunks.size() == 1, since we always assign chunks beginning at node 0
+
+	GridRegion<3> source_region;
+	std::vector<GridRegion<3>> dest_regions(m_num_nodes);
+	for(node_id nid = 0; nid < std::min(m_num_nodes, consumer_chunks.size()); ++nid) {
+		if(nid == root) continue; // do not send to self
+
+		auto& node_region = dest_regions[nid];
+		for(const auto& crm : consumer_rms) {
+			node_region = GridRegion<3>::merge(node_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_chunks[nid], consumer_dims)));
+		}
+		node_region = GridRegion<3>::intersect(node_region, forward_region);
+		source_region = GridRegion<3>::merge(source_region, node_region);
+	}
+
+	// To overlap MPI_Alltoall with intra-node d2d communication necessary for the local chunk, we enumerate the regions each device can make_coherent
+	// from regions its sibling devices have produced before.
+	// TODO this is copied almost verbatim from generate_alltoall_commands.
+	std::vector<GridRegion<3>> local_coherence_regions_per_device(m_num_local_devices);
+	if(m_local_nid == root && m_num_local_devices > 1) {
+		const auto& consumer_constraints = tsk.get_consumer().constraints;
+		assert(consumer_constraints.is_splittable()); // otherwise how would we end up generating an alltoall?
+		const auto& consumer_geometry = consumer_constraints.get_task_geometry();
+		const auto split = consumer_constraints.requires_tiled_split() ? split_2d : split_1d;
+		const auto consumer_device_chunks = split(consumer_chunks[m_local_nid], consumer_geometry.granularity, m_num_local_devices);
+
+		for(device_id did = 0; did < consumer_device_chunks.size(); ++did) {
+			GridRegion<3> device_consumer_region;
+			for(const auto& crm : consumer_rms) {
+				device_consumer_region =
+				    GridRegion<3>::merge(device_consumer_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_device_chunks[did], consumer_dims)));
+			}
+			local_coherence_regions_per_device[did] = GridRegion<3>::intersect(device_consumer_region, forward_region);
+		}
+	}
+
+	const auto scatter_cmd =
+	    create_command<scatter_command>(m_local_nid, bid, root, dest_regions /* TODO eliminate copy? */, std::move(local_coherence_regions_per_device));
+
+	auto& buffer_state = m_buffer_states.at(bid);
+	if(m_local_nid == root) {
+		// Store the read access for determining anti-dependencies later on
+		m_command_buffer_reads[scatter_cmd->get_cid()][bid] = forward_region;
+
+		for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(forward_region)) {
+			assert(wcs.is_fresh());
+			m_cdag.add_dependency(scatter_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+		}
+
+		for(node_id nid = 0; nid < m_num_nodes; ++nid) {
+			buffer_state.replicated_regions.update_region(dest_regions[nid], node_bitset().set(nid));
+		}
+	} else {
+		generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, forward_region, scatter_cmd);
+
+		buffer_state.local_last_writer.update_region(dest_regions[m_local_nid], write_command_state(scatter_cmd->get_cid(), true /* is_replicated */));
+	}
+
+	if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+		m_cdag.add_dependency(scatter_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+	}
+	m_last_collective_commands[implicit_collective] = scatter_cmd->get_cid();
+
+	generate_epoch_dependencies(scatter_cmd);
+}
+
+
+void distributed_graph_generator::generate_alltoall_command(const forward_task& tsk) {
+	const auto producer_chunks = split_task(tsk.get_producer().constraints);
+	const auto consumer_chunks = split_task(tsk.get_consumer().constraints);
+	const auto producer_dims = tsk.get_producer().constraints.get_task_geometry().dimensions;
+	const auto consumer_dims = tsk.get_consumer().constraints.get_task_geometry().dimensions;
+	const auto& producer_rms = tsk.get_producer().range_mappers;
+	const auto& consumer_rms = tsk.get_consumer().range_mappers;
+	const auto bid = tsk.get_bid();
+
+	GridRegion<3> local_producer_region;
+	for(const auto& prm : producer_rms) {
+		local_producer_region =
+		    GridRegion<3>::merge(local_producer_region, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[m_local_nid], producer_dims)));
+	}
+
+	GridRegion<3> local_consumer_region;
+	for(const auto& crm : consumer_rms) {
+		local_consumer_region =
+		    GridRegion<3>::merge(local_consumer_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_chunks[m_local_nid], consumer_dims)));
+	}
+
+	GridRegion<3> local_read_set, local_write_set;
+	std::vector<GridRegion<3>> send_regions(m_num_nodes);
+	std::vector<GridRegion<3>> recv_regions(m_num_nodes);
+	for(node_id nid = 0; nid < std::min(m_num_nodes, consumer_chunks.size()); ++nid) {
+		if(nid == m_local_nid) continue; // do not exchange with self
+
+		auto& send_to_node = send_regions[nid];
+		for(const auto& crm : consumer_rms) {
+			send_to_node = GridRegion<3>::merge(send_to_node, subrange_to_grid_box(apply_range_mapper(crm, consumer_chunks[nid], consumer_dims)));
+		}
+		send_to_node = GridRegion<3>::intersect(send_to_node, local_producer_region);
+		local_read_set = GridRegion<3>::merge(local_read_set, send_to_node);
+
+		auto& recv_from_node = recv_regions[nid];
+		for(const auto& prm : producer_rms) {
+			recv_from_node = GridRegion<3>::merge(recv_from_node, subrange_to_grid_box(apply_range_mapper(prm, producer_chunks[nid], producer_dims)));
+		}
+		recv_from_node = GridRegion<3>::intersect(recv_from_node, local_consumer_region);
+		local_write_set = GridRegion<3>::merge(local_write_set, recv_from_node);
+	}
+	assert(GridRegion<3>::intersect(local_read_set, local_write_set).empty()); // this will not hold after we insert intra-node device coherence below --v
+
+	// To overlap MPI_Alltoall with intra-node d2d communication necessary for the local chunk, we enumerate the regions each device can make_coherent
+	// from regions its sibling devices have produced before.
+	GridRegion<3> local_coherence_region;
+	std::vector<GridRegion<3>> local_coherence_regions_per_device(m_num_local_devices);
+	if(m_num_local_devices > 1) {
+		// TODO this is in part duplicated from generate_execution_commands
+		// ... but we do not have to worry about oversubscription here since that will just mean further intra-device subdivision without affecting the
+		// inter-device communication pattern.
+		const auto& consumer_constraints = tsk.get_consumer().constraints;
+		assert(consumer_constraints.is_splittable()); // otherwise how would we end up generating an alltoall?
+		const auto& consumer_geometry = consumer_constraints.get_task_geometry();
+		const auto split = consumer_constraints.requires_tiled_split() ? split_2d : split_1d;
+		const auto consumer_device_chunks = split(consumer_chunks[m_local_nid], consumer_geometry.granularity, m_num_local_devices);
+
+		for(device_id did = 0; did < consumer_device_chunks.size(); ++did) {
+			GridRegion<3> device_consumer_region;
+			for(const auto& crm : consumer_rms) {
+				device_consumer_region =
+				    GridRegion<3>::merge(device_consumer_region, subrange_to_grid_box(apply_range_mapper(crm, consumer_device_chunks[did], consumer_dims)));
+			}
+			local_coherence_regions_per_device[did] = GridRegion<3>::intersect(device_consumer_region, local_producer_region);
+		}
+
+		local_coherence_region = GridRegion<3>::intersect(local_producer_region, local_consumer_region);
+		local_read_set = GridRegion<3>::merge(local_read_set, local_coherence_region);
+		local_write_set = GridRegion<3>::merge(local_write_set, local_coherence_region);
+	}
+
+	const auto alltoall_cmd = create_command<alltoall_command>(m_local_nid, bid, send_regions, recv_regions, // TODO eliminate copies
+	    std::move(local_coherence_regions_per_device));
+
+	auto& buffer_state = m_buffer_states.at(bid);
+
+	for(const auto& [_, wcs] : buffer_state.local_last_writer.get_region_values(local_read_set)) {
+		assert(wcs.is_fresh());
+		m_cdag.add_dependency(alltoall_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
+	}
+
+	for(node_id nid = 0; nid < m_num_nodes; ++nid) {
+		// one replacement-update is enough per node since we assume send-regions are disjoint
+		buffer_state.replicated_regions.update_region(send_regions[nid], node_bitset().set(nid));
+	}
+
+	generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, local_write_set, alltoall_cmd);
+
+	// Store the read access for determining anti-dependencies later on
+	m_command_buffer_reads[alltoall_cmd->get_cid()][bid] = local_read_set;
+
+	buffer_state.local_last_writer.update_region(local_write_set, write_command_state(alltoall_cmd->get_cid(), true /* is_replicated */));
+
+	if(const auto cgit = m_last_collective_commands.find(implicit_collective); cgit != m_last_collective_commands.end()) {
+		m_cdag.add_dependency(alltoall_cmd, m_cdag.get(cgit->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+	}
+	m_last_collective_commands[implicit_collective] = alltoall_cmd->get_cid();
+
+	generate_epoch_dependencies(alltoall_cmd);
+}
+
+
+void distributed_graph_generator::generate_collective_commands(const forward_task& tsk) {
+	// Since splits are reproducible, we simply re-compute the producer split here. If we ever introduce a non-reproducible split/scheduling behavior,
+	// replace this by a std::unordered_map<task_id, std::vector<chunk<3>>> member (which can be pruned-on-epoch).
+	const auto num_producer_chunks = split_task(tsk.get_producer().constraints).size();
+	const auto num_consumer_chunks = split_task(tsk.get_consumer().constraints).size();
+
+	const bool combined_consumers_constant = combined_range_mappers_constant(tsk.get_consumer());
+	if(num_producer_chunks > 1 && (num_consumer_chunks == 1 || combined_consumers_constant)) {
+		// Gather or Allgather
+		generate_gather_command(tsk);
+	} else if(num_producer_chunks == 1 && num_consumer_chunks > 1 && combined_consumers_constant) {
+		generate_broadcast_command(tsk);
+	} else if(num_producer_chunks == 1 && num_consumer_chunks > 1 && combined_range_mappers_non_overlapping(tsk.get_consumer())) {
+		generate_scatter_command(tsk);
+	} else if(num_producer_chunks > 1 && num_consumer_chunks > 1 && is_non_trivial_transposition(tsk.get_producer(), tsk.get_consumer())) {
+		generate_alltoall_command(tsk);
+	}
+}
+
+
+void distributed_graph_generator::generate_execution_commands(const command_group_task& tsk) {
+	const auto distributed_chunks = split_task(tsk.get_split_constraints());
 
 	const size_t oversub_factor = 1; // TODO this is now handled by instruction_graph_generator, get rid of oversubscription and device assigment here
 	// const auto* oversub_hint = tsk.get_hint<experimental::hints::oversubscribe>();
@@ -298,11 +692,11 @@ void distributed_graph_generator::generate_execution_commands(const task& tsk) {
 		std::vector<device_id> device_assignments;
 		if(is_local_chunk && m_num_local_devices > 1 && tsk.has_variable_split()) {
 			const bool tiled_split = (tsk.get_hint<experimental::hints::tiled_split>() != nullptr);
-			auto per_device_chunks = tiled_split ? split_2d(distributed_chunks[i], tsk.get_granularity(), m_num_local_devices)
-			                                     : split_1d(distributed_chunks[i], tsk.get_granularity(), m_num_local_devices);
+			const auto split = tiled_split ? split_2d : split_1d;
+			const auto per_device_chunks = split(distributed_chunks[i], tsk.get_granularity(), m_num_local_devices);
 			if(oversub_factor == 1) {
 				effective_chunks = per_device_chunks;
-				device_assignments.resize(m_num_local_devices);
+				device_assignments.resize(per_device_chunks.size());
 				std::iota(device_assignments.begin(), device_assignments.end(), 0);
 			} else {
 				effective_chunks.reserve(per_device_chunks.size() * oversub_factor); // Assuming we can do the full split
@@ -468,11 +862,9 @@ void distributed_graph_generator::generate_anti_dependencies(
 
 		// Add anti-dependencies onto all successors of the writer
 		bool has_successors = false;
-		for(auto d : last_writer_cmd->get_dependents()) {
+		for(const auto cmd : last_writer_cmd->get_dependent_nodes()) {
 			// Only consider true dependencies
-			if(d.kind != dependency_kind::true_dep) continue;
-
-			const auto cmd = d.node;
+			if(cmd->get_dependency(last_writer_cmd).kind != dependency_kind::true_dep) continue;
 
 			// We might have already generated new commands within the same task that also depend on this; in that case, skip it
 			if(isa<task_command>(cmd) && static_cast<task_command*>(cmd)->get_tid() == tid) continue;
@@ -496,7 +888,7 @@ void distributed_graph_generator::generate_anti_dependencies(
 	}
 }
 
-void distributed_graph_generator::process_task_side_effect_requirements(const task& tsk) {
+void distributed_graph_generator::process_task_side_effect_requirements(const command_group_task& tsk) {
 	const task_id tid = tsk.get_id();
 	if(tsk.get_side_effect_map().empty()) return; // skip the loop in the common case
 	if(m_cdag.task_command_count(tid) == 0) return;
@@ -528,7 +920,10 @@ void distributed_graph_generator::set_epoch_for_new_commands(const abstract_comm
 			return new_wcs;
 		});
 	}
-	for(auto& [cgid, cid] : m_host_object_last_effects) {
+	for(auto& [hoid, cid] : m_host_object_last_effects) {
+		cid = std::max(epoch_or_horizon->get_cid(), cid);
+	}
+	for(auto& [cgid, cid] : m_last_collective_commands) {
 		cid = std::max(epoch_or_horizon->get_cid(), cid);
 	}
 
@@ -545,7 +940,7 @@ void distributed_graph_generator::reduce_execution_front_to(abstract_command* co
 }
 
 // NOCOMMIT TODO: Apply epoch to data structures
-void distributed_graph_generator::generate_epoch_command(const task& tsk) {
+void distributed_graph_generator::generate_epoch_command(const epoch_task& tsk) {
 	assert(tsk.get_type() == task_type::epoch);
 	const auto epoch = create_command<epoch_command>(m_local_nid, tsk.get_id(), tsk.get_epoch_action());
 	set_epoch_for_new_commands(epoch);
@@ -555,7 +950,7 @@ void distributed_graph_generator::generate_epoch_command(const task& tsk) {
 }
 
 // NOCOMMIT TODO: Apply previous horizon to data structures
-void distributed_graph_generator::generate_horizon_command(const task& tsk) {
+void distributed_graph_generator::generate_horizon_command(const horizon_task& tsk) {
 	assert(tsk.get_type() == task_type::horizon);
 	const auto horizon = create_command<horizon_command>(m_local_nid, tsk.get_id());
 
@@ -588,6 +983,7 @@ void distributed_graph_generator::generate_epoch_dependencies(abstract_command* 
 }
 
 void distributed_graph_generator::prune_commands_before(const command_id epoch) {
+	return;
 	if(epoch > m_epoch_last_pruned_before) {
 		m_cdag.erase_if([&](abstract_command* cmd) {
 			if(cmd->get_cid() < epoch) {

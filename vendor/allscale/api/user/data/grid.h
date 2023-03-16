@@ -198,9 +198,9 @@ namespace data {
 		point_type max;
 
 	public:
-		GridBox() {}
+	  GridBox() : min(0), max(0) {}
 
-		GridBox(coordinate_type N)
+	  GridBox(coordinate_type N)
 			: min(0), max(N) {}
 
 		GridBox(coordinate_type A, coordinate_type B)
@@ -573,12 +573,26 @@ namespace data {
 		 * Scans the covered boxes.
 		 * Added by psalz for CELERITY on 2018/03/02.
 		 */
-		template<typename Lambda>
+		template <typename Lambda>
 		void scanByBoxes(const Lambda& f) const {
 			for(const auto& cur : regions) {
 				f(cur);
 			}
 		}
+
+		/**
+		 * If the region is just a single box, return that.
+		 * Added by fknorr for CELERITY on 2022/01/19.
+		 */
+		box_type getSingle() const {
+			switch(regions.size()) {
+			case 0: return box_type();
+			case 1: return regions.front();
+			default: throw std::range_error("region contains more than a single box");
+			}
+		}
+
+		bool hasMultipleBoxes() const { return regions.size() > 1; }
 
 		/**
 		 * An operator to load an instance of this range from the given archive.

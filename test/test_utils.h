@@ -18,6 +18,7 @@
 #include "command.h"
 #include "command_graph.h"
 #include "device_queue.h"
+#include "distributed_graph_generator.h"
 #include "graph_generator.h"
 #include "graph_serializer.h"
 #include "range_mapper.h"
@@ -266,6 +267,10 @@ namespace test_utils {
 			m_ggen = std::make_unique<detail::graph_generator>(num_nodes, *m_cdag);
 			m_gser = std::make_unique<detail::graph_serializer>(*m_cdag, m_inspector.get_cb());
 			this->m_num_nodes = num_nodes;
+
+			m_tm->register_task_callback([this](const detail::task* const tsk) {
+				if(tsk->get_type() == detail::task_type::forward) { m_ggen->build_task(*tsk, {}); }
+			});
 		}
 
 		detail::task_manager& get_task_manager() { return *m_tm; }
@@ -303,6 +308,7 @@ namespace test_utils {
 		explicit mock_buffer_factory() = default;
 		explicit mock_buffer_factory(detail::task_manager& tm) : m_task_mngr(&tm) {}
 		explicit mock_buffer_factory(detail::task_manager& tm, detail::graph_generator& ggen) : m_task_mngr(&tm), m_ggen(&ggen) {}
+		explicit mock_buffer_factory(detail::task_manager& tm, detail::distributed_graph_generator& dggen) : m_task_mngr(&tm), m_dggen(&dggen) {}
 		explicit mock_buffer_factory(detail::task_manager& tm, detail::abstract_scheduler& schdlr) : m_task_mngr(&tm), m_schdlr(&schdlr) {}
 		explicit mock_buffer_factory(cdag_test_context& ctx) : m_task_mngr(&ctx.get_task_manager()), m_ggen(&ctx.get_graph_generator()) {}
 
@@ -310,9 +316,10 @@ namespace test_utils {
 		mock_buffer<Dims> create_buffer(cl::sycl::range<Dims> size, bool mark_as_host_initialized = false) {
 			const detail::buffer_id bid = m_next_buffer_id++;
 			const auto buf = mock_buffer<Dims>(bid, size);
-			if(m_task_mngr != nullptr) { m_task_mngr->add_buffer(bid, detail::range_cast<3>(size), mark_as_host_initialized); }
+			if(m_task_mngr != nullptr) { m_task_mngr->add_buffer(bid, Dims, detail::range_cast<3>(size), mark_as_host_initialized); }
 			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_registered(bid, detail::range_cast<3>(size), Dims); }
-			if(m_ggen != nullptr) { m_ggen->add_buffer(bid, detail::range_cast<3>(size)); }
+			// if(m_ggen != nullptr) { m_ggen->add_buffer(bid, detail::range_cast<3>(size)); } // NOCOMMIT
+			if(m_dggen != nullptr) { m_dggen->add_buffer(bid, detail::range_cast<3>(size), Dims); }
 			return buf;
 		}
 
@@ -320,6 +327,7 @@ namespace test_utils {
 		detail::task_manager* m_task_mngr = nullptr;
 		detail::abstract_scheduler* m_schdlr = nullptr;
 		detail::graph_generator* m_ggen = nullptr;
+		detail::distributed_graph_generator* m_dggen = nullptr;
 		detail::buffer_id m_next_buffer_id = 0;
 	};
 

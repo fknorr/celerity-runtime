@@ -44,11 +44,12 @@ namespace detail {
 
 	enum class task_type {
 		epoch,
-		host_compute,   ///< host task with explicit global size and celerity-defined split
-		device_compute, ///< device compute task
-		collective,     ///< host task with implicit 1d global size = #ranks and fixed split
-		master_node,    ///< zero-dimensional host task
-		horizon,        ///< task horizon
+		host_compute,    ///< host task with explicit global size and celerity-defined split
+		device_compute,  ///< device compute task
+		host_collective, ///< host task with implicit 1d global size = #ranks and fixed split
+		master_node,     ///< zero-dimensional host task
+		horizon,         ///< task horizon
+		forward,
 	};
 
 	enum class execution_target {
@@ -125,6 +126,14 @@ namespace detail {
 
 		GridBox<3> get_requirements_for_nth_access(const size_t n, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
 
+		std::vector<const range_mapper_base*> get_range_mappers(const buffer_id bid) const {
+			std::vector<const range_mapper_base*> rms;
+			for(const auto& [a_bid, a_rm] : m_accesses) {
+				if(a_bid == bid) { rms.push_back(a_rm.get()); }
+			}
+			return rms;
+		}
+
 	  private:
 		std::vector<std::pair<buffer_id, std::unique_ptr<range_mapper_base>>> m_accesses;
 	};
@@ -156,14 +165,94 @@ namespace detail {
 		cl::sycl::range<3> global_size{0, 0, 0};
 		cl::sycl::id<3> global_offset{};
 		cl::sycl::range<3> granularity{1, 1, 1};
+
+		friend bool operator==(const task_geometry& lhs, const task_geometry& rhs) {
+			return lhs.dimensions == rhs.dimensions          //
+			       && lhs.global_size == rhs.global_size     //
+			       && lhs.global_offset == rhs.global_offset //
+			       && lhs.granularity == rhs.granularity;
+		}
+
+		friend bool operator!=(const task_geometry& lhs, const task_geometry& rhs) { return !(rhs == lhs); }
 	};
 
 	class task : public intrusive_graph_node<task> {
 	  public:
+		virtual ~task() = 0;
+
 		task_type get_type() const { return m_type; }
 
 		task_id get_id() const { return m_tid; }
 
+		virtual execution_target get_execution_target() const { return execution_target::none; }
+
+	  protected:
+		explicit task(const task_id tid, const task_type type) : m_tid(tid), m_type(type) {}
+
+		// derived classes are copy/move-constructible and assignable, but this base class is not
+		task(const task&) = default;
+		task(task&&) = default;
+		task& operator=(const task&) = default;
+		task& operator=(task&&) = default;
+
+	  private:
+		task_id m_tid;
+		task_type m_type;
+	};
+
+	inline task::~task() = default;
+
+	class epoch_task final : public task {
+	  public:
+		explicit epoch_task(const task_id tid, const detail::epoch_action epoch_action) : task(tid, task_type::epoch), m_epoch_action(epoch_action) {}
+
+		epoch_action get_epoch_action() const { return m_epoch_action; }
+
+	  private:
+		detail::epoch_action m_epoch_action;
+	};
+
+	class horizon_task final : public task {
+	  public:
+		explicit horizon_task(const task_id tid) : task(tid, task_type::horizon) {}
+	};
+
+	struct split_constraints {
+		split_constraints(const task_geometry& task_geometry, const bool require_tiled_split)
+		    : m_task_geometry(task_geometry), m_tiled_split(require_tiled_split), m_split_geometry(task_geometry.dimensions) {
+			if(task_geometry.dimensions > 0) { m_split_geometry[0] = experimental::split_geometry::split; }
+			if(task_geometry.dimensions > 1) { m_split_geometry[1] = require_tiled_split ? experimental::split_geometry::split : experimental::constant; }
+			if(task_geometry.dimensions > 2) { m_split_geometry[2] = experimental::constant; }
+			m_is_splittable = (task_geometry.global_size > task_geometry.granularity) != sycl::id<3>(false, false, false);
+		}
+
+		friend bool operator==(const split_constraints& lhs, const split_constraints& rhs) {
+			return lhs.m_task_geometry == rhs.m_task_geometry //
+			       && lhs.m_tiled_split == rhs.m_tiled_split;
+		}
+		friend bool operator!=(const split_constraints& lhs, const split_constraints& rhs) { return !(rhs == lhs); }
+
+		task_geometry get_task_geometry() const { return m_task_geometry; }
+
+		const experimental::split_geometry_map& get_split_geometry() const { return m_split_geometry; }
+
+		bool is_splittable() const { return m_is_splittable; }
+
+		bool requires_tiled_split() const { return m_tiled_split; }
+
+	  private:
+		// v-- inputs
+		detail::task_geometry m_task_geometry;
+		bool m_tiled_split;
+		// oversubscription is not a concern because it is applied after the initial internode split
+
+		// v-- generated
+		experimental::split_geometry_map m_split_geometry;
+		bool m_is_splittable;
+	};
+
+	class command_group_task final : public task {
+	  public:
 		collective_group_id get_collective_group_id() const { return m_cgid; }
 
 		const buffer_access_map& get_buffer_access_map() const { return m_access_map; }
@@ -182,23 +271,24 @@ namespace detail {
 
 		const std::string& get_debug_name() const { return m_debug_name; }
 
-		bool has_variable_split() const { return m_type == task_type::host_compute || m_type == task_type::device_compute; }
+		// TODO this is currently used to determine whether a task can be split at all, but it reports false for collective-host-tasks, where it used to mean
+		//  that naive_split_transformer cannot be applied on top of the "natural" one-item-per-node split for these tasks
+		bool has_variable_split() const {
+			return (get_type() == task_type::host_compute || get_type() == task_type::device_compute)
+			       && (m_geometry.global_size.size() > m_geometry.granularity.size());
+		}
 
 		execution_target get_execution_target() const {
-			switch(m_type) {
-			case task_type::epoch: return execution_target::none;
+			switch(get_type()) {
 			case task_type::device_compute: return execution_target::device;
 			case task_type::host_compute:
-			case task_type::collective:
+			case task_type::host_collective:
 			case task_type::master_node: return execution_target::host;
-			case task_type::horizon: return execution_target::none;
 			default: assert(!"Unhandled task type"); return execution_target::none;
 			}
 		}
 
 		const reduction_set& get_reductions() const { return m_reductions; }
-
-		epoch_action get_epoch_action() const { return m_epoch_action; }
 
 		// NOCOMMIT TODO We can do better with typings here...
 		template <typename... Args>
@@ -220,42 +310,34 @@ namespace detail {
 			return nullptr;
 		}
 
-		static std::unique_ptr<task> make_epoch(task_id tid, detail::epoch_action action) {
-			return std::unique_ptr<task>(new task(tid, task_type::epoch, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, action));
+		split_constraints get_split_constraints() const;
+
+		static std::unique_ptr<command_group_task> make_host_compute(task_id tid, task_geometry geometry,
+		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::host_compute, non_collective, geometry, std::move(launcher),
+			    std::move(access_map), std::move(side_effect_map), std::move(reductions), {}));
 		}
 
-		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
-			return std::unique_ptr<task>(new task(tid, task_type::host_compute, collective_group_id{}, geometry, std::move(launcher), std::move(access_map),
-			    std::move(side_effect_map), std::move(reductions), {}, {}));
+		static std::unique_ptr<command_group_task> make_device_compute(task_id tid, task_geometry geometry,
+		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, reduction_set reductions, std::string debug_name) {
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::device_compute, non_collective, geometry, std::move(launcher),
+			    std::move(access_map), {}, std::move(reductions), std::move(debug_name)));
 		}
 
-		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, reduction_set reductions, std::string debug_name) {
-			return std::unique_ptr<task>(new task(tid, task_type::device_compute, collective_group_id{}, geometry, std::move(launcher), std::move(access_map),
-			    {}, std::move(reductions), std::move(debug_name), {}));
-		}
-
-		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
+		static std::unique_ptr<command_group_task> make_host_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
 		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(cl::sycl::range<1>{num_collective_nodes}), {}, {1, 1, 1}};
-			return std::unique_ptr<task>(
-			    new task(tid, task_type::collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}, {}));
+			return std::unique_ptr<command_group_task>(new command_group_task(
+			    tid, task_type::host_collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
 		}
 
-		static std::unique_ptr<task> make_master_node(
+		static std::unique_ptr<command_group_task> make_master_node(
 		    task_id tid, std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
-			return std::unique_ptr<task>(new task(tid, task_type::master_node, collective_group_id{}, task_geometry{}, std::move(launcher),
-			    std::move(access_map), std::move(side_effect_map), {}, {}, {}));
-		}
-
-		static std::unique_ptr<task> make_horizon_task(task_id tid) {
-			return std::unique_ptr<task>(new task(tid, task_type::horizon, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, {}));
+			return std::unique_ptr<command_group_task>(new command_group_task(
+			    tid, task_type::master_node, non_collective, task_geometry{}, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
 		}
 
 	  private:
-		task_id m_tid;
-		task_type m_type;
 		collective_group_id m_cgid;
 		task_geometry m_geometry;
 		std::unique_ptr<command_launcher_storage_base> m_launcher;
@@ -263,19 +345,44 @@ namespace detail {
 		detail::side_effect_map m_side_effects;
 		reduction_set m_reductions;
 		std::string m_debug_name;
-		detail::epoch_action m_epoch_action;
 		std::vector<std::unique_ptr<hint_base>> m_hints;
 
-		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions, std::string debug_name,
-		    detail::epoch_action epoch_action)
-		    : m_tid(tid), m_type(type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),
-		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)), m_epoch_action(epoch_action) {
+		command_group_task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry,
+		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, detail::side_effect_map side_effects,
+		    reduction_set reductions, std::string debug_name)
+		    : task(tid, type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),
+		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)) {
 			assert(type == task_type::host_compute || type == task_type::device_compute || get_granularity().size() == 1);
 			// Only host tasks can have side effects
-			assert(this->m_side_effects.empty() || type == task_type::host_compute || type == task_type::collective || type == task_type::master_node);
+			assert(this->m_side_effects.empty() || type == task_type::host_compute || type == task_type::host_collective || type == task_type::master_node);
 		}
 	};
+
+	class forward_task final : public task {
+	  public:
+		struct access {
+			split_constraints constraints;
+			std::vector<const range_mapper_base*> range_mappers;
+		};
+
+		forward_task(const task_id tid, const buffer_id bid, GridRegion<3> region, access producer, access consumer)
+		    : task(tid, task_type::forward), m_bid(bid), m_region(std::move(region)), m_producer(std::move(producer)), m_consumer(std::move(consumer)) {}
+
+		const buffer_id& get_bid() const { return m_bid; }
+		const GridRegion<3>& get_region() const { return m_region; }
+		const access& get_producer() const { return m_producer; }
+		const access& get_consumer() const { return m_consumer; }
+
+	  private:
+		buffer_id m_bid;
+		GridRegion<3> m_region;
+		access m_producer;
+		access m_consumer;
+	};
+
+	inline subrange<3> apply_range_mapper(range_mapper_base const* rm, const task_geometry& geometry) {
+		return apply_range_mapper(rm, chunk<3>{geometry.global_offset, geometry.global_size, geometry.global_size}, geometry.dimensions);
+	}
 
 } // namespace detail
 } // namespace celerity

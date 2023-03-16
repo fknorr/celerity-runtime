@@ -76,6 +76,7 @@ namespace detail {
 		struct job_handle {
 			std::unique_ptr<worker_job> job;
 			command_type cmd;
+			std::vector<command_id> HACK_collective_order_dependents;
 			std::vector<command_id> dependents;
 			size_t unsatisfied_dependencies;
 		};
@@ -85,15 +86,23 @@ namespace detail {
 		executor_metrics m_metrics;
 		bool m_first_command_received = false;
 
+		static bool HACK_is_collective_job(const worker_job* job) {
+			return isa<gather_job>(job) || isa<allgather_job>(job) || isa<scatter_job>(job) || isa<broadcast_job>(job) || isa<alltoall_job>(job);
+		}
+
 		template <typename Job, typename... Args>
 		void create_job(const command_pkg& pkg, Args&&... args) {
-			m_jobs[pkg.cid] = {std::make_unique<Job>(pkg, std::forward<Args>(args)...), pkg.get_command_type(), {}, 0};
+			m_jobs[pkg.cid] = {std::make_unique<Job>(pkg, std::forward<Args>(args)...), pkg.get_command_type(), {}, {}, 0};
 
 			// If job doesn't exist we assume it has already completed.
 			// This is true as long as we're respecting task-graph (anti-)dependencies when processing tasks.
 			for(const auto dcid : pkg.dependencies) {
 				if(const auto it = m_jobs.find(dcid); it != m_jobs.end()) {
-					it->second.dependents.push_back(pkg.cid);
+					if(HACK_is_collective_job(m_jobs[pkg.cid].job.get()) && HACK_is_collective_job(it->second.job.get())) {
+						it->second.HACK_collective_order_dependents.push_back(pkg.cid);
+					} else {
+						it->second.dependents.push_back(pkg.cid);
+					}
 					m_jobs[pkg.cid].unsatisfied_dependencies++;
 				}
 			}

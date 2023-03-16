@@ -13,7 +13,7 @@
 namespace celerity {
 namespace detail {
 
-	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction };
+	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, allgather, broadcast, scatter, alltoall };
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
@@ -189,6 +189,109 @@ namespace detail {
 		device_id m_device_id = 0;
 	};
 
+	class gather_command final : public abstract_command {
+		friend class command_graph;
+		gather_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions,
+		    GridRegion<3> local_coherence_region, const node_id root)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_local_coherence_region(std::move(local_coherence_region)),
+		      m_root(root) {
+			assert(m_source_regions[root].empty());
+		}
+
+	  public:
+		command_type get_type() const override { return command_type::gather; }
+		buffer_id get_bid() const { return m_bid; }
+		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
+		const GridRegion<3>& get_local_coherence_region() const { return m_local_coherence_region; }
+		node_id get_root() const { return m_root; }
+
+	  private:
+		buffer_id m_bid;
+		std::vector<GridRegion<3>> m_source_regions;
+		GridRegion<3> m_local_coherence_region;
+		node_id m_root;
+	};
+
+	class allgather_command final : public abstract_command {
+		friend class command_graph;
+		allgather_command(
+		    const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> source_regions, GridRegion<3> local_coherence_region)
+		    : abstract_command(cid, nid), m_bid(bid), m_source_regions(std::move(source_regions)), m_local_coherence_region(std::move(local_coherence_region)) {
+		}
+
+	  public:
+		command_type get_type() const override { return command_type::allgather; }
+		buffer_id get_bid() const { return m_bid; }
+		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
+		const GridRegion<3>& get_local_coherence_region() const { return m_local_coherence_region; }
+
+	  private:
+		buffer_id m_bid;
+		std::vector<GridRegion<3>> m_source_regions;
+		GridRegion<3> m_local_coherence_region;
+	};
+
+	class broadcast_command final : public abstract_command {
+		friend class command_graph;
+		broadcast_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id root, GridRegion<3> region)
+		    : abstract_command(cid, nid), m_bid(bid), m_root(root), m_region(std::move(region)) {}
+
+	  public:
+		command_type get_type() const override { return command_type::broadcast; }
+		buffer_id get_bid() const { return m_bid; }
+		const GridRegion<3>& get_region() const { return m_region; }
+		node_id get_root() const { return m_root; }
+
+	  private:
+		buffer_id m_bid;
+		node_id m_root;
+		GridRegion<3> m_region;
+	};
+
+	class scatter_command final : public abstract_command {
+		friend class command_graph;
+		scatter_command(const command_id cid, const node_id nid, const buffer_id bid, const node_id root, std::vector<GridRegion<3>> dest_regions,
+		    std::vector<GridRegion<3>> local_device_coherence_regions)
+		    : abstract_command(cid, nid), m_bid(bid), m_root(root), m_dest_regions(std::move(dest_regions)),
+		      m_local_device_coherence_regions(std::move(local_device_coherence_regions)) {
+			assert(m_dest_regions[root].empty());
+		}
+
+	  public:
+		command_type get_type() const override { return command_type::scatter; }
+		buffer_id get_bid() const { return m_bid; }
+		node_id get_root() const { return m_root; }
+		const std::vector<GridRegion<3>>& get_dest_regions() const { return m_dest_regions; }
+		const std::vector<GridRegion<3>>& get_local_device_coherence_regions() const { return m_local_device_coherence_regions; }
+
+	  private:
+		buffer_id m_bid;
+		node_id m_root;
+		std::vector<GridRegion<3>> m_dest_regions;
+		std::vector<GridRegion<3>> m_local_device_coherence_regions;
+	};
+
+	class alltoall_command final : public abstract_command {
+		friend class command_graph;
+		alltoall_command(const command_id cid, const node_id nid, const buffer_id bid, std::vector<GridRegion<3>> send_regions,
+		    std::vector<GridRegion<3>> recv_regions, std::vector<GridRegion<3>> local_device_coherence_regions)
+		    : abstract_command(cid, nid), m_bid(bid), m_send_regions(std::move(send_regions)), m_recv_regions(std::move(recv_regions)),
+		      m_local_device_coherence_regions(std::move(local_device_coherence_regions)) {}
+
+	  public:
+		command_type get_type() const override { return command_type::alltoall; }
+		buffer_id get_bid() const { return m_bid; }
+		const std::vector<GridRegion<3>>& get_send_regions() const { return m_send_regions; }
+		const std::vector<GridRegion<3>>& get_recv_regions() const { return m_recv_regions; }
+		const std::vector<GridRegion<3>>& get_local_device_coherence_regions() const { return m_local_device_coherence_regions; }
+
+	  private:
+		buffer_id m_bid;
+		std::vector<GridRegion<3>> m_send_regions;
+		std::vector<GridRegion<3>> m_recv_regions;
+		std::vector<GridRegion<3>> m_local_device_coherence_regions;
+	};
+
 	// ----------------------------------------------------------------------------------------------------------------
 	// -------------------------------------------- SERIALIZED COMMANDS -----------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
@@ -238,7 +341,41 @@ namespace detail {
 		reduction_id rid;
 	};
 
-	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data>;
+	struct gather_data {
+		buffer_id bid;
+		std::vector<GridRegion<3>> source_regions;
+		GridRegion<3> local_coherence_region;
+		node_id root;
+	};
+
+	struct allgather_data {
+		buffer_id bid;
+		std::vector<GridRegion<3>> source_regions;
+		GridRegion<3> local_coherence_region;
+	};
+
+	struct broadcast_data {
+		buffer_id bid;
+		GridRegion<3> region;
+		node_id root;
+	};
+
+	struct scatter_data {
+		buffer_id bid;
+		node_id root;
+		std::vector<GridRegion<3>> dest_regions;
+		std::vector<GridRegion<3>> local_device_coherence_regions;
+	};
+
+	struct alltoall_data {
+		buffer_id bid;
+		std::vector<GridRegion<3>> send_regions;
+		std::vector<GridRegion<3>> recv_regions;
+		std::vector<GridRegion<3>> local_device_coherence_regions;
+	};
+
+	using command_data = std::variant<std::monostate, horizon_data, epoch_data, execution_data, push_data, await_push_data, data_request_data, reduction_data,
+	    gather_data, allgather_data, broadcast_data, scatter_data, alltoall_data>;
 
 	/**
 	 * A command package is what is actually transferred between nodes.
@@ -274,7 +411,12 @@ namespace detail {
 			    [](const push_data&) { return command_type::push; },
 			    [](const await_push_data&) { return command_type::await_push; },
 				[](const data_request_data&) { return command_type::data_request; },
-			    [](const reduction_data&) { return command_type::reduction; }
+			    [](const reduction_data&) { return command_type::reduction; },
+				[](const gather_data&) { return command_type::gather; },
+				[](const allgather_data&) { return command_type::allgather; },
+				[](const broadcast_data&) { return command_type::broadcast; },
+				[](const scatter_data&) { return command_type::scatter; },
+				[](const alltoall_data&) { return command_type::alltoall; }
 			);
 			// clang-format on
 		}

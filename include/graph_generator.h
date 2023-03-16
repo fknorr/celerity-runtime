@@ -112,6 +112,8 @@ namespace detail {
 
 		void process_task_side_effect_requirements(const task& tsk);
 
+		void process_task_collective_group_requirements(const task& tsk);
+
 		void generate_epoch_dependencies(abstract_command* cmd);
 
 		void generate_epoch_commands(const task& tsk);
@@ -121,6 +123,8 @@ namespace detail {
 		void generate_collective_execution_commands(const task& tsk);
 
 		void generate_independent_execution_commands(const task& tsk);
+
+		void generate_gather_commands(const task& tsk);
 
 		void prune_commands_before(const command_id min_epoch);
 	};

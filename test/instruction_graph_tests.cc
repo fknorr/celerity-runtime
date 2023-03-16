@@ -119,8 +119,8 @@ std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*> unm
 		assert(temporary_marked.count(cmd) == 0 || !"cyclic command graph");
 		unmarked.erase(cmd);
 		temporary_marked.insert(cmd);
-		for(const auto& dep : cmd->get_dependents()) {
-			visit(dep.node, visit);
+		for(const auto dep_cmd : cmd->get_dependent_nodes()) {
+			visit(dep_cmd, visit);
 		}
 		temporary_marked.erase(cmd);
 		permanent_marked.insert(cmd);
@@ -152,7 +152,7 @@ class idag_test_context {
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
-		m_tm->add_buffer(bid, range_cast<3>(size), mark_as_host_initialized);
+		m_tm->add_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		m_dggen->add_buffer(bid, range_cast<3>(size), Dims);
 		m_iggen->register_buffer(bid, range_cast<3>(size));
 		return buf;

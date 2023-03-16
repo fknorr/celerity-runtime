@@ -47,35 +47,34 @@ namespace detail {
 		case task_type::host_compute:
 		case task_type::device_compute:
 		case task_type::master_node: generate_independent_execution_commands(tsk); break;
+		case task_type::gather: generate_gather_commands(tsk); break;
 		}
 
 		for(auto& t : transformers) {
 			t->transform_task(tsk, m_cdag);
 		}
 
-		// Only execution tasks can have data requirements or reductions
-		if(tsk.get_execution_target() != execution_target::none) {
 #ifndef NDEBUG
-			// It is currently undefined to split reduction-producer tasks into multiple chunks on the same node:
-			//   - Per-node reduction intermediate results are stored with fixed access to a single SYCL buffer, so multiple chunks on the same node will race
-			//   on
-			//     this buffer access
-			//   - Inputs to the final reduction command are ordered by origin node ids to guarantee bit-identical results. It is not possible to distinguish
-			//     more than one chunk per node in the serialized commands, so different nodes can produce different final reduction results for non-associative
-			//     or non-commutative operations
-			if(!tsk.get_reductions().empty()) {
-				std::unordered_set<node_id> producer_nids;
-				for(auto& cmd : m_cdag.task_commands(tid)) {
-					assert(producer_nids.insert(cmd->get_nid()).second);
-				}
+		// It is currently undefined to split reduction-producer tasks into multiple chunks on the same node:
+		//   - Per-node reduction intermediate results are stored with fixed access to a single SYCL buffer, so multiple chunks on the same node will race
+		//   on
+		//     this buffer access
+		//   - Inputs to the final reduction command are ordered by origin node ids to guarantee bit-identical results. It is not possible to distinguish
+		//     more than one chunk per node in the serialized commands, so different nodes can produce different final reduction results for non-associative
+		//     or non-commutative operations
+		if(!tsk.get_reductions().empty()) {
+			std::unordered_set<node_id> producer_nids;
+			for(auto& cmd : m_cdag.task_commands(tid)) {
+				assert(producer_nids.insert(cmd->get_nid()).second);
 			}
+		}
 #endif
 
-			// TODO: At some point we might want to do this also before calling transformers
-			// --> So that more advanced transformations can also take data transfers into account
-			process_task_data_requirements(tsk);
-			process_task_side_effect_requirements(tsk);
-		}
+		// TODO: At some point we might want to do this also before calling transformers
+		// --> So that more advanced transformations can also take data transfers into account
+		process_task_data_requirements(tsk);
+		process_task_side_effect_requirements(tsk);
+		process_task_collective_group_requirements(tsk);
 
 		// Commands without any other true-dependency must depend on the active epoch command to ensure they cannot be re-ordered before the epoch
 		for(const auto cmd : m_cdag.task_commands(tid)) {
@@ -177,16 +176,6 @@ namespace detail {
 			auto range = cl::sycl::range<1>{1};
 			const auto sr = subrange_cast<3>(subrange<1>{offset, range});
 			auto* cmd = m_cdag.create<execution_command>(nid, tsk.get_id(), sr);
-
-			// Collective host tasks have an implicit dependency on the previous task in the same collective group, which is required in order to guarantee
-			// they are executed in the same order on every node.
-			auto cgid = tsk.get_collective_group_id();
-			auto& last_collective_commands = m_node_data.at(nid).last_collective_commands;
-			if(auto prev = last_collective_commands.find(cgid); prev != last_collective_commands.end()) {
-				m_cdag.add_dependency(cmd, m_cdag.get(prev->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
-				last_collective_commands.erase(prev);
-			}
-			last_collective_commands.emplace(cgid, cmd->get_cid());
 		}
 	}
 
@@ -195,6 +184,30 @@ namespace detail {
 
 		const auto sr = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
 		m_cdag.create<execution_command>(0, tsk.get_id(), sr);
+	}
+
+	void graph_generator::generate_gather_commands(const task& tsk) {
+		assert(tsk.get_type() == task_type::gather);
+		const auto gather_sr = subrange<3>(tsk.get_global_offset(), tsk.get_global_size());
+
+		const auto dependencies = tsk.get_dependencies();
+		assert(std::distance(dependencies.begin(), dependencies.end()) == 1); // only dependency is the producer TODO until we have more elaborate inference
+		const auto& ptsk = *dependencies.front().node;
+
+		// TODO assert there is no ??
+		const auto producer_cmds = m_cdag.task_commands(ptsk.get_id());
+
+		// TODO things to think about:
+		// 		- how to handle strides (probably have a contiguous staging buffer where necessary)
+		//		- how to determine arguments to Allgatherv (probably by another Allgather just before, but we can detect when all sizes are the same and skip)
+		//		- how to handle oversubscription
+		for(size_t nid = 0; nid < m_num_nodes; ++nid) {
+			subrange<3> producer_sr;
+			const auto pcmd = std::find_if(producer_cmds.begin(), producer_cmds.end(), [=](const abstract_command* cmd) { return cmd->get_nid() == nid; });
+			if(pcmd != producer_cmds.end()) { producer_sr = dynamic_cast<const execution_command&>(**pcmd).get_execution_range(); }
+			const auto source_sr = grid_box_to_subrange(GridBox<3>::intersect(subrange_to_grid_box(producer_sr), subrange_to_grid_box(gather_sr)));
+			m_cdag.create<gather_command>(nid, tsk.get_id(), source_sr); // node must participate in collective even if its own range is empty
+		}
 	}
 
 	using buffer_requirements_map = std::unordered_map<buffer_id, std::unordered_map<cl::sycl::access::mode, GridRegion<3>>>;
@@ -332,29 +345,34 @@ namespace detail {
 			const command_id cid = cmd->get_cid();
 			const node_id nid = cmd->get_nid();
 
-			assert(isa<execution_command>(cmd));
-			auto* ecmd = static_cast<execution_command*>(cmd);
+			buffer_requirements_map requirements;
+			if(auto* ecmd = dynamic_cast<execution_command*>(cmd)) {
+				ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
 
-			ecmd->set_is_reduction_initializer(cid == reduction_initializer_cid);
+				requirements = get_buffer_requirements_for_mapped_access(tsk, ecmd->get_execution_range(), tsk.get_global_size());
 
-			auto requirements = get_buffer_requirements_for_mapped_access(tsk, ecmd->get_execution_range(), tsk.get_global_size());
-
-			// Any reduction that includes the value previously found in the buffer (i.e. the absence of sycl::property::reduction::initialize_to_identity)
-			// must read that original value in the eventual reduction_command generated by a future buffer requirement. Since whenever a buffer is used as
-			// a reduction output, we replace its state with a pending_reduction_state, that original value would be lost. To avoid duplicating the buffer,
-			// we simply include it in the pre-reduced state of a single execution_command.
-			for(const auto& reduction : tsk.get_reductions()) {
-				auto rmode = cl::sycl::access::mode::discard_write;
-				if(ecmd->is_reduction_initializer() && reduction.init_from_buffer) { rmode = cl::sycl::access::mode::read_write; }
+				// Any reduction that includes the value previously found in the buffer (i.e. the absence of sycl::property::reduction::initialize_to_identity)
+				// must read that original value in the eventual reduction_command generated by a future buffer requirement. Since whenever a buffer is used as
+				// a reduction output, we replace its state with a pending_reduction_state, that original value would be lost. To avoid duplicating the buffer,
+				// we simply include it in the pre-reduced state of a single execution_command.
+				for(const auto& reduction : tsk.get_reductions()) {
+					auto rmode = cl::sycl::access::mode::discard_write;
+					if(ecmd->is_reduction_initializer() && reduction.init_from_buffer) { rmode = cl::sycl::access::mode::read_write; }
 
 #ifndef NDEBUG
-				for(auto pmode : detail::access::producer_modes) {
-					assert(requirements[reduction.bid].count(pmode) == 0); // task_manager verifies that there are no reduction <-> write-access conflicts
-				}
+					for(auto pmode : detail::access::producer_modes) {
+						assert(requirements[reduction.bid].count(pmode) == 0); // task_manager verifies that there are no reduction <-> write-access conflicts
+					}
 #endif
 
-				// We need to add a proper requirement here because bid might itself be in pending_reduction_state
-				requirements[reduction.bid][rmode] = GridRegion<3>{{1, 1, 1}};
+					// We need to add a proper requirement here because bid might itself be in pending_reduction_state
+					requirements[reduction.bid][rmode] = GridRegion<3>{{1, 1, 1}};
+				}
+			} else if(const auto gcmd = dynamic_cast<gather_command*>(cmd)) {
+				requirements = get_buffer_requirements_for_mapped_access(tsk, gcmd->get_source_range(), tsk.get_global_size());
+			} else {
+				// tasks without an execution range (e.g. fences) can still have fixed or all-accesses.
+				requirements = get_buffer_requirements_for_mapped_access(tsk, {}, {});
 			}
 
 			for(auto& it : requirements) {
@@ -393,9 +411,7 @@ namespace detail {
 							const auto buffer_source_nodes = distributed->region_sources.get_region_values(req);
 							assert(!buffer_source_nodes.empty());
 
-							for(auto& box_and_sources : buffer_source_nodes) {
-								const auto& box = box_and_sources.first;
-								const auto& box_sources = box_and_sources.second;
+							for(const auto& [box, box_sources] : buffer_source_nodes) {
 								assert(!box_sources.empty());
 
 								if(std::find(box_sources.cbegin(), box_sources.cend(), nid) != box_sources.cend()) {
@@ -448,8 +464,9 @@ namespace detail {
 						// generating anti-dependencies around this requirement. This might not be valid if (multivariate) reductions ever operate on regions.
 						if(!generate_reduction) { generate_anti_dependencies(tid, bid, node_buffer_last_writer, req, cmd); }
 
-						// After this task is completed, this node and command are the last writer of this region
-						buffer_state_write_list.emplace_back(nid, bid, req);
+						// After this task is completed, this node and command are the last writer of this region.
+						// Gather tasks have replicated writes, so instead of emplacing a single-node update, we manually process gather requirements below.
+						if(tsk.get_type() != task_type::gather) { buffer_state_write_list.emplace_back(nid, bid, req); }
 						per_node_last_writer_update_list.emplace_back(nid, bid, req, cid);
 					}
 				}
@@ -529,6 +546,21 @@ namespace detail {
 			}
 		}
 
+		// We skip updating the last writer node for gather tasks above since its writes are replicated: All participating nodes must be last-writers for the
+		// gathered subregion, but buffer_state_write_list semantics would successively replace the node id with the last generated command only.
+		if(tsk.get_type() == task_type::gather) {
+			assert(tsk.get_buffer_access_map().get_accessed_buffers().size() == 1);
+			const auto bid = *tsk.get_buffer_access_map().get_accessed_buffers().begin();
+			const auto region = tsk.get_buffer_access_map().get_requirements_for_access(bid, access_mode::discard_write, 1, {}, {});
+			assert(!region.empty());
+
+			std::vector<node_id> all_nodes(m_num_nodes);
+			std::iota(all_nodes.begin(), all_nodes.end(), node_id());
+
+			auto& state = std::get<distributed_state>(m_buffer_states.at(bid));
+			state.region_sources.update_region(region, all_nodes);
+		}
+
 		// Update per-node last writer information to take into account writes from await_pushes generated for this task.
 		for(const auto& write : per_node_last_writer_update_list) {
 			const auto& nid = std::get<0>(write);
@@ -583,6 +615,21 @@ namespace detail {
 				// Simplification: If there are multiple chunks per node, we generate true-dependencies between them in an arbitrary order, when all we really
 				// need is mutual exclusion (i.e. a bi-directional pseudo-dependency).
 				nd.host_object_last_effects.insert_or_assign(hoid, cmd->get_cid());
+			}
+		}
+	}
+
+	void graph_generator::process_task_collective_group_requirements(const task& tsk) {
+		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective) {
+			for(const auto cmd : m_cdag.task_commands(tsk.get_id())) {
+				// Collective tasks have an implicit dependency on the previous task in the same collective group, which is required in order to guarantee
+				// they are executed in the same order on every node.
+				auto& last_collective_commands = m_node_data.at(cmd->get_nid()).last_collective_commands;
+				if(auto prev = last_collective_commands.find(cgid); prev != last_collective_commands.end()) {
+					m_cdag.add_dependency(cmd, m_cdag.get(prev->second), dependency_kind::true_dep, dependency_origin::collective_group_serialization);
+					last_collective_commands.erase(prev);
+				}
+				last_collective_commands.emplace(cgid, cmd->get_cid());
 			}
 		}
 	}

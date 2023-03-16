@@ -7,6 +7,16 @@
 #include <CL/sycl.hpp>
 #include <gch/small_vector.hpp>
 
+// clang-format off
+#define CELERITY_STRINGIFY2(f) #f
+#define CELERITY_STRINGIFY(f) CELERITY_STRINGIFY2(f)
+#define CELERITY_CUDA_CHECK(f, ...)                                                               \
+	if (const auto cuda_check_result = (f)(__VA_ARGS__); cuda_check_result != cudaSuccess) {      \
+		CELERITY_CRITICAL(CELERITY_STRINGIFY(f) ": {}", cudaGetErrorString(cuda_check_result));   \
+		abort();                                                                                  \
+	}
+// clang-format on
+
 #define USE_NDVBUFFER 0
 
 // TODO: Works for now, but really needs to be a runtime switch depending on selected device
@@ -44,22 +54,25 @@ namespace detail {
 	};
 
 #if defined(__HIPSYCL__)
-	inline cudaEvent_t create_and_record_cuda_event(cudaStream_t stream = 0) {
+	inline cudaEvent_t create_and_record_cuda_event(cudaStream_t stream) {
 		// TODO: Perf considerations - we should probably have an event pool
 		cudaEvent_t result;
-		cudaEventCreateWithFlags(&result, cudaEventDisableTiming);
-		cudaEventRecord(result, stream);
+		CELERITY_CUDA_CHECK(cudaEventCreateWithFlags, &result, cudaEventDisableTiming);
+		CELERITY_CUDA_CHECK(cudaEventRecord, result, stream);
 		return result;
 	}
 
 	class cuda_event_wrapper final : public native_event_wrapper {
 	  public:
-		cuda_event_wrapper(cudaEvent_t evt) : m_event(evt) {}
-		~cuda_event_wrapper() { cudaEventDestroy(m_event); }
+		cuda_event_wrapper(cudaEvent_t evt, cudaStream_t stream) : m_event(evt) {}
+		~cuda_event_wrapper() { CELERITY_CUDA_CHECK(cudaEventDestroy, m_event); }
 
 		bool is_done() const override {
 			const auto ret = cudaEventQuery(m_event);
-			assert(ret == cudaSuccess || ret == cudaErrorNotReady);
+			if(ret != cudaSuccess && ret != cudaErrorNotReady) {
+				CELERITY_CRITICAL("cudaEventQuery: {}", cudaGetErrorString(ret));
+				abort();
+			}
 			return ret == cudaSuccess;
 		}
 
@@ -113,13 +126,13 @@ namespace detail {
 		}
 
 		// FIXME: Workaround to extend lifetime of temporary staging copies for asynchronous transfers
-		void hack_attach_payload(unique_payload_ptr ptr) { m_attached_payloads.emplace_back(std::move(ptr)); }
+		void hack_attach_payload(shared_payload_ptr ptr) { m_attached_payloads.emplace_back(std::move(ptr)); }
 
 	  private:
 		mutable gch::small_vector<bool> m_done_cache;
 		gch::small_vector<std::shared_ptr<native_event_wrapper>> m_native_events;
 		// FIXME: For some reason (old libstdc++?) this doesn't compile as a gch::small_vector on Marconi-100...
-		std::vector<unique_payload_ptr> m_attached_payloads;
+		std::vector<shared_payload_ptr> m_attached_payloads;
 	};
 
 	void memcpy_strided(const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const cl::sycl::range<1>& source_range,
@@ -140,15 +153,15 @@ namespace detail {
 	// NOCOMMIT Copy pasta of host variant. Unify with above.
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<1>& source_range, const cl::sycl::id<1>& source_offset, const cl::sycl::range<1>& target_range,
-	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range);
+	    const cl::sycl::id<1>& target_offset, const cl::sycl::range<1>& copy_range, device_id did, cudaStream_t stream);
 
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<2>& source_range, const cl::sycl::id<2>& source_offset, const cl::sycl::range<2>& target_range,
-	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range);
+	    const cl::sycl::id<2>& target_offset, const cl::sycl::range<2>& copy_range, device_id did, cudaStream_t stream);
 
 	async_event memcpy_strided_device(cl::sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
 	    const cl::sycl::range<3>& source_range, const cl::sycl::id<3>& source_offset, const cl::sycl::range<3>& target_range,
-	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range);
+	    const cl::sycl::id<3>& target_offset, const cl::sycl::range<3>& copy_range, device_id did, cudaStream_t stream);
 
 	void linearize_subrange(const void* source_base_ptr, void* target_ptr, size_t elem_size, const range<3>& source_range, const subrange<3>& copy_sr);
 
@@ -232,12 +245,18 @@ namespace detail {
 
 		virtual async_event get_data(const subrange<3>& sr, void* out_linearized) const = 0;
 
-		virtual async_event set_data(const subrange<3>& sr, const void* in_linearized) = 0;
+		virtual async_event set_data(
+		    const void* in_base_ptr, const range<3>& in_range, const id<3>& in_offset, const id<3>& local_offset, const range<3>& copy_range) = 0;
 
 		/**
 		 * Copy data from the given source buffer into this buffer.
 		 */
 		virtual async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) = 0;
+
+		// FIXME Just hacking - this assumes source has same dimensionality
+		// FIXME: Need to pass SYCL queue for copying to host... ugh
+		virtual async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset,
+		    const id<3>& target_offset, const range<3>& copy_range, device_id did, cudaStream_t stream) = 0;
 
 		virtual ~buffer_storage() = default;
 
@@ -255,14 +274,15 @@ namespace detail {
 	template <typename DataT, int Dims>
 	class device_buffer_storage : public buffer_storage {
 	  public:
-		device_buffer_storage(range<Dims> range, device_queue& owning_queue)
+		device_buffer_storage(range<Dims> range, device_queue& owning_queue, cudaStream_t copy_stream)
 		    : buffer_storage(range_cast<3>(range), buffer_type::device_buffer), m_owning_queue(owning_queue.get_sycl_queue()),
 #if USE_NDVBUFFER
 		      m_device_buf(sycl::get_native<sycl::backend::cuda>(m_owning_queue.get_device()), ndv::extent<Dims>::make_from(range))
 #else
 		      m_device_buf(range, owning_queue)
 #endif
-		{
+		      ,
+		      m_did(owning_queue.get_id()), m_copy_stream(copy_stream) {
 		}
 
 		~device_buffer_storage() {
@@ -270,6 +290,8 @@ namespace detail {
 			CELERITY_DEBUG("Destroying ndvbuffer. Total allocation size: {} bytes.\n", m_device_buf.get_allocated_size());
 #endif
 		}
+
+		sycl::queue& get_owning_queue() const { return m_owning_queue; }
 
 		// FIXME: This is no longer accurate for (sparsely allocated) ndv buffers (only an upper bound).
 		size_t get_size() const override { return get_range().size() * sizeof(DataT); };
@@ -298,13 +320,14 @@ namespace detail {
 			assert(false && "Figure out how to integrate with async_event");
 #else
 			return memcpy_strided_device(m_owning_queue, m_device_buf.get_pointer(), out_linearized, sizeof(DataT), m_device_buf.get_range(),
-			    id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), id<Dims>{}, range_cast<Dims>(sr.range));
+			    id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range), id<Dims>{}, range_cast<Dims>(sr.range), m_did, m_copy_stream);
 #endif
 		}
 
-		async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
-			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
-			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
+		async_event set_data(
+		    const void* in_base_ptr, const range<3>& in_range, const id<3>& in_offset, const id<3>& local_offset, const range<3>& copy_range) override {
+			assert(Dims > 1 || (in_offset[1] == 0 && in_range[1] == 1 && local_offset[1] == 0 && copy_range[1] == 1));
+			assert(Dims > 2 || (in_offset[2] == 0 && in_range[2] == 1 && local_offset[2] == 0 && copy_range[2] == 1));
 #if USE_NDVBUFFER
 			const ndv::box<Dims> src_box = {{}, ndv::point<Dims>::make_from(sr.range)};
 			const ndv::box<Dims> dst_box = {ndv::point<Dims>::make_from(sr.offset), ndv::point<Dims>::make_from(sr.offset + sr.range)};
@@ -312,13 +335,16 @@ namespace detail {
 			assert(false && "Figure out how to integrate with async_event");
 #else
 			// NOCOMMIT Use assert_copy_is_in_range from below?
-			assert((id_cast<Dims>(sr.offset) + range_cast<Dims>(sr.range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
-			return memcpy_strided_device(m_owning_queue, in_linearized, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id<Dims>{},
-			    m_device_buf.get_range(), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
+			assert((id_cast<Dims>(local_offset) + range_cast<Dims>(copy_range) <= m_device_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
+			return memcpy_strided_device(m_owning_queue, in_base_ptr, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(in_range),
+			    range_cast<Dims>(in_offset), m_device_buf.get_range(), id_cast<Dims>(local_offset), range_cast<Dims>(copy_range), m_did, m_copy_stream);
 #endif
 		}
 
 		async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
+
+		async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset,
+		    const range<3>& copy_range, device_id did, cudaStream_t stream) override;
 
 #if USE_NDVBUFFER
 		// FIXME: Required for more efficient D->H copies (see host_buffer_storage::copy). Find cleaner API.
@@ -332,6 +358,11 @@ namespace detail {
 #else
 		device_buffer<DataT, Dims> m_device_buf;
 #endif
+
+		// NOCOMMIT HACK copy_from_device_raw() takes the stream by argument, but copy() doesn't, so we keep it as a member here
+	  public:
+		device_id m_did;
+		cudaStream_t m_copy_stream;
 	};
 
 	template <typename DataT, int Dims>
@@ -354,16 +385,20 @@ namespace detail {
 			return async_event{};
 		}
 
-		async_event set_data(const subrange<3>& sr, const void* in_linearized) override {
-			assert(Dims > 1 || (sr.offset[1] == 0 && sr.range[1] == 1));
-			assert(Dims > 2 || (sr.offset[2] == 0 && sr.range[2] == 1));
-
-			memcpy_strided(in_linearized, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(sr.range), id_cast<Dims>(cl::sycl::id<3>(0, 0, 0)),
-			    range_cast<Dims>(m_host_buf.get_range()), id_cast<Dims>(sr.offset), range_cast<Dims>(sr.range));
+		async_event set_data(
+		    const void* in_base_ptr, const range<3>& in_range, const id<3>& in_offset, const id<3>& local_offset, const range<3>& copy_range) override {
+			assert(Dims > 1 || (in_offset[1] == 0 && in_range[1] == 1 && local_offset[1] == 0 && copy_range[1] == 1));
+			assert(Dims > 2 || (in_offset[2] == 0 && in_range[2] == 1 && local_offset[2] == 0 && copy_range[2] == 1));
+			assert((id_cast<Dims>(local_offset) + range_cast<Dims>(copy_range) <= m_host_buf.get_range()) == range_cast<Dims>(range<3>{true, true, true}));
+			memcpy_strided(in_base_ptr, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(in_range), range_cast<Dims>(in_offset),
+			    m_host_buf.get_range(), id_cast<Dims>(local_offset), range_cast<Dims>(copy_range));
 			return async_event{};
 		}
 
 		async_event copy(const buffer_storage& source, cl::sycl::id<3> source_offset, cl::sycl::id<3> target_offset, cl::sycl::range<3> copy_range) override;
+
+		async_event copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range, const id<3>& source_offset, const id<3>& target_offset,
+		    const range<3>& copy_range, device_id did, cudaStream_t copy_stream) override;
 
 		host_buffer<DataT, Dims>& get_host_buffer() { return m_host_buf; }
 
@@ -390,8 +425,10 @@ namespace detail {
 
 		if(source.get_type() == buffer_type::device_buffer) {
 			auto& device_source = dynamic_cast<const device_buffer_storage<DataT, Dims>&>(source);
-			const auto msg = fmt::format("d2d {}", copy_range.size() * sizeof(DataT));
+#if TRACY_ENABLE
+			const auto msg = fmt::format("d2d {} -> {}, {} bytes", device_source.m_did, m_did, copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
+#endif
 
 #if USE_NDVBUFFER
 			m_device_buf.copy_from(device_source.m_device_buf,
@@ -400,27 +437,26 @@ namespace detail {
 #else
 			return memcpy_strided_device(m_owning_queue, device_source.m_device_buf.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
 			    device_source.m_device_buf.get_range(), id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset),
-			    range_cast<Dims>(copy_range));
+			    range_cast<Dims>(copy_range), device_source.m_did, device_source.m_copy_stream);
 #endif
 		}
 
 		// TODO: Optimize for contiguous copies - we could do a single SYCL H->D copy directly.
 		else if(source.get_type() == buffer_type::host_buffer) {
 			auto& host_source = dynamic_cast<const host_buffer_storage<DataT, Dims>&>(source);
-			const auto msg = fmt::format("h2d {}", copy_range.size() * sizeof(DataT));
+#if TRACY_ENABLE
+			const auto msg = fmt::format("h2d -> {}, {} bytes", m_did, copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
+#endif
 
 #if USE_NDVBUFFER
 			m_device_buf.copy_from(static_cast<const DataT*>(host_source.get_pointer()), ndv::extent<Dims>::make_from(host_source.get_range()),
 			    {ndv::point<Dims>::make_from(source_offset), ndv::point<Dims>::make_from(source_offset + copy_range)},
 			    {ndv::point<Dims>::make_from(target_offset), ndv::point<Dims>::make_from(target_offset + copy_range)});
 #else
-			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
-			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
-			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
-			const auto evt = host_source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			evt.wait();
-			return set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
+			return memcpy_strided_device(m_owning_queue, host_source.get_pointer(), m_device_buf.get_pointer(), sizeof(DataT),
+			    range_cast<Dims>(host_source.get_range()), id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset),
+			    range_cast<Dims>(copy_range), m_did, m_copy_stream);
 #endif
 		}
 
@@ -429,6 +465,13 @@ namespace detail {
 		}
 
 		return async_event{};
+	}
+
+	template <typename DataT, int Dims>
+	async_event device_buffer_storage<DataT, Dims>::copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range,
+	    const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range, device_id did, cudaStream_t copy_stream) {
+		return memcpy_strided_device(m_owning_queue, source_ptr, m_device_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(source_range),
+		    id_cast<Dims>(source_offset), m_device_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range), did, copy_stream);
 	}
 
 	template <typename DataT, int Dims>
@@ -441,6 +484,7 @@ namespace detail {
 		// TODO: Optimize for contiguous copies - we could do a single SYCL D->H copy directly.
 		// NOCOMMIT This is USM - can't we just call memcpy here as well?
 		if(source.get_type() == buffer_type::device_buffer) {
+			auto& device_source = dynamic_cast<const device_buffer_storage<DataT, Dims>&>(source);
 			const auto msg = fmt::format("d2h {}", copy_range.size() * sizeof(DataT));
 			ZoneText(msg.c_str(), msg.size());
 
@@ -451,14 +495,9 @@ namespace detail {
 			    {ndv::point<Dims>::make_from(source_offset), ndv::point<Dims>::make_from(source_offset + copy_range)},
 			    {ndv::point<Dims>::make_from(target_offset), ndv::point<Dims>::make_from(target_offset + copy_range)});
 #else
-			// This looks more convoluted than using a vector<DataT>, but that would break if DataT == bool
-			// TODO: No need for intermediate copy with USM 2D/3D copy capabilities
-			auto tmp = make_uninitialized_payload<DataT>(copy_range.size());
-			// FIXME: What we really want here is to chain two asynchronous operations. Currently not possible...
-			const auto evt1 = source.get_data(subrange{source_offset, copy_range}, static_cast<DataT*>(tmp.get_pointer()));
-			evt1.wait();
-			const auto evt2 = set_data(subrange{target_offset, copy_range}, static_cast<const DataT*>(tmp.get_pointer()));
-			evt2.wait();
+			return memcpy_strided_device(device_source.get_owning_queue(), device_source.get_pointer(), m_host_buf.get_pointer(), sizeof(DataT),
+			    range_cast<Dims>(device_source.get_range()), id_cast<Dims>(source_offset), range_cast<Dims>(m_host_buf.get_range()),
+			    range_cast<Dims>(target_offset), range_cast<Dims>(copy_range), device_source.m_did, device_source.m_copy_stream);
 #endif
 		}
 
@@ -475,6 +514,13 @@ namespace detail {
 		}
 
 		return async_event{};
+	}
+
+	template <typename DataT, int Dims>
+	async_event host_buffer_storage<DataT, Dims>::copy_from_device_raw(sycl::queue& q, void* source_ptr, const range<3>& source_range,
+	    const id<3>& source_offset, const id<3>& target_offset, const range<3>& copy_range, device_id did, cudaStream_t copy_stream) {
+		return memcpy_strided_device(q, source_ptr, m_host_buf.get_pointer(), sizeof(DataT), range_cast<Dims>(source_range), id_cast<Dims>(source_offset),
+		    m_host_buf.get_range(), id_cast<Dims>(target_offset), range_cast<Dims>(copy_range), did, copy_stream);
 	}
 
 } // namespace detail

@@ -29,9 +29,10 @@ namespace detail {
 		case task_type::epoch: return "epoch";
 		case task_type::host_compute: return "host-compute";
 		case task_type::device_compute: return "device-compute";
-		case task_type::collective: return "collective host";
+		case task_type::host_collective: return "host_collective host";
 		case task_type::master_node: return "master-node host";
 		case task_type::horizon: return "horizon";
+		case task_type::forward: return "forward";
 		default: return "unknown";
 		}
 	}
@@ -59,7 +60,7 @@ namespace detail {
 	}
 
 	void format_requirements(
-	    std::string& label, const task& tsk, subrange<3> execution_range, access_mode reduction_init_mode, const buffer_manager* const bm) {
+	    std::string& label, const command_group_task& tsk, subrange<3> execution_range, access_mode reduction_init_mode, const buffer_manager* const bm) {
 		for(const auto& reduction : tsk.get_reductions()) {
 			auto rmode = cl::sycl::access::mode::discard_write;
 			if(reduction.init_from_buffer) { rmode = reduction_init_mode; }
@@ -87,19 +88,25 @@ namespace detail {
 	std::string get_task_label(const task& tsk, const buffer_manager* const bm) {
 		std::string label;
 		fmt::format_to(std::back_inserter(label), "T{}", tsk.get_id());
-		if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(label), " \"{}\" ", tsk.get_debug_name()); }
 
-		const auto execution_range = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
-
-		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.get_type()));
-		if(tsk.get_type() == task_type::host_compute || tsk.get_type() == task_type::device_compute) {
-			fmt::format_to(std::back_inserter(label), " {}", execution_range);
-		} else if(tsk.get_type() == task_type::collective) {
-			fmt::format_to(std::back_inserter(label), " in CG{}", tsk.get_collective_group_id());
+		if(const auto cgtsk = dynamic_cast<const command_group_task*>(&tsk)) {
+			if(!cgtsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(label), " \"{}\" ", cgtsk->get_debug_name()); }
 		}
 
-		format_requirements(label, tsk, execution_range, access_mode::read_write, bm);
+		fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.get_type()));
 
+		if(const auto cgtsk = dynamic_cast<const command_group_task*>(&tsk)) {
+			const auto execution_range = subrange<3>{cgtsk->get_global_offset(), cgtsk->get_global_size()};
+			if(cgtsk->get_type() == task_type::host_compute || cgtsk->get_type() == task_type::device_compute) {
+				fmt::format_to(std::back_inserter(label), " {}", execution_range);
+			} else if(cgtsk->get_type() == task_type::host_collective) {
+				fmt::format_to(std::back_inserter(label), " in CG{}", cgtsk->get_collective_group_id());
+			}
+
+			format_requirements(label, *cgtsk, execution_range, access_mode::read_write, bm);
+		} else if(const auto* ftsk = dynamic_cast<const forward_task*>(&tsk)) {
+			fmt::format_to(std::back_inserter(label), "<br/>B{} {}", ftsk->get_bid(), ftsk->get_region());
+		}
 		return label;
 	}
 
@@ -107,10 +114,12 @@ namespace detail {
 		std::string dot = "digraph G {label=\"Task Graph\" ";
 
 		for(auto tsk : tdag) {
-			const auto shape = tsk->get_type() == task_type::epoch || tsk->get_type() == task_type::horizon ? "ellipse" : "box style=rounded";
+			const auto shape = isa<command_group_task>(tsk) ? "box style=rounded" : "ellipse";
 			fmt::format_to(std::back_inserter(dot), "{}[shape={} label=<{}>];", tsk->get_id(), shape, get_task_label(*tsk, bm));
 			for(auto d : tsk->get_dependencies()) {
-				fmt::format_to(std::back_inserter(dot), "{}->{}[{}];", d.node->get_id(), tsk->get_id(), dependency_style(d));
+				std::vector<std::string> attrs;
+				if(const auto d_style = dependency_style(d); *d_style != 0) { attrs.push_back(d_style); }
+				fmt::format_to(std::back_inserter(dot), "{}->{}[{}];", d.node->get_id(), tsk->get_id(), fmt::join(attrs, ","));
 			}
 		}
 
@@ -129,14 +138,19 @@ namespace detail {
 			if(ecmd->get_epoch_action() == epoch_action::barrier) { label += " (barrier)"; }
 			if(ecmd->get_epoch_action() == epoch_action::shutdown) { label += " (shutdown)"; }
 		} else if(const auto xcmd = dynamic_cast<const execution_command*>(&cmd)) {
-			fmt::format_to(std::back_inserter(label), "<b>execution</b> {}", subrange_to_grid_box(xcmd->get_execution_range()));
+			const auto xbox = subrange_to_grid_box(xcmd->get_execution_range());
+			if(const auto tsk = tm.find_task(xcmd->get_tid()); tsk && tsk->get_execution_target() == execution_target::device) {
+				fmt::format_to(std::back_inserter(label), "<b>execution</b> on D{} {}", xcmd->get_device_id(), xbox);
+			} else {
+				fmt::format_to(std::back_inserter(label), "<b>execution</b> {}", xbox);
+			}
 		} else if(const auto pcmd = dynamic_cast<const push_command*>(&cmd)) {
 			if(pcmd->get_rid()) { fmt::format_to(std::back_inserter(label), "(R{}) ", pcmd->get_rid()); }
 			const std::string bl = get_buffer_label(bm, pcmd->get_bid());
-			fmt::format_to(std::back_inserter(label), "<b>push</b> transfer {} to N{}<br/>B{} {}", pcmd->get_transfer_id(), pcmd->get_target(), bl,
+			fmt::format_to(std::back_inserter(label), "<b>push</b> transfer {} to N{}<br/>{} {}", pcmd->get_transfer_id(), pcmd->get_target(), bl,
 			    subrange_to_grid_box(pcmd->get_range()));
 		} else if(const auto apcmd = dynamic_cast<const await_push_command*>(&cmd)) {
-			// if(apcmd->get_source()->get_rid()) { label += fmt::format("(R{}) ", apcmd->get_source()->get_rid()); }
+			// if(apcmd->get_source()->get_rid()) { label += fmt::format("(R{}) ", apcmd->get_root()->get_rid()); }
 			const std::string bl = get_buffer_label(bm, apcmd->get_bid());
 			fmt::format_to(std::back_inserter(label), "<b>await push</b> transfer {} <br/>B{} {}", apcmd->get_transfer_id(), bl, apcmd->get_region());
 		} else if(const auto drcmd = dynamic_cast<const data_request_command*>(&cmd)) {
@@ -149,6 +163,57 @@ namespace detail {
 			fmt::format_to(std::back_inserter(label), "<b>reduction</b> R{}<br/> {} {}", reduction.rid, bl, req);
 		} else if(const auto hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
 			label += "<b>horizon</b>";
+		} else if(const auto gcmd = dynamic_cast<const gather_command*>(&cmd)) {
+			fmt::format_to(std::back_inserter(label), "<b>gather</b> to N{}", gcmd->get_root());
+			if(const auto& source_region = gcmd->get_source_regions()[gcmd->get_nid()]; !source_region.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", gcmd->get_bid(), source_region);
+			}
+			if(gcmd->get_root() == gcmd->get_nid()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", gcmd->get_bid(), merge_regions(gcmd->get_source_regions()));
+			}
+			if(const auto& coherence = gcmd->get_local_coherence_region(); !coherence.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/>D0 <i>make coherent</i> {}", coherence);
+			}
+		} else if(const auto agcmd = dynamic_cast<const allgather_command*>(&cmd)) {
+			label += "<b>all-gather</b>";
+			if(const auto& source_region = agcmd->get_source_regions()[agcmd->get_nid()]; !source_region.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", agcmd->get_bid(), source_region);
+			}
+			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", agcmd->get_bid(), merge_regions(agcmd->get_source_regions()));
+			if(const auto& coherence = agcmd->get_local_coherence_region(); !coherence.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/>D* <i>make coherent</i> {}", coherence);
+			}
+		} else if(const auto bcmd = dynamic_cast<const broadcast_command*>(&cmd)) {
+			fmt::format_to(std::back_inserter(label), "<b>broadcast</b> from N{}", bcmd->get_root());
+			if(bcmd->get_root() == bcmd->get_nid()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", bcmd->get_bid(), bcmd->get_region());
+			}
+			fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", bcmd->get_bid(), bcmd->get_region());
+		} else if(const auto scmd = dynamic_cast<const scatter_command*>(&cmd)) {
+			fmt::format_to(std::back_inserter(label), "<b>scatter</b> from N{}", scmd->get_root());
+			if(scmd->get_root() == scmd->get_nid()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>read</i> B{} {}", scmd->get_bid(), merge_regions(scmd->get_dest_regions()));
+			} else if(const auto& dest_region = scmd->get_dest_regions()[scmd->get_nid()]; !dest_region.empty()) {
+				fmt::format_to(std::back_inserter(label), "<br/><i>write</i> B{} {}", scmd->get_bid(), dest_region);
+			}
+			for(device_id did = 0; did < scmd->get_local_device_coherence_regions().size(); ++did) {
+				const auto& coherence = scmd->get_local_device_coherence_regions()[did];
+				if(!coherence.empty()) { fmt::format_to(std::back_inserter(label), "<br/>D{} <i>make coherent</i> {}", did, coherence); }
+			}
+		} else if(const auto a2acmd = dynamic_cast<const alltoall_command*>(&cmd)) {
+			fmt::format_to(std::back_inserter(label), "<b>all-to-all</b> B{}", a2acmd->get_bid());
+			for(node_id from_nid = 0; from_nid < a2acmd->get_send_regions().size(); ++from_nid) {
+				const auto& sends = a2acmd->get_send_regions()[from_nid];
+				if(!sends.empty()) { fmt::format_to(std::back_inserter(label), "<br/>N{} &lt;- <i>read</i> {}", from_nid, sends); }
+			}
+			for(node_id to_nid = 0; to_nid < a2acmd->get_recv_regions().size(); ++to_nid) {
+				const auto& recvs = a2acmd->get_recv_regions()[to_nid];
+				if(!recvs.empty()) { fmt::format_to(std::back_inserter(label), "<br/>N{} -&gt; <i>write</i> {}", to_nid, recvs); }
+			}
+			for(device_id did = 0; did < a2acmd->get_local_device_coherence_regions().size(); ++did) {
+				const auto& coherence = a2acmd->get_local_device_coherence_regions()[did];
+				if(!coherence.empty()) { fmt::format_to(std::back_inserter(label), "<br/>D{} <i>make coherent</i> {}", did, coherence); }
+			}
 		} else {
 			assert(!"Unkown command");
 			label += "<b>unknown</b>";
@@ -158,16 +223,16 @@ namespace detail {
 			if(!tm.has_task(tcmd->get_tid())) return label; // NOCOMMIT This is only needed while we do TDAG pruning but not CDAG pruning
 			assert(tm.has_task(tcmd->get_tid()));
 
-			const auto& tsk = *tm.get_task(tcmd->get_tid());
-
-			auto reduction_init_mode = access_mode::discard_write;
-			auto execution_range = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
-			if(const auto ecmd = dynamic_cast<const execution_command*>(&cmd)) {
-				if(ecmd->is_reduction_initializer()) { reduction_init_mode = cl::sycl::access::mode::read_write; }
-				execution_range = ecmd->get_execution_range();
+			const auto tsk = tm.get_task(tcmd->get_tid());
+			if(const auto* cgtsk = dynamic_cast<const command_group_task*>(tsk)) {
+				auto reduction_init_mode = access_mode::discard_write;
+				auto execution_range = subrange<3>{cgtsk->get_global_offset(), cgtsk->get_global_size()};
+				if(const auto ecmd = dynamic_cast<const execution_command*>(&cmd)) {
+					if(ecmd->is_reduction_initializer()) { reduction_init_mode = cl::sycl::access::mode::read_write; }
+					execution_range = ecmd->get_execution_range();
+				}
+				format_requirements(label, *cgtsk, execution_range, reduction_init_mode, bm);
 			}
-
-			format_requirements(label, tsk, execution_range, reduction_init_mode, bm);
 		}
 
 		return label;
@@ -177,10 +242,13 @@ namespace detail {
 		std::string task_label;
 		fmt::format_to(std::back_inserter(task_label), "T{} ", tid);
 		if(const auto tsk = tm.find_task(tid)) {
-			if(!tsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(task_label), "\"{}\" ", tsk->get_debug_name()); }
+			const auto cgtsk = dynamic_cast<const command_group_task*>(tsk);
+			if(cgtsk && !cgtsk->get_debug_name().empty()) { fmt::format_to(std::back_inserter(task_label), "\"{}\" ", cgtsk->get_debug_name()); }
 			task_label += "(";
 			task_label += task_type_string(tsk->get_type());
-			if(tsk->get_type() == task_type::collective) { fmt::format_to(std::back_inserter(task_label), " on CG{}", tsk->get_collective_group_id()); }
+			if(cgtsk->get_type() == task_type::host_collective) {
+				fmt::format_to(std::back_inserter(task_label), " on CG{}", cgtsk->get_collective_group_id());
+			}
 			task_label += ")";
 		} else {
 			task_label += "(deleted)";
@@ -227,7 +295,7 @@ namespace detail {
 
 			// Add a dashed line to the corresponding push
 			// if(const auto apcmd = dynamic_cast<const await_push_command*>(cmd)) {
-			// 	fmt::format_to(std::back_inserter(main_dot), "{}->{}[style=dashed color=gray40];", local_to_global_id(apcmd->get_source()->get_cid()),
+			// 	fmt::format_to(std::back_inserter(main_dot), "{}->{}[style=dashed color=gray40];", local_to_global_id(apcmd->get_root()->get_cid()),
 			// 	    local_to_global_id(cmd->get_cid()));
 			// }
 		};

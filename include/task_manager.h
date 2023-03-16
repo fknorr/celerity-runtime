@@ -78,6 +78,7 @@ namespace detail {
 			if(m_queue) m_queue->require_collective_group(unique_tsk->get_collective_group_id());
 
 			auto& tsk = register_task_internal(std::move(reservation), std::move(unique_tsk));
+			generate_forward_tasks(&tsk);
 			compute_dependencies(tsk);
 
 			// the following deletion is intentionally redundant with the one happening when waiting for free task slots
@@ -107,7 +108,7 @@ namespace detail {
 		 * @brief Adds a new buffer for dependency tracking
 		 * @arg host_initialized Whether this buffer has been initialized using a host pointer (i.e., it contains useful data before any write-task)
 		 */
-		void add_buffer(buffer_id bid, const cl::sycl::range<3>& range, bool host_initialized);
+		void add_buffer(buffer_id bid, int dimensions /* TODO only for TDAG collectives */, const cl::sycl::range<3>& range, bool host_initialized);
 
 		/**
 		 * Returns the specified task if it still exists, nullptr otherwise.
@@ -171,7 +172,14 @@ namespace detail {
 		 */
 		size_t get_current_task_count() const { return m_task_buffer.get_current_task_count(); }
 
+		static bool NOMERGE_generate_collectives;
+
 	  private:
+		struct buffer_info { // TODO only required for TDAG collectives
+			int dimensions;
+			celerity::range<3> range;
+		};
+
 		const size_t m_num_collective_nodes;
 		host_queue* m_queue;
 
@@ -181,6 +189,8 @@ namespace detail {
 		// This is useful so we can correctly generate anti-dependencies onto tasks that read host-initialized buffers.
 		// To ensure correct ordering, all tasks that have no other true-dependencies depend on this task.
 		task_id m_epoch_for_new_tasks{initial_epoch_task};
+
+		std::unordered_map<buffer_id, buffer_info> m_buffer_info; // TODO only required for TDAG collectives
 
 		// We store a map of which task last wrote to a certain region of a buffer.
 		// NOTE: This represents the state after the latest performed pre-pass.
@@ -194,7 +204,7 @@ namespace detail {
 		std::vector<task_callback> m_task_callbacks;
 
 		// maximum critical path length in the task graph before inserting a horizon
-		int m_task_horizon_step_size = 2;
+		int m_task_horizon_step_size = 4;
 
 		// This only (potentially) grows when adding dependencies,
 		// it never shrinks and does not take into account later changes further up in the dependency chain
@@ -214,9 +224,18 @@ namespace detail {
 		// Set of tasks with no dependents
 		std::unordered_set<task*> m_execution_front;
 
-		task& register_task_internal(task_ring_buffer::reservation&& reserve, std::unique_ptr<task> task);
+		template <typename Task>
+		Task& register_task_internal(task_ring_buffer::reservation&& reserve, std::unique_ptr<Task> task) {
+			Task& task_ref = *task;
+			assert(task != nullptr);
+			m_task_buffer.put(std::move(reserve), std::move(task));
+			m_execution_front.insert(&task_ref);
+			return task_ref;
+		}
 
 		void invoke_callbacks(const task* tsk) const;
+
+		void add_dependency(task& depender, task::dependency dependency);
 
 		void add_dependency(task& depender, task& dependee, dependency_kind kind, dependency_origin origin);
 
@@ -232,6 +251,7 @@ namespace detail {
 
 		task_id generate_horizon_task();
 
+		void compute_command_group_dependencies(command_group_task& tsk);
 		void compute_dependencies(task& tsk);
 
 		// Finds the first in-flight epoch, or returns the currently reached one if there are none in-flight
@@ -240,6 +260,8 @@ namespace detail {
 
 		// Returns a callback which blocks until any epoch task has executed, freeing new task slots
 		task_ring_buffer::wait_callback await_free_task_slot_callback();
+
+		void generate_forward_tasks(const command_group_task* consumer);
 	};
 
 } // namespace detail

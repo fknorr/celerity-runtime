@@ -22,13 +22,18 @@ namespace detail {
 		// Separate push commands from task commands. We flush pushes first to avoid deadlocking the executor.
 		// This is always safe as no other unflushed command within a single task can precede a push.
 		std::vector<abstract_command*> push_cmds;
-		push_cmds.reserve(cmds.size() / 2);
+		push_cmds.reserve(cmds.size());
+		std::vector<abstract_command*> collective_cmds;
+		collective_cmds.reserve(cmds.size());
 		std::vector<abstract_command*> task_cmds;
-		task_cmds.reserve(cmds.size() / 2); // Somewhat overzealous, we are likely to have more push commands
+		task_cmds.reserve(cmds.size());
 
 		for(auto& cmd : cmds) {
 			if(isa<push_command>(cmd)) {
 				push_cmds.push_back(cmd);
+			} else if(isa<gather_command>(cmd) || isa<allgather_command>(cmd) || isa<broadcast_command>(cmd) || isa<scatter_command>(cmd)
+			          || isa<alltoall_command>(cmd)) {
+				collective_cmds.push_back(cmd);
 			} else if(isa<task_command>(cmd)) {
 				task_cmds.push_back(cmd);
 			}
@@ -38,6 +43,8 @@ namespace detail {
 		// One notable exception are reductions, which generate a tree of await push commands and reduction commands as successors.
 		[[maybe_unused]] size_t flush_count = 0;
 		const auto flush_recursive = [this, &check_tid, &flush_count](abstract_command* cmd, auto recurse) -> void {
+			if(cmd->is_flushed()) return;
+
 			(void)check_tid;
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 			if(isa<task_command>(cmd)) {
@@ -48,14 +55,14 @@ namespace detail {
 #endif
 			std::vector<command_id> deps;
 			for(auto dep : cmd->get_dependencies()) {
-				if(!dep.node->is_flushed()) { recurse(dep.node, recurse); }
+				recurse(dep.node, recurse);
 				if(!is_virtual_dependency(dep.node)) { deps.push_back(dep.node->get_cid()); }
 			}
 			serialize_and_flush(cmd, deps);
 			flush_count++;
 		};
 
-		for(auto& cmds_ptr : {&push_cmds, &task_cmds}) {
+		for(auto& cmds_ptr : {&push_cmds, &collective_cmds, &task_cmds}) {
 			for(auto& cmd : *cmds_ptr) {
 				flush_recursive(cmd, flush_recursive);
 			}
@@ -93,6 +100,16 @@ namespace detail {
 			pkg.data = reduction_data{rcmd->get_reduction_info().rid};
 		} else if(const auto* hcmd = dynamic_cast<horizon_command*>(cmd)) {
 			pkg.data = horizon_data{hcmd->get_tid()};
+		} else if(const auto* gcmd = dynamic_cast<gather_command*>(cmd)) {
+			pkg.data = gather_data{gcmd->get_bid(), gcmd->get_source_regions(), gcmd->get_local_coherence_region(), gcmd->get_root()};
+		} else if(const auto* agcmd = dynamic_cast<allgather_command*>(cmd)) {
+			pkg.data = allgather_data{agcmd->get_bid(), agcmd->get_source_regions(), agcmd->get_local_coherence_region()};
+		} else if(const auto* bcmd = dynamic_cast<broadcast_command*>(cmd)) {
+			pkg.data = broadcast_data{bcmd->get_bid(), bcmd->get_region(), bcmd->get_root()};
+		} else if(const auto* scmd = dynamic_cast<scatter_command*>(cmd)) {
+			pkg.data = scatter_data{scmd->get_bid(), scmd->get_root(), scmd->get_dest_regions(), scmd->get_local_device_coherence_regions()};
+		} else if(const auto* a2acmd = dynamic_cast<alltoall_command*>(cmd)) {
+			pkg.data = alltoall_data{a2acmd->get_bid(), a2acmd->get_send_regions(), a2acmd->get_recv_regions(), a2acmd->get_local_device_coherence_regions()};
 		} else {
 			assert(false && "Unknown command");
 		}

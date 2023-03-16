@@ -71,6 +71,10 @@ enum class side_effect_order { sequential };
 
 namespace celerity::detail {
 
+inline constexpr collective_group_id non_collective(0);
+inline constexpr collective_group_id implicit_collective(1);
+inline constexpr collective_group_id first_explicit_collective(2);
+
 struct reduction_info {
 	reduction_id rid = 0;
 	buffer_id bid = 0;

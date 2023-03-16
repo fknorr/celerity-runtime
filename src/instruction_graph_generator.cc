@@ -72,7 +72,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	// 1) assign work, determine execution range and target memory of command instructions (and perform a local split where applicable)
 
 	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
-		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
+		const auto& tsk = dynamic_cast<const command_group_task&>(*m_tm.get_task(xcmd->get_tid()));
 		const auto command_sr = xcmd->get_execution_range();
 		if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device) {
 			const auto split = tsk.get_hint<experimental::hints::tiled_split>() ? split_2d : split_1d;

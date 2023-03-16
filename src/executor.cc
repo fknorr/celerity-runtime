@@ -118,6 +118,11 @@ namespace detail {
 					m_jobs[d].unsatisfied_dependencies--;
 					if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
 				}
+				for(const auto& d : job_handle.HACK_collective_order_dependents) {
+					assert(m_jobs.count(d) == 1);
+					m_jobs[d].unsatisfied_dependencies--;
+					if(m_jobs[d].unsatisfied_dependencies == 0) { ready_jobs.push_back(d); }
+				}
 
 				if(isa<device_execute_job>(job_handle.job.get())) {
 					const device_id did = static_cast<device_execute_job*>(job_handle.job.get())->get_device_id();
@@ -135,11 +140,12 @@ namespace detail {
 			}
 
 			// Process newly available jobs
-			if(!ready_jobs.empty()) {
+			while(!ready_jobs.empty()) { // HACK "while" because we make new jobs ready in the loop
 				// Make sure to start any push jobs before other jobs, as on some platforms copying data from a compute device while
 				// also reading it from within a kernel is not supported. To avoid stalling other nodes, we thus perform the push first.
 				std::sort(ready_jobs.begin(), ready_jobs.end(),
 				    [this](command_id a, command_id b) { return m_jobs[a].cmd == command_type::push && m_jobs[b].cmd != command_type::push; });
+				std::vector<command_id> HACK_new_ready_jobs_after_collective_start;
 				for(command_id cid : ready_jobs) {
 #if ATTEMPT_DEADLOCK_DETECTION
 					ts_last_change = chr::steady_clock::now();
@@ -159,7 +165,16 @@ namespace detail {
 
 					job->start();
 					job->update();
+
+					for(const auto& d : m_jobs.at(cid).HACK_collective_order_dependents) {
+						assert(m_jobs.count(d) == 1);
+						m_jobs[d].unsatisfied_dependencies--;
+						if(m_jobs[d].unsatisfied_dependencies == 0) { HACK_new_ready_jobs_after_collective_start.push_back(d); }
+					}
+					m_jobs.at(cid).HACK_collective_order_dependents.clear();
 				}
+
+				ready_jobs = std::move(HACK_new_ready_jobs_after_collective_start);
 			}
 
 			if(m_jobs.size() < MAX_CONCURRENT_JOBS) {
@@ -253,6 +268,11 @@ namespace detail {
 			}
 			break;
 		case command_type::data_request: create_job<data_request_job>(pkg, *m_btm); break;
+		case command_type::gather: create_job<gather_job>(pkg, m_buffer_mngr, m_local_nid); break;
+		case command_type::allgather: create_job<allgather_job>(pkg, m_buffer_mngr, m_local_nid); break;
+		case command_type::broadcast: create_job<broadcast_job>(pkg, m_buffer_mngr, m_local_nid); break;
+		case command_type::scatter: create_job<scatter_job>(pkg, m_buffer_mngr, m_local_nid); break;
+		case command_type::alltoall: create_job<alltoall_job>(pkg, m_buffer_mngr); break;
 		default: assert(!"Unexpected command");
 		}
 		return true;
