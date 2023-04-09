@@ -3,6 +3,8 @@
 #include "command.h"
 #include "task_manager.h"
 
+#include <numeric>
+
 namespace celerity::detail {
 
 instruction_graph_generator::instruction_graph_generator(const task_manager& tm, size_t num_devices) : m_tm(tm), m_num_devices(num_devices) {

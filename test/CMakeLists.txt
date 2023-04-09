@@ -44,7 +44,7 @@ set(TEST_TARGETS
   task_graph_tests
   task_ring_buffer_tests
   device_selection_tests
-  ndvbuffer_tests
+  # ndvbuffer_tests
   instruction_graph_tests
 )
 

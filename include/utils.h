@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <type_traits>
 #include <variant>
 
@@ -27,6 +28,149 @@ struct overload : F... {
 template <typename Variant, typename... Arms>
 decltype(auto) match(Variant&& v, Arms&&... arms) {
 	return std::visit(overload{std::forward<Arms>(arms)...}, std::forward<Variant>(v));
+}
+
+template <typename T>
+class declare_visit_fn {
+  public:
+	virtual void visit(T) = 0;
+};
+
+template <typename... Ts>
+class visitor : public declare_visit_fn<Ts>... {
+  public:
+	virtual ~visitor() = default;
+	using declare_visit_fn<Ts>::visit...;
+};
+
+template <typename Base, typename Fn, typename Ret, typename... Ts>
+class impl_visit_fn;
+
+template <typename Base, typename Fn, typename Ret, typename T, typename... Ts>
+class impl_visit_fn<Base, Fn, Ret, T, Ts...> : public impl_visit_fn<Base, Fn, Ret, Ts...> {
+  private:
+	using next = impl_visit_fn<Base, Fn, Ret, Ts...>;
+
+  public:
+	explicit impl_visit_fn(Fn&& fn) : next(std::move(fn)) {}
+	void visit(T v) final { next::template invoke<T>(v); }
+	using next::visit;
+};
+
+template <typename Base, typename Fn, typename Ret>
+class impl_visit_fn<Base, Fn, Ret> : public Base {
+  public:
+	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
+	Ret get_result() { return std::move(*ret); }
+
+  protected:
+	template <typename T>
+	void invoke(T v) {
+		ret.emplace(fn(static_cast<T>(v)));
+	}
+
+  private:
+	Fn fn;
+	std::optional<Ret> ret;
+};
+
+template <typename Base, typename Fn, typename Ret>
+class impl_visit_fn<Base, Fn, Ret&> : public Base {
+  public:
+	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
+	Ret& get_result() { return *ret; }
+
+  protected:
+	template <typename T>
+	void invoke(T v) {
+		ret = &fn(static_cast<T>(v));
+	}
+
+  private:
+	Fn fn;
+	Ret* ret = nullptr;
+};
+
+template <typename Base, typename Fn, typename Ret>
+class impl_visit_fn<Base, Fn, Ret&&> : public Base {
+  public:
+	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
+	Ret&& get_result() { return std::move(*ret); }
+
+  protected:
+	template <typename T>
+	void invoke(T v) {
+		Ret&& name = fn(static_cast<T>(v));
+		ret = &name;
+	}
+
+  private:
+	Fn fn;
+	Ret* ret;
+};
+
+template <typename Base, typename Fn>
+class impl_visit_fn<Base, Fn, void> : public Base {
+  public:
+	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
+	void get_result() {}
+
+  protected:
+	template <typename T>
+	void invoke(T v) {
+		fn(static_cast<T>(v));
+	}
+
+  private:
+	Fn fn;
+};
+
+template <typename Fn, typename T, typename... Ts>
+struct visitor_result {
+	using type = std::invoke_result_t<Fn, T>;
+	static_assert((... && std::is_same_v<type, std::invoke_result_t<Fn, Ts>>), "all overloads must return the same type");
+};
+
+template <typename Fn, typename... Ts>
+using visitor_result_t = typename visitor_result<Fn, Ts...>::type;
+
+template <typename Visitor, typename Fn>
+class visitor_impl;
+
+template <typename... Ts, typename Fn>
+class visitor_impl<visitor<Ts...>, Fn> : public impl_visit_fn<visitor<Ts...>, Fn, visitor_result_t<Fn, Ts...>, Ts...> {
+  public:
+	using result_type = visitor_result_t<Fn, Ts...>;
+	using impl_visit_fn<visitor<Ts...>, Fn, result_type, Ts...>::impl_visit_fn;
+};
+
+template <typename Visitor, typename T, typename... Fns>
+decltype(auto) match(T& target, Fns&&... fns) {
+	using overload_type = overload<std::decay_t<Fns>...>;
+	visitor_impl<Visitor, overload_type> vis(overload_type{std::forward<Fns>(fns)...});
+	target.accept(vis);
+	return vis.get_result();
+}
+
+template <typename T, typename Enable = void>
+struct default_visitor;
+
+template <typename T>
+struct default_visitor<T, std::enable_if_t<std::is_const_v<T>, std::void_t<typename T::const_visitor>>> {
+	using type = typename T::const_visitor;
+};
+
+template <typename T>
+struct default_visitor<T, std::enable_if_t<!std::is_const_v<T>, std::void_t<typename T::visitor>>> {
+	using type = typename T::visitor;
+};
+
+template <typename T>
+using default_visitor_t = typename default_visitor<T>::type;
+
+template <typename T, typename... Fns, typename Visitor = default_visitor_t<T>>
+decltype(auto) match(T& target, Fns&&... fns) {
+	return match<Visitor, T, Fns...>(target, std::forward<Fns>(fns)...);
 }
 
 // Implementation from Boost.ContainerHash, licensed under the Boost Software License, Version 1.0.

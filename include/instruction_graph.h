@@ -5,6 +5,7 @@
 #include "ranges.h"
 #include "task.h"
 #include "types.h"
+#include "utils.h"
 
 #include <unordered_map>
 
@@ -21,31 +22,18 @@ class recv_instruction;
 class horizon_instruction;
 class epoch_instruction;
 
-class const_instruction_graph_visitor {
-  public:
-	virtual ~const_instruction_graph_visitor() = default;
-
-	virtual void visit(const instruction& insn) {}
-	virtual void visit_alloc(const alloc_instruction& ainsn);
-	virtual void visit_copy(const copy_instruction& cinsn);
-	virtual void visit_kernel(const kernel_instruction& kinsn);
-	virtual void visit_device_kernel(const device_kernel_instruction& dkinsn);
-	virtual void visit_host_kernel(const host_kernel_instruction& hkinsn);
-	virtual void visit_send(const send_instruction& sinsn);
-	virtual void visit_recv(const recv_instruction& rinsn);
-	virtual void visit_horizon(const horizon_instruction& hinsn);
-	virtual void visit_epoch(const epoch_instruction& einsn);
-};
-
 class instruction : public intrusive_graph_node<instruction> {
   public:
+	using const_visitor = utils::visitor<const alloc_instruction&, const copy_instruction&, const device_kernel_instruction&, const host_kernel_instruction&,
+	    const send_instruction&, const recv_instruction&, const horizon_instruction&, const epoch_instruction&>;
+
 	explicit instruction(const instruction_id id, const std::optional<command_id> cid = std::nullopt) : m_id(id), m_cid(cid) {}
 
 	instruction(const instruction&) = delete;
 	instruction& operator=(const instruction&) = delete;
 	virtual ~instruction() = default;
 
-	virtual void visit(const_instruction_graph_visitor& visitor) const = 0;
+	virtual void accept(const_visitor& visitor) const = 0;
 
 	instruction_id get_id() const { return m_id; }
 	std::optional<command_id> get_command_id() const { return m_cid; }
@@ -64,7 +52,7 @@ class alloc_instruction final : public instruction {
 	explicit alloc_instruction(const instruction_id id, const buffer_id bid, const memory_id mid, GridRegion<3> region)
 	    : instruction(id), m_bid(bid), m_mid(mid), m_region(std::move(region)) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_alloc(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	buffer_id get_buffer_id() const { return m_bid; }
 	memory_id get_memory_id() const { return m_mid; }
@@ -81,7 +69,7 @@ class copy_instruction final : public instruction {
 	explicit copy_instruction(const instruction_id id, const buffer_id bid, GridRegion<3> region, const memory_id from_mid, const memory_id to_mid)
 	    : instruction(id), m_bid(bid), m_region(std::move(region)), m_from_mid(from_mid), m_to_mid(to_mid) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_copy(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	const buffer_id& get_buffer_id() const { return m_bid; }
 	const GridRegion<3>& get_region() const { return m_region; }
@@ -111,8 +99,6 @@ class kernel_instruction : public instruction {
 	explicit kernel_instruction(const instruction_id id, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map)
 	    : instruction(id, cid), m_execution_range(execution_range), m_rw_map(std::move(rw_map)) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_kernel(*this); }
-
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
 
 	const buffer_read_write_map& get_buffer_read_write_map() const { return m_rw_map; }
@@ -128,7 +114,7 @@ class device_kernel_instruction final : public kernel_instruction {
 	    const instruction_id id, const device_id did, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map)
 	    : kernel_instruction(id, cid, execution_range, std::move(rw_map)), m_device_id(did) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_device_kernel(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	device_id get_device_id() const { return m_device_id; }
 
@@ -142,7 +128,7 @@ class host_kernel_instruction final : public kernel_instruction {
 	    side_effect_map se_map, collective_group_id cgid)
 	    : kernel_instruction(id, cid, execution_range, std::move(rw_map)), m_se_map(std::move(se_map)), m_cgid(cgid) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_host_kernel(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	const side_effect_map& get_side_effect_map() const { return m_se_map; }
 
@@ -158,7 +144,7 @@ class send_instruction final : public instruction {
 	explicit send_instruction(const instruction_id id, const command_id cid, const node_id to_nid, const buffer_id bid, GridRegion<3> region)
 	    : instruction(id, cid), m_to_nid(to_nid), m_bid(bid), m_region(std::move(region)) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_send(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	node_id get_dest_node_id() const { return m_to_nid; }
 	buffer_id get_buffer_id() const { return m_bid; }
@@ -176,7 +162,7 @@ class recv_instruction final : public instruction {
 	explicit recv_instruction(const instruction_id id, const transfer_id trid, const buffer_id bid, GridRegion<3> region)
 	    : instruction(id), m_trid(trid), m_bid(bid), m_region(region) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_recv(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	transfer_id get_transfer_id() const { return m_trid; }
 	buffer_id get_buffer_id() const { return m_bid; }
@@ -192,25 +178,15 @@ class horizon_instruction final : public instruction {
   public:
 	explicit horizon_instruction(const instruction_id id, const command_id cid) : instruction(id, cid) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_horizon(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 };
 
 class epoch_instruction final : public instruction {
   public:
 	explicit epoch_instruction(const instruction_id id, const command_id cid) : instruction(id, cid) {}
 
-	void visit(const_instruction_graph_visitor& visitor) const override { visitor.visit_epoch(*this); }
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 };
-
-inline void const_instruction_graph_visitor::visit_alloc(const alloc_instruction& ainsn) { visit(ainsn); }
-inline void const_instruction_graph_visitor::visit_copy(const copy_instruction& cinsn) { visit(cinsn); }
-inline void const_instruction_graph_visitor::visit_kernel(const kernel_instruction& dkinsn) { visit(dkinsn); }
-inline void const_instruction_graph_visitor::visit_device_kernel(const device_kernel_instruction& dkinsn) { visit_kernel(dkinsn); }
-inline void const_instruction_graph_visitor::visit_host_kernel(const host_kernel_instruction& hkinsn) { visit_kernel(hkinsn); }
-inline void const_instruction_graph_visitor::visit_send(const send_instruction& sinsn) { visit(sinsn); }
-inline void const_instruction_graph_visitor::visit_recv(const recv_instruction& rinsn) { visit(rinsn); }
-inline void const_instruction_graph_visitor::visit_horizon(const horizon_instruction& hinsn) { visit(hinsn); }
-inline void const_instruction_graph_visitor::visit_epoch(const epoch_instruction& einsn) { visit(einsn); }
 
 class instruction_graph {
   public:
@@ -223,13 +199,12 @@ class instruction_graph {
 		m_instructions.erase(last, m_instructions.end());
 	}
 
-	void visit(const_instruction_graph_visitor& visitor) const {
-		for(const auto& insn : m_instructions) {
-			insn->visit(visitor);
+	template <typename Fn>
+	void for_each(Fn&& fn) const {
+		for(const auto& instr : m_instructions) {
+			fn(std::as_const(*instr));
 		}
 	}
-
-	void visit(const_instruction_graph_visitor&& visitor) const { visit(/* lvalue */ visitor); }
 
   private:
 	// TODO split vector into epochs for cleanup phase
