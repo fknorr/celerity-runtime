@@ -235,7 +235,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				buffer_memory.record_write(tr_region, tr_insn);
 
 				buffer.original_writers.update_region(tr_region, tr_insn);
-				buffer.newest_data_location.update_region(tr_region, data_location(host_memory_id));
+				buffer.newest_data_location.update_region(tr_region, data_location().set(host_memory_id));
 				buffer.pending_await_pushes.update_region(tr_region, transfer_id());
 			}
 		}
@@ -256,7 +256,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			const auto region_sources = buffer.newest_data_location.get_region_values(region);
 #ifndef NDEBUG
 			for(const auto& [box, sources] : region_sources) {
-				assert(sources.any() || "trying to read data that is neither found locally nor has been await-pushed before");
+				// TODO for convenience, we want to accept read-write access by the first kernel that ever touches a given buffer range (think a read-write
+				//  kernel in a loop). However we still want to be able to detect the error condition of not having received a buffer region that was produced
+				//  by some other kernel in the past.
+				assert(sources.any() && "trying to read data that is neither found locally nor has been await-pushed before");
 			}
 #endif
 

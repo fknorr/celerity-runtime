@@ -116,7 +116,7 @@ std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*> unm
 
 	const auto visit = [&](abstract_command* const cmd, auto& visit /* to allow recursion in lambda */) {
 		if(permanent_marked.count(cmd) != 0) return;
-		assert(temporary_marked.count(cmd) == 0 || !"cyclic command graph");
+		assert(temporary_marked.count(cmd) == 0 && "cyclic command graph");
 		unmarked.erase(cmd);
 		temporary_marked.insert(cmd);
 		for(const auto dep_cmd : cmd->get_dependent_nodes()) {
