@@ -15,6 +15,19 @@ namespace detail {
 
 	enum class command_type { epoch, horizon, execution, data_request, push, await_push, reduction, gather, allgather, broadcast, scatter, alltoall };
 
+	class epoch_command;
+	class horizon_command;
+	class execution_command;
+	class data_request_command;
+	class push_command;
+	class await_push_command;
+	class reduction_command;
+	class gather_command;
+	class allgather_command;
+	class broadcast_command;
+	class scatter_command;
+	class alltoall_command;
+
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
@@ -33,9 +46,15 @@ namespace detail {
 		abstract_command(command_id cid, node_id nid) : m_cid(cid), m_nid(nid) {}
 
 	  public:
+		using const_visitor = utils::visitor<const epoch_command&, const horizon_command&, const execution_command&, const data_request_command&,
+		    const push_command&, const await_push_command&, const reduction_command&, const gather_command&, const allgather_command&, const broadcast_command&,
+		    const scatter_command&, const alltoall_command&>;
+
 		virtual ~abstract_command() = 0;
 
 		virtual command_type get_type() const = 0;
+
+		virtual void accept(const_visitor &visitor) const = 0;
 
 		command_id get_cid() const { return m_cid; }
 
@@ -66,6 +85,8 @@ namespace detail {
 
 		command_type get_type() const override { return command_type::push; }
 
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
+
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		reduction_id get_rid() const { return m_rid; }
@@ -88,6 +109,8 @@ namespace detail {
 
 		command_type get_type() const override { return command_type::await_push; }
 
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
+
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		transfer_id get_transfer_id() const { return m_trid; }
@@ -106,6 +129,8 @@ namespace detail {
 
 		command_type get_type() const override { return command_type::data_request; }
 
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
+
 	  public:
 		buffer_id get_bid() const { return m_bid; }
 		node_id get_source() const { return m_source; }
@@ -122,6 +147,8 @@ namespace detail {
 		reduction_command(command_id cid, node_id nid, const reduction_info& info) : abstract_command(cid, nid), m_info(info) {}
 
 		command_type get_type() const override { return command_type::reduction; }
+
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 
 	  public:
 		const reduction_info& get_reduction_info() const { return m_info; }
@@ -147,6 +174,8 @@ namespace detail {
 
 		command_type get_type() const override { return command_type::epoch; }
 
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
+
 	  public:
 		epoch_action get_epoch_action() const { return m_action; }
 
@@ -159,6 +188,8 @@ namespace detail {
 		using task_command::task_command;
 
 		command_type get_type() const override { return command_type::horizon; }
+
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 	};
 
 	class execution_command final : public task_command {
@@ -170,6 +201,8 @@ namespace detail {
 
 	  public:
 		command_type get_type() const override { return command_type::execution; }
+
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 
 		const subrange<3>& get_execution_range() const { return m_execution_range; }
 
@@ -200,6 +233,7 @@ namespace detail {
 
 	  public:
 		command_type get_type() const override { return command_type::gather; }
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 		buffer_id get_bid() const { return m_bid; }
 		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
 		const GridRegion<3>& get_local_coherence_region() const { return m_local_coherence_region; }
@@ -221,6 +255,7 @@ namespace detail {
 
 	  public:
 		command_type get_type() const override { return command_type::allgather; }
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 		buffer_id get_bid() const { return m_bid; }
 		const std::vector<GridRegion<3>>& get_source_regions() const { return m_source_regions; }
 		const GridRegion<3>& get_local_coherence_region() const { return m_local_coherence_region; }
@@ -238,6 +273,7 @@ namespace detail {
 
 	  public:
 		command_type get_type() const override { return command_type::broadcast; }
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 		buffer_id get_bid() const { return m_bid; }
 		const GridRegion<3>& get_region() const { return m_region; }
 		node_id get_root() const { return m_root; }
@@ -259,6 +295,7 @@ namespace detail {
 
 	  public:
 		command_type get_type() const override { return command_type::scatter; }
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 		buffer_id get_bid() const { return m_bid; }
 		node_id get_root() const { return m_root; }
 		const std::vector<GridRegion<3>>& get_dest_regions() const { return m_dest_regions; }
@@ -280,6 +317,7 @@ namespace detail {
 
 	  public:
 		command_type get_type() const override { return command_type::alltoall; }
+		void accept(const_visitor &visitor) const override { visitor.visit(*this); }
 		buffer_id get_bid() const { return m_bid; }
 		const std::vector<GridRegion<3>>& get_send_regions() const { return m_send_regions; }
 		const std::vector<GridRegion<3>>& get_recv_regions() const { return m_recv_regions; }

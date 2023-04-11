@@ -73,82 +73,86 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 	// 1) assign work, determine execution range and target memory of command instructions (and perform a local split where applicable)
 
-	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
-		const auto& tsk = dynamic_cast<const command_group_task&>(*m_tm.get_task(xcmd->get_tid()));
-		const auto command_sr = xcmd->get_execution_range();
-		if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device) {
-			const auto split = tsk.get_hint<experimental::hints::tiled_split>() ? split_2d : split_1d;
-			const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>();
-			const auto num_sub_chunks_per_device = oversubscribe ? oversubscribe->get_factor() : 1;
+	utils::match(
+	    cmd,
+	    [&](const execution_command& xcmd) {
+		    const auto& tsk = dynamic_cast<const command_group_task&>(*m_tm.get_task(xcmd.get_tid()));
+		    const auto command_sr = xcmd.get_execution_range();
+		    if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device) {
+			    const auto split = tsk.get_hint<experimental::hints::tiled_split>() ? split_2d : split_1d;
+			    const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>();
+			    const auto num_sub_chunks_per_device = oversubscribe ? oversubscribe->get_factor() : 1;
 
-			const auto device_chunks = split(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_num_devices);
-			for(device_id did = 0; did < m_num_devices && did < device_chunks.size(); ++did) {
-				// subdivide recursively so that in case of a 2D split, we still produce 2D tiles instead of a row-subset
-				const auto this_device_sub_chunks = split(device_chunks[did], tsk.get_granularity(), num_sub_chunks_per_device);
-				for(const auto& sub_chunk : this_device_sub_chunks) {
-					auto& insn = cmd_insns.emplace_back();
-					insn.execution_sr = subrange<3>(sub_chunk.offset, sub_chunk.range);
-					insn.did = did;
-					insn.mid = device_to_memory_id(did);
-				}
-			}
-		} else {
-			// TODO oversubscribe distributed host tasks (but not if they have side effects)
-			auto& insn = cmd_insns.emplace_back();
-			insn.execution_sr = command_sr;
-			if(tsk.get_execution_target() == execution_target::device) {
-				// Assign work to the first device - note this may lead to load imbalance if there's multiple independent unsplittable tasks.
-				//   - but at the same time, keeping work on one device minimizes data transfers => this can only truly be solved through profiling.
-				insn.did = 0;
-				insn.mid = device_to_memory_id(insn.did);
-			} else {
-				insn.mid = host_memory_id;
-			}
-		}
+			    const auto device_chunks = split(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_num_devices);
+			    for(device_id did = 0; did < m_num_devices && did < device_chunks.size(); ++did) {
+				    // subdivide recursively so that in case of a 2D split, we still produce 2D tiles instead of a row-subset
+				    const auto this_device_sub_chunks = split(device_chunks[did], tsk.get_granularity(), num_sub_chunks_per_device);
+				    for(const auto& sub_chunk : this_device_sub_chunks) {
+					    auto& insn = cmd_insns.emplace_back();
+					    insn.execution_sr = subrange<3>(sub_chunk.offset, sub_chunk.range);
+					    insn.did = did;
+					    insn.mid = device_to_memory_id(did);
+				    }
+			    }
+		    } else {
+			    // TODO oversubscribe distributed host tasks (but not if they have side effects)
+			    auto& insn = cmd_insns.emplace_back();
+			    insn.execution_sr = command_sr;
+			    if(tsk.get_execution_target() == execution_target::device) {
+				    // Assign work to the first device - note this may lead to load imbalance if there's multiple independent unsplittable tasks.
+				    //   - but at the same time, keeping work on one device minimizes data transfers => this can only truly be solved through profiling.
+				    insn.did = 0;
+				    insn.mid = device_to_memory_id(insn.did);
+			    } else {
+				    insn.mid = host_memory_id;
+			    }
+		    }
 
-		const auto& bam = tsk.get_buffer_access_map();
-		for(const auto bid : bam.get_accessed_buffers()) {
-			for(auto& insn : cmd_insns) {
-				reads_writes rw;
-				for(const auto mode : bam.get_access_modes(bid)) {
-					const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
-					if(access::mode_traits::is_consumer(mode)) { rw.reads = GridRegion<3>::merge(rw.reads, req); }
-					if(access::mode_traits::is_producer(mode)) { rw.writes = GridRegion<3>::merge(rw.writes, req); }
-				}
-				if(!rw.empty()) { insn.rw_map.emplace(bid, std::move(rw)); }
-			}
-		}
+		    const auto& bam = tsk.get_buffer_access_map();
+		    for(const auto bid : bam.get_accessed_buffers()) {
+			    for(auto& insn : cmd_insns) {
+				    reads_writes rw;
+				    for(const auto mode : bam.get_access_modes(bid)) {
+					    const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
+					    if(access::mode_traits::is_consumer(mode)) { rw.reads = GridRegion<3>::merge(rw.reads, req); }
+					    if(access::mode_traits::is_producer(mode)) { rw.writes = GridRegion<3>::merge(rw.writes, req); }
+				    }
+				    if(!rw.empty()) { insn.rw_map.emplace(bid, std::move(rw)); }
+			    }
+		    }
 
-		if(!tsk.get_side_effect_map().empty()) {
-			assert(cmd_insns.size() == 1); // split instructions for host tasks with side effects would race
-			assert(cmd_insns[0].mid == host_memory_id);
-			cmd_insns[0].se_map = tsk.get_side_effect_map();
-		}
+		    if(!tsk.get_side_effect_map().empty()) {
+			    assert(cmd_insns.size() == 1); // split instructions for host tasks with side effects would race
+			    assert(cmd_insns[0].mid == host_memory_id);
+			    cmd_insns[0].se_map = tsk.get_side_effect_map();
+		    }
 
-		cmd_insns[0].cgid = tsk.get_collective_group_id();
-	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
-		const auto bid = pcmd->get_bid();
-		auto& buffer = m_buffers.at(bid);
-		const auto push_box = subrange_to_grid_box(pcmd->get_range());
+		    cmd_insns[0].cgid = tsk.get_collective_group_id();
+	    },
+	    [&](const push_command& pcmd) {
+		    const auto bid = pcmd.get_bid();
+		    auto& buffer = m_buffers.at(bid);
+		    const auto push_box = subrange_to_grid_box(pcmd.get_range());
 
-		// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same command
-		// that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
-		std::unordered_map<instruction*, GridRegion<3>> writer_regions;
-		for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
-			auto& region = writer_regions[writer]; // allow default-insert
-			region = GridRegion<3>::merge(region, box);
-		}
-		for(auto& [writer, region] : writer_regions) {
-			auto& insn = cmd_insns.emplace_back();
-			insn.mid = host_memory_id;
-			insn.rw_map.emplace(bid, reads_writes{std::move(region), {}});
-		}
-	} else if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
-		cmd_insns.emplace_back();
-	} else {
-		assert(!"unhandled command type");
-		std::abort();
-	}
+		    // We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same
+		    // command that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
+		    std::unordered_map<instruction*, GridRegion<3>> writer_regions;
+		    for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
+			    auto& region = writer_regions[writer]; // allow default-insert
+			    region = GridRegion<3>::merge(region, box);
+		    }
+		    for(auto& [writer, region] : writer_regions) {
+			    auto& insn = cmd_insns.emplace_back();
+			    insn.mid = host_memory_id;
+			    insn.rw_map.emplace(bid, reads_writes{std::move(region), {}});
+		    }
+	    },
+	    [&](const horizon_command& /* hcmd */) { cmd_insns.emplace_back(); }, //
+	    [&](const epoch_command& /* ecmd */) { cmd_insns.emplace_back(); },
+	    [](const auto& /* unhandled */) {
+		    assert(!"unhandled command type");
+		    std::abort();
+	    });
 
 	// 2) create allocation instructions for any region unallocated in the memory read or written by a command instruction
 
@@ -325,38 +329,44 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 	// 4) create the actual command instructions
 
-	if(const auto* xcmd = dynamic_cast<const execution_command*>(&cmd)) {
-		const auto& tsk = *m_tm.get_task(xcmd->get_tid());
-		for(auto& in : cmd_insns) {
-			if(tsk.get_execution_target() == execution_target::device) {
-				assert(in.execution_sr.range.size() > 0);
-				assert(in.mid != host_memory_id);
-				in.instruction = &create<device_kernel_instruction>(in.did, xcmd->get_cid(), in.execution_sr, in.rw_map);
-			} else {
-				assert(tsk.get_execution_target() == execution_target::host);
-				assert(in.mid == host_memory_id);
-				in.instruction = &create<host_kernel_instruction>(xcmd->get_cid(), in.execution_sr, in.rw_map, in.se_map, in.cgid);
-			}
-		}
-	} else if(const auto* pcmd = dynamic_cast<const push_command*>(&cmd)) {
-		for(auto& insn : cmd_insns) {
-			assert(insn.rw_map.size() == 1);
-			auto [bid, rw] = *insn.rw_map.begin();
-			assert(!rw.reads.empty());
-			insn.instruction = &create<send_instruction>(pcmd->get_cid(), pcmd->get_target(), bid, rw.reads);
-		}
-	} else if(const auto* hcmd = dynamic_cast<const horizon_command*>(&cmd)) {
-		for(auto& insn : cmd_insns) {
-			insn.instruction = &create<horizon_instruction>(hcmd->get_cid());
-		}
-	} else if(const auto* ecmd = dynamic_cast<const epoch_command*>(&cmd)) {
-		for(auto& insn : cmd_insns) {
-			insn.instruction = &create<epoch_instruction>(hcmd->get_cid());
-		}
-	} else {
-		assert(!"unhandled command type");
-		std::abort();
-	}
+	utils::match(
+	    cmd,
+	    [&](const execution_command& xcmd) {
+		    const auto& tsk = *m_tm.get_task(xcmd.get_tid());
+		    for(auto& in : cmd_insns) {
+			    if(tsk.get_execution_target() == execution_target::device) {
+				    assert(in.execution_sr.range.size() > 0);
+				    assert(in.mid != host_memory_id);
+				    in.instruction = &create<device_kernel_instruction>(in.did, xcmd.get_cid(), in.execution_sr, in.rw_map);
+			    } else {
+				    assert(tsk.get_execution_target() == execution_target::host);
+				    assert(in.mid == host_memory_id);
+				    in.instruction = &create<host_kernel_instruction>(xcmd.get_cid(), in.execution_sr, in.rw_map, in.se_map, in.cgid);
+			    }
+		    }
+	    },
+	    [&](const push_command& pcmd) {
+		    for(auto& insn : cmd_insns) {
+			    assert(insn.rw_map.size() == 1);
+			    auto [bid, rw] = *insn.rw_map.begin();
+			    assert(!rw.reads.empty());
+			    insn.instruction = &create<send_instruction>(pcmd.get_cid(), pcmd.get_target(), bid, rw.reads);
+		    }
+	    },
+	    [&](const horizon_command& hcmd) {
+		    for(auto& insn : cmd_insns) {
+			    insn.instruction = &create<horizon_instruction>(hcmd.get_cid());
+		    }
+	    },
+	    [&](const epoch_command& ecmd) {
+		    for(auto& insn : cmd_insns) {
+			    insn.instruction = &create<epoch_instruction>(ecmd.get_cid());
+		    }
+	    },
+	    [](const auto& /* unhandled */) {
+		    assert(!"unhandled command type");
+		    std::abort();
+	    });
 
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
