@@ -154,7 +154,7 @@ class idag_test_context {
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm->add_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		m_dggen->add_buffer(bid, range_cast<3>(size), Dims);
-		m_iggen->register_buffer(bid, range_cast<3>(size));
+		m_iggen->register_buffer(bid, Dims, range_cast<3>(size), 1 /* size */, 1 /* align */);
 		return buf;
 	}
 

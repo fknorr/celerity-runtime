@@ -88,8 +88,9 @@ class free_instruction final : public instruction {
 
 class copy_instruction final : public instruction {
   public:
-	explicit copy_instruction(const instruction_id iid, allocation_id source, const id<3>& source_offset, allocation_id dest, const id<3>& dest_offset,
-	    int dims, const range<3>& range, const size_t elem_size)
+	// TODO needs source_range and dest_range!
+	explicit copy_instruction(const instruction_id iid, const allocation_id source, const id<3>& source_offset, const allocation_id dest,
+	    const id<3>& dest_offset, const int dims, const range<3>& range, const size_t elem_size)
 	    : instruction(iid), m_source(source), m_source_offset(source_offset), m_dest(dest), m_dest_offset(dest_offset), m_dims(dims), m_range(range),
 	      m_elem_size(elem_size) {}
 
@@ -97,11 +98,11 @@ class copy_instruction final : public instruction {
 
 	allocation_id get_source() const { return m_source; }
 	const id<3>& get_source_offset() const { return m_source_offset; }
-	allocation_id get_dest() const { return m_dest; }
+	allocation_id get_destination() const { return m_dest; }
 	const id<3>& get_dest_offset() const { return m_dest_offset; }
 	int get_dimensions() const { return m_dims; }
 	const range<3>& get_range() const { return m_range; }
-	size_t get_elem_size() const { return m_elem_size; }
+	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	allocation_id m_source;
@@ -171,37 +172,66 @@ class host_kernel_instruction final : public kernel_instruction {
 
 class send_instruction final : public instruction {
   public:
-	explicit send_instruction(const instruction_id iid, const command_id cid, const node_id to_nid, const buffer_id bid, GridRegion<3> region)
-	    : instruction(iid, cid), m_to_nid(to_nid), m_bid(bid), m_region(std::move(region)) {}
+	explicit send_instruction(const instruction_id iid, const command_id cid, const node_id to_nid, const buffer_id bid, const allocation_id aid,
+	    const int dims, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer, const range<3>& send_range,
+	    const size_t elem_size)
+	    : instruction(iid, cid), m_to_nid(to_nid), m_bid(bid), m_aid(aid), m_dims(dims), m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc),
+	      m_offset_in_buffer(offset_in_buffer), m_send_range(send_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	node_id get_dest_node_id() const { return m_to_nid; }
 	buffer_id get_buffer_id() const { return m_bid; }
-	GridRegion<3> get_region() const { return m_region; }
+	allocation_id get_allocation_id() const { return m_aid; }
+	allocation_id get_dimensions() const { return m_dims; }
+	const range<3>& get_allocation_range() const { return m_alloc_range; }
+	const id<3>& get_offset_in_allocation() const { return m_offset_in_alloc; }
+	const id<3>& get_offset_in_buffer() const { return m_offset_in_buffer; }
+	const range<3>& get_send_range() const { return m_send_range; }
+	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	node_id m_to_nid;
 	buffer_id m_bid;
-	GridRegion<3> m_region;
+	allocation_id m_aid;
+	int m_dims;
+	range<3> m_alloc_range;
+	id<3> m_offset_in_alloc;
+	id<3> m_offset_in_buffer;
+	range<3> m_send_range;
+	size_t m_elem_size;
 };
 
 class recv_instruction final : public instruction {
   public:
 	// We don't make the effort of tracking the command ids of (pending) await-pushes
-	explicit recv_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, GridRegion<3> region)
-	    : instruction(iid), m_trid(trid), m_bid(bid), m_region(region) {}
+	explicit recv_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, const allocation_id aid, const int dims,
+	    const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer, const range<3>& recv_range, const size_t elem_size)
+	    : instruction(iid), m_trid(trid), m_bid(bid), m_aid(aid), m_dims(dims), m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc),
+	      m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	transfer_id get_transfer_id() const { return m_trid; }
 	buffer_id get_buffer_id() const { return m_bid; }
-	GridRegion<3> get_region() const { return m_region; }
+	allocation_id get_allocation_id() const { return m_aid; }
+	allocation_id get_dimensions() const { return m_dims; }
+	const range<3>& get_allocation_range() const { return m_alloc_range; }
+	const id<3>& get_offset_in_allocation() const { return m_offset_in_alloc; }
+	const id<3>& get_offset_in_buffer() const { return m_offset_in_buffer; }
+	const range<3>& get_recv_range() const { return m_recv_range; }
+	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	transfer_id m_trid;
 	buffer_id m_bid;
-	GridRegion<3> m_region;
+	allocation_id m_aid;
+	int m_dims;
+	range<3> m_alloc_range;
+	id<3> m_offset_in_alloc;
+	id<3> m_offset_in_buffer;
+	range<3> m_recv_range;
+	size_t m_elem_size;
 };
 
 class horizon_instruction final : public instruction {

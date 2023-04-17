@@ -53,7 +53,7 @@ class instruction_graph_generator {
 
 		allocation_id aid;
 		GridBox<3> box;
-		region_map<instruction*> last_writers; // in virtual-buffer coordinates
+		region_map<instruction*> last_writers;  // in virtual-buffer coordinates
 		region_map<access_front> access_fronts; // in virtual-buffer coordinates
 
 		explicit buffer_memory_per_allocation_data(const allocation_id aid, const GridBox<3>& box)
@@ -104,6 +104,7 @@ class instruction_graph_generator {
 	};
 
 	struct buffer_per_memory_data {
+		// TODO bound the number of allocations per buffer in order to avoid runaway tracking overhead (similar to horizons)
 		std::vector<buffer_memory_per_allocation_data> allocations; // disjoint
 
 		bool is_allocated_contiguously(const GridBox<3>& box) const {
@@ -128,13 +129,8 @@ class instruction_graph_generator {
 		region_map<transfer_id> pending_await_pushes;
 
 		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
-		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), newest_data_location(range), original_writers(range),
-		      pending_await_pushes(range) {
-			memories.reserve(n_memories);
-			for(size_t i = 0; i < n_memories; ++i) {
-				memories.emplace_back(range);
-			}
-		}
+		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), newest_data_location(range),
+		      original_writers(range), pending_await_pushes(range) {}
 
 		void apply_epoch(instruction* const epoch) {
 			for(auto& memory : memories) {

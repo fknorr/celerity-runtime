@@ -1,5 +1,6 @@
 #include "instruction_graph_generator.h"
 #include "access_modes.h"
+#include "allscale/api/user/data/grid.h"
 #include "command.h"
 #include "grid.h"
 #include "task.h"
@@ -148,7 +149,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		    for(auto& [writer, region] : writer_regions) {
 			    auto& insn = cmd_insns.emplace_back();
 			    insn.mid = host_memory_id;
-			    insn.rw_map.emplace(bid, reads_writes{std::move(region), {}});
+			    insn.rw_map.emplace(bid, reads_writes{std::move(region), {}, {}});
 		    }
 	    },
 	    [&](const horizon_command& /* hcmd */) { cmd_insns.emplace_back(); }, //
@@ -173,6 +174,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			}
 		}
 	}
+
+	// TODO allocate for await-pushes!
 
 	for(auto& [bid_mid, boxes] : not_contiguously_allocated_boxes) {
 		const auto& [bid, mid] = bid_mid;
@@ -204,30 +207,40 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			dest.record_allocation(dest.box, &alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
 			for(auto& source : memory.allocations) {
-				const auto copy_box = GridBox<3>::intersect(dest.box, source.box);
-				if(copy_box.empty()) continue;
-				const auto source_offset = grid_box_to_subrange(source.box).offset;
-				const auto dest_offset = grid_box_to_subrange(source.box).offset;
-				const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
-
-				const auto copy_instr = &create<copy_instruction>(
-				    source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
-
-				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
-					add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+				// only copy those boxes to the new allocation that are still up-to-date in the old allocation
+				// TODO investigate a garbage-collection heuristic that omits these copies if we do not expect them to be read from again on this memory
+				const auto full_copy_box = GridBox<3>::intersect(dest.box, source.box);
+				GridRegion<3> live_copy_region;
+				for(const auto& [copy_box, location] : buffer.newest_data_location.get_region_values(full_copy_box)) {
+					live_copy_region = GridRegion<3>::merge(live_copy_region, copy_box);
 				}
-				source.record_read(copy_box, copy_instr);
 
-				for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
-					for(const auto dep_instr : front.front) {
-						add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+				live_copy_region.scanByBoxes([&](const auto& copy_box) {
+					assert(!copy_box.empty());
+
+					const auto source_offset = grid_box_to_subrange(source.box).offset;
+					const auto dest_offset = grid_box_to_subrange(source.box).offset;
+					const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
+
+					const auto copy_instr = &create<copy_instruction>(
+					    source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
+
+					for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
+						add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 					}
-				}
-				dest.record_write(copy_box, copy_instr);
+					source.record_read(copy_box, copy_instr);
+
+					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
+						for(const auto dep_instr : front.front) {
+							add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+						}
+					}
+					dest.record_write(copy_box, copy_instr);
+				});
 			}
 		}
 
-		// TODO consider keeping allocations around until their subregion is written to in order to resolve "buffer-locking" anti-dependencies
+		// TODO consider keeping old allocations around until their box is written to in order to resolve "buffer-locking" anti-dependencies
 		for(const auto free_aid : free_after_reallocation) {
 			const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
 			const auto free_instr = &create<free_instruction>(allocation.aid);
@@ -237,6 +250,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				}
 			}
 		}
+		// TODO garbage-collect allocations that are both stale and not written to?
 
 		const auto end_retain_after_allocation = std::remove_if(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) {
 			return std::any_of(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const auto aid) { return alloc.aid == aid; });
@@ -255,7 +269,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			for(const auto& [box, location] : buffer.newest_data_location.get_region_values(rw.reads)) {
 				if(!location.test(insn.mid)) { unsatified_region = GridRegion<3>::merge(unsatified_region, box); }
 			}
-			if(!unsatified_region.empty()) { unsatisfied_reads[{bid, insn.mid}].push_back(unsatified_region); }
+			if(!unsatified_region.empty()) { unsatisfied_reads[{bid, insn.mid}].push_back(std::move(unsatified_region)); }
 		}
 	}
 
@@ -282,7 +296,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		const auto& [bid, mid] = bid_mid;
 		auto& buffer = m_buffers.at(bid);
 		for(auto& region : disjoint_regions) {
-			// merge regions per transfer id to generate at most one instruction per pending await-push command
+			// merge regions per transfer id to generate at most one instruction per host allocation and pending await-push command
 			std::unordered_map<transfer_id, GridRegion<3>> transfer_regions;
 			for(auto& [box, trid] : buffer.pending_await_pushes.get_region_values(region)) {
 				if(trid != transfer_id()) {
@@ -291,19 +305,32 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				}
 			}
 			for(auto& [trid, tr_region] : transfer_regions) {
-				const auto tr_insn = &create<recv_instruction>(trid, bid, tr_region);
 				auto& buffer_memory = buffer.memories[host_memory_id];
 
-				// TODO the dependency logic here is duplicated from copy-instruction generation
-				for(const auto& [_, front] : buffer_memory.access_fronts.get_region_values(tr_region)) {
-					for(const auto dep_instr : front.front) {
-						add_dependency(*tr_insn, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
-					}
-				}
-				add_dependency(*tr_insn, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-				buffer_memory.record_write(tr_region, tr_insn);
+				for(auto& alloc : buffer_memory.allocations) {
+					tr_region.scanByBoxes([&, trid = trid, bid = bid](const GridBox<3>& tr_box) {
+						const auto recv_box = GridBox<3>::intersect(alloc.box, tr_box);
+						if(recv_box.empty()) return;
 
-				buffer.original_writers.update_region(tr_region, tr_insn);
+						const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
+						const auto [recv_offset, recv_range] = grid_box_to_subrange(recv_box);
+						const auto recv_instr = &create<recv_instruction>(
+						    trid, bid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
+
+						// TODO the dependency logic here is duplicated from copy-instruction generation
+						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
+							for(const auto dep_instr : front.front) {
+								add_dependency(*recv_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+							}
+						}
+						add_dependency(*recv_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+						alloc.record_write(recv_box, recv_instr);
+
+						buffer.original_writers.update_region(recv_box, recv_instr);
+					});
+				}
+				// TODO assert that the entire region has been consumed
+
 				buffer.newest_data_location.update_region(tr_region, data_location().set(host_memory_id));
 				buffer.pending_await_pushes.update_region(tr_region, transfer_id());
 			}
@@ -311,14 +338,15 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	}
 
 	struct copy_template {
-		buffer_memory_per_allocation_data *source;
-		buffer_memory_per_allocation_data *dest;
-		GridBox<3> box; // in virtual buffer coordinates
+		buffer_id bid;
+		memory_id source_mid;
+		memory_id dest_mid;
+		GridRegion<3> region;
 	};
 
 	std::vector<copy_template> pending_copies;
 	for(auto& [bid_mid, disjoint_regions] : unsatisfied_reads) {
-		const auto& [bid, mid] = bid_mid;
+		const auto& [bid, dest_mid] = bid_mid;
 		auto& buffer = m_buffers.at(bid);
 		for(auto& region : disjoint_regions) {
 			const auto region_sources = buffer.newest_data_location.get_region_values(region);
@@ -335,19 +363,15 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			const auto common_sources = std::accumulate(region_sources.begin(), region_sources.end(), data_location(),
 			    [](const data_location common, const std::pair<GridBox<3>, data_location>& box_sources) { return common & box_sources.second; });
 
-			if(const auto common_device_sources = data_location(common_sources).reset(host_memory_id); common_device_sources.any()) {
-				// best case: we can copy all data from a single device
-				const auto copy_from = next_location(common_device_sources, mid + 1);
-				pending_copies.push_back({bid, copy_from, mid, std::move(region)});
+			if(common_sources.test(host_memory_id)) { // best case: we can copy all data from the host
+				pending_copies.push_back({bid, host_memory_id, dest_mid, std::move(region)});
 				continue;
 			}
 
-			// see if we can find data exclusively on devices, or exclusively on the host
-			const auto have_all_device_sources = std::all_of(region_sources.begin(), region_sources.end(),
-			    [](const std::pair<GridBox<3>, data_location>& box_sources) { return data_location(box_sources.second).reset(host_memory_id).any(); });
-			if(!have_all_device_sources && common_sources[host_memory_id]) {
-				// prefer a single copy from the host to mixing and matching host and device sources
-				pending_copies.push_back({bid, host_memory_id, mid, std::move(region)});
+			// see if we can copy all data from a single device
+			if(const auto common_device_sources = data_location(common_sources).reset(host_memory_id); common_device_sources.any()) {
+				const auto copy_from = next_location(common_device_sources, dest_mid + 1);
+				pending_copies.push_back({bid, copy_from, dest_mid, std::move(region)});
 				continue;
 			}
 
@@ -357,7 +381,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			for(const auto& [box, sources] : region_sources) {
 				memory_id copy_from;
 				if(const auto device_sources = data_location(sources).reset(host_memory_id); device_sources.any()) {
-					copy_from = next_location(device_sources, mid + 1);
+					copy_from = next_location(device_sources, dest_mid + 1);
 				} else {
 					copy_from = host_memory_id;
 				}
@@ -365,29 +389,46 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 				copy_region = GridRegion<3>::merge(copy_region, box);
 			}
 			for(auto& [copy_from, copy_region] : combined_source_regions) {
-				pending_copies.push_back({bid, copy_from, mid, std::move(copy_region)});
+				pending_copies.push_back({bid, copy_from, dest_mid, std::move(copy_region)});
 			}
 		}
-	}
 
-	for(auto& copy : pending_copies) {
-		assert(copy.from != copy.to);
-		auto& buffer = m_buffers.at(copy.bid);
+		for(auto& copy : pending_copies) {
+			assert(copy.dest_mid != copy.source_mid);
+			auto& buffer = m_buffers.at(copy.bid);
+			copy.region.scanByBoxes([&](const GridBox<3>& box) {
+				for(auto& source : buffer.memories[copy.source_mid].allocations) {
+					const auto read_box = GridBox<3>::intersect(box, source.box);
+					if(read_box.empty()) continue;
 
-		const auto copy_instr = &create<copy_instruction>(copy.bid, copy.region, copy.from, copy.to);
-		for(const auto& [_, last_writer_instr] : buffer.memories[copy.from].last_writers.get_region_values(copy.region)) {
-			add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
-		}
-		buffer.memories[copy.from].record_read(copy.region, copy_instr);
+					for(auto& dest : buffer.memories[copy.dest_mid].allocations) {
+						const auto copy_box = GridBox<3>::intersect(read_box, dest.box);
+						if(copy_box.empty()) continue;
 
-		for(const auto& [_, front] : buffer.memories[copy.to].access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
-			for(const auto dep_instr : front.front) {
-				add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
-			}
-		}
-		buffer.memories[copy.to].record_write(copy.region, copy_instr);
-		for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
-			buffer.newest_data_location.update_region(box, data_location(location).set(copy.to));
+						const auto [source_offset, source_range] = grid_box_to_subrange(source.box);
+						const auto [dest_offset, dest_range] = grid_box_to_subrange(dest.box);
+						const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
+
+						const auto copy_instr = &create<copy_instruction>(
+						    source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
+
+						for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
+							add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+						}
+						source.record_read(copy.region, copy_instr);
+
+						for(const auto& [_, front] : dest.access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
+							for(const auto dep_instr : front.front) {
+								add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+							}
+						}
+						dest.record_write(copy.region, copy_instr);
+						for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
+							buffer.newest_data_location.update_region(box, data_location(location).set(copy.dest_mid));
+						}
+					}
+				}
+			});
 		}
 	}
 
@@ -414,7 +455,18 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			    assert(insn.rw_map.size() == 1);
 			    auto [bid, rw] = *insn.rw_map.begin();
 			    assert(!rw.reads.empty());
-			    insn.instruction = &create<send_instruction>(pcmd.get_cid(), pcmd.get_target(), bid, rw.reads);
+
+			    const auto& buffer = m_buffers.at(bid);
+			    for(auto& alloc : buffer.memories[host_memory_id].allocations) {
+				    const auto send_box = GridBox<3>::intersect(alloc.box, subrange_to_grid_box(pcmd.get_range()));
+				    if(!send_box.empty()) {
+					    const auto [send_offset, send_range] = grid_box_to_subrange(send_box);
+					    const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
+					    insn.instruction = &create<send_instruction>(pcmd.get_cid(), pcmd.get_target(), bid, alloc.aid, buffer.dims, alloc_range,
+					        send_offset - alloc_offset, send_offset, send_range, buffer.elem_size);
+					    // ^ TODO FIXME I'm generating (and overwriting) more than one instruction here! The "split" should probably be decided ahead of time?
+				    }
+			    }
 		    }
 	    },
 	    [&](const horizon_command& hcmd) {
@@ -439,16 +491,18 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
 	for(const auto& insn : cmd_insns) {
 		for(const auto& [bid, rw] : insn.rw_map) {
-			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, last_writer_instr] : buffer.memories[insn.mid].last_writers.get_region_values(rw.reads)) {
-				add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+			for(auto& alloc : m_buffers.at(bid).memories[insn.mid].allocations) {
+				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(rw.reads)) {
+					add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+				}
 			}
 		}
 		for(const auto& [bid, rw] : insn.rw_map) {
-			auto& buffer = m_buffers.at(bid);
-			for(const auto& [_, front] : buffer.memories[insn.mid].access_fronts.get_region_values(rw.writes)) {
-				for(const auto dep_instr : front.front) {
-					add_dependency(*insn.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+			for(auto& alloc : m_buffers.at(bid).memories[insn.mid].allocations) {
+				for(const auto& [_, front] : alloc.access_fronts.get_region_values(rw.writes)) {
+					for(const auto dep_instr : front.front) {
+						add_dependency(*insn.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+					}
 				}
 			}
 		}
@@ -474,8 +528,14 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 			assert(insn.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
 			buffer.newest_data_location.update_region(rw.writes, data_location().set(insn.mid));
-			buffer.memories[insn.mid].record_write(rw.writes, insn.instruction);
 			buffer.original_writers.update_region(rw.writes, insn.instruction);
+
+			for(auto& alloc : buffer.memories[insn.mid].allocations) {
+				rw.writes.scanByBoxes([&](const auto& box) {
+					const auto write_box = GridBox<3>::intersect(alloc.box, box);
+					if(!write_box.empty()) { alloc.record_write(write_box, insn.instruction); }
+				});
+			}
 		}
 		for(const auto& [hoid, order] : insn.se_map) {
 			assert(insn.mid == host_memory_id);
@@ -493,8 +553,6 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		if(isa<horizon_command>(&cmd) || isa<epoch_command>(&cmd)) {
 			collapse_execution_front_to(insn.instruction);
 
-			instruction* new_epoch = nullptr;
-			instruction* new_last_horizon = nullptr;
 			if(isa<epoch_command>(&cmd)) {
 				apply_epoch(insn.instruction);
 				m_last_horizon = nullptr;
