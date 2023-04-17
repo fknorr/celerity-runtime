@@ -21,26 +21,26 @@ constexpr inline uint32_t popcount(const BitMaskT bit_mask) noexcept {
 
 template <typename... F>
 struct overload : F... {
-	explicit constexpr overload(F... f) : F(f)... {}
 	using F::operator()...;
 };
 
+template <typename... F>
+overload(F...) -> overload<F...>;
+
 template <typename Variant, typename... Arms>
 decltype(auto) match(Variant&& v, Arms&&... arms) {
-	return std::visit(overload{std::forward<Arms>(arms)...}, std::forward<Variant>(v));
+	using overload_type = overload<std::decay_t<Arms>...>;
+	return std::visit(overload_type{std::forward<Arms>(arms)...}, std::forward<Variant>(v));
 }
+
+} // namespace celerity::detail::utils
+
+namespace celerity::detail::utils_detail {
 
 template <typename T>
 class declare_visit_fn {
   public:
 	virtual void visit(T) = 0;
-};
-
-template <typename... Ts>
-class visitor : public declare_visit_fn<Ts>... {
-  public:
-	virtual ~visitor() = default;
-	using declare_visit_fn<Ts>::visit...;
 };
 
 template <typename Base, typename Fn, typename Ret, typename... Ts>
@@ -60,70 +60,89 @@ class impl_visit_fn<Base, Fn, Ret, T, Ts...> : public impl_visit_fn<Base, Fn, Re
 template <typename Base, typename Fn, typename Ret>
 class impl_visit_fn<Base, Fn, Ret> : public Base {
   public:
-	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
-	Ret get_result() { return std::move(*ret); }
+	explicit impl_visit_fn(Fn&& fn) : m_fn(std::move(fn)) {}
+	Ret get_result() { return std::move(*m_ret); }
 
   protected:
 	template <typename T>
 	void invoke(T v) {
-		ret.emplace(fn(static_cast<T>(v)));
+		static_assert(std::is_same_v<std::invoke_result_t<Fn, T>, Ret>);
+		m_ret.emplace(m_fn(static_cast<T>(v)));
 	}
 
   private:
-	Fn fn;
-	std::optional<Ret> ret;
+	Fn m_fn;
+	std::optional<Ret> m_ret;
 };
 
 template <typename Base, typename Fn, typename Ret>
 class impl_visit_fn<Base, Fn, Ret&> : public Base {
   public:
-	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
-	Ret& get_result() { return *ret; }
+	explicit impl_visit_fn(Fn&& fn) : m_fn(std::move(fn)) {}
+	Ret& get_result() { return *m_ret; }
 
   protected:
 	template <typename T>
 	void invoke(T v) {
-		ret = &fn(static_cast<T>(v));
+		static_assert(std::is_same_v<std::invoke_result_t<Fn, T>, Ret&>);
+		m_ret = &m_fn(static_cast<T>(v));
 	}
 
   private:
-	Fn fn;
-	Ret* ret = nullptr;
+	Fn m_fn;
+	Ret* m_ret = nullptr;
 };
 
 template <typename Base, typename Fn, typename Ret>
 class impl_visit_fn<Base, Fn, Ret&&> : public Base {
   public:
-	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
-	Ret&& get_result() { return std::move(*ret); }
+	explicit impl_visit_fn(Fn&& fn) : m_fn(std::move(fn)) {}
+	Ret&& get_result() { return std::move(*m_ret); }
 
   protected:
 	template <typename T>
 	void invoke(T v) {
+		static_assert(std::is_same_v<std::invoke_result_t<Fn, T>, Ret&&>);
 		Ret&& name = fn(static_cast<T>(v));
-		ret = &name;
+		m_ret = &name;
 	}
 
   private:
-	Fn fn;
-	Ret* ret;
+	Fn m_fn;
+	Ret* m_ret;
 };
 
 template <typename Base, typename Fn>
 class impl_visit_fn<Base, Fn, void> : public Base {
   public:
-	explicit impl_visit_fn(Fn&& fn) : fn(std::move(fn)) {}
+	explicit impl_visit_fn(Fn&& fn) : m_fn(std::move(fn)) {}
 	void get_result() {}
 
   protected:
 	template <typename T>
 	void invoke(T v) {
-		fn(static_cast<T>(v));
+		static_assert(std::is_void_v<std::invoke_result_t<Fn, T>>);
+		m_fn(static_cast<T>(v));
 	}
 
   private:
-	Fn fn;
+	Fn m_fn;
 };
+
+} // namespace celerity::detail::utils_detail
+
+namespace celerity::detail::utils {
+
+template <typename... Ts>
+class visitor : public utils_detail::declare_visit_fn<Ts>... {
+  public:
+	virtual ~visitor() = default;
+	using utils_detail::declare_visit_fn<Ts>::visit...;
+};
+
+} // namespace celerity::detail::utils
+
+namespace celerity::detail::utils_detail {
 
 template <typename Fn, typename T, typename... Ts>
 struct visitor_result {
@@ -138,16 +157,32 @@ template <typename Visitor, typename Fn>
 class visitor_impl;
 
 template <typename... Ts, typename Fn>
-class visitor_impl<visitor<Ts...>, Fn> : public impl_visit_fn<visitor<Ts...>, Fn, visitor_result_t<Fn, Ts...>, Ts...> {
+class visitor_impl<utils::visitor<Ts...>, Fn> : public impl_visit_fn<utils::visitor<Ts...>, Fn, visitor_result_t<Fn, Ts...>, Ts...> {
   public:
 	using result_type = visitor_result_t<Fn, Ts...>;
-	using impl_visit_fn<visitor<Ts...>, Fn, result_type, Ts...>::impl_visit_fn;
+	using impl_visit_fn<utils::visitor<Ts...>, Fn, result_type, Ts...>::impl_visit_fn;
 };
 
-template <typename Visitor, typename T, typename... Fns>
-decltype(auto) match(T& target, Fns&&... fns) {
-	using overload_type = overload<std::decay_t<Fns>...>;
-	visitor_impl<Visitor, overload_type> vis(overload_type{std::forward<Fns>(fns)...});
+template <typename T, typename Enable = void>
+inline constexpr bool declares_const_visitor_v = false;
+
+template <typename T>
+inline constexpr bool declares_const_visitor_v<T, std::void_t<typename T::const_visitor>> = true;
+
+template <typename T, typename Enable = void>
+inline constexpr bool declares_visitor_v = false;
+
+template <typename T>
+inline constexpr bool declares_visitor_v<T, std::void_t<typename T::visitor>> = true;
+
+} // namespace celerity::detail::utils_detail
+
+namespace celerity::detail::utils {
+
+template <typename Visitor, typename T, typename... Arms>
+decltype(auto) match(T& target, Arms&&... arms) {
+	using overload_type = overload<std::decay_t<Arms>...>;
+	utils_detail::visitor_impl<Visitor, overload_type> vis(overload_type{std::forward<Arms>(arms)...});
 	target.accept(vis);
 	return vis.get_result();
 }
@@ -156,21 +191,21 @@ template <typename T, typename Enable = void>
 struct default_visitor;
 
 template <typename T>
-struct default_visitor<T, std::enable_if_t<std::is_const_v<T>, std::void_t<typename T::const_visitor>>> {
+struct default_visitor<T, std::enable_if_t<utils_detail::declares_const_visitor_v<T> && (std::is_const_v<T> || !utils_detail::declares_visitor_v<T>)>> {
 	using type = typename T::const_visitor;
 };
 
 template <typename T>
-struct default_visitor<T, std::enable_if_t<!std::is_const_v<T>, std::void_t<typename T::visitor>>> {
+struct default_visitor<T, std::enable_if_t<utils_detail::declares_visitor_v<T> && !std::is_const_v<T>>> {
 	using type = typename T::visitor;
 };
 
 template <typename T>
 using default_visitor_t = typename default_visitor<T>::type;
 
-template <typename T, typename... Fns, typename Visitor = default_visitor_t<T>>
-decltype(auto) match(T& target, Fns&&... fns) {
-	return match<Visitor, T, Fns...>(target, std::forward<Fns>(fns)...);
+template <typename T, typename... Arms, typename Visitor = default_visitor_t<T>>
+decltype(auto) match(T& target, Arms&&... arms) {
+	return match<Visitor, T, Arms...>(target, std::forward<Arms>(arms)...);
 }
 
 // Implementation from Boost.ContainerHash, licensed under the Boost Software License, Version 1.0.
