@@ -41,36 +41,43 @@ class instruction_graph_generator {
 				friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
 			};
 
-			GridRegion<3> allocation;
+			struct buffer_allocation: nd_allocation {
+				id<3> offset;
+
+				subrange<3> get_subrange() const { return {offset, range}; }
+				GridBox<3> get_box() const { return subrange_to_grid_box(get_subrange()); }
+			};
+
+			std::vector<buffer_allocation> allocations;
 			region_map<instruction*> last_writers;
 			region_map<access_front> access_fronts;
 
 			explicit per_memory_data(const range<3>& range) : last_writers(range), access_fronts(range) {}
 
-			void record_allocation(const GridRegion<3>& region, instruction* const insn) {
-				allocation = GridRegion<3>::merge(allocation, region);
+			void record_allocation(const buffer_allocation &allocation, instruction* const instr) {
+				allocations.push_back(allocation);
 				// TODO this will generate antidependencies, but semantically, we want true dependencies.
-				access_fronts.update_region(region, access_front{{insn}, access_front::write});
+				access_fronts.update_region(allocation.get_box(), access_front{{instr}, access_front::write});
 			}
 
-			void record_read(const GridRegion<3>& region, instruction* const insn) {
+			void record_read(const GridRegion<3>& region, instruction* const instr) {
 				for(auto& [box, record] : access_fronts.get_region_values(region)) {
 					if(record.mode == access_front::read) {
 						// sorted insert
-						const auto at = std::lower_bound(record.front.begin(), record.front.end(), insn, instruction_id_less());
-						assert(at == record.front.end() || *at != insn);
-						record.front.insert(at, insn);
+						const auto at = std::lower_bound(record.front.begin(), record.front.end(), instr, instruction_id_less());
+						assert(at == record.front.end() || *at != instr);
+						record.front.insert(at, instr);
 					} else {
-						record.front = {insn};
+						record.front = {instr};
 					}
 					assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
 					access_fronts.update_region(region, std::move(record));
 				}
 			}
 
-			void record_write(const GridRegion<3>& region, instruction* const insn) {
-				last_writers.update_region(region, insn);
-				access_fronts.update_region(region, access_front{{insn}, access_front::write});
+			void record_write(const GridRegion<3>& region, instruction* const instr) {
+				last_writers.update_region(region, instr);
+				access_fronts.update_region(region, access_front{{instr}, access_front::write});
 			}
 
 			void apply_epoch(instruction* const epoch) {
@@ -151,9 +158,9 @@ class instruction_graph_generator {
 	template <typename Instruction, typename... CtorParams>
 	Instruction& create(CtorParams&&... ctor_args) {
 		const auto id = m_next_iid++;
-		auto insn = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
-		const auto ptr = insn.get();
-		m_idag.insert(std::move(insn));
+		auto instr = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
+		const auto ptr = instr.get();
+		m_idag.insert(std::move(instr));
 		m_execution_front.insert(ptr);
 		return *ptr;
 	}
@@ -185,8 +192,8 @@ class instruction_graph_generator {
 	}
 
 	void collapse_execution_front_to(instruction* const horizon) {
-		for(const auto insn : m_execution_front) {
-			if(insn != horizon) { horizon->add_dependency({insn, dependency_kind::true_dep, dependency_origin::execution_front}); }
+		for(const auto instr : m_execution_front) {
+			if(instr != horizon) { horizon->add_dependency({instr, dependency_kind::true_dep, dependency_origin::execution_front}); }
 		}
 		m_execution_front.clear();
 		m_execution_front.insert(horizon);

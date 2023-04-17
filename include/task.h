@@ -134,6 +134,9 @@ namespace detail {
 			return rms;
 		}
 
+		std::vector<GridBox<3>> get_required_contiguous_boxes(
+		    const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
+
 	  private:
 		std::vector<std::pair<buffer_id, std::unique_ptr<range_mapper_base>>> m_accesses;
 	};

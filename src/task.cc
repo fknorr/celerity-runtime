@@ -44,6 +44,25 @@ namespace detail {
 		return subrange_to_grid_box(apply_range_mapper(rm.get(), chunk<3>{sr.offset, sr.range, global_size}, kernel_dims));
 	}
 
+	std::vector<GridBox<3>> buffer_access_map::get_required_contiguous_boxes(
+	    const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const {
+		std::vector<GridBox<3>> boxes;
+		for(const auto& [a_bid, a_rm] : m_accesses) {
+			if(a_bid != bid) continue;
+			auto new_box = subrange_to_grid_box(apply_range_mapper(a_rm.get(), chunk<3>{sr.offset, sr.range, global_size}, kernel_dims));
+			// If the new box intersects with any of the existing boxes, their union must be contiguous in the result
+			const auto first_intersecting = std::partition(boxes.begin(), boxes.end(), [&](const auto& other_box) { return !other_box.intersects(new_box); });
+			if(first_intersecting != boxes.end()) {
+				for(auto it = first_intersecting; it != boxes.end(); ++it) {
+					new_box = GridBox<3>::span(new_box, *it);
+				}
+				boxes.erase(first_intersecting, boxes.end());
+			}
+			boxes.push_back(new_box);
+		}
+		return boxes;
+	}
+
 	void side_effect_map::add_side_effect(const host_object_id hoid, const experimental::side_effect_order order) {
 		// TODO for multiple side effects on the same hoid, find the weakest order satisfying all of them
 		emplace(hoid, order);

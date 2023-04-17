@@ -117,6 +117,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 					    if(access::mode_traits::is_consumer(mode)) { rw.reads = GridRegion<3>::merge(rw.reads, req); }
 					    if(access::mode_traits::is_producer(mode)) { rw.writes = GridRegion<3>::merge(rw.writes, req); }
 				    }
+					rw.contiguous_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
 				    if(!rw.empty()) { insn.rw_map.emplace(bid, std::move(rw)); }
 			    }
 		    }
@@ -155,6 +156,11 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	    });
 
 	// 2) create allocation instructions for any region unallocated in the memory read or written by a command instruction
+
+	// TODO this must 
+	// 	- be inherently conditional on the presence of virtual memory
+	//  - for non-VM, re-allocate any region required by a single accessor if the region is covered by multiple disjoint allocations
+	//  - for VM, keep page size in mind
 
 	std::unordered_map<std::pair<buffer_id, memory_id>, GridRegion<3>, utils::pair_hash> unallocated_regions;
 	for(const auto& insn : cmd_insns) {
