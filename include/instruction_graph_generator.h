@@ -1,5 +1,6 @@
 #pragma once
 
+#include "grid.h"
 #include "instruction_graph.h"
 #include "region_map.h"
 #include "task.h"
@@ -33,89 +34,102 @@ class instruction_graph_generator {
 	static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
 	using data_location = std::bitset<max_memories>;
 
-	struct per_buffer_data {
-		struct per_memory_data {
-			struct access_front {
-				gch::small_vector<instruction*> front; // sorted by id to allow equality comparison
-				enum { read, write } mode = write;
+	struct buffer_memory_per_allocation_data {
+		struct access_front {
+			gch::small_vector<instruction*> front; // sorted by id to allow equality comparison
+			enum { read, write } mode = write;
 
-				friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.front == rhs.front && lhs.mode == rhs.mode; }
-				friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
-			};
-
-			struct allocated_box {
-				allocation_id aid;
-				GridBox<3> box;
-
-				friend bool operator==(const allocated_box& lhs, const allocated_box& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
-				friend bool operator!=(const allocated_box& lhs, const allocated_box& rhs) { return !(lhs == rhs); }
-			};
-
-			std::vector<allocated_box> allocation;
-			region_map<instruction*> last_writers; // TODO should be in a per_allocation_data struct
-			region_map<access_front> access_fronts; // TODO should be in a per_allocation_data struct
-			allocation_id next_aid = 0;
-
-			explicit per_memory_data(const range<3>& range) : last_writers(range), access_fronts(range) {}
-
-			bool is_allocated_contiguously(const GridBox<3>& box) const {
-				return std::any_of(allocation.begin(), allocation.end(), [&](const allocated_box& ab) { return ab.box.covers(box); });
-			}
-
-			void record_allocation(const GridBox<3>& box, instruction* const instr) {
-				// TODO we want these dependencies only for newly allocated subregions, not the entire thing
-				access_fronts.update_region(box, access_front{{instr}, access_front::write});
-			}
-
-			void record_read(const GridRegion<3>& region, instruction* const instr) {
-				for(auto& [box, record] : access_fronts.get_region_values(region)) {
-					if(record.mode == access_front::read) {
-						// sorted insert
-						const auto at = std::lower_bound(record.front.begin(), record.front.end(), instr, instruction_id_less());
-						assert(at == record.front.end() || *at != instr);
-						record.front.insert(at, instr);
-					} else {
-						record.front = {instr};
-					}
-					assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
-					access_fronts.update_region(region, std::move(record));
-				}
-			}
-
-			void record_write(const GridRegion<3>& region, instruction* const instr) {
-				last_writers.update_region(region, instr);
-				access_fronts.update_region(region, access_front{{instr}, access_front::write});
-			}
-
-			void apply_epoch(instruction* const epoch) {
-				last_writers.apply_to_values([epoch](instruction* const instr) -> instruction* {
-					if(instr == nullptr) return nullptr;
-					return instr->get_id() > epoch->get_id() ? instr : epoch;
-				});
-				access_fronts.apply_to_values([epoch](access_front record) {
-					const auto new_front_end = std::remove_if(record.front.begin(), record.front.end(), //
-					    [epoch](instruction* const instr) { return instr->get_id() < epoch->get_id(); });
-					if(new_front_end != record.front.end()) {
-						record.front.erase(new_front_end, record.front.end());
-						record.front.push_back(epoch);
-					}
-					assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
-					return record;
-				});
-			}
+			friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.front == rhs.front && lhs.mode == rhs.mode; }
+			friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
 		};
 
+		struct allocated_box {
+			allocation_id aid;
+			GridBox<3> box;
+
+			friend bool operator==(const allocated_box& lhs, const allocated_box& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
+			friend bool operator!=(const allocated_box& lhs, const allocated_box& rhs) { return !(lhs == rhs); }
+		};
+
+		allocation_id aid;
+		GridBox<3> box;
+		region_map<instruction*> last_writers; // in virtual-buffer coordinates
+		region_map<access_front> access_fronts; // in virtual-buffer coordinates
+
+		explicit buffer_memory_per_allocation_data(const allocation_id aid, const GridBox<3>& box)
+		    : aid(aid), box(box), last_writers(grid_box_to_subrange(box).range), access_fronts(grid_box_to_subrange(box).range) {}
+
+		// TODO this method's naming makes no sense
+		void record_allocation(const GridBox<3>& box, instruction* const instr) {
+			// TODO we want these dependencies only for newly allocated subregions, not the entire thing
+			access_fronts.update_region(box, access_front{{instr}, access_front::write});
+		}
+
+		void record_read(const GridRegion<3>& region, instruction* const instr) {
+			for(auto& [box, record] : access_fronts.get_region_values(region)) {
+				if(record.mode == access_front::read) {
+					// sorted insert
+					const auto at = std::lower_bound(record.front.begin(), record.front.end(), instr, instruction_id_less());
+					assert(at == record.front.end() || *at != instr);
+					record.front.insert(at, instr);
+				} else {
+					record.front = {instr};
+				}
+				assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
+				access_fronts.update_region(region, std::move(record));
+			}
+		}
+
+		void record_write(const GridRegion<3>& region, instruction* const instr) {
+			last_writers.update_region(region, instr);
+			access_fronts.update_region(region, access_front{{instr}, access_front::write});
+		}
+
+		void apply_epoch(instruction* const epoch) {
+			last_writers.apply_to_values([epoch](instruction* const instr) -> instruction* {
+				if(instr == nullptr) return nullptr;
+				return instr->get_id() > epoch->get_id() ? instr : epoch;
+			});
+			access_fronts.apply_to_values([epoch](access_front record) {
+				const auto new_front_end = std::remove_if(record.front.begin(), record.front.end(), //
+				    [epoch](instruction* const instr) { return instr->get_id() < epoch->get_id(); });
+				if(new_front_end != record.front.end()) {
+					record.front.erase(new_front_end, record.front.end());
+					record.front.push_back(epoch);
+				}
+				assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
+				return record;
+			});
+		}
+	};
+
+	struct buffer_per_memory_data {
+		std::vector<buffer_memory_per_allocation_data> allocations; // disjoint
+
+		bool is_allocated_contiguously(const GridBox<3>& box) const {
+			return std::any_of(allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& a) { return a.box.covers(box); });
+		}
+
+		void apply_epoch(instruction* const epoch) {
+			for(auto& alloc : allocations) {
+				alloc.apply_epoch(epoch);
+			}
+		}
+	};
+
+	struct per_buffer_data {
 		int dims;
 		range<3> range;
 		size_t elem_size;
 		size_t elem_align;
-		std::vector<per_memory_data> memories;
+		std::vector<buffer_per_memory_data> memories;
 		region_map<data_location> newest_data_location;
 		region_map<instruction*> original_writers;
 		region_map<transfer_id> pending_await_pushes;
 
 		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
-		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), newest_data_location(range), original_writers(range), pending_await_pushes(range) {
+		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), newest_data_location(range), original_writers(range),
+		      pending_await_pushes(range) {
 			memories.reserve(n_memories);
 			for(size_t i = 0; i < n_memories; ++i) {
 				memories.emplace_back(range);
@@ -154,6 +168,7 @@ class instruction_graph_generator {
 
 	instruction_graph m_idag;
 	instruction_id m_next_iid = 0;
+	allocation_id m_next_aid = 0;
 	const task_manager& m_tm;
 	size_t m_num_devices;
 	instruction* m_last_horizon = nullptr;

@@ -175,66 +175,73 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	}
 
 	for(auto& [bid_mid, boxes] : not_contiguously_allocated_boxes) {
-		using allocated_box = per_buffer_data::per_memory_data::allocated_box;
 		const auto& [bid, mid] = bid_mid;
 
 		auto& buffer = m_buffers.at(bid);
 		auto& memory = buffer.memories[mid];
 
-		contiguous_box_set contiguous_boxes_after_reallocation;
-		for(auto& [aid, box] : memory.allocation) {
-			contiguous_boxes_after_reallocation.insert(box);
+		contiguous_box_set contiguous_after_reallocation;
+		for(auto& alloc : memory.allocations) {
+			contiguous_after_reallocation.insert(alloc.box);
 		}
 		for(auto& box : boxes) {
-			contiguous_boxes_after_reallocation.insert(box);
+			contiguous_after_reallocation.insert(box);
 		}
 
-		std::vector<allocated_box> memory_allocation_after;
-		for(const auto& dest_box : contiguous_boxes_after_reallocation) {
-			if(const auto untouched = std::find_if(memory.allocation.begin(), memory.allocation.end(), [&](auto& alloc) { return alloc.box == dest_box; });
-			    untouched != memory.allocation.end()) {
-				memory_allocation_after.push_back(*untouched);
-				continue;
+		std::vector<allocation_id> free_after_reallocation;
+		for(auto& alloc : memory.allocations) {
+			if(std::none_of(contiguous_after_reallocation.begin(), contiguous_after_reallocation.end(), [&](auto& box) { return alloc.box == box; })) {
+				free_after_reallocation.push_back(alloc.aid);
 			}
+		}
 
-			const allocated_box dest{memory.next_aid++, dest_box};
+		for(const auto& dest_box : contiguous_after_reallocation) {
+			if(std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == dest_box; })) continue;
+
+			auto& dest = memory.allocations.emplace_back(m_next_aid++, dest_box);
 			auto& alloc_instr = create<alloc_instruction>(dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
 			add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-			memory.record_allocation(dest.box, &alloc_instr);
+			dest.record_allocation(dest.box, &alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
-			for(const auto& source : memory.allocation) {
-				if(const auto copy_box = GridBox<3>::intersect(dest.box, source.box); !copy_box.empty()) {
-					const auto source_offset = grid_box_to_subrange(source.box).offset;
-					const auto dest_offset = grid_box_to_subrange(source.box).offset;
-					const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
-					const auto copy_instr =
-					    &create<copy_instruction>(source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
+			for(auto& source : memory.allocations) {
+				const auto copy_box = GridBox<3>::intersect(dest.box, source.box);
+				if(copy_box.empty()) continue;
+				const auto source_offset = grid_box_to_subrange(source.box).offset;
+				const auto dest_offset = grid_box_to_subrange(source.box).offset;
+				const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 
-					for(const auto& [_, front] : memory.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
-						for(const auto dep_instr : front.front) {
-							add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
-						}
-					}
+				const auto copy_instr = &create<copy_instruction>(
+				    source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
 
-					memory.record_read(copy_box, copy_instr);  // TODO on source aid
-					memory.record_write(copy_box, copy_instr); // TODO on dest aid
+				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
+					add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 				}
-			}
+				source.record_read(copy_box, copy_instr);
 
-			memory_allocation_after.push_back(dest);
-		}
-
-		for(const auto& existing : memory.allocation) {
-			if(std::find(memory_allocation_after.begin(), memory_allocation_after.end(), existing) == memory_allocation_after.end()) {
-				const auto free_instr = &create<free_instruction>(existing.aid);
-				for(const auto& [_, front] : memory.access_fronts.get_region_values(existing.box)) { // TODO copy-pasta
+				for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
 					for(const auto dep_instr : front.front) {
-						add_dependency(*free_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+						add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 					}
 				}
-				memory.record_write(existing.box, free_instr);
+				dest.record_write(copy_box, copy_instr);
 			}
 		}
+
+		// TODO consider keeping allocations around until their subregion is written to in order to resolve "buffer-locking" anti-dependencies
+		for(const auto free_aid : free_after_reallocation) {
+			const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
+			const auto free_instr = &create<free_instruction>(allocation.aid);
+			for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
+				for(const auto dep_instr : front.front) {
+					add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+				}
+			}
+		}
+
+		const auto end_retain_after_allocation = std::remove_if(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) {
+			return std::any_of(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const auto aid) { return alloc.aid == aid; });
+		});
+		memory.allocations.erase(end_retain_after_allocation, memory.allocations.end());
 	}
 
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
@@ -304,10 +311,9 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	}
 
 	struct copy_template {
-		buffer_id bid;
-		memory_id from;
-		memory_id to;
-		GridRegion<3> region;
+		buffer_memory_per_allocation_data *source;
+		buffer_memory_per_allocation_data *dest;
+		GridBox<3> box; // in virtual buffer coordinates
 	};
 
 	std::vector<copy_template> pending_copies;
