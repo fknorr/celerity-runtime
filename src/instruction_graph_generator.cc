@@ -1,6 +1,8 @@
 #include "instruction_graph_generator.h"
 #include "access_modes.h"
 #include "command.h"
+#include "grid.h"
+#include "task.h"
 #include "task_manager.h"
 
 #include <numeric>
@@ -12,8 +14,9 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 	m_last_epoch = &create<epoch_instruction>(command_id(0 /* or so we assume */));
 }
 
-void instruction_graph_generator::register_buffer(buffer_id bid, cl::sycl::range<3> range) {
-	[[maybe_unused]] const auto [_, inserted] = m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(range, m_num_devices + 1));
+void instruction_graph_generator::register_buffer(buffer_id bid, int dims, range<3> range, const size_t elem_size, const size_t elem_align) {
+	[[maybe_unused]] const auto [_, inserted] =
+	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_num_devices + 1));
 	assert(inserted);
 }
 
@@ -117,7 +120,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 					    if(access::mode_traits::is_consumer(mode)) { rw.reads = GridRegion<3>::merge(rw.reads, req); }
 					    if(access::mode_traits::is_producer(mode)) { rw.writes = GridRegion<3>::merge(rw.writes, req); }
 				    }
-					rw.contiguous_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
+				    rw.contiguous_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
 				    if(!rw.empty()) { insn.rw_map.emplace(bid, std::move(rw)); }
 			    }
 		    }
@@ -157,32 +160,81 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 
 	// 2) create allocation instructions for any region unallocated in the memory read or written by a command instruction
 
-	// TODO this must 
+	// TODO this must
 	// 	- be inherently conditional on the presence of virtual memory
-	//  - for non-VM, re-allocate any region required by a single accessor if the region is covered by multiple disjoint allocations
 	//  - for VM, keep page size in mind
 
-	std::unordered_map<std::pair<buffer_id, memory_id>, GridRegion<3>, utils::pair_hash> unallocated_regions;
+	std::unordered_map<std::pair<buffer_id, memory_id>, std::vector<GridBox<3>>, utils::pair_hash> not_contiguously_allocated_boxes;
 	for(const auto& insn : cmd_insns) {
 		for(const auto& [bid, rw] : insn.rw_map) {
-			for(const auto& region : {rw.reads, rw.writes}) {
-				const auto unallocated = GridRegion<3>::difference(region, m_buffers.at(bid).memories[insn.mid].allocation);
-				if(!unallocated.empty()) { unallocated_regions[{bid, insn.mid}] = GridRegion<3>::merge(unallocated_regions[{bid, insn.mid}], unallocated); }
+			const auto& memory = m_buffers.at(bid).memories[insn.mid];
+			for(auto& box : rw.contiguous_boxes) {
+				if(!memory.is_allocated_contiguously(box)) { not_contiguously_allocated_boxes[{bid, insn.mid}].push_back(box); }
 			}
 		}
 	}
 
-	for(const auto& [bid_mid, region] : unallocated_regions) {
-		const auto [bid, mid] = bid_mid;
+	for(auto& [bid_mid, boxes] : not_contiguously_allocated_boxes) {
+		using allocated_box = per_buffer_data::per_memory_data::allocated_box;
+		const auto& [bid, mid] = bid_mid;
 
-		// TODO allocate a multiple of the allocator's page size (GridRegion might not be the right parameter to alloc_instruction)
-		auto& alloc_instr = create<alloc_instruction>(bid, mid, region);
+		auto& buffer = m_buffers.at(bid);
+		auto& memory = buffer.memories[mid];
 
-		// TODO until we have ndvbuffers everywhere, alloc_instructions need forward and backward dependencies to reproduce buffer-locking semantics.
-		//	 We could solve this by having resize_instructions instead that "read" the entire previous and "write" the entire new allocation
-		add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+		contiguous_box_set contiguous_boxes_after_reallocation;
+		for(auto& [aid, box] : memory.allocation) {
+			contiguous_boxes_after_reallocation.insert(box);
+		}
+		for(auto& box : boxes) {
+			contiguous_boxes_after_reallocation.insert(box);
+		}
 
-		m_buffers.at(bid).memories[mid].record_allocation(region, &alloc_instr);
+		std::vector<allocated_box> memory_allocation_after;
+		for(const auto& dest_box : contiguous_boxes_after_reallocation) {
+			if(const auto untouched = std::find_if(memory.allocation.begin(), memory.allocation.end(), [&](auto& alloc) { return alloc.box == dest_box; });
+			    untouched != memory.allocation.end()) {
+				memory_allocation_after.push_back(*untouched);
+				continue;
+			}
+
+			const allocated_box dest{memory.next_aid++, dest_box};
+			auto& alloc_instr = create<alloc_instruction>(dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
+			add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+			memory.record_allocation(dest.box, &alloc_instr);
+
+			for(const auto& source : memory.allocation) {
+				if(const auto copy_box = GridBox<3>::intersect(dest.box, source.box); !copy_box.empty()) {
+					const auto source_offset = grid_box_to_subrange(source.box).offset;
+					const auto dest_offset = grid_box_to_subrange(source.box).offset;
+					const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
+					const auto copy_instr =
+					    &create<copy_instruction>(source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
+
+					for(const auto& [_, front] : memory.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
+						for(const auto dep_instr : front.front) {
+							add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+						}
+					}
+
+					memory.record_read(copy_box, copy_instr);  // TODO on source aid
+					memory.record_write(copy_box, copy_instr); // TODO on dest aid
+				}
+			}
+
+			memory_allocation_after.push_back(dest);
+		}
+
+		for(const auto& existing : memory.allocation) {
+			if(std::find(memory_allocation_after.begin(), memory_allocation_after.end(), existing) == memory_allocation_after.end()) {
+				const auto free_instr = &create<free_instruction>(existing.aid);
+				for(const auto& [_, front] : memory.access_fronts.get_region_values(existing.box)) { // TODO copy-pasta
+					for(const auto dep_instr : front.front) {
+						add_dependency(*free_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+					}
+				}
+				memory.record_write(existing.box, free_instr);
+			}
+		}
 	}
 
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
@@ -316,18 +368,18 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		assert(copy.from != copy.to);
 		auto& buffer = m_buffers.at(copy.bid);
 
-		const auto copy_in = &create<copy_instruction>(copy.bid, copy.region, copy.from, copy.to);
+		const auto copy_instr = &create<copy_instruction>(copy.bid, copy.region, copy.from, copy.to);
 		for(const auto& [_, last_writer_instr] : buffer.memories[copy.from].last_writers.get_region_values(copy.region)) {
-			add_dependency(*copy_in, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+			add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 		}
-		buffer.memories[copy.from].record_read(copy.region, copy_in);
+		buffer.memories[copy.from].record_read(copy.region, copy_instr);
 
-		for(const auto& [_, front] : buffer.memories[copy.to].access_fronts.get_region_values(copy.region)) {
+		for(const auto& [_, front] : buffer.memories[copy.to].access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
-				add_dependency(*copy_in, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+				add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 			}
 		}
-		buffer.memories[copy.to].record_write(copy.region, copy_in);
+		buffer.memories[copy.to].record_write(copy.region, copy_instr);
 		for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
 			buffer.newest_data_location.update_region(box, data_location(location).set(copy.to));
 		}

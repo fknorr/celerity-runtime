@@ -57,15 +57,18 @@ struct nd_allocation {
 
 class alloc_instruction final : public instruction {
   public:
-	explicit alloc_instruction(const instruction_id iid, const memory_id mid, const size_t size, const size_t alignment) : instruction(iid), m_mid(mid), m_size(size), m_alignment(alignment) {}
+	explicit alloc_instruction(const instruction_id iid, const allocation_id aid, const memory_id mid, const size_t size, const size_t alignment)
+	    : instruction(iid), m_aid(aid), m_mid(mid), m_size(size), m_alignment(alignment) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
+	allocation_id get_allocation_id() const { return m_aid; }
 	memory_id get_memory_id() const { return m_mid; }
 	size_t get_size() const { return m_size; }
 	size_t get_alignment() const { return m_alignment; }
 
   private:
+	allocation_id m_aid;
 	memory_id m_mid;
 	size_t m_size;
 	size_t m_alignment;
@@ -85,30 +88,35 @@ class free_instruction final : public instruction {
 
 class copy_instruction final : public instruction {
   public:
-	explicit copy_instruction(
-	    const instruction_id iid, const nd_allocation& source, const id<3>& source_offset, const nd_allocation& dest, const id<3>& dest_offset, range<3>& range)
-	    : instruction(iid), m_source(source), m_source_offset(source_offset), m_dest(dest), m_dest_offset(dest_offset), m_range(range) {}
+	explicit copy_instruction(const instruction_id iid, allocation_id source, const id<3>& source_offset, allocation_id dest, const id<3>& dest_offset,
+	    int dims, const range<3>& range, const size_t elem_size)
+	    : instruction(iid), m_source(source), m_source_offset(source_offset), m_dest(dest), m_dest_offset(dest_offset), m_dims(dims), m_range(range),
+	      m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
-	const nd_allocation& get_source() const { return m_source; }
+	allocation_id get_source() const { return m_source; }
 	const id<3>& get_source_offset() const { return m_source_offset; }
-	const nd_allocation& get_dest() const { return m_dest; }
+	allocation_id get_dest() const { return m_dest; }
 	const id<3>& get_dest_offset() const { return m_dest_offset; }
+	int get_dimensions() const { return m_dims; }
 	const range<3>& get_range() const { return m_range; }
+	size_t get_elem_size() const { return m_elem_size; }
 
   private:
-	nd_allocation m_source;
+	allocation_id m_source;
 	id<3> m_source_offset;
-	nd_allocation m_dest;
+	allocation_id m_dest;
 	id<3> m_dest_offset;
+	int m_dims;
 	range<3> m_range;
+	size_t m_elem_size;
 };
 
 struct reads_writes {
 	GridRegion<3> reads;
 	GridRegion<3> writes;
-	std::vector<GridBox<3>> contiguous_boxes;
+	contiguous_box_set contiguous_boxes;
 
 	bool empty() const { return reads.empty() && writes.empty(); }
 };

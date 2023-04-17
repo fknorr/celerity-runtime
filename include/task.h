@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "allscale/api/user/data/grid.h"
 #include "device_queue.h"
 #include "grid.h"
 #include "host_queue.h" // NOCOMMIT Do we really need to include this..?
@@ -100,6 +101,36 @@ namespace detail {
 		}
 	};
 
+	class contiguous_box_set : private std::vector<GridBox<3>> {
+	  private:
+		using vector = std::vector<GridBox<3>>;
+
+	  public:
+		using typename vector::const_iterator;
+		using typename vector::value_type;
+		using iterator = const_iterator;
+
+		contiguous_box_set() = default;
+
+		using vector::empty;
+		using vector::size;
+		using vector::swap;
+
+		iterator begin() const { return vector::begin(); } // only export const overload
+		iterator end() const { return vector::end(); }     // only export const overload
+
+		void insert(const GridBox<3>& box);
+
+		template <typename Iterator>
+		void insert(const Iterator first, const Iterator last) {
+			while(first != last) {
+				insert(*first++);
+			}
+		}
+
+		vector into_vector() && { return std::move(*this); }
+	};
+
 	class buffer_access_map {
 	  public:
 		void add_access(buffer_id bid, std::unique_ptr<range_mapper_base>&& rm) { m_accesses.emplace_back(bid, std::move(rm)); }
@@ -134,8 +165,7 @@ namespace detail {
 			return rms;
 		}
 
-		std::vector<GridBox<3>> get_required_contiguous_boxes(
-		    const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
+		contiguous_box_set get_required_contiguous_boxes(const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
 
 	  private:
 		std::vector<std::pair<buffer_id, std::unique_ptr<range_mapper_base>>> m_accesses;

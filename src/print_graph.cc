@@ -383,14 +383,17 @@ namespace detail {
 			utils::match(
 			    instr,
 			    [&](const alloc_instruction& ainstr) {
-				    print_node(ainstr, "<b>alloc</b> on M{}<br/>B{} {}", ainstr.get_memory_id(), ainstr.get_buffer_id(), ainstr.get_region());
+				    print_node(ainstr, "<b>alloc</b><br/> A{} on M{}: {} bytes @{}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ainstr.get_size(),
+				        ainstr.get_alignment());
+			    },
+			    [&](const free_instruction& finstr) { //
+				    print_node(finstr, "<b>free</b><br/>A{}", finstr.get_allocation_id());
 			    },
 			    [&](const copy_instruction& cinstr) {
-				    const bool source_host = cinstr.get_source_memory_id() == host_memory_id;
-				    const bool dest_host = cinstr.get_dest_memory_id() == host_memory_id;
-				    const auto direction = source_host && dest_host ? "h2h" : source_host && !dest_host ? "h2d" : !source_host && dest_host ? "d2h" : "d2d";
-				    print_node(cinstr, "<b>{}</b> from M{} to M{}<br/>B{} {}", direction, cinstr.get_source_memory_id(), cinstr.get_dest_memory_id(),
-				        cinstr.get_buffer_id(), cinstr.get_region());
+				    print_node(cinstr, "<b>copy</b> {}D<br/>A{}+[{},{},{}] -> A{}+[{},{},{}], [{},{},{}]x{} bytes", cinstr.get_dimensions(),
+				        cinstr.get_source(), cinstr.get_source_offset()[0], cinstr.get_source_offset()[1], cinstr.get_source_offset()[2], cinstr.get_dest(),
+				        cinstr.get_dest_offset()[0], cinstr.get_dest_offset()[1], cinstr.get_dest_offset()[2], cinstr.get_range()[0], cinstr.get_range()[1],
+				        cinstr.get_range()[2], cinstr.get_elem_size());
 			    },
 			    [&](const device_kernel_instruction& dkinstr) {
 				    begin_node(dkinstr);
@@ -412,8 +415,12 @@ namespace detail {
 			    [&](const recv_instruction& rinstr) {
 				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B{} {}", rinstr.get_transfer_id(), rinstr.get_buffer_id(), rinstr.get_region());
 			    },
-			    [&](const horizon_instruction& hinstr) { print_node(hinstr, "<b>horizon</b>"); },
-			    [&](const epoch_instruction& einstr) { print_node(einstr, "<b>epoch</b>"); });
+			    [&](const horizon_instruction& hinstr) { //
+				    print_node(hinstr, "<b>horizon</b>");
+			    },
+			    [&](const epoch_instruction& einstr) { //
+				    print_node(einstr, "<b>epoch</b>");
+			    });
 		});
 
 		idag.for_each([&](const instruction& instr) {

@@ -2,6 +2,8 @@
 
 #include "instruction_graph.h"
 #include "region_map.h"
+#include "task.h"
+#include "types.h"
 
 #include <bitset>
 #include <unordered_set>
@@ -15,7 +17,7 @@ class instruction_graph_generator {
   public:
 	explicit instruction_graph_generator(const task_manager& tm, size_t num_devices);
 
-	void register_buffer(buffer_id bid, cl::sycl::range<3> range);
+	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
 
 	void unregister_buffer(buffer_id bid);
 
@@ -41,23 +43,28 @@ class instruction_graph_generator {
 				friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
 			};
 
-			struct buffer_allocation: nd_allocation {
-				id<3> offset;
+			struct allocated_box {
+				allocation_id aid;
+				GridBox<3> box;
 
-				subrange<3> get_subrange() const { return {offset, range}; }
-				GridBox<3> get_box() const { return subrange_to_grid_box(get_subrange()); }
+				friend bool operator==(const allocated_box& lhs, const allocated_box& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
+				friend bool operator!=(const allocated_box& lhs, const allocated_box& rhs) { return !(lhs == rhs); }
 			};
 
-			std::vector<buffer_allocation> allocations;
-			region_map<instruction*> last_writers;
-			region_map<access_front> access_fronts;
+			std::vector<allocated_box> allocation;
+			region_map<instruction*> last_writers; // TODO should be in a per_allocation_data struct
+			region_map<access_front> access_fronts; // TODO should be in a per_allocation_data struct
+			allocation_id next_aid = 0;
 
 			explicit per_memory_data(const range<3>& range) : last_writers(range), access_fronts(range) {}
 
-			void record_allocation(const buffer_allocation &allocation, instruction* const instr) {
-				allocations.push_back(allocation);
-				// TODO this will generate antidependencies, but semantically, we want true dependencies.
-				access_fronts.update_region(allocation.get_box(), access_front{{instr}, access_front::write});
+			bool is_allocated_contiguously(const GridBox<3>& box) const {
+				return std::any_of(allocation.begin(), allocation.end(), [&](const allocated_box& ab) { return ab.box.covers(box); });
+			}
+
+			void record_allocation(const GridBox<3>& box, instruction* const instr) {
+				// TODO we want these dependencies only for newly allocated subregions, not the entire thing
+				access_fronts.update_region(box, access_front{{instr}, access_front::write});
 			}
 
 			void record_read(const GridRegion<3>& region, instruction* const instr) {
@@ -98,14 +105,17 @@ class instruction_graph_generator {
 			}
 		};
 
+		int dims;
 		range<3> range;
+		size_t elem_size;
+		size_t elem_align;
 		std::vector<per_memory_data> memories;
 		region_map<data_location> newest_data_location;
 		region_map<instruction*> original_writers;
 		region_map<transfer_id> pending_await_pushes;
 
-		explicit per_buffer_data(const celerity::range<3>& range, const size_t n_memories)
-		    : range(range), newest_data_location(range), original_writers(range), pending_await_pushes(range) {
+		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
+		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), newest_data_location(range), original_writers(range), pending_await_pushes(range) {
 			memories.reserve(n_memories);
 			for(size_t i = 0; i < n_memories; ++i) {
 				memories.emplace_back(range);
