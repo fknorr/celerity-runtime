@@ -75,6 +75,13 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		dest.record_write(dest.box, &alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
 		for(auto& source : memory.allocations) {
+			if(std::find_if(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const allocation_id aid) { return aid == source.aid; })
+			    == free_after_reallocation.end()) {
+				// we modify memory.allocations in-place, so we need to be careful not to attempt copying from a new allocation to itself.
+				// Since we don't have overlapping allocations, any copy source must currently be one that will be freed after reallocation.
+				continue;
+			}
+
 			// only copy those boxes to the new allocation that are still up-to-date in the old allocation
 			// TODO investigate a garbage-collection heuristic that omits these copies if we do not expect them to be read from again on this memory
 			const auto full_copy_box = GridBox<3>::intersect(dest.box, source.box);
@@ -87,7 +94,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 				assert(!copy_box.empty());
 
 				const auto [source_offset, source_range] = grid_box_to_subrange(source.box);
-				const auto [dest_offset, dest_range] = grid_box_to_subrange(source.box);
+				const auto [dest_offset, dest_range] = grid_box_to_subrange(dest_box);
 				const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 
 				const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, dest.aid, dest_range,
@@ -256,45 +263,45 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 				pending_copies.push_back({copy_from, dest_mid, std::move(copy_region)});
 			}
 		}
+	}
 
-		for(auto& copy : pending_copies) {
-			assert(copy.dest_mid != copy.source_mid);
-			auto& buffer = m_buffers.at(bid);
-			copy.region.scanByBoxes([&](const GridBox<3>& box) {
-				for(auto& source : buffer.memories[copy.source_mid].allocations) {
-					const auto read_box = GridBox<3>::intersect(box, source.box);
-					if(read_box.empty()) continue;
+	for(auto& copy : pending_copies) {
+		assert(copy.dest_mid != copy.source_mid);
+		auto& buffer = m_buffers.at(bid);
+		copy.region.scanByBoxes([&](const GridBox<3>& box) {
+			for(auto& source : buffer.memories[copy.source_mid].allocations) {
+				const auto read_box = GridBox<3>::intersect(box, source.box);
+				if(read_box.empty()) continue;
 
-					for(auto& dest : buffer.memories[copy.dest_mid].allocations) {
-						const auto copy_box = GridBox<3>::intersect(read_box, dest.box);
-						if(copy_box.empty()) continue;
+				for(auto& dest : buffer.memories[copy.dest_mid].allocations) {
+					const auto copy_box = GridBox<3>::intersect(read_box, dest.box);
+					if(copy_box.empty()) continue;
 
-						const auto [source_offset, source_range] = grid_box_to_subrange(source.box);
-						const auto [dest_offset, dest_range] = grid_box_to_subrange(dest.box);
-						const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
+					const auto [source_offset, source_range] = grid_box_to_subrange(source.box);
+					const auto [dest_offset, dest_range] = grid_box_to_subrange(dest.box);
+					const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 
-						const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, dest.aid,
-						    dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+					const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, dest.aid, dest_range,
+					    copy_offset - dest_offset, copy_range, buffer.elem_size);
 
-						for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
-							assert(last_writer_instr != nullptr);
-							add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
-						}
-						source.record_read(copy.region, copy_instr);
+					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
+						assert(last_writer_instr != nullptr);
+						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+					}
+					source.record_read(copy.region, copy_instr);
 
-						for(const auto& [_, front] : dest.access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
-							for(const auto dep_instr : front.front) {
-								add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
-							}
-						}
-						dest.record_write(copy.region, copy_instr);
-						for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
-							buffer.newest_data_location.update_region(box, data_location(location).set(copy.dest_mid));
+					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
+						for(const auto dep_instr : front.front) {
+							add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 						}
 					}
+					dest.record_write(copy.region, copy_instr);
+					for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
+						buffer.newest_data_location.update_region(box, data_location(location).set(copy.dest_mid));
+					}
 				}
-			});
-		}
+			}
+		});
 	}
 }
 
@@ -460,7 +467,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	for(size_t cmd_insn_idx = 0; cmd_insn_idx < cmd_instrs.size(); ++cmd_insn_idx) {
 		auto& insn = cmd_instrs[cmd_insn_idx];
 		for(const auto& [bid, rw] : insn.rw_map) {
-			buffer_reads[bid].emplace_back(insn.mid, rw.reads);
+			if(!rw.reads.empty()) { buffer_reads[bid].emplace_back(insn.mid, rw.reads); }
 		}
 	}
 

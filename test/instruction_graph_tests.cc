@@ -235,6 +235,34 @@ task_id idag_task_builder::step::submit() {
 	return tid;
 }
 
+TEST_CASE("trivial graph", "[instruction graph]") {
+	idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+	const range<1> test_range = {256};
+	ictx.device_compute<class UKN(kernel)>(test_range).submit();
+}
+
+TEST_CASE("graph with only writes", "[instruction graph]") {
+	idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+	const range<1> test_range = {256};
+	auto buf1 = ictx.create_buffer(test_range);
+	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
+}
+
+TEST_CASE("communication-free dataflow", "[instruction graph]") {
+	idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+	const range<1> test_range = {256};
+	auto buf1 = ictx.create_buffer(test_range);
+	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::one_to_one()).submit();
+}
+
+TEST_CASE("communication-free dataflow with copies", "[instruction graph]") {
+	idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
+	const range<1> test_range = {256};
+	auto buf1 = ictx.create_buffer(test_range);
+	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::all()).submit();
+}
 
 TEST_CASE("large graph", "[instruction graph]") {
 	idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);

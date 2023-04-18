@@ -383,14 +383,14 @@ namespace detail {
 			utils::match(
 			    instr,
 			    [&](const alloc_instruction& ainstr) {
-				    print_node(ainstr, "<b>alloc</b><br/> A{} on M{}: {} bytes @{}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ainstr.get_size(),
+				    print_node(ainstr, "<b>alloc</b><br/> A{} on M{}: {}%{} bytes", ainstr.get_allocation_id(), ainstr.get_memory_id(), ainstr.get_size(),
 				        ainstr.get_alignment());
 			    },
 			    [&](const free_instruction& finstr) { //
 				    print_node(finstr, "<b>free</b><br/>A{}", finstr.get_allocation_id());
 			    },
 			    [&](const copy_instruction& cinstr) {
-				    print_node(cinstr, "<b>copy</b> {}D<br/>A{} ([{},{},{}]) +[{},{},{}] -> A{} ([{},{},{}]) +[{},{},{}]<br/>[{},{},{}]x{} bytes",
+				    print_node(cinstr, "{}D <b>copy</b><br/>from A{} ([{},{},{}]) +[{},{},{}]<br/>to A{} ([{},{},{}]) +[{},{},{}]<br/>[{},{},{}]x{} bytes",
 				        cinstr.get_dimensions(), cinstr.get_source(), cinstr.get_source_range()[0], cinstr.get_source_range()[1], cinstr.get_source_range()[2],
 				        cinstr.get_offset_in_source()[0], cinstr.get_offset_in_source()[1], cinstr.get_offset_in_source()[2], cinstr.get_dest(),
 				        cinstr.get_dest_range()[0], cinstr.get_dest_range()[1], cinstr.get_dest_range()[2], cinstr.get_offset_in_dest()[0],
