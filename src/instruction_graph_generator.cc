@@ -168,6 +168,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 	// First, see if there are pending await-pushes for any of the unsatisfied read regions.
 	for(auto& [mid, disjoint_regions] : unsatisfied_reads) {
 		auto& buffer = m_buffers.at(bid);
+		auto &memory = buffer.memories[mid];
+
 		for(auto& region : disjoint_regions) {
 			// merge regions per transfer id to generate at most one instruction per host allocation and pending await-push command
 			std::unordered_map<transfer_id, GridRegion<3>> transfer_regions;
@@ -178,9 +180,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 				}
 			}
 			for(auto& [trid, tr_region] : transfer_regions) {
-				auto& buffer_memory = buffer.memories[host_memory_id];
-
-				for(auto& alloc : buffer_memory.allocations) {
+				for(auto& alloc : memory.allocations) {
 					tr_region.scanByBoxes([&, trid = trid, bid = bid](const GridBox<3>& tr_box) {
 						const auto recv_box = GridBox<3>::intersect(alloc.box, tr_box);
 						if(recv_box.empty()) return;
@@ -188,7 +188,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
 						const auto [recv_offset, recv_range] = grid_box_to_subrange(recv_box);
 						const auto recv_instr = &create<recv_instruction>(
-						    trid, bid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
+						    trid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
 
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {

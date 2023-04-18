@@ -264,6 +264,14 @@ TEST_CASE("communication-free dataflow with copies", "[instruction graph]") {
 	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::all()).submit();
 }
 
+TEST_CASE("simple communication", "[instruction graph]") {
+	idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	const range<1> test_range = {256};
+	auto buf1 = ictx.create_buffer(test_range);
+	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::all()).submit();
+}
+
 TEST_CASE("large graph", "[instruction graph]") {
 	idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 

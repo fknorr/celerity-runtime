@@ -416,11 +416,10 @@ namespace detail {
 				        sinstr.get_size_bytes());
 			    },
 			    [&](const recv_instruction& rinstr) {
-				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B{} {}<br/>from A{} {}D +[{},{},{}], [{},{},{}]x{} bytes", rinstr.get_transfer_id(),
-				        rinstr.get_buffer_id(), subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()), rinstr.get_allocation_id(),
-				        rinstr.get_dimensions(), rinstr.get_offset_in_allocation()[0], rinstr.get_offset_in_allocation()[1],
-				        rinstr.get_offset_in_allocation()[2], rinstr.get_recv_range()[0], rinstr.get_recv_range()[1], rinstr.get_recv_range()[2],
-				        rinstr.get_element_size());
+				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B? {}<br/>to A{} {}D +[{},{},{}], [{},{},{}]x{} bytes", rinstr.get_transfer_id(),
+				        subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()), rinstr.get_allocation_id(), rinstr.get_dimensions(),
+				        rinstr.get_offset_in_allocation()[0], rinstr.get_offset_in_allocation()[1], rinstr.get_offset_in_allocation()[2],
+				        rinstr.get_recv_range()[0], rinstr.get_recv_range()[1], rinstr.get_recv_range()[2], rinstr.get_element_size());
 			    },
 			    [&](const horizon_instruction& hinstr) { //
 				    print_node(hinstr, "<b>horizon</b>");

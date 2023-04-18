@@ -198,15 +198,14 @@ class send_instruction final : public instruction {
 class recv_instruction final : public instruction {
   public:
 	// We don't make the effort of tracking the command ids of (pending) await-pushes
-	explicit recv_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, const allocation_id aid, const int dims,
+	explicit recv_instruction(const instruction_id iid, const transfer_id trid, const allocation_id aid, const int dims,
 	    const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer, const range<3>& recv_range, const size_t elem_size)
-	    : instruction(iid), m_trid(trid), m_bid(bid), m_aid(aid), m_dims(dims), m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc),
+	    : instruction(iid), m_trid(trid), m_aid(aid), m_dims(dims), m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc),
 	      m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	transfer_id get_transfer_id() const { return m_trid; }
-	buffer_id get_buffer_id() const { return m_bid; }
 	allocation_id get_allocation_id() const { return m_aid; }
 	allocation_id get_dimensions() const { return m_dims; }
 	const range<3>& get_allocation_range() const { return m_alloc_range; }
@@ -217,7 +216,6 @@ class recv_instruction final : public instruction {
 
   private:
 	transfer_id m_trid;
-	buffer_id m_bid;
 	allocation_id m_aid;
 	int m_dims;
 	range<3> m_alloc_range;
