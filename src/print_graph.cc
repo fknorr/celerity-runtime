@@ -390,10 +390,12 @@ namespace detail {
 				    print_node(finstr, "<b>free</b><br/>A{}", finstr.get_allocation_id());
 			    },
 			    [&](const copy_instruction& cinstr) {
-				    print_node(cinstr, "<b>copy</b> {}D<br/>A{}+[{},{},{}] -> A{}+[{},{},{}], [{},{},{}]x{} bytes", cinstr.get_dimensions(),
-				        cinstr.get_source(), cinstr.get_source_offset()[0], cinstr.get_source_offset()[1], cinstr.get_source_offset()[2],
-				        cinstr.get_destination(), cinstr.get_dest_offset()[0], cinstr.get_dest_offset()[1], cinstr.get_dest_offset()[2], cinstr.get_range()[0],
-				        cinstr.get_range()[1], cinstr.get_range()[2], cinstr.get_element_size());
+				    print_node(cinstr, "<b>copy</b> {}D<br/>A{} ([{},{},{}]) +[{},{},{}] -> A{} ([{},{},{}]) +[{},{},{}]<br/>[{},{},{}]x{} bytes",
+				        cinstr.get_dimensions(), cinstr.get_source(), cinstr.get_source_range()[0], cinstr.get_source_range()[1], cinstr.get_source_range()[2],
+				        cinstr.get_offset_in_source()[0], cinstr.get_offset_in_source()[1], cinstr.get_offset_in_source()[2], cinstr.get_dest(),
+				        cinstr.get_dest_range()[0], cinstr.get_dest_range()[1], cinstr.get_dest_range()[2], cinstr.get_offset_in_dest()[0],
+				        cinstr.get_offset_in_dest()[1], cinstr.get_offset_in_dest()[2], cinstr.get_copy_range()[0], cinstr.get_copy_range()[1],
+				        cinstr.get_copy_range()[2], cinstr.get_element_size());
 			    },
 			    [&](const device_kernel_instruction& dkinstr) {
 				    begin_node(dkinstr);
@@ -410,11 +412,8 @@ namespace detail {
 				    end_node();
 			    },
 			    [&](const send_instruction& sinstr) {
-				    print_node(sinstr, "<b>send</b> to N{}<br/>B{} {}<br/>from A{} {}D +[{},{},{}], [{},{},{}]x{} bytes", sinstr.get_dest_node_id(),
-				        sinstr.get_buffer_id(), subrange(sinstr.get_offset_in_buffer(), sinstr.get_send_range()), sinstr.get_allocation_id(),
-				        sinstr.get_dimensions(), sinstr.get_offset_in_allocation()[0], sinstr.get_offset_in_allocation()[1],
-				        sinstr.get_offset_in_allocation()[2], sinstr.get_send_range()[0], sinstr.get_send_range()[1], sinstr.get_send_range()[2],
-				        sinstr.get_element_size());
+				    print_node(sinstr, "<b>send</b> to N{} tag {}<br/>A{}, {} bytes", sinstr.get_dest_node_id(), sinstr.get_tag(), sinstr.get_allocation_id(),
+				        sinstr.get_size_bytes());
 			    },
 			    [&](const recv_instruction& rinstr) {
 				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B{} {}<br/>from A{} {}D +[{},{},{}], [{},{},{}]x{} bytes", rinstr.get_transfer_id(),

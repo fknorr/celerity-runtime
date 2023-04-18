@@ -86,31 +86,37 @@ class free_instruction final : public instruction {
 	allocation_id m_aid;
 };
 
+// copy_instruction: either copy or linearize
+// TODO maybe template this on Dims?
 class copy_instruction final : public instruction {
   public:
 	// TODO needs source_range and dest_range!
-	explicit copy_instruction(const instruction_id iid, const allocation_id source, const id<3>& source_offset, const allocation_id dest,
-	    const id<3>& dest_offset, const int dims, const range<3>& range, const size_t elem_size)
-	    : instruction(iid), m_source(source), m_source_offset(source_offset), m_dest(dest), m_dest_offset(dest_offset), m_dims(dims), m_range(range),
-	      m_elem_size(elem_size) {}
+	explicit copy_instruction(const instruction_id iid, const int dims, const allocation_id source, const range<3>& source_range, const id<3>& offset_in_source,
+	    const allocation_id dest, const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
+	    : instruction(iid), m_source(source), m_dest(dest), m_dims(dims), m_source_range(source_range), m_dest_range(dest_range),
+	      m_offset_in_source(offset_in_source), m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	allocation_id get_source() const { return m_source; }
-	const id<3>& get_source_offset() const { return m_source_offset; }
-	allocation_id get_destination() const { return m_dest; }
-	const id<3>& get_dest_offset() const { return m_dest_offset; }
 	int get_dimensions() const { return m_dims; }
-	const range<3>& get_range() const { return m_range; }
+	const range<3>& get_source_range() const { return m_source_range; }
+	const id<3>& get_offset_in_source() const { return m_offset_in_source; }
+	allocation_id get_dest() const { return m_dest; }
+	const range<3>& get_dest_range() const { return m_dest_range; }
+	const id<3>& get_offset_in_dest() const { return m_offset_in_dest; }
+	const range<3>& get_copy_range() const { return m_copy_range; }
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	allocation_id m_source;
-	id<3> m_source_offset;
 	allocation_id m_dest;
-	id<3> m_dest_offset;
 	int m_dims;
-	range<3> m_range;
+	range<3> m_source_range;
+	range<3> m_dest_range;
+	id<3> m_offset_in_source;
+	id<3> m_offset_in_dest;
+	range<3> m_copy_range;
 	size_t m_elem_size;
 };
 
@@ -172,34 +178,21 @@ class host_kernel_instruction final : public kernel_instruction {
 
 class send_instruction final : public instruction {
   public:
-	explicit send_instruction(const instruction_id iid, const command_id cid, const node_id to_nid, const buffer_id bid, const allocation_id aid,
-	    const int dims, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer, const range<3>& send_range,
-	    const size_t elem_size)
-	    : instruction(iid, cid), m_to_nid(to_nid), m_bid(bid), m_aid(aid), m_dims(dims), m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc),
-	      m_offset_in_buffer(offset_in_buffer), m_send_range(send_range), m_elem_size(elem_size) {}
+	explicit send_instruction(const instruction_id iid, const command_id cid, const node_id to_nid, const int tag, const allocation_id aid, const size_t bytes)
+	    : instruction(iid, cid), m_to_nid(to_nid), m_tag(tag), m_aid(aid), m_bytes(bytes) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	node_id get_dest_node_id() const { return m_to_nid; }
-	buffer_id get_buffer_id() const { return m_bid; }
+	int get_tag() const { return m_tag; }
 	allocation_id get_allocation_id() const { return m_aid; }
-	allocation_id get_dimensions() const { return m_dims; }
-	const range<3>& get_allocation_range() const { return m_alloc_range; }
-	const id<3>& get_offset_in_allocation() const { return m_offset_in_alloc; }
-	const id<3>& get_offset_in_buffer() const { return m_offset_in_buffer; }
-	const range<3>& get_send_range() const { return m_send_range; }
-	size_t get_element_size() const { return m_elem_size; }
+	size_t get_size_bytes() const { return m_bytes; }
 
   private:
 	node_id m_to_nid;
-	buffer_id m_bid;
+	int m_tag;
 	allocation_id m_aid;
-	int m_dims;
-	range<3> m_alloc_range;
-	id<3> m_offset_in_alloc;
-	id<3> m_offset_in_buffer;
-	range<3> m_send_range;
-	size_t m_elem_size;
+	size_t m_bytes;
 };
 
 class recv_instruction final : public instruction {

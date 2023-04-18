@@ -1,5 +1,6 @@
 #pragma once
 
+#include "command.h"
 #include "grid.h"
 #include "instruction_graph.h"
 #include "region_map.h"
@@ -213,6 +214,20 @@ class instruction_graph_generator {
 		m_execution_front.clear();
 		m_execution_front.insert(horizon);
 	}
+
+	// Re-allocation of one buffer on one memory never interacts with other buffers or other memories backing the same buffer, this function can be called
+	// in any order of allocation requirements without generating additional dependencies.
+	void allocate_contiguously(const buffer_id bid, const memory_id mid, const std::vector<GridBox<3>>& boxes);
+
+	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
+	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
+	void satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, GridRegion<3>>>& reads);
+
+	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const GridBox<3>& box, const allocation_id out_aid);
+
+	void compile_execution_command(const execution_command& ecmd);
+
+	void compile_push_command(const push_command& pcmd);
 };
 
 } // namespace celerity::detail
