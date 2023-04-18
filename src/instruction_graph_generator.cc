@@ -201,10 +201,10 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(const auto& dest_box : contiguous_after_reallocation) {
 			if(std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == dest_box; })) continue;
 
-			auto& dest = memory.allocations.emplace_back(m_next_aid++, dest_box);
+			auto& dest = memory.allocations.emplace_back(m_next_aid++, dest_box, buffer.range);
 			auto& alloc_instr = create<alloc_instruction>(dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
 			add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-			dest.record_allocation(dest.box, &alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
+			dest.record_write(dest.box, &alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
 			for(auto& source : memory.allocations) {
 				// only copy those boxes to the new allocation that are still up-to-date in the old allocation
@@ -226,6 +226,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 					    source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
 
 					for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
+						assert(dep_instr != nullptr);
 						add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 					}
 					source.record_read(copy_box, copy_instr);
@@ -413,6 +414,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 						    source.aid, copy_offset - source_offset, dest.aid, copy_offset - dest_offset, buffer.dims, copy_range, buffer.elem_size);
 
 						for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
+							assert(last_writer_instr != nullptr);
 							add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 						}
 						source.record_read(copy.region, copy_instr);
@@ -493,6 +495,7 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		for(const auto& [bid, rw] : insn.rw_map) {
 			for(auto& alloc : m_buffers.at(bid).memories[insn.mid].allocations) {
 				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(rw.reads)) {
+					assert(last_writer_instr != nullptr);
 					add_dependency(*insn.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 				}
 			}

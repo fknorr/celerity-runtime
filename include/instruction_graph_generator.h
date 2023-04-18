@@ -56,14 +56,8 @@ class instruction_graph_generator {
 		region_map<instruction*> last_writers;  // in virtual-buffer coordinates
 		region_map<access_front> access_fronts; // in virtual-buffer coordinates
 
-		explicit buffer_memory_per_allocation_data(const allocation_id aid, const GridBox<3>& box)
-		    : aid(aid), box(box), last_writers(grid_box_to_subrange(box).range), access_fronts(grid_box_to_subrange(box).range) {}
-
-		// TODO this method's naming makes no sense
-		void record_allocation(const GridBox<3>& box, instruction* const instr) {
-			// TODO we want these dependencies only for newly allocated subregions, not the entire thing
-			access_fronts.update_region(box, access_front{{instr}, access_front::write});
-		}
+		explicit buffer_memory_per_allocation_data(const allocation_id aid, const GridBox<3>& allocated_box, const range<3>& buffer_range)
+		    : aid(aid), box(allocated_box), last_writers(buffer_range), access_fronts(buffer_range) {}
 
 		void record_read(const GridRegion<3>& region, instruction* const instr) {
 			for(auto& [box, record] : access_fronts.get_region_values(region)) {
