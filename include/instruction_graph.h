@@ -128,6 +128,7 @@ class copy_instruction final : public instruction {
 struct reads_writes {
 	GridRegion<3> reads;
 	GridRegion<3> writes;
+	GridRegion<3> invalidations;
 	contiguous_box_set contiguous_boxes;
 
 	bool empty() const { return reads.empty() && writes.empty(); }

@@ -93,7 +93,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 			const auto full_copy_box = GridBox<3>::intersect(dest.box, source.box);
 			GridRegion<3> live_copy_region;
 			for(const auto& [copy_box, location] : buffer.newest_data_location.get_region_values(full_copy_box)) {
-				live_copy_region = GridRegion<3>::merge(live_copy_region, copy_box);
+				if(location.test(mid)) { live_copy_region = GridRegion<3>::merge(live_copy_region, copy_box); }
 			}
 
 			live_copy_region.scanByBoxes([&](const auto& copy_box) {
@@ -435,6 +435,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	}
 
+	std::unordered_map<std::pair<buffer_id, memory_id>, GridRegion<3>, utils::pair_hash> invalidations;
 	const auto& bam = tsk.get_buffer_access_map();
 	for(const auto bid : bam.get_accessed_buffers()) {
 		for(auto& insn : cmd_instrs) {
@@ -443,6 +444,10 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
 				if(access::mode_traits::is_consumer(mode)) { rw.reads = GridRegion<3>::merge(rw.reads, req); }
 				if(access::mode_traits::is_producer(mode)) { rw.writes = GridRegion<3>::merge(rw.writes, req); }
+				if(!access::mode_traits::is_consumer(mode)) {
+					auto& region = invalidations[{bid, insn.mid}]; // allow default-insert
+					region = GridRegion<3>::merge(region, req);
+				}
 			}
 			rw.contiguous_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
 			if(!rw.empty()) { insn.rw_map.emplace(bid, std::move(rw)); }
@@ -453,6 +458,16 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		assert(cmd_instrs.size() == 1); // split instructions for host tasks with side effects would race
 		assert(cmd_instrs[0].mid == host_memory_id);
 		cmd_instrs[0].se_map = tsk.get_side_effect_map();
+	}
+
+	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
+	// read-write access conflicts, TODO)
+	for(auto& [bid_mid, region] : invalidations) {
+		const auto& [bid, mid] = bid_mid;
+		auto& buffer = m_buffers.at(bid);
+		for(auto& [box, location] : buffer.newest_data_location.get_region_values(region)) {
+			buffer.newest_data_location.update_region(box, data_location(location).reset(mid));
+		}
 	}
 
 	// 2) allocate memory
@@ -635,9 +650,9 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); }, //
 	    [&](const push_command& pcmd) { compile_push_command(pcmd); },
 	    [&](const await_push_command& apcmd) {
-		    // We do not generate instructions for await-push commands immediately upon receiving them; instead, we buffer them and generate recv-instructions
-		    // as soon as data is to be read by another instruction. This way, we can split the recv instructions and avoid unnecessary synchronization points
-		    // between chunks that can otherwise profit from a transfer-compute overlap.
+		    // We do not generate instructions for await-push commands immediately upon receiving them; instead, we buffer them and generate
+		    // recv-instructions as soon as data is to be read by another instruction. This way, we can split the recv instructions and avoid
+		    // unnecessary synchronization points between chunks that can otherwise profit from a transfer-compute overlap.
 		    auto& buffer = m_buffers.at(apcmd.get_bid());
 		    auto region = apcmd.get_region();
 

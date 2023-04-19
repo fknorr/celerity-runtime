@@ -248,6 +248,14 @@ TEST_CASE("graph with only writes", "[instruction graph]") {
 	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
 }
 
+TEST_CASE("resize and overwrite", "[instruction graph]") {
+	idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf1 = ictx.create_buffer(range<1>(256));
+	ictx.device_compute<class UKN(writer)>(range<1>(1)).discard_write(buf1, acc::fixed<1>({0, 128})).submit();
+	ictx.device_compute<class UKN(writer)>(range<1>(1)).discard_write(buf1, acc::fixed<1>({64, 196})).submit();
+	// TODO assert that we do not copy the overwritten buffer portion
+}
+
 TEST_CASE("communication-free dataflow", "[instruction graph]") {
 	idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
