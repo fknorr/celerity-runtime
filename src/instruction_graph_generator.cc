@@ -63,12 +63,18 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		}
 	}
 
-	// TODO region-merge adjacent boxes that need to be allocated
+	auto new_allocations = std::move(contiguous_after_reallocation).into_vector();
+	const auto last_new_allocation = std::remove_if(new_allocations.begin(), new_allocations.end(),
+	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
+	new_allocations.erase(last_new_allocation, new_allocations.end());
+
+	// region-merge adjacent boxes that need to be allocated (usually for oversubscriptions). This should not introduce problematic synchronization points since
+	// allocations usually execute way ahead of time
+	allscale::api::user::data::detail::box_fuser<3>().apply(new_allocations);
+
 	// TODO don't copy data that will be overwritten (have an additional GridRegion<3> to_be_overwritten parameter)
 
-	for(const auto& dest_box : contiguous_after_reallocation) {
-		if(std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == dest_box; })) continue;
-
+	for(const auto& dest_box : new_allocations) {
 		auto& dest = memory.allocations.emplace_back(m_next_aid++, dest_box, buffer.range);
 		auto& alloc_instr = create<alloc_instruction>(dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
 		add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
@@ -97,8 +103,11 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 				const auto [dest_offset, dest_range] = grid_box_to_subrange(dest_box);
 				const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, dest.aid, dest_range,
-				    copy_offset - dest_offset, copy_range, buffer.elem_size);
+				// TODO to avoid introducing a synchronization point on oversubscription, split into multiple copies if that will allow unimpeded
+				// oversubscribed-producer to oversubscribed-consumer data flow.
+
+				const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, source.aid, source_range, copy_offset - source_offset, mid, dest.aid,
+				    dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
@@ -184,7 +193,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 			}
 			for(auto& [trid, tr_region] : transfer_regions) {
 				for(auto& alloc : memory.allocations) {
-					tr_region.scanByBoxes([&, trid = trid, bid = bid](const GridBox<3>& tr_box) {
+					tr_region.scanByBoxes([&, trid = trid](const GridBox<3>& tr_box) {
 						const auto recv_box = GridBox<3>::intersect(alloc.box, tr_box);
 						if(recv_box.empty()) return;
 
@@ -284,8 +293,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					const auto [dest_offset, dest_range] = grid_box_to_subrange(dest.box);
 					const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 
-					const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, dest.aid, dest_range,
-					    copy_offset - dest_offset, copy_range, buffer.elem_size);
+					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
+					    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
 						assert(last_writer_instr != nullptr);
@@ -309,7 +318,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 }
 
 
-std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_subrange(const buffer_id bid, const GridBox<3>& box, const allocation_id out_aid) {
+std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_subrange(
+    const buffer_id bid, const GridBox<3>& box, const memory_id out_mid, const allocation_id out_aid) {
 	auto& buffer = m_buffers.at(bid);
 
 	const auto box_sources = buffer.newest_data_location.get_region_values(box);
@@ -357,8 +367,8 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				const auto [source_offset, source_range] = grid_box_to_subrange(source.box);
 				const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 				const auto [dest_offset, dest_range] = grid_box_to_subrange(box);
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, out_aid, dest_range,
-				    dest_offset - source_offset, copy_range, buffer.elem_size);
+				const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset, out_mid,
+				    out_aid, dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
 
 				// TODO copy-pasta
 				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
@@ -490,7 +500,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			const auto allocation_it = std::find_if(
 			    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
 			assert(allocation_it != allocations.end());
-			const auto &alloc = *allocation_it;
+			const auto& alloc = *allocation_it;
 			const auto [access_offset, access_range] = grid_box_to_subrange(accessed_box);
 			const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
 			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset};
@@ -506,7 +516,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			instr.instruction = &create<host_kernel_instruction>(ecmd.get_cid(), instr.execution_sr, std::move(allocation_map));
 		}
 	}
-
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
 	// TODO this will not work correctly for oversubscription
@@ -605,7 +614,7 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			const auto alloc_instr = &create<alloc_instruction>(m_next_aid++, host_memory_id, bytes, buffer.elem_align);
 			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
-			const auto copy_instrs = linearize_buffer_subrange(bid, box, alloc_instr->get_allocation_id());
+			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, alloc_instr->get_allocation_id());
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 			}

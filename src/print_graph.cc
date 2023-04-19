@@ -366,12 +366,14 @@ namespace detail {
 				    print_node(finstr, "<b>free</b><br/>A{}", finstr.get_allocation_id());
 			    },
 			    [&](const copy_instruction& cinstr) {
-				    print_node(cinstr, "{}D <b>copy</b><br/>from A{} ([{},{},{}]) +[{},{},{}]<br/>to A{} ([{},{},{}]) +[{},{},{}]<br/>[{},{},{}]x{} bytes",
-				        cinstr.get_dimensions(), cinstr.get_source(), cinstr.get_source_range()[0], cinstr.get_source_range()[1], cinstr.get_source_range()[2],
-				        cinstr.get_offset_in_source()[0], cinstr.get_offset_in_source()[1], cinstr.get_offset_in_source()[2], cinstr.get_dest(),
-				        cinstr.get_dest_range()[0], cinstr.get_dest_range()[1], cinstr.get_dest_range()[2], cinstr.get_offset_in_dest()[0],
-				        cinstr.get_offset_in_dest()[1], cinstr.get_offset_in_dest()[2], cinstr.get_copy_range()[0], cinstr.get_copy_range()[1],
-				        cinstr.get_copy_range()[2], cinstr.get_element_size());
+				    print_node(cinstr,
+				        "{}D <b>copy</b><br/>from M{}.A{} ([{},{},{}]) +[{},{},{}]<br/>to M{}.A{} ([{},{},{}]) +[{},{},{}]<br/>[{},{},{}]x{} bytes",
+				        cinstr.get_dimensions(), cinstr.get_source_memory(), cinstr.get_source_allocation(), cinstr.get_source_range()[0],
+				        cinstr.get_source_range()[1], cinstr.get_source_range()[2], cinstr.get_offset_in_source()[0], cinstr.get_offset_in_source()[1],
+				        cinstr.get_offset_in_source()[2], cinstr.get_dest_memory(), cinstr.get_dest_allocation(), cinstr.get_dest_range()[0],
+				        cinstr.get_dest_range()[1], cinstr.get_dest_range()[2], cinstr.get_offset_in_dest()[0], cinstr.get_offset_in_dest()[1],
+				        cinstr.get_offset_in_dest()[2], cinstr.get_copy_range()[0], cinstr.get_copy_range()[1], cinstr.get_copy_range()[2],
+				        cinstr.get_element_size());
 			    },
 			    [&](const kernel_instruction& kinstr) {
 				    begin_node(kinstr);
@@ -381,7 +383,7 @@ namespace detail {
 				    }
 				    fmt::format_to(back, " {}", kinstr.get_execution_range());
 
-					// TODO streamline the "debug info retrieval" process
+				    // TODO streamline the "debug info retrieval" process
 				    const auto& amap = kinstr.get_allocation_map();
 				    const auto cid = kinstr.get_command_id();
 				    const auto cmd = cid.has_value() && cdag.has(*cid) ? cdag.get(*cid) : nullptr;
