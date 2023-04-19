@@ -126,7 +126,10 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 			}
 		}
 	}
-	// TODO garbage-collect allocations that are both stale and not written to?
+
+	// TODO garbage-collect allocations that are both stale and not written to? We cannot re-fetch buffer subranges from their original producer without some
+	// sort of inter-node pull semantics if the GC turned out to be a misprediction, but we can swap allocations to the host when we run out of device memory.
+	// Basically we would annotate each allocation with an last-used value to implement LRU semantics.
 
 	const auto end_retain_after_allocation = std::remove_if(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) {
 		return std::any_of(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const auto aid) { return alloc.aid == aid; });
@@ -168,7 +171,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 	// First, see if there are pending await-pushes for any of the unsatisfied read regions.
 	for(auto& [mid, disjoint_regions] : unsatisfied_reads) {
 		auto& buffer = m_buffers.at(bid);
-		auto &memory = buffer.memories[mid];
+		auto& memory = buffer.memories[mid];
 
 		for(auto& region : disjoint_regions) {
 			// merge regions per transfer id to generate at most one instruction per host allocation and pending await-push command
@@ -478,14 +481,29 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	}
 
 	for(auto& instr : cmd_instrs) {
+		access_allocation_map allocation_map(bam.get_num_accesses());
+
+		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
+			const auto [bid, mode] = bam.get_nth_access(i);
+			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.execution_sr, tsk.get_global_size());
+			const auto& allocations = m_buffers.at(bid).memories[instr.mid].allocations;
+			const auto allocation_it = std::find_if(
+			    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
+			assert(allocation_it != allocations.end());
+			const auto &alloc = *allocation_it;
+			const auto [access_offset, access_range] = grid_box_to_subrange(accessed_box);
+			const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
+			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset};
+		}
+
 		if(tsk.get_execution_target() == execution_target::device) {
 			assert(instr.execution_sr.range.size() > 0);
 			assert(instr.mid != host_memory_id);
-			instr.instruction = &create<device_kernel_instruction>(instr.did, ecmd.get_cid(), instr.execution_sr, instr.rw_map);
+			instr.instruction = &create<device_kernel_instruction>(instr.did, ecmd.get_cid(), instr.execution_sr, std::move(allocation_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.mid == host_memory_id);
-			instr.instruction = &create<host_kernel_instruction>(ecmd.get_cid(), instr.execution_sr, instr.rw_map, instr.se_map, tsk.get_collective_group_id());
+			instr.instruction = &create<host_kernel_instruction>(ecmd.get_cid(), instr.execution_sr, std::move(allocation_map));
 		}
 	}
 
@@ -585,6 +603,8 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 
 			// this allocation is not associated with a buffer (and thus not tracked in m_buffers), so we add all dependencies immediately
 			const auto alloc_instr = &create<alloc_instruction>(m_next_aid++, host_memory_id, bytes, buffer.elem_align);
+			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+
 			const auto copy_instrs = linearize_buffer_subrange(bid, box, alloc_instr->get_allocation_id());
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep, dependency_origin::dataflow);

@@ -355,30 +355,6 @@ namespace detail {
 			end_node();
 		};
 
-		const auto print_buffer_read_write_map = [&](const buffer_read_write_map& rw_map) {
-			for(const auto& [bid, rw] : rw_map) {
-				if(const auto read_only = GridRegion<3>::difference(rw.reads, rw.writes); !read_only.empty()) {
-					fmt::format_to(back, "<br/><i>read</i> B{} {}", bid, read_only);
-				}
-			}
-			for(const auto& [bid, rw] : rw_map) {
-				if(const auto read_write = GridRegion<3>::intersect(rw.reads, rw.writes); !read_write.empty()) {
-					fmt::format_to(back, "<br/><i>read-write</i> B{} {}", bid, read_write);
-				}
-			}
-			for(const auto& [bid, rw] : rw_map) {
-				if(const auto write_only = GridRegion<3>::difference(rw.writes, rw.reads); !write_only.empty()) {
-					fmt::format_to(back, "<br/><i>write</i> B{} {}", bid, write_only);
-				}
-			}
-		};
-
-		const auto print_side_effect_map = [&](const side_effect_map& se_map) {
-			for(const auto& [hoid, order] : se_map) {
-				fmt::format_to(back, "<br/><i>affect</i> H{}", hoid);
-			}
-		};
-
 		idag.for_each([&](const instruction& instr) {
 			utils::match(
 			    instr,
@@ -397,18 +373,32 @@ namespace detail {
 				        cinstr.get_offset_in_dest()[1], cinstr.get_offset_in_dest()[2], cinstr.get_copy_range()[0], cinstr.get_copy_range()[1],
 				        cinstr.get_copy_range()[2], cinstr.get_element_size());
 			    },
-			    [&](const device_kernel_instruction& dkinstr) {
-				    begin_node(dkinstr);
-				    fmt::format_to(back, "<b>kernel</b> on D{} {}", dkinstr.get_device_id(), dkinstr.get_execution_range());
-				    print_buffer_read_write_map(dkinstr.get_buffer_read_write_map());
-				    end_node();
-			    },
-			    [&](const host_kernel_instruction& hkinstr) {
-				    begin_node(hkinstr);
-				    fmt::format_to(back, "<b>host kernel</b> {}", hkinstr.get_execution_range());
-				    if(hkinstr.get_collective_group_id()) { fmt::format_to(back, " (collective CG{})", hkinstr.get_collective_group_id()); }
-				    print_buffer_read_write_map(hkinstr.get_buffer_read_write_map());
-				    print_side_effect_map(hkinstr.get_side_effect_map());
+			    [&](const kernel_instruction& kinstr) {
+				    begin_node(kinstr);
+				    dot += "<b>kernel</b>";
+				    if(const auto dkinstr = dynamic_cast<const device_kernel_instruction*>(&kinstr)) {
+					    fmt::format_to(back, " on D{}", dkinstr->get_device_id());
+				    }
+				    fmt::format_to(back, " {}", kinstr.get_execution_range());
+
+					// TODO streamline the "debug info retrieval" process
+				    const auto& amap = kinstr.get_allocation_map();
+				    const auto cid = kinstr.get_command_id();
+				    const auto cmd = cid.has_value() && cdag.has(*cid) ? cdag.get(*cid) : nullptr;
+				    const auto tsk = cmd != nullptr && isa<task_command>(cmd) ? tm.find_task(static_cast<const task_command*>(cmd)->get_tid()) : nullptr;
+				    const auto cgtsk = dynamic_cast<const command_group_task*>(tsk);
+				    for(size_t i = 0; i < amap.size(); ++i) {
+					    dot += "<br/>";
+					    if(cgtsk) {
+						    const auto& bam = cgtsk->get_buffer_access_map();
+						    const auto [bid, mode] = bam.get_nth_access(i);
+						    const auto accessed_box =
+						        bam.get_requirements_for_nth_access(i, cgtsk->get_dimensions(), kinstr.get_execution_range(), cgtsk->get_global_size());
+						    fmt::format_to(back, "<i>{}</i> B{} {} via ", detail::access::mode_traits::name(mode), bid, accessed_box);
+					    }
+					    fmt::format_to(back, "A{} ([{},{},{}]) +[{},{},{}]", amap[i].allocation, amap[i].allocation_range[0], amap[i].allocation_range[1],
+					        amap[i].allocation_range[2], amap[i].access_offset[0], amap[i].access_offset[1], amap[i].access_offset[2]);
+				    }
 				    end_node();
 			    },
 			    [&](const send_instruction& sinstr) {
@@ -416,10 +406,11 @@ namespace detail {
 				        sinstr.get_size_bytes());
 			    },
 			    [&](const recv_instruction& rinstr) {
-				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B? {}<br/>to A{} {}D +[{},{},{}], [{},{},{}]x{} bytes", rinstr.get_transfer_id(),
-				        subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()), rinstr.get_allocation_id(), rinstr.get_dimensions(),
+				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B? {}<br/>to A{} ([{},{},{}]) +[{},{},{}], {}D [{},{},{}]x{} bytes",
+				        rinstr.get_transfer_id(), subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()), rinstr.get_allocation_id(),
+				        rinstr.get_allocation_range()[0], rinstr.get_allocation_range()[1], rinstr.get_allocation_range()[2],
 				        rinstr.get_offset_in_allocation()[0], rinstr.get_offset_in_allocation()[1], rinstr.get_offset_in_allocation()[2],
-				        rinstr.get_recv_range()[0], rinstr.get_recv_range()[1], rinstr.get_recv_range()[2], rinstr.get_element_size());
+				        rinstr.get_dimensions(), rinstr.get_recv_range()[0], rinstr.get_recv_range()[1], rinstr.get_recv_range()[2], rinstr.get_element_size());
 			    },
 			    [&](const horizon_instruction& hinstr) { //
 				    print_node(hinstr, "<b>horizon</b>");

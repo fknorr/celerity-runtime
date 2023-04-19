@@ -288,7 +288,6 @@ TEST_CASE("large graph", "[instruction graph]") {
 	ictx.device_compute<class UKN(consumer)>(test_range).read(buf2, acc::all()).submit();
 }
 
-
 TEST_CASE("oversubscribe", "[instruction-graph]") {
 	idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 2 /* devices */);
 

@@ -128,28 +128,38 @@ struct reads_writes {
 	bool empty() const { return reads.empty() && writes.empty(); }
 };
 
-// TODO this should eventually supersede buffer_access_map (we don't need per-access-mode granularity anywhere)
+struct access_allocation {
+	allocation_id allocation;
+	range<3> allocation_range;
+	id<3> access_offset;
+};
+
+using access_allocation_map = std::vector<access_allocation>;
+
+// TODO maybe overhaul buffer_access_map to provide this functionality?
 using buffer_read_write_map = std::unordered_map<buffer_id, reads_writes>;
 
 class kernel_instruction : public instruction {
   public:
-	explicit kernel_instruction(const instruction_id iid, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map)
-	    : instruction(iid, cid), m_execution_range(execution_range), m_rw_map(std::move(rw_map)) {}
+	explicit kernel_instruction(const instruction_id iid, const command_id cid, const subrange<3>& execution_range, access_allocation_map allocation_map)
+	    : instruction(iid, cid), m_execution_range(execution_range), m_allocation_map(std::move(allocation_map)) {}
 
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
 
-	const buffer_read_write_map& get_buffer_read_write_map() const { return m_rw_map; }
+	const access_allocation_map& get_allocation_map() const { return m_allocation_map; }
 
   private:
 	subrange<3> m_execution_range;
-	buffer_read_write_map m_rw_map;
+	access_allocation_map m_allocation_map;
 };
 
+// TODO is the distinction between "device kernel" and "host kernel" optimal? "SYCL kernel", "CUDA kernel", "host kernel" might be necessary to decide
+// which type of dependency edge (events, host continuations, streams) to insert between them
 class device_kernel_instruction final : public kernel_instruction {
   public:
 	explicit device_kernel_instruction(
-	    const instruction_id iid, const device_id did, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map)
-	    : kernel_instruction(iid, cid, execution_range, std::move(rw_map)), m_device_id(did) {}
+	    const instruction_id iid, const device_id did, const command_id cid, const subrange<3>& execution_range, access_allocation_map allocation_map)
+	    : kernel_instruction(iid, cid, execution_range, std::move(allocation_map)), m_device_id(did) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
@@ -161,19 +171,9 @@ class device_kernel_instruction final : public kernel_instruction {
 
 class host_kernel_instruction final : public kernel_instruction {
   public:
-	explicit host_kernel_instruction(const instruction_id iid, const command_id cid, const subrange<3>& execution_range, buffer_read_write_map rw_map,
-	    side_effect_map se_map, collective_group_id cgid)
-	    : kernel_instruction(iid, cid, execution_range, std::move(rw_map)), m_se_map(std::move(se_map)), m_cgid(cgid) {}
+	using kernel_instruction::kernel_instruction;
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-
-	const side_effect_map& get_side_effect_map() const { return m_se_map; }
-
-	collective_group_id get_collective_group_id() const { return m_cgid; }
-
-  private:
-	side_effect_map m_se_map;
-	collective_group_id m_cgid;
 };
 
 class send_instruction final : public instruction {
@@ -198,8 +198,8 @@ class send_instruction final : public instruction {
 class recv_instruction final : public instruction {
   public:
 	// We don't make the effort of tracking the command ids of (pending) await-pushes
-	explicit recv_instruction(const instruction_id iid, const transfer_id trid, const allocation_id aid, const int dims,
-	    const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer, const range<3>& recv_range, const size_t elem_size)
+	explicit recv_instruction(const instruction_id iid, const transfer_id trid, const allocation_id aid, const int dims, const range<3>& alloc_range,
+	    const id<3>& offset_in_alloc, const id<3>& offset_in_buffer, const range<3>& recv_range, const size_t elem_size)
 	    : instruction(iid), m_trid(trid), m_aid(aid), m_dims(dims), m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc),
 	      m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
 
