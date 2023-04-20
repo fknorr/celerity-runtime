@@ -19,7 +19,6 @@ namespace detail {
 		case dependency_origin::collective_group_serialization: return "color=blue";
 		case dependency_origin::execution_front: return "color=orange";
 		case dependency_origin::last_epoch: return "color=orchid";
-		case dependency_origin::transitive_dataflow: return "color=darkgray";
 		default: return "";
 		}
 	}
@@ -359,11 +358,11 @@ namespace detail {
 			utils::match(
 			    instr,
 			    [&](const alloc_instruction& ainstr) {
-				    print_node(ainstr, "<b>alloc</b><br/> A{} on M{}: {}%{} bytes", ainstr.get_allocation_id(), ainstr.get_memory_id(), ainstr.get_size(),
+				    print_node(ainstr, "<b>alloc</b> A{} on M{}<br/>{}%{} bytes", ainstr.get_allocation_id(), ainstr.get_memory_id(), ainstr.get_size(),
 				        ainstr.get_alignment());
 			    },
 			    [&](const free_instruction& finstr) { //
-				    print_node(finstr, "<b>free</b><br/>A{}", finstr.get_allocation_id());
+				    print_node(finstr, "<b>free</b> A{}", finstr.get_allocation_id());
 			    },
 			    [&](const copy_instruction& cinstr) {
 				    print_node(cinstr,
@@ -404,7 +403,7 @@ namespace detail {
 				    end_node();
 			    },
 			    [&](const send_instruction& sinstr) {
-				    print_node(sinstr, "<b>send</b> to N{} tag {}<br/>A{}, {} bytes", sinstr.get_dest_node_id(), sinstr.get_tag(), sinstr.get_allocation_id(),
+				    print_node(sinstr, "<b>send</b> to N{} tag {}<br/>A{}, {} bytes", sinstr.get_dest_node_id(), sinstr.get_tag(), sinstr.get_source_allocation(),
 				        sinstr.get_size_bytes());
 			    },
 			    [&](const recv_instruction& rinstr) {

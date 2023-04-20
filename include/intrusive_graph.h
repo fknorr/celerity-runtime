@@ -21,7 +21,7 @@ namespace detail {
 		collective_group_serialization, // all nodes must execute kernels within the same collective group in the same order
 		execution_front,                // horizons and epochs are temporally ordered after all preceding tasks or commands on the same node
 		last_epoch,                     // nodes without other true-dependencies require an edge to the last epoch for temporal ordering
-		transitive_dataflow,
+		instruction,
 	};
 
 	// TODO: Move to utility header..?

@@ -111,13 +111,13 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
-					add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+					add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
 				}
 				source.record_read(copy_box, copy_instr);
 
 				for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
 					for(const auto dep_instr : front.front) {
-						add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+						add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
 					}
 				}
 				dest.record_write(copy_box, copy_instr);
@@ -131,7 +131,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		const auto free_instr = &create<free_instruction>(allocation.aid);
 		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
-				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
 			}
 		}
 	}
@@ -206,7 +206,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
 							for(const auto dep_instr : front.front) {
-								add_dependency(*recv_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+								add_dependency(*recv_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
 							}
 						}
 						add_dependency(*recv_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
@@ -308,13 +308,13 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
 						assert(last_writer_instr != nullptr);
-						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::instruction);
 					}
 					source.record_read(copy.region, copy_instr);
 
 					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
 						for(const auto dep_instr : front.front) {
-							add_dependency(*copy_instr, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+							add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
 						}
 					}
 					dest.record_write(copy.region, copy_instr);
@@ -383,7 +383,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				// TODO copy-pasta
 				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
 					assert(last_writer_instr != nullptr);
-					add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+					add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::instruction);
 				}
 				source.record_read(copy_box, copy_instr);
 
@@ -554,7 +554,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto reads_from_alloc = GridRegion<3>::intersect(rw.reads, alloc.box);
 				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(reads_from_alloc)) {
 					assert(last_writer_instr != nullptr);
-					add_dependency(*instr.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+					add_dependency(*instr.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::instruction);
 				}
 			}
 		}
@@ -565,7 +565,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto writes_to_alloc = GridRegion<3>::intersect(rw.writes, alloc.box);
 				for(const auto& [_, front] : alloc.access_fronts.get_region_values(writes_to_alloc)) {
 					for(const auto dep_instr : front.front) {
-						add_dependency(*instr.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
+						add_dependency(*instr.instruction, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
 					}
 				}
 			}
@@ -573,7 +573,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		for(const auto& [hoid, order] : instr.se_map) {
 			assert(instr.mid == host_memory_id);
 			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
-				add_dependency(*instr.instruction, *last_side_effect, dependency_kind::true_dep, dependency_origin::dataflow);
+				add_dependency(*instr.instruction, *last_side_effect, dependency_kind::true_dep, dependency_origin::instruction);
 			}
 		}
 		if(tsk.get_collective_group_id() != collective_group_id(0) /* 0 means "no collective group association" */) {
@@ -647,15 +647,15 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 
 			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, alloc_instr->get_allocation_id());
 			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep, dependency_origin::instruction);
 			}
 			const int tag = 42; // TODO send tags and pilot messages
 			const auto send_instr = &create<send_instruction>(pcmd.get_cid(), pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
 			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep, dependency_origin::instruction);
 			}
 			const auto free_instr = &create<free_instruction>(alloc_instr->get_allocation_id());
-			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep, dependency_origin::dataflow);
+			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep, dependency_origin::instruction);
 		});
 	}
 }
