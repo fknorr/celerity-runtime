@@ -215,10 +215,17 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						buffer.original_writers.update_region(recv_box, recv_instr);
 					});
 				}
-				// TODO assert that the entire region has been consumed (... eventually?)
+				// TODO assert that the entire region is consumed (... eventually?)
 
 				// TODO this always transfers to a single memory, which is suboptimal. Find a way to implement "device broadcast" from a single receive buffer.
 				// This will probably require explicit handling of the receive buffer inside the IDAG.
+				//
+				// How to realize this in the presence of CUDA-aware MPI? We want to have RDMA MPI_Recv to device buffers as the happy path, and a copy from
+				// receive buffer as fallback - but only in the absence of a broadcast condition.
+				// 	 - annotate recv_instructions with the desired allocation to RDMA to (if any)
+				//   - have a conditional copy_instruction following it, in case the RDMA fails (or should the buffer_transfer_manager dispatch that copy?)
+				//   - in case of a RDMA failure, or when we want to broadcast, we need a release_transfer_instruction to hand the transfer_allocation_id back
+				// 	   to the buffer_transfer_manager (again kinda conditional on whether we did an RDMA receive or not)
 				buffer.newest_data_location.update_region(accepted_transfer_region, data_location().set(mid));
 				buffer.pending_await_pushes.update_region(accepted_transfer_region, transfer_id());
 

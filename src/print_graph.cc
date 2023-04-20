@@ -403,7 +403,7 @@ namespace detail {
 				    end_node();
 			    },
 			    [&](const send_instruction& sinstr) {
-				    print_node(sinstr, "<b>send</b> to N{} tag {}<br/>A{}, {} bytes", sinstr.get_dest_node_id(), sinstr.get_tag(), sinstr.get_source_allocation(),
+				    print_node(sinstr, "<b>send</b> to N{} tag {}<br/>A{}, {} bytes", sinstr.get_dest_node_id(), sinstr.get_tag(), sinstr.get_allocation_id(),
 				        sinstr.get_size_bytes());
 			    },
 			    [&](const recv_instruction& rinstr) {
