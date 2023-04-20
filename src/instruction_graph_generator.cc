@@ -182,25 +182,26 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 		auto& buffer = m_buffers.at(bid);
 		auto& memory = buffer.memories[mid];
 
-		for(auto& region : disjoint_regions) {
+		for(auto& unsatisfied_region : disjoint_regions) {
 			// merge regions per transfer id to generate at most one instruction per host allocation and pending await-push command
 			std::unordered_map<transfer_id, GridRegion<3>> transfer_regions;
-			for(auto& [box, trid] : buffer.pending_await_pushes.get_region_values(region)) {
-				if(trid != transfer_id()) {
-					auto& tr_region = transfer_regions[trid]; // allow default-insert
-					tr_region = GridRegion<3>::merge(tr_region, box);
-				}
+			for(auto& [box, trid] : buffer.pending_await_pushes.get_region_values(unsatisfied_region)) {
+				if(trid == transfer_id()) continue;
+
+				auto& tr_region = transfer_regions[trid]; // allow default-insert
+				tr_region = GridRegion<3>::merge(tr_region, box);
 			}
-			for(auto& [trid, tr_region] : transfer_regions) {
+			for(auto& [trid, accepted_transfer_region] : transfer_regions) {
 				for(auto& alloc : memory.allocations) {
-					tr_region.scanByBoxes([&, trid = trid](const GridBox<3>& tr_box) {
+					const auto accepted_alloc_region = GridRegion<3>::intersect(alloc.box, accepted_transfer_region);
+					accepted_alloc_region.scanByBoxes([&, mid = mid, trid = trid](const GridBox<3>& tr_box) {
 						const auto recv_box = GridBox<3>::intersect(alloc.box, tr_box);
 						if(recv_box.empty()) return;
 
 						const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
 						const auto [recv_offset, recv_range] = grid_box_to_subrange(recv_box);
 						const auto recv_instr = &create<recv_instruction>(
-						    trid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
+						    trid, mid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
 
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
@@ -214,12 +215,19 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						buffer.original_writers.update_region(recv_box, recv_instr);
 					});
 				}
-				// TODO assert that the entire region has been consumed
+				// TODO assert that the entire region has been consumed (... eventually?)
 
-				buffer.newest_data_location.update_region(tr_region, data_location().set(host_memory_id));
-				buffer.pending_await_pushes.update_region(tr_region, transfer_id());
+				// TODO this always transfers to a single memory, which is suboptimal. Find a way to implement "device broadcast" from a single receive buffer.
+				// This will probably require explicit handling of the receive buffer inside the IDAG.
+				buffer.newest_data_location.update_region(accepted_transfer_region, data_location().set(mid));
+				buffer.pending_await_pushes.update_region(accepted_transfer_region, transfer_id());
+
+				unsatisfied_region = GridRegion<3>::difference(unsatisfied_region, accepted_transfer_region);
 			}
 		}
+
+		// remove regions that are fully satisfied by incoming transfers
+		disjoint_regions.erase(std::remove_if(disjoint_regions.begin(), disjoint_regions.end(), std::mem_fn(&GridRegion<3>::empty)), disjoint_regions.end());
 	}
 
 	struct copy_template {
@@ -230,6 +238,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 	std::vector<copy_template> pending_copies;
 	for(auto& [dest_mid, disjoint_regions] : unsatisfied_reads) {
+		if(disjoint_regions.empty()) continue; // if fully satisfied by incoming transfers
+
 		auto& buffer = m_buffers.at(bid);
 		for(auto& region : disjoint_regions) {
 			const auto region_sources = buffer.newest_data_location.get_region_values(region);
@@ -538,16 +548,22 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
 	for(const auto& instr : cmd_instrs) {
 		for(const auto& [bid, rw] : instr.rw_map) {
-			for(auto& alloc : m_buffers.at(bid).memories[instr.mid].allocations) {
-				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(rw.reads)) {
+			auto& buffer = m_buffers.at(bid);
+			auto& memory = buffer.memories[instr.mid];
+			for(auto& alloc : memory.allocations) {
+				const auto reads_from_alloc = GridRegion<3>::intersect(rw.reads, alloc.box);
+				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(reads_from_alloc)) {
 					assert(last_writer_instr != nullptr);
 					add_dependency(*instr.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::dataflow);
 				}
 			}
 		}
 		for(const auto& [bid, rw] : instr.rw_map) {
-			for(auto& alloc : m_buffers.at(bid).memories[instr.mid].allocations) {
-				for(const auto& [_, front] : alloc.access_fronts.get_region_values(rw.writes)) {
+			auto& buffer = m_buffers.at(bid);
+			auto& memory = buffer.memories[instr.mid];
+			for(auto& alloc : memory.allocations) {
+				const auto writes_to_alloc = GridRegion<3>::intersect(rw.writes, alloc.box);
+				for(const auto& [_, front] : alloc.access_fronts.get_region_values(writes_to_alloc)) {
 					for(const auto dep_instr : front.front) {
 						add_dependency(*instr.instruction, *dep_instr, dependency_kind::anti_dep, dependency_origin::dataflow);
 					}

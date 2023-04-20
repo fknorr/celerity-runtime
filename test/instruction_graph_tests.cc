@@ -304,6 +304,7 @@ TEST_CASE("oversubscribe", "[instruction-graph]") {
 
 	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).hint(hints::oversubscribe(2)).submit();
 	ictx.device_compute<class UKN(consumer)>(test_range).read(buf, acc::all()).hint(hints::oversubscribe(2)).submit();
+	// TODO assert that there are no synchronization points across the two chunks on this device
 }
 
 TEST_CASE("recv split", "[instruction-graph]") {
@@ -329,3 +330,6 @@ TEST_CASE("transitive copy dependencies", "[instruction-graph]") {
 	ictx.device_compute<class UKN(gather)>(test_range).read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
 	ictx.device_compute<class UKN(consumer)>(test_range).read(buf2, reverse_one_to_one).submit();
 }
+
+// TODO a test with impossible requirements (overlapping writes maybe?)
+// TODO an oversubscribed host task with side effects

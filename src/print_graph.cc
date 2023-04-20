@@ -409,7 +409,7 @@ namespace detail {
 			    },
 			    [&](const recv_instruction& rinstr) {
 				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B? {}<br/>to A{} ([{},{},{}]) +[{},{},{}], {}D [{},{},{}]x{} bytes",
-				        rinstr.get_transfer_id(), subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()), rinstr.get_allocation_id(),
+				        rinstr.get_transfer_id(), subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()), rinstr.get_dest_allocation_id(),
 				        rinstr.get_allocation_range()[0], rinstr.get_allocation_range()[1], rinstr.get_allocation_range()[2],
 				        rinstr.get_offset_in_allocation()[0], rinstr.get_offset_in_allocation()[1], rinstr.get_offset_in_allocation()[2],
 				        rinstr.get_dimensions(), rinstr.get_recv_range()[0], rinstr.get_recv_range()[1], rinstr.get_recv_range()[2], rinstr.get_element_size());
