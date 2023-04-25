@@ -70,6 +70,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 	// region-merge adjacent boxes that need to be allocated (usually for oversubscriptions). This should not introduce problematic synchronization points since
 	// allocations usually execute way ahead of time
+	// TODO but it does introduce synchronization between producers on the resize-copies, which we want to avoid. To resolve this, allocate the fused boxes as
+	// before, but use the non-fused boxes as copy destinations.
 	allscale::api::user::data::detail::box_fuser<3>().apply(new_allocations);
 
 	// TODO don't copy data that will be overwritten (have an additional GridRegion<3> to_be_overwritten parameter)

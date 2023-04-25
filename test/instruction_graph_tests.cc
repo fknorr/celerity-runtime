@@ -144,6 +144,11 @@ class idag_test_context {
 		m_cdag = std::make_unique<command_graph>();
 		m_dggen = std::make_unique<distributed_graph_generator>(num_nodes, 1 /* devices per node, TODO */, my_nid, *m_cdag, *m_tm);
 		m_iggen = std::make_unique<instruction_graph_generator>(*m_tm, num_devices_per_node);
+
+		m_tm->NOMERGE_generate_collectives = false; // TODO temporary until we implement collectives
+		m_tm->register_task_callback([this](const task* const tsk) {
+			if(tsk->get_type() == task_type::forward) { compile_commands(m_dggen->build_task(*tsk)); }
+		});
 	}
 
 	~idag_test_context() { maybe_print_graphs(); }
@@ -297,14 +302,14 @@ TEST_CASE("large graph", "[instruction graph]") {
 }
 
 TEST_CASE("oversubscribe", "[instruction-graph]") {
-	idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 2 /* devices */);
+	idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
 
 	const range<1> test_range = {256};
 	auto buf = ictx.create_buffer(test_range);
 
 	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).hint(hints::oversubscribe(2)).submit();
 	ictx.device_compute<class UKN(consumer)>(test_range).read(buf, acc::all()).hint(hints::oversubscribe(2)).submit();
-	// TODO assert that there are no synchronization points across the two chunks on this device
+	// TODO assert that the resize-copy does not introduce a synchronization point between producer chunks on the same device
 }
 
 TEST_CASE("recv split", "[instruction-graph]") {
@@ -330,6 +335,28 @@ TEST_CASE("transitive copy dependencies", "[instruction-graph]") {
 	ictx.device_compute<class UKN(gather)>(test_range).read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
 	ictx.device_compute<class UKN(consumer)>(test_range).read(buf2, reverse_one_to_one).submit();
 }
+
+TEST_CASE("RSim pattern", "[instruction-graph]") {
+	idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 2 /* devices */);
+	size_t width = 1000;
+	size_t n_iters = 3;
+	auto buf = ictx.create_buffer(range<2>(n_iters, width));
+
+	const auto access_up_to_ith_line_all = [&](size_t i) { //
+		return celerity::access::fixed<2>({{0, 0}, {i, width}});
+	};
+	const auto access_ith_line_1to1 = [](size_t i) {
+		return [i](celerity::chunk<2> chnk) { return celerity::subrange<2>({i, chnk.offset[0]}, {1, chnk.range[0]}); };
+	};
+
+	for(size_t i = 0; i < n_iters; ++i) {
+		ictx.device_compute<class UKN(rsim)>(range<2>(width, width))
+		    .read(buf, access_up_to_ith_line_all(i))
+		    .discard_write(buf, access_ith_line_1to1(i))
+		    .submit();
+	}
+}
+
 
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects
