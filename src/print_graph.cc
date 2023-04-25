@@ -332,7 +332,8 @@ namespace detail {
 		return cmd_label;
 	}
 
-	std::string print_instruction_graph(const instruction_graph& idag, const command_graph& cdag, const task_manager& tm) {
+	std::string print_instruction_graph(
+	    const instruction_graph& idag, const std::vector<pilot_message>& pilots, const command_graph& cdag, const task_manager& tm) {
 		std::string dot = "digraph G{label=\"Instruction Graph\";";
 		const auto back = std::back_inserter(dot);
 
@@ -354,6 +355,7 @@ namespace detail {
 			end_node();
 		};
 
+		std::unordered_map<int, instruction_id> send_instructions_by_tag; // for connecting pilot messages to send instructions
 		idag.for_each([&](const instruction& instr) {
 			utils::match(
 			    instr,
@@ -405,6 +407,7 @@ namespace detail {
 			    [&](const send_instruction& sinstr) {
 				    print_node(sinstr, "<b>send</b> to N{} tag {}<br/>A{}, {} bytes", sinstr.get_dest_node_id(), sinstr.get_tag(), sinstr.get_allocation_id(),
 				        sinstr.get_size_bytes());
+				    send_instructions_by_tag.emplace(sinstr.get_tag(), sinstr.get_id());
 			    },
 			    [&](const recv_instruction& rinstr) {
 				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B? {}<br/>to A{} ([{},{},{}]) +[{},{},{}], {}D [{},{},{}]x{} bytes",
@@ -426,6 +429,14 @@ namespace detail {
 				fmt::format_to(back, "I{}->I{}[{}];", dep.node->get_id(), instr.get_id(), dependency_style(dep));
 			}
 		});
+
+		for(const auto& pilot : pilots) {
+			fmt::format_to(back, "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> tag {}<br/>for B{} {}</font>>];",
+			    pilot.tag, pilot.tag, pilot.buffer, pilot.box);
+			if(auto it = send_instructions_by_tag.find(pilot.tag); it != send_instructions_by_tag.end()) {
+				fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.tag, it->second);
+			}
+		}
 
 		dot += "}";
 		return dot;

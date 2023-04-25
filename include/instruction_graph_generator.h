@@ -31,6 +31,8 @@ class instruction_graph_generator {
 
 	const instruction_graph& get_graph() const { return m_idag; }
 
+	const std::vector<pilot_message>& get_pilot_messages() const { return m_pilots; } // TODO these should be flushed to a callback instead of queried
+
   private:
 	static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
 	using data_location = std::bitset<max_memories>;
@@ -158,8 +160,10 @@ class instruction_graph_generator {
 	};
 
 	instruction_graph m_idag;
+	std::vector<pilot_message> m_pilots;
 	instruction_id m_next_iid = 0;
 	allocation_id m_next_aid = 0;
+	int m_next_p2p_tag = 10;
 	const task_manager& m_tm;
 	size_t m_num_devices;
 	instruction* m_last_horizon = nullptr;
@@ -224,6 +228,8 @@ class instruction_graph_generator {
 	void satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, GridRegion<3>>>& reads);
 
 	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const GridBox<3>& box, const memory_id out_mid, const allocation_id out_aid);
+
+	int create_pilot_message(buffer_id bid, const GridBox<3>& box);
 
 	void compile_execution_command(const execution_command& ecmd);
 

@@ -182,6 +182,12 @@ class host_kernel_instruction final : public kernel_instruction {
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 };
 
+struct pilot_message {
+	int tag;
+	buffer_id buffer;
+	GridBox<3> box;
+};
+
 class send_instruction final : public instruction {
   public:
 	explicit send_instruction(const instruction_id iid, const command_id cid, const node_id to_nid, const int tag, const allocation_id aid, const size_t bytes)

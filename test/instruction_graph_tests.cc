@@ -216,7 +216,7 @@ class idag_test_context {
 		if(test_utils::print_graphs) {
 			test_utils::maybe_print_graph(*m_tm);
 			CELERITY_INFO("Command graph:\n\n{}\n", m_cdag->print_graph(m_my_nid, std::numeric_limits<size_t>::max(), *m_tm, nullptr).value());
-			CELERITY_INFO("Instruction graph:\n\n{}\n", print_instruction_graph(m_iggen->get_graph(), *m_cdag, *m_tm));
+			CELERITY_INFO("Instruction graph:\n\n{}\n", print_instruction_graph(m_iggen->get_graph(), m_iggen->get_pilot_messages(), *m_cdag, *m_tm));
 		}
 	}
 };

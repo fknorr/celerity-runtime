@@ -405,6 +405,13 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 }
 
 
+int instruction_graph_generator::create_pilot_message(buffer_id bid, const GridBox<3>& box) {
+	int tag = m_next_p2p_tag++;
+	m_pilots.push_back(pilot_message{tag, bid, box});
+	return tag;
+}
+
+
 // TODO HACK we're just pulling in the splitting logic from distributed_graph_generator here
 std::vector<chunk<3>> split_1d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks);
 std::vector<chunk<3>> split_2d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks);
@@ -658,7 +665,7 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep, dependency_origin::instruction);
 			}
-			const int tag = 42; // TODO send tags and pilot messages
+			const int tag = create_pilot_message(bid, box);
 			const auto send_instr = &create<send_instruction>(pcmd.get_cid(), pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep, dependency_origin::instruction);
