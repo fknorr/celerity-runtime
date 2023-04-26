@@ -7,6 +7,7 @@
 #include "command_graph.h"
 #include "grid.h"
 #include "instruction_graph.h"
+#include "spdlog/fmt/bundled/core.h"
 #include "task_manager.h"
 
 namespace celerity {
@@ -332,72 +333,113 @@ namespace detail {
 		return cmd_label;
 	}
 
-	std::string print_instruction_graph(
-	    const instruction_graph& idag, const std::vector<pilot_message>& pilots, const command_graph& cdag, const task_manager& tm) {
+	std::string print_instruction_graph(const instruction_graph& idag, const std::vector<pilot_message>& pilots) {
 		std::string dot = "digraph G{label=\"Instruction Graph\";";
 		const auto back = std::back_inserter(dot);
 
-		const auto begin_node = [&](const instruction& insn) {
-			const auto shape = insn.get_command_id().has_value() ? "box" : "ellipse";
-			fmt::format_to(back, "I{0}[shape={1} label=<", insn.get_id(), shape);
-			if(insn.get_command_id().has_value()) {
-				fmt::format_to(back, "<font color=\"#606060\" point-size=\"14\">from {}<br/><br/></font>",
-				    print_command_reference_label(*insn.get_command_id(), cdag, tm));
-			}
-			fmt::format_to(back, "I{0}<br/>", insn.get_id());
+		const auto begin_node = [&](const instruction& instr, const std::string_view& shape) {
+			fmt::format_to(back, "I{}[shape={},label=<", instr.get_id(), shape);
 		};
 
 		const auto end_node = [&] { fmt::format_to(back, ">];"); };
 
-		const auto print_node = [&](const instruction& insn, auto&&... fmt_args) {
-			begin_node(insn);
-			fmt::format_to(back, std::forward<decltype(fmt_args)>(fmt_args)...);
-			end_node();
+		const auto print_buffer_range = [&](const buffer_id bid, const std::string& debug_name, const GridBox<3>& box) {
+			if(debug_name.empty()) {
+				fmt::format_to(back, "B{} {}", bid, box);
+			} else {
+				fmt::format_to(back, "{} (B{}) {}", debug_name /* TODO escape? */, bid, box);
+			}
 		};
+
+		const auto print_buffer_allocation = [&](const buffer_allocation_info& ba) { print_buffer_range(ba.bid, ba.debug_name, ba.box); };
 
 		std::unordered_map<int, instruction_id> send_instructions_by_tag; // for connecting pilot messages to send instructions
 		idag.for_each([&](const instruction& instr) {
 			utils::match(
 			    instr,
 			    [&](const alloc_instruction& ainstr) {
-				    print_node(ainstr, "<b>alloc</b> A{} on M{}<br/>{}%{} bytes", ainstr.get_allocation_id(), ainstr.get_memory_id(), ainstr.get_size(),
-				        ainstr.get_alignment());
+				    begin_node(ainstr, "ellipse");
+				    fmt::format_to(back, "I{}<br/>", ainstr.get_id());
+				    const auto debug_info = ainstr.get_debug_info();
+				    if(debug_info) {
+					    switch(debug_info->origin) {
+					    case alloc_instruction_debug_info::alloc_origin::send: dot += "send "; break;
+					    case alloc_instruction_debug_info::alloc_origin::buffer: dot += "buffer "; break;
+					    }
+				    }
+				    fmt::format_to(back, "<b>alloc</b> A{} on M{}", ainstr.get_allocation_id(), ainstr.get_memory_id());
+				    if(debug_info && debug_info->buffer_allocation) {
+					    dot += "<br/>for ";
+					    print_buffer_allocation(*debug_info->buffer_allocation);
+				    }
+				    fmt::format_to(back, "<br/>{}%{} bytes", ainstr.get_size(), ainstr.get_alignment());
+				    end_node();
 			    },
-			    [&](const free_instruction& finstr) { //
-				    print_node(finstr, "<b>free</b> A{}", finstr.get_allocation_id());
+			    [&](const free_instruction& finstr) {
+				    begin_node(finstr, "ellipse");
+				    fmt::format_to(back, "I{}<br/>", finstr.get_id());
+				    fmt::format_to(back, "<b>free</b> A{}", finstr.get_allocation_id());
+				    if(const auto debug_info = finstr.get_debug_info()) {
+					    fmt::format_to(back, " on M{}", debug_info->mid);
+					    if(debug_info->buffer_allocation) {
+						    dot += "<br/>";
+						    print_buffer_allocation(*debug_info->buffer_allocation);
+					    }
+					    fmt::format_to(back, " <br/>{}%{} bytes", debug_info->size, debug_info->alignment);
+				    }
+				    end_node();
 			    },
 			    [&](const copy_instruction& cinstr) {
-				    print_node(cinstr,
-				        "{}D <b>copy</b><br/>from M{}.A{} ([{},{},{}]) +[{},{},{}]<br/>to M{}.A{} ([{},{},{}]) +[{},{},{}]<br/>[{},{},{}]x{} bytes",
-				        cinstr.get_dimensions(), cinstr.get_source_memory(), cinstr.get_source_allocation(), cinstr.get_source_range()[0],
-				        cinstr.get_source_range()[1], cinstr.get_source_range()[2], cinstr.get_offset_in_source()[0], cinstr.get_offset_in_source()[1],
-				        cinstr.get_offset_in_source()[2], cinstr.get_dest_memory(), cinstr.get_dest_allocation(), cinstr.get_dest_range()[0],
-				        cinstr.get_dest_range()[1], cinstr.get_dest_range()[2], cinstr.get_offset_in_dest()[0], cinstr.get_offset_in_dest()[1],
-				        cinstr.get_offset_in_dest()[2], cinstr.get_copy_range()[0], cinstr.get_copy_range()[1], cinstr.get_copy_range()[2],
-				        cinstr.get_element_size());
+				    begin_node(cinstr, "ellipse");
+				    fmt::format_to(back, "I{}<br/>", cinstr.get_id());
+				    const auto debug_info = cinstr.get_debug_info();
+				    fmt::format_to(back, "{}D ", cinstr.get_dimensions());
+				    if(debug_info) {
+					    switch(debug_info->origin) {
+					    case copy_instruction_debug_info::copy_origin::linearize: dot += "linearizing "; break;
+					    case copy_instruction_debug_info::copy_origin::resize: dot += "resize "; break;
+					    case copy_instruction_debug_info::copy_origin::coherence: dot += "coherence "; break;
+					    }
+				    }
+				    dot += "<b>copy</b>";
+				    if(debug_info) {
+					    dot += "<br/>on ";
+					    print_buffer_range(debug_info->buffer, debug_info->buffer_debug_name, debug_info->box);
+				    }
+				    fmt::format_to(back, "<br/>from M{}.A{} ([{},{},{}]) +[{},{},{}]<br/>to M{}.A{} ([{},{},{}]) +[{},{},{}]<br/>[{},{},{}]x{} bytes",
+				        cinstr.get_source_memory(), cinstr.get_source_allocation(), cinstr.get_source_range()[0], cinstr.get_source_range()[1],
+				        cinstr.get_source_range()[2], cinstr.get_offset_in_source()[0], cinstr.get_offset_in_source()[1], cinstr.get_offset_in_source()[2],
+				        cinstr.get_dest_memory(), cinstr.get_dest_allocation(), cinstr.get_dest_range()[0], cinstr.get_dest_range()[1],
+				        cinstr.get_dest_range()[2], cinstr.get_offset_in_dest()[0], cinstr.get_offset_in_dest()[1], cinstr.get_offset_in_dest()[2],
+				        cinstr.get_copy_range()[0], cinstr.get_copy_range()[1], cinstr.get_copy_range()[2], cinstr.get_element_size());
+				    end_node();
 			    },
 			    [&](const kernel_instruction& kinstr) {
-				    begin_node(kinstr);
-				    dot += "<b>kernel</b>";
+				    begin_node(kinstr, "box,margin=0.1");
+				    fmt::format_to(back, "I{}", kinstr.get_id());
+				    const auto debug_info = kinstr.get_debug_info();
+				    if(debug_info) {
+					    // TODO does not correctly label master-node / collective host tasks
+					    fmt::format_to(back, " ({}-compute T{}, exectuion C{})", isa<device_kernel_instruction>(&kinstr) ? "device" : "host",
+					        debug_info->cg_tid, debug_info->execution_cid);
+				    }
+				    dot += "<br/><b>kernel</b>";
+				    if(debug_info && !debug_info->kernel_debug_name.empty()) {
+					    dot += " ";
+					    dot += debug_info->kernel_debug_name; // TODO escape?
+				    }
 				    if(const auto dkinstr = dynamic_cast<const device_kernel_instruction*>(&kinstr)) {
 					    fmt::format_to(back, " on D{}", dkinstr->get_device_id());
 				    }
 				    fmt::format_to(back, " {}", kinstr.get_execution_range());
 
-				    // TODO streamline the "debug info retrieval" process
 				    const auto& amap = kinstr.get_allocation_map();
-				    const auto cid = kinstr.get_command_id();
-				    const auto cmd = cid.has_value() && cdag.has(*cid) ? cdag.get(*cid) : nullptr;
-				    const auto tsk = cmd != nullptr && isa<task_command>(cmd) ? tm.find_task(static_cast<const task_command*>(cmd)->get_tid()) : nullptr;
-				    const auto cgtsk = dynamic_cast<const command_group_task*>(tsk);
 				    for(size_t i = 0; i < amap.size(); ++i) {
 					    dot += "<br/>";
-					    if(cgtsk) {
-						    const auto& bam = cgtsk->get_buffer_access_map();
-						    const auto [bid, mode] = bam.get_nth_access(i);
-						    const auto accessed_box =
-						        bam.get_requirements_for_nth_access(i, cgtsk->get_dimensions(), kinstr.get_execution_range(), cgtsk->get_global_size());
-						    fmt::format_to(back, "<i>{}</i> B{} {} via ", detail::access::mode_traits::name(mode), bid, accessed_box);
+					    if(debug_info) {
+						    assert(amap.size() == debug_info->allocation_buffer_map.size());
+						    print_buffer_allocation(debug_info->allocation_buffer_map[i]);
+						    dot += " via ";
 					    }
 					    fmt::format_to(back, "A{} ([{},{},{}]) +[{},{},{}]", amap[i].allocation, amap[i].allocation_range[0], amap[i].allocation_range[1],
 					        amap[i].allocation_range[2], amap[i].access_offset[0], amap[i].access_offset[1], amap[i].access_offset[2]);
@@ -405,22 +447,51 @@ namespace detail {
 				    end_node();
 			    },
 			    [&](const send_instruction& sinstr) {
-				    print_node(sinstr, "<b>send</b> to N{} tag {}<br/>A{}, {} bytes", sinstr.get_dest_node_id(), sinstr.get_tag(), sinstr.get_allocation_id(),
-				        sinstr.get_size_bytes());
+				    begin_node(sinstr, "ellipse");
+				    fmt::format_to(back, "I{}", sinstr.get_id());
+				    if(const auto debug_info = sinstr.get_debug_info()) { fmt::format_to(back, " (push C{})", debug_info->push_cid); }
+				    fmt::format_to(back, "<br/><b>send</b> to N{} tag {}", sinstr.get_dest_node_id(), sinstr.get_tag());
+				    if(const auto debug_info = sinstr.get_debug_info()) {
+					    fmt::format_to(back, " (C{})", debug_info->push_cid);
+					    dot += "<br/>";
+					    print_buffer_range(debug_info->buffer, debug_info->buffer_debug_name, debug_info->box);
+				    }
+				    fmt::format_to(back, "<br/>A{}, {} bytes", sinstr.get_allocation_id(), sinstr.get_size_bytes());
 				    send_instructions_by_tag.emplace(sinstr.get_tag(), sinstr.get_id());
+				    end_node();
 			    },
 			    [&](const recv_instruction& rinstr) {
-				    print_node(rinstr, "<b>recv</b> transfer {}<br/>B? {}<br/>to A{} ([{},{},{}]) +[{},{},{}], {}D [{},{},{}]x{} bytes",
-				        rinstr.get_transfer_id(), subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()), rinstr.get_dest_allocation_id(),
+				    begin_node(rinstr, "ellipse");
+				    fmt::format_to(back, "I{}", rinstr.get_id());
+				    const auto debug_info = rinstr.get_debug_info();
+				    if(debug_info) { fmt::format_to(back, " (await-push C{})", debug_info->await_push_cid); }
+				    fmt::format_to(back, "<br/><b>recv</b> transfer {}", rinstr.get_transfer_id());
+				    dot += "<br/>";
+				    if(debug_info) {
+					    print_buffer_range(debug_info->buffer, debug_info->buffer_debug_name,
+					        subrange_to_grid_box(subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range())));
+				    } else {
+					    fmt::format_to(back, "B? {}", subrange(rinstr.get_offset_in_buffer(), rinstr.get_recv_range()));
+				    }
+				    fmt::format_to(back, "<br/>to A{} ([{},{},{}]) +[{},{},{}], {}D [{},{},{}]x{} bytes", rinstr.get_dest_allocation_id(),
 				        rinstr.get_allocation_range()[0], rinstr.get_allocation_range()[1], rinstr.get_allocation_range()[2],
 				        rinstr.get_offset_in_allocation()[0], rinstr.get_offset_in_allocation()[1], rinstr.get_offset_in_allocation()[2],
 				        rinstr.get_dimensions(), rinstr.get_recv_range()[0], rinstr.get_recv_range()[1], rinstr.get_recv_range()[2], rinstr.get_element_size());
+				    end_node();
 			    },
-			    [&](const horizon_instruction& hinstr) { //
-				    print_node(hinstr, "<b>horizon</b>");
+			    [&](const horizon_instruction& hinstr) {
+				    begin_node(hinstr, "box,margin=0.1");
+				    fmt::format_to(back, "I{} (T{}", hinstr.get_id(), hinstr.get_horizon_task_id());
+				    if(const auto debug_info = hinstr.get_debug_info()) { fmt::format_to(back, " , C{}", debug_info->horizon_cid); }
+				    dot += ")<br/><b>horizon</b>";
+				    end_node();
 			    },
-			    [&](const epoch_instruction& einstr) { //
-				    print_node(einstr, "<b>epoch</b>");
+			    [&](const epoch_instruction& einstr) {
+				    begin_node(einstr, "box,margin=0.1");
+				    fmt::format_to(back, "I{} (T{}", einstr.get_id(), einstr.get_epoch_task_id());
+				    if(const auto debug_info = einstr.get_debug_info()) { fmt::format_to(back, " , C{}", debug_info->epoch_cid); }
+				    dot += ")<br/><b>epoch</b>";
+				    end_node();
 			    });
 		});
 

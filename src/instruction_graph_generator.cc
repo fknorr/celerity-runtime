@@ -15,13 +15,19 @@ namespace celerity::detail {
 
 instruction_graph_generator::instruction_graph_generator(const task_manager& tm, size_t num_devices) : m_tm(tm), m_num_devices(num_devices) {
 	assert(num_devices + 1 <= max_memories);
-	m_last_epoch = &create<epoch_instruction>(command_id(0 /* or so we assume */));
+	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */));
+	initial_epoch->set_debug_info(epoch_instruction_debug_info(command_id(0 /* or so we assume */)));
+	m_last_epoch = initial_epoch;
 }
 
 void instruction_graph_generator::register_buffer(buffer_id bid, int dims, range<3> range, const size_t elem_size, const size_t elem_align) {
 	[[maybe_unused]] const auto [_, inserted] =
 	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_num_devices + 1));
 	assert(inserted);
+}
+
+void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, std::string name) {
+	if(const auto it = m_buffers.find(bid); it != m_buffers.end()) { it->second.debug_name = std::move(name); }
 }
 
 void instruction_graph_generator::unregister_buffer(buffer_id bid) { m_buffers.erase(bid); }
@@ -69,7 +75,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	new_allocations.erase(last_new_allocation, new_allocations.end());
 
 	// region-merge adjacent boxes that need to be allocated (usually for oversubscriptions). This should not introduce problematic synchronization points since
-	// allocations usually execute way ahead of time
+
+
 	// TODO but it does introduce synchronization between producers on the resize-copies, which we want to avoid. To resolve this, allocate the fused boxes as
 	// before, but use the non-fused boxes as copy destinations.
 	allscale::api::user::data::detail::box_fuser<3>().apply(new_allocations);
@@ -78,9 +85,10 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 	for(const auto& dest_box : new_allocations) {
 		auto& dest = memory.allocations.emplace_back(m_next_aid++, dest_box, buffer.range);
-		auto& alloc_instr = create<alloc_instruction>(dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
-		add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
-		dest.record_write(dest.box, &alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
+		const auto alloc_instr = &create<alloc_instruction>(dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
+		alloc_instr->set_debug_info(alloc_instruction_debug_info(bid, buffer.debug_name, dest_box));
+		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+		dest.record_write(dest.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
 		for(auto& source : memory.allocations) {
 			if(std::find_if(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const allocation_id aid) { return aid == source.aid; })
@@ -110,6 +118,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 				const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, source.aid, source_range, copy_offset - source_offset, mid, dest.aid,
 				    dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+				copy_instr->set_debug_info(copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::resize, bid, buffer.debug_name, copy_box));
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
@@ -131,6 +140,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	for(const auto free_aid : free_after_reallocation) {
 		const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
 		const auto free_instr = &create<free_instruction>(allocation.aid);
+		free_instr->set_debug_info(
+		    free_instruction_debug_info(mid, allocation.box.area() * buffer.elem_size, buffer.elem_align, bid, buffer.debug_name, allocation.box));
 		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
 				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
@@ -204,6 +215,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						const auto [recv_offset, recv_range] = grid_box_to_subrange(recv_box);
 						const auto recv_instr = &create<recv_instruction>(
 						    trid, mid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
+						command_id await_push_cid = 1234; // TODO where do we get this from without changing non-debug code paths too much?
+						recv_instr->set_debug_info(recv_instruction_debug_info(await_push_cid, bid, buffer.debug_name));
 
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
@@ -314,6 +327,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
 					    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+					copy_instr->set_debug_info(
+					    copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::coherence, bid, buffer.debug_name, copy_box));
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
 						assert(last_writer_instr != nullptr);
@@ -388,6 +403,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				const auto [dest_offset, dest_range] = grid_box_to_subrange(box);
 				const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset, out_mid,
 				    out_aid, dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
+				copy_instr->set_debug_info(copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::linearize, bid, buffer.debug_name, copy_box));
 
 				// TODO copy-pasta
 				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
@@ -533,11 +549,13 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	for(auto& instr : cmd_instrs) {
 		access_allocation_map allocation_map(bam.get_num_accesses());
+		std::vector<buffer_allocation_info> allocation_buffer_map(bam.get_num_accesses()); // TODO debug only
 
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
 			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.execution_sr, tsk.get_global_size());
-			const auto& allocations = m_buffers.at(bid).memories[instr.mid].allocations;
+			const auto& buffer = m_buffers.at(bid);
+			const auto& allocations = buffer.memories[instr.mid].allocations;
 			const auto allocation_it = std::find_if(
 			    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
 			assert(allocation_it != allocations.end());
@@ -545,17 +563,22 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			const auto [access_offset, access_range] = grid_box_to_subrange(accessed_box);
 			const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
 			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset};
+			allocation_buffer_map[i] = buffer_allocation_info{bid, buffer.debug_name, alloc.box};
 		}
 
+		kernel_instruction* kernel_instr;
 		if(tsk.get_execution_target() == execution_target::device) {
 			assert(instr.execution_sr.range.size() > 0);
 			assert(instr.mid != host_memory_id);
-			instr.instruction = &create<device_kernel_instruction>(instr.did, ecmd.get_cid(), instr.execution_sr, std::move(allocation_map));
+			kernel_instr = &create<device_kernel_instruction>(&tsk, instr.did, instr.execution_sr, std::move(allocation_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.mid == host_memory_id);
-			instr.instruction = &create<host_kernel_instruction>(ecmd.get_cid(), instr.execution_sr, std::move(allocation_map));
+			kernel_instr = &create<host_kernel_instruction>(&tsk, instr.execution_sr, std::move(allocation_map));
 		}
+
+		kernel_instr->set_debug_info(kernel_instruction_debug_info(ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map)));
+		instr.instruction = kernel_instr;
 	}
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
@@ -659,6 +682,7 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 
 			// this allocation is not associated with a buffer (and thus not tracked in m_buffers), so we add all dependencies immediately
 			const auto alloc_instr = &create<alloc_instruction>(m_next_aid++, host_memory_id, bytes, buffer.elem_align);
+			alloc_instr->set_debug_info(alloc_instruction_debug_info(/* alloc_origin::send */));
 			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
 
 			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, alloc_instr->get_allocation_id());
@@ -666,11 +690,13 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep, dependency_origin::instruction);
 			}
 			const int tag = create_pilot_message(bid, box);
-			const auto send_instr = &create<send_instruction>(pcmd.get_cid(), pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
+			const auto send_instr = &create<send_instruction>(pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
+			send_instr->set_debug_info(send_instruction_debug_info(pcmd.get_cid(), bid, buffer.debug_name, box));
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep, dependency_origin::instruction);
 			}
 			const auto free_instr = &create<free_instruction>(alloc_instr->get_allocation_id());
+			free_instr->set_debug_info(free_instruction_debug_info(host_memory_id, bytes, buffer.elem_align));
 			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep, dependency_origin::instruction);
 		});
 	}
@@ -697,13 +723,15 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		    buffer.pending_await_pushes.update_region(region, apcmd.get_transfer_id());
 	    },
 	    [&](const horizon_command& hcmd) {
-		    const auto horizon = &create<horizon_instruction>(hcmd.get_cid());
+		    const auto horizon = &create<horizon_instruction>(hcmd.get_tid());
+		    horizon->set_debug_info(horizon_instruction_debug_info(hcmd.get_cid()));
 		    collapse_execution_front_to(horizon);
 		    if(m_last_horizon) { apply_epoch(m_last_horizon); }
 		    m_last_horizon = horizon;
 	    },
 	    [&](const epoch_command& ecmd) {
-		    const auto epoch = &create<epoch_instruction>(ecmd.get_cid());
+		    const auto epoch = &create<epoch_instruction>(ecmd.get_tid());
+		    epoch->set_debug_info(epoch_instruction_debug_info(ecmd.get_cid()));
 		    collapse_execution_front_to(epoch);
 		    apply_epoch(epoch);
 		    m_last_horizon = nullptr;

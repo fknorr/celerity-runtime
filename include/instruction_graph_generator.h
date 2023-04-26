@@ -21,6 +21,8 @@ class instruction_graph_generator {
 
 	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
 
+	void set_buffer_debug_name(buffer_id bid, std::string name);
+
 	void unregister_buffer(buffer_id bid);
 
 	void register_host_object(host_object_id hoid);
@@ -124,6 +126,7 @@ class instruction_graph_generator {
 		region_map<data_location> newest_data_location;
 		region_map<instruction*> original_writers;
 		region_map<transfer_id> pending_await_pushes;
+		std::string debug_name;
 
 		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
 		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), newest_data_location(range),
