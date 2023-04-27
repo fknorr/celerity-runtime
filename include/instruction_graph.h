@@ -24,6 +24,12 @@ class recv_instruction;
 class horizon_instruction;
 class epoch_instruction;
 
+enum class instruction_port {
+	host,
+	sycl,
+	sycl_async,
+};
+
 struct instruction_debug_info {
 	virtual ~instruction_debug_info() = default;
 };
@@ -40,6 +46,7 @@ class instruction : public intrusive_graph_node<instruction> {
 	virtual ~instruction() = default;
 
 	virtual void accept(const_visitor& visitor) const = 0;
+	virtual instruction_port get_target_port() const = 0;
 
 	instruction_id get_id() const { return m_id; }
 
@@ -86,10 +93,12 @@ struct alloc_instruction_debug_info final : instruction_debug_info {
 
 class alloc_instruction final : public instruction {
   public:
-	explicit alloc_instruction(const instruction_id iid, const allocation_id aid, const memory_id mid, const size_t size, const size_t alignment)
-	    : instruction(iid), m_aid(aid), m_mid(mid), m_size(size), m_alignment(alignment) {}
+	explicit alloc_instruction(
+	    const instruction_id iid, const instruction_port port, const allocation_id aid, const memory_id mid, const size_t size, const size_t alignment)
+	    : instruction(iid), m_port(port), m_aid(aid), m_mid(mid), m_size(size), m_alignment(alignment) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return m_port; }
 
 	allocation_id get_allocation_id() const { return m_aid; }
 	memory_id get_memory_id() const { return m_mid; }
@@ -100,6 +109,7 @@ class alloc_instruction final : public instruction {
 	void set_debug_info(const alloc_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
+	instruction_port m_port;
 	allocation_id m_aid;
 	memory_id m_mid;
 	size_t m_size;
@@ -120,9 +130,11 @@ struct free_instruction_debug_info final : instruction_debug_info {
 
 class free_instruction final : public instruction {
   public:
-	explicit free_instruction(const instruction_id iid, const allocation_id aid) : instruction(iid), m_aid(aid) {}
+	explicit free_instruction(const instruction_id iid, const instruction_port port, const allocation_id aid)
+	    : instruction(iid), m_port(port), m_aid(aid) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return m_port; }
 
 	allocation_id get_allocation_id() const { return m_aid; }
 
@@ -130,6 +142,7 @@ class free_instruction final : public instruction {
 	void set_debug_info(const free_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
+	instruction_port m_port;
 	allocation_id m_aid;
 };
 
@@ -152,14 +165,15 @@ struct copy_instruction_debug_info final : instruction_debug_info {
 // TODO maybe template this on Dims?
 class copy_instruction final : public instruction {
   public:
-	explicit copy_instruction(const instruction_id iid, const int dims, const memory_id source_memory, const allocation_id source_allocation,
+	explicit copy_instruction(const instruction_id iid, const instruction_port port, const int dims, const memory_id source_memory, const allocation_id source_allocation,
 	    const range<3>& source_range, const id<3>& offset_in_source, const memory_id dest_memory, const allocation_id dest_allocation,
 	    const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
-	    : instruction(iid), m_source_memory(source_memory), m_source_allocation(source_allocation), m_dest_memory(dest_memory),
+	    : instruction(iid), m_port(port), m_source_memory(source_memory), m_source_allocation(source_allocation), m_dest_memory(dest_memory),
 	      m_dest_allocation(dest_allocation), m_dims(dims), m_source_range(source_range), m_dest_range(dest_range), m_offset_in_source(offset_in_source),
 	      m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return m_port; }
 
 	memory_id get_source_memory() const { return m_source_memory; }
 	allocation_id get_source_allocation() const { return m_source_allocation; }
@@ -177,6 +191,7 @@ class copy_instruction final : public instruction {
 	void set_debug_info(const copy_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
+	instruction_port m_port;
 	memory_id m_source_memory;
 	allocation_id m_source_allocation;
 	memory_id m_dest_memory;
@@ -245,17 +260,19 @@ class kernel_instruction : public instruction {
 // which type of dependency edge (events, host continuations, streams) to insert between them
 class device_kernel_instruction final : public kernel_instruction {
   public:
-	explicit device_kernel_instruction(const instruction_id iid, const command_group_task* cg_task, const device_id did, const subrange<3>& execution_range,
-	    access_allocation_map allocation_map)
-	    : kernel_instruction(iid, cg_task, execution_range, std::move(allocation_map)), m_device_id(did) {
+	explicit device_kernel_instruction(const instruction_id iid, const instruction_port port, const command_group_task* cg_task, const device_id did,
+	    const subrange<3>& execution_range, access_allocation_map allocation_map)
+	    : kernel_instruction(iid, cg_task, execution_range, std::move(allocation_map)), m_port(port), m_device_id(did) {
 		assert(cg_task->get_execution_target() == execution_target::device);
 	}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return m_port; }
 
 	device_id get_device_id() const { return m_device_id; }
 
   private:
+	instruction_port m_port;
 	device_id m_device_id;
 };
 
@@ -269,6 +286,7 @@ class host_kernel_instruction final : public kernel_instruction {
 	}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return instruction_port::host; }
 };
 
 struct pilot_message {
@@ -293,6 +311,7 @@ class send_instruction final : public instruction {
 	    : instruction(iid), m_to_nid(to_nid), m_tag(tag), m_aid(aid), m_bytes(bytes) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return instruction_port::host; }
 
 	node_id get_dest_node_id() const { return m_to_nid; }
 	int get_tag() const { return m_tag; }
@@ -328,6 +347,7 @@ class recv_instruction final : public instruction {
 	      m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return instruction_port::host; }
 
 	transfer_id get_transfer_id() const { return m_transfer_id; }
 	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }
@@ -367,6 +387,7 @@ class horizon_instruction final : public instruction {
 	task_id get_horizon_task_id() const { return m_horizon_tid; }
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return instruction_port::host; }
 
 	const horizon_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<horizon_instruction_debug_info>(); }
 	void set_debug_info(const horizon_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
@@ -388,6 +409,7 @@ class epoch_instruction final : public instruction {
 	task_id get_epoch_task_id() const { return m_epoch_tid; }
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+	instruction_port get_target_port() const override { return instruction_port::host; }
 
 	const epoch_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<epoch_instruction_debug_info>(); }
 	void set_debug_info(const epoch_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }

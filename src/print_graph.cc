@@ -338,7 +338,13 @@ namespace detail {
 		const auto back = std::back_inserter(dot);
 
 		const auto begin_node = [&](const instruction& instr, const std::string_view& shape) {
-			fmt::format_to(back, "I{}[shape={},label=<", instr.get_id(), shape);
+			fmt::format_to(back, "I{}[", instr.get_id());
+			switch(instr.get_target_port()) {
+			case instruction_port::host: break;
+			case instruction_port::sycl:
+			case instruction_port::sycl_async: dot += "color=darkorange2,"; break;
+			}
+			fmt::format_to(back, "shape={},label=<", shape);
 		};
 
 		const auto end_node = [&] { fmt::format_to(back, ">];"); };
@@ -447,7 +453,7 @@ namespace detail {
 				    end_node();
 			    },
 			    [&](const send_instruction& sinstr) {
-				    begin_node(sinstr, "ellipse");
+				    begin_node(sinstr, "box");
 				    fmt::format_to(back, "I{}", sinstr.get_id());
 				    if(const auto debug_info = sinstr.get_debug_info()) { fmt::format_to(back, " (push C{})", debug_info->push_cid); }
 				    fmt::format_to(back, "<br/><b>send</b> to N{} tag {}", sinstr.get_dest_node_id(), sinstr.get_tag());
@@ -461,7 +467,7 @@ namespace detail {
 				    end_node();
 			    },
 			    [&](const recv_instruction& rinstr) {
-				    begin_node(rinstr, "ellipse");
+				    begin_node(rinstr, "box");
 				    fmt::format_to(back, "I{}", rinstr.get_id());
 				    const auto debug_info = rinstr.get_debug_info();
 				    if(debug_info) { fmt::format_to(back, " (await-push C{})", debug_info->await_push_cid); }

@@ -3,6 +3,7 @@
 #include "command.h"
 #include "grid.h"
 #include "instruction_graph.h"
+#include "intrusive_graph.h"
 #include "region_map.h"
 #include "task.h"
 #include "types.h"
@@ -17,7 +18,16 @@ class task_manager;
 
 class instruction_graph_generator {
   public:
-	explicit instruction_graph_generator(const task_manager& tm, size_t num_devices);
+	enum class platform { // TODO
+		host,
+		sycl,
+	};
+	struct device_info {
+		instruction_graph_generator::platform platform;
+		// TODO platform-specific device id (i.e. cuda <int> device enumerator) necessary in case of heterogeneous machines
+	};
+
+	explicit instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices);
 
 	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
 
@@ -168,7 +178,7 @@ class instruction_graph_generator {
 	allocation_id m_next_aid = 0;
 	int m_next_p2p_tag = 10;
 	const task_manager& m_tm;
-	size_t m_num_devices;
+	std::vector<device_info> m_devices;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
 	std::unordered_set<instruction*> m_execution_front;
@@ -188,14 +198,19 @@ class instruction_graph_generator {
 		return *ptr;
 	}
 
-	void add_dependency(instruction& from, instruction& to, const dependency_kind kind, const dependency_origin origin) {
-		from.add_dependency({&to, kind, origin});
+	void add_dependency(instruction& from, instruction& to, const dependency_kind kind) {
+		from.add_dependency({&to, kind, dependency_origin::instruction});
 		if(kind == dependency_kind::true_dep) { m_execution_front.erase(&to); }
 	}
 
 	// This mapping will differ for architectures that share memory between host and device or between devices.
 	// TODO we want a class like detail::local_devices to do the conversion, but without the runtime dependency (i.e. host_queue).
 	memory_id device_to_memory_id(const device_id did) const { return did + 1; }
+
+	platform get_memory_platform(const memory_id mid) const;
+	instruction_port get_allocation_port(const memory_id mid) const;
+	instruction_port get_copy_port(const memory_id from_mid, const memory_id to_mid) const;
+	instruction_port get_kernel_launch_port(const device_id did) const;
 
 	void apply_epoch(instruction* const epoch) {
 		for(auto& [_, buffer] : m_buffers) {
@@ -216,7 +231,7 @@ class instruction_graph_generator {
 
 	void collapse_execution_front_to(instruction* const horizon) {
 		for(const auto instr : m_execution_front) {
-			if(instr != horizon) { horizon->add_dependency({instr, dependency_kind::true_dep, dependency_origin::execution_front}); }
+			if(instr != horizon) { horizon->add_dependency({instr, dependency_kind::true_dep, dependency_origin::instruction}); }
 		}
 		m_execution_front.clear();
 		m_execution_front.insert(horizon);

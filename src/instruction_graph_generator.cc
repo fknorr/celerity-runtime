@@ -13,8 +13,8 @@
 
 namespace celerity::detail {
 
-instruction_graph_generator::instruction_graph_generator(const task_manager& tm, size_t num_devices) : m_tm(tm), m_num_devices(num_devices) {
-	assert(num_devices + 1 <= max_memories);
+instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices) : m_tm(tm), m_devices(std::move(devices)) {
+	assert(devices.size() + 1 <= max_memories);
 	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */));
 	initial_epoch->set_debug_info(epoch_instruction_debug_info(command_id(0 /* or so we assume */)));
 	m_last_epoch = initial_epoch;
@@ -22,7 +22,7 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 
 void instruction_graph_generator::register_buffer(buffer_id bid, int dims, range<3> range, const size_t elem_size, const size_t elem_align) {
 	[[maybe_unused]] const auto [_, inserted] =
-	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_num_devices + 1));
+	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_devices.size() + 1));
 	assert(inserted);
 }
 
@@ -49,6 +49,38 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 	std::abort();
 }
 
+
+instruction_graph_generator::platform instruction_graph_generator::get_memory_platform(const memory_id mid) const {
+	return mid == 0 ? platform::host : m_devices[mid - 1].platform;
+}
+
+instruction_port instruction_graph_generator::get_allocation_port(const memory_id mid) const {
+	switch(get_memory_platform(mid)) {
+	case platform::host: return instruction_port::host;
+	case platform::sycl: return instruction_port::sycl_async;
+	}
+}
+
+instruction_port instruction_graph_generator::get_copy_port(const memory_id from_mid, const memory_id to_mid) const {
+	const auto from = get_memory_platform(from_mid);
+	const auto to = get_memory_platform(to_mid);
+	if(from == platform::host && to == platform::host) {
+		return instruction_port::host;
+	} else if((from == platform::sycl && to == platform::sycl) || (from == platform::host && to == platform::sycl)
+	          || (from == platform::sycl && to == platform::host)) {
+		return instruction_port::sycl_async;
+	} else {
+		assert(!"cannot copy between unrelated platforms");
+		std::abort();
+	}
+}
+
+instruction_port instruction_graph_generator::get_kernel_launch_port(const device_id did) const {
+	switch(m_devices[did].platform) {
+	case platform::host: assert(!"device cannot have host platform"); std::abort();
+	case platform::sycl: return instruction_port::sycl_async;
+	}
+}
 
 void instruction_graph_generator::allocate_contiguously(const buffer_id bid, const memory_id mid, const std::vector<GridBox<3>>& boxes) {
 	auto& buffer = m_buffers.at(bid);
@@ -85,9 +117,9 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 	for(const auto& dest_box : new_allocations) {
 		auto& dest = memory.allocations.emplace_back(m_next_aid++, dest_box, buffer.range);
-		const auto alloc_instr = &create<alloc_instruction>(dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
+		const auto alloc_instr = &create<alloc_instruction>(get_allocation_port(mid), dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
 		alloc_instr->set_debug_info(alloc_instruction_debug_info(bid, buffer.debug_name, dest_box));
-		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 		dest.record_write(dest.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
 		for(auto& source : memory.allocations) {
@@ -116,19 +148,19 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 				// TODO to avoid introducing a synchronization point on oversubscription, split into multiple copies if that will allow unimpeded
 				// oversubscribed-producer to oversubscribed-consumer data flow.
 
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, source.aid, source_range, copy_offset - source_offset, mid, dest.aid,
-				    dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+				const auto copy_instr = &create<copy_instruction>(get_allocation_port(mid), buffer.dims, mid, source.aid, source_range,
+				    copy_offset - source_offset, mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 				copy_instr->set_debug_info(copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::resize, bid, buffer.debug_name, copy_box));
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
-					add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
+					add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 				}
 				source.record_read(copy_box, copy_instr);
 
 				for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
 					for(const auto dep_instr : front.front) {
-						add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
+						add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 					}
 				}
 				dest.record_write(copy_box, copy_instr);
@@ -139,12 +171,12 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	// TODO consider keeping old allocations around until their box is written to in order to resolve "buffer-locking" anti-dependencies
 	for(const auto free_aid : free_after_reallocation) {
 		const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
-		const auto free_instr = &create<free_instruction>(allocation.aid);
+		const auto free_instr = &create<free_instruction>(get_allocation_port(mid), allocation.aid);
 		free_instr->set_debug_info(
 		    free_instruction_debug_info(mid, allocation.box.area() * buffer.elem_size, buffer.elem_align, bid, buffer.debug_name, allocation.box));
 		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
-				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
+				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep);
 			}
 		}
 	}
@@ -221,10 +253,10 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
 							for(const auto dep_instr : front.front) {
-								add_dependency(*recv_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
+								add_dependency(*recv_instr, *dep_instr, dependency_kind::true_dep);
 							}
 						}
-						add_dependency(*recv_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+						add_dependency(*recv_instr, *m_last_epoch, dependency_kind::true_dep);
 						alloc.record_write(recv_box, recv_instr);
 
 						buffer.original_writers.update_region(recv_box, recv_instr);
@@ -311,6 +343,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 	for(auto& copy : pending_copies) {
 		assert(copy.dest_mid != copy.source_mid);
+		const auto copy_port = get_copy_port(copy.source_mid, copy.dest_mid);
 		auto& buffer = m_buffers.at(bid);
 		copy.region.scanByBoxes([&](const GridBox<3>& box) {
 			for(auto& source : buffer.memories[copy.source_mid].allocations) {
@@ -325,20 +358,20 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					const auto [dest_offset, dest_range] = grid_box_to_subrange(dest.box);
 					const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 
-					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
-					    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+					const auto copy_instr = &create<copy_instruction>(copy_port, buffer.dims, copy.source_mid, source.aid, source_range,
+					    copy_offset - source_offset, copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 					copy_instr->set_debug_info(
 					    copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::coherence, bid, buffer.debug_name, copy_box));
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
 						assert(last_writer_instr != nullptr);
-						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::instruction);
+						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
 					}
 					source.record_read(copy.region, copy_instr);
 
 					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
 						for(const auto dep_instr : front.front) {
-							add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
+							add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 						}
 					}
 					dest.record_write(copy.region, copy_instr);
@@ -366,7 +399,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 		assert(sources.any() && "trying to read data that is neither found locally nor has been await-pushed before");
 	}
 	for(auto& [box, await_push] : buffer.pending_await_pushes.get_region_values(box)) {
-		assert(await_push == 0 && "attempting to linearize a subrange with uncommited await-pushes");
+		assert(await_push == 0 && "attempting to linearize a subrange with uncommitted await-pushes");
 	}
 #endif
 
@@ -393,6 +426,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 
 	std::vector<copy_instruction*> copy_instrs;
 	for(const auto& [source_mid, region] : pending_copies) {
+		const auto copy_port = get_copy_port(source_mid, out_mid);
 		region.scanByBoxes([&, source_mid = source_mid](const GridBox<3>& source_box) {
 			for(auto& source : buffer.memories[source_mid].allocations) {
 				const auto copy_box = GridBox<3>::intersect(source.box, source_box);
@@ -401,14 +435,14 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				const auto [source_offset, source_range] = grid_box_to_subrange(source.box);
 				const auto [copy_offset, copy_range] = grid_box_to_subrange(copy_box);
 				const auto [dest_offset, dest_range] = grid_box_to_subrange(box);
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset, out_mid,
-				    out_aid, dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
+				const auto copy_instr = &create<copy_instruction>(copy_port, buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset,
+				    out_mid, out_aid, dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
 				copy_instr->set_debug_info(copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::linearize, bid, buffer.debug_name, copy_box));
 
 				// TODO copy-pasta
 				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
 					assert(last_writer_instr != nullptr);
-					add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep, dependency_origin::instruction);
+					add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
 				}
 				source.record_read(copy_box, copy_instr);
 
@@ -452,8 +486,8 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>();
 		const auto num_sub_chunks_per_device = oversubscribe ? oversubscribe->get_factor() : 1;
 
-		const auto device_chunks = split(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_num_devices);
-		for(device_id did = 0; did < m_num_devices && did < device_chunks.size(); ++did) {
+		const auto device_chunks = split(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_devices.size());
+		for(device_id did = 0; did < m_devices.size() && did < device_chunks.size(); ++did) {
 			// subdivide recursively so that in case of a 2D split, we still produce 2D tiles instead of a row-subset
 			const auto this_device_sub_chunks = split(device_chunks[did], tsk.get_granularity(), num_sub_chunks_per_device);
 			for(const auto& sub_chunk : this_device_sub_chunks) {
@@ -570,7 +604,8 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		if(tsk.get_execution_target() == execution_target::device) {
 			assert(instr.execution_sr.range.size() > 0);
 			assert(instr.mid != host_memory_id);
-			kernel_instr = &create<device_kernel_instruction>(&tsk, instr.did, instr.execution_sr, std::move(allocation_map));
+			kernel_instr =
+			    &create<device_kernel_instruction>(get_kernel_launch_port(instr.did), &tsk, instr.did, instr.execution_sr, std::move(allocation_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.mid == host_memory_id);
@@ -593,7 +628,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto reads_from_alloc = GridRegion<3>::intersect(rw.reads, alloc.box);
 				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(reads_from_alloc)) {
 					assert(last_writer_instr != nullptr);
-					add_dependency(*instr.instruction, *last_writer_instr, dependency_kind::true_dep, dependency_origin::instruction);
+					add_dependency(*instr.instruction, *last_writer_instr, dependency_kind::true_dep);
 				}
 			}
 		}
@@ -604,7 +639,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto writes_to_alloc = GridRegion<3>::intersect(rw.writes, alloc.box);
 				for(const auto& [_, front] : alloc.access_fronts.get_region_values(writes_to_alloc)) {
 					for(const auto dep_instr : front.front) {
-						add_dependency(*instr.instruction, *dep_instr, dependency_kind::true_dep, dependency_origin::instruction);
+						add_dependency(*instr.instruction, *dep_instr, dependency_kind::true_dep);
 					}
 				}
 			}
@@ -612,15 +647,13 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		for(const auto& [hoid, order] : instr.se_map) {
 			assert(instr.mid == host_memory_id);
 			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
-				add_dependency(*instr.instruction, *last_side_effect, dependency_kind::true_dep, dependency_origin::instruction);
+				add_dependency(*instr.instruction, *last_side_effect, dependency_kind::true_dep);
 			}
 		}
 		if(tsk.get_collective_group_id() != collective_group_id(0) /* 0 means "no collective group association" */) {
 			assert(instr.mid == host_memory_id);
 			auto& group = m_collective_groups[tsk.get_collective_group_id()]; // allow default-insertion since we do not register CGs explicitly
-			if(group.last_host_task) {
-				add_dependency(*instr.instruction, *group.last_host_task, dependency_kind::true_dep, dependency_origin::collective_group_serialization);
-			}
+			if(group.last_host_task) { add_dependency(*instr.instruction, *group.last_host_task, dependency_kind::true_dep); }
 		}
 	}
 
@@ -657,7 +690,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
 		const auto deps = instr.instruction->get_dependencies();
 		if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
-			add_dependency(*instr.instruction, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+			add_dependency(*instr.instruction, *m_last_epoch, dependency_kind::true_dep);
 		}
 	}
 }
@@ -681,23 +714,23 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			const auto bytes = box.area() * buffer.elem_size;
 
 			// this allocation is not associated with a buffer (and thus not tracked in m_buffers), so we add all dependencies immediately
-			const auto alloc_instr = &create<alloc_instruction>(m_next_aid++, host_memory_id, bytes, buffer.elem_align);
+			const auto alloc_instr = &create<alloc_instruction>(instruction_port::host, m_next_aid++, host_memory_id, bytes, buffer.elem_align);
 			alloc_instr->set_debug_info(alloc_instruction_debug_info(/* alloc_origin::send */));
-			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep, dependency_origin::last_epoch);
+			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 
 			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, alloc_instr->get_allocation_id());
 			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep, dependency_origin::instruction);
+				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
 			}
 			const int tag = create_pilot_message(bid, box);
 			const auto send_instr = &create<send_instruction>(pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
 			send_instr->set_debug_info(send_instruction_debug_info(pcmd.get_cid(), bid, buffer.debug_name, box));
 			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep, dependency_origin::instruction);
+				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep);
 			}
-			const auto free_instr = &create<free_instruction>(alloc_instr->get_allocation_id());
+			const auto free_instr = &create<free_instruction>(instruction_port::host, alloc_instr->get_allocation_id());
 			free_instr->set_debug_info(free_instruction_debug_info(host_memory_id, bytes, buffer.elem_align));
-			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep, dependency_origin::instruction);
+			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep);
 		});
 	}
 }

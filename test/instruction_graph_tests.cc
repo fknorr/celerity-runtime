@@ -143,7 +143,8 @@ class idag_test_context {
 		m_tm = std::make_unique<task_manager>(num_nodes, nullptr /* host_queue */);
 		m_cdag = std::make_unique<command_graph>();
 		m_dggen = std::make_unique<distributed_graph_generator>(num_nodes, 1 /* devices per node, TODO */, my_nid, *m_cdag, *m_tm);
-		m_iggen = std::make_unique<instruction_graph_generator>(*m_tm, num_devices_per_node);
+		m_iggen = std::make_unique<instruction_graph_generator>(
+		    *m_tm, std::vector<instruction_graph_generator::device_info>(num_devices_per_node, {instruction_graph_generator::platform::sycl}));
 
 		m_tm->NOMERGE_generate_collectives = false; // TODO temporary until we implement collectives
 		m_tm->register_task_callback([this](const task* const tsk) {
