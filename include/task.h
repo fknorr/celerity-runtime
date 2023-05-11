@@ -65,6 +65,10 @@ namespace detail {
 		shutdown,
 	};
 
+	using sycl_kernel_launcher = std::function<void(sycl::handler&, const subrange<3>&)>;
+	using host_task_launcher = std::function<void(const subrange<3>&, const range<3>&, MPI_Comm)>;
+
+	// TODO(IDAG) remove
 	class command_launcher_storage_base {
 	  public:
 		virtual sycl::event operator()(device_queue& q, const subrange<3> execution_sr) const = 0;
@@ -73,6 +77,7 @@ namespace detail {
 		virtual ~command_launcher_storage_base() = default;
 	};
 
+	// TODO(IDAG) remove
 	template <typename Functor>
 	class command_launcher_storage : public command_launcher_storage_base {
 	  public:
@@ -286,6 +291,8 @@ namespace detail {
 
 	class command_group_task final : public task {
 	  public:
+		using launcher = std::variant<std::monostate, sycl_kernel_launcher, host_task_launcher>;
+
 		collective_group_id get_collective_group_id() const { return m_cgid; }
 
 		const buffer_access_map& get_buffer_access_map() const { return m_access_map; }
@@ -326,8 +333,10 @@ namespace detail {
 		// NOCOMMIT TODO We can do better with typings here...
 		template <typename... Args>
 		auto launch(Args&&... args) const {
-			return (*m_launcher)(std::forward<Args>(args)...);
+			return (*m_c_launcher)(std::forward<Args>(args)...);
 		}
+
+		const launcher& get_launcher() const { return m_launcher; }
 
 		// TODO: What happens when the same hint is added several times?
 		// TODO: Are there combinations of hints that aren't allowed? Where would that be validated?
@@ -346,34 +355,38 @@ namespace detail {
 		split_constraints get_split_constraints() const;
 
 		static std::unique_ptr<command_group_task> make_host_compute(task_id tid, task_geometry geometry,
-		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
-			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::host_compute, non_collective, geometry, std::move(launcher),
-			    std::move(access_map), std::move(side_effect_map), std::move(reductions), {}));
+		    std::unique_ptr<command_launcher_storage_base> c_launcher, host_task_launcher launcher, buffer_access_map access_map,
+		    side_effect_map side_effect_map, reduction_set reductions) {
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::host_compute, non_collective, geometry, std::move(c_launcher),
+			    std::move(launcher), std::move(access_map), std::move(side_effect_map), std::move(reductions), {}));
 		}
 
 		static std::unique_ptr<command_group_task> make_device_compute(task_id tid, task_geometry geometry,
-		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, reduction_set reductions, std::string debug_name) {
-			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::device_compute, non_collective, geometry, std::move(launcher),
-			    std::move(access_map), {}, std::move(reductions), std::move(debug_name)));
+		    std::unique_ptr<command_launcher_storage_base> c_launcher, sycl_kernel_launcher launcher, buffer_access_map access_map, reduction_set reductions,
+		    std::string debug_name) {
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::device_compute, non_collective, geometry, std::move(c_launcher),
+			    std::move(launcher), std::move(access_map), {}, std::move(reductions), std::move(debug_name)));
 		}
 
 		static std::unique_ptr<command_group_task> make_host_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
-		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
+		    std::unique_ptr<command_launcher_storage_base> c_launcher, host_task_launcher launcher, buffer_access_map access_map,
+		    side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(cl::sycl::range<1>{num_collective_nodes}), {}, {1, 1, 1}};
-			return std::unique_ptr<command_group_task>(new command_group_task(
-			    tid, task_type::host_collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::host_collective, cgid, geometry, std::move(c_launcher),
+			    std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
 		}
 
-		static std::unique_ptr<command_group_task> make_master_node(
-		    task_id tid, std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
-			return std::unique_ptr<command_group_task>(new command_group_task(
-			    tid, task_type::master_node, non_collective, task_geometry{}, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
+		static std::unique_ptr<command_group_task> make_master_node(task_id tid, std::unique_ptr<command_launcher_storage_base> c_launcher,
+		    host_task_launcher launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
+			return std::unique_ptr<command_group_task>(new command_group_task(tid, task_type::master_node, non_collective, task_geometry{},
+			    std::move(c_launcher), std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}));
 		}
 
 	  private:
 		collective_group_id m_cgid;
 		task_geometry m_geometry;
-		std::unique_ptr<command_launcher_storage_base> m_launcher;
+		std::unique_ptr<command_launcher_storage_base> m_c_launcher; // TODO remove
+		std::variant<std::monostate, sycl_kernel_launcher, host_task_launcher> m_launcher;
 		buffer_access_map m_access_map;
 		detail::side_effect_map m_side_effects;
 		reduction_set m_reductions;
@@ -381,7 +394,7 @@ namespace detail {
 		std::vector<std::unique_ptr<hint_base>> m_hints;
 
 		command_group_task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry,
-		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, detail::side_effect_map side_effects,
+		    std::unique_ptr<command_launcher_storage_base> c_launcher, launcher launcher, buffer_access_map access_map, detail::side_effect_map side_effects,
 		    reduction_set reductions, std::string debug_name)
 		    : task(tid, type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),
 		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_debug_name(std::move(debug_name)) {

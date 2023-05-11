@@ -437,7 +437,6 @@ class handler {
 	detail::buffer_access_map m_access_map;
 	detail::side_effect_map m_side_effects;
 	detail::reduction_set m_reductions;
-	std::unique_ptr<detail::command_launcher_storage_base> m_launcher; // NOCOMMIT Get rid of this again (no need to have this be a member)
 	std::unique_ptr<detail::command_group_task> m_task = nullptr;
 	size_t m_num_collective_nodes;
 	detail::closure_object_id m_next_closure_object_id = 0;
@@ -495,32 +494,6 @@ class handler {
 		return result;
 	}
 
-	void create_host_compute_task(detail::task_geometry geometry) {
-		assert(m_task == nullptr);
-		assert(m_launcher != nullptr);
-		if(geometry.global_size.size() == 0) {
-			// TODO this can be easily supported by not creating a task in case the execution range is empty
-			throw std::runtime_error{"The execution range of distributed host tasks must have at least one item"};
-		}
-		m_task = detail::command_group_task::make_host_compute(
-		    m_tid, geometry, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects), std::move(m_reductions));
-	}
-
-	void create_device_compute_task(detail::task_geometry geometry, std::string debug_name) {
-		assert(m_task == nullptr);
-		assert(m_launcher != nullptr);
-		if(geometry.global_size.size() == 0) {
-			// TODO unless reductions are involved, this can be easily supported by not creating a task in case the execution range is empty.
-			// Edge case: If the task includes reductions that specify property::reduction::initialize_to_identity, we need to create a task that sets
-			// the buffer state to an empty pending_reduction_state in the graph_generator. This will cause a trivial reduction_command to be generated on
-			// each node that reads from the reduction output buffer, initializing it to the identity value locally.
-			throw std::runtime_error{"The execution range of device tasks must have at least one item"};
-		}
-		if(!m_side_effects.empty()) { throw std::runtime_error{"Side effects cannot be used in device kernels"}; }
-		m_task = detail::command_group_task::make_device_compute(
-		    m_tid, geometry, std::move(m_launcher), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
-	}
-
 	template <int Dims, typename Functor>
 	void create_interop_task(const range<Dims>& global_range, Functor task_fn, std::string debug_name) {
 #if !defined(__HIPSYCL__) || !defined(HIPSYCL_PLATFORM_CUDA)
@@ -528,10 +501,9 @@ class handler {
 #endif
 
 		assert(m_task == nullptr);
-		assert(m_launcher == nullptr);
 
 		static_assert(std::is_invocable_v<Functor, experimental::interop_handle&, const partition<Dims>&>);
-		auto launch_fn = [=](detail::device_queue& q, const subrange<3> execution_sr) {
+		auto c_launch_fn = [=](detail::device_queue& q, const subrange<3> execution_sr) {
 			return q.submit([&](sycl::handler& cgh) {
 				cgh.hipSYCL_enqueue_custom_operation([=](sycl::interop_handle& sycl_ih) {
 					const auto part = detail::make_partition<Dims>(global_range, detail::subrange_cast<Dims>(execution_sr));
@@ -540,34 +512,26 @@ class handler {
 				});
 			});
 		};
+		auto c_launcher = std::make_unique<detail::command_launcher_storage<decltype(c_launch_fn)>>(std::move(c_launch_fn));
 
-		// TODO: This is currently inconsistent with other task types, b/c we create the launcher right here instead of a separate function (prefer this way).
-		auto launcher = std::make_unique<detail::command_launcher_storage<decltype(launch_fn)>>(std::move(launch_fn));
+		auto launcher = [=](sycl::handler& cgh, const subrange<3>& execution_sr) {
+			cgh.hipSYCL_enqueue_custom_operation([=](sycl::interop_handle& sycl_ih) {
+				const auto part = detail::make_partition<Dims>(global_range, detail::subrange_cast<Dims>(execution_sr));
+				experimental::interop_handle ih{sycl_ih};
+				task_fn(ih, part);
+			});
+		};
+
 		const range<3> granularity = {1, 1, 1};
 		const detail::task_geometry geometry{Dims, detail::range_cast<3>(global_range), {}, get_constrained_granularity(granularity)};
 		m_task = detail::command_group_task::make_device_compute(
-		    m_tid, geometry, std::move(launcher), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
-	}
-
-	void create_collective_task(detail::collective_group_id cgid) {
-		assert(m_task == nullptr);
-		assert(m_launcher != nullptr);
-		m_task = detail::command_group_task::make_host_collective(
-		    m_tid, cgid, m_num_collective_nodes, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects));
-	}
-
-	void create_master_node_task() {
-		assert(m_task == nullptr);
-		assert(m_launcher != nullptr);
-		m_task = detail::command_group_task::make_master_node(m_tid, std::move(m_launcher), std::move(m_access_map), std::move(m_side_effects));
+		    m_tid, geometry, std::move(c_launcher), std::monostate(), std::move(m_access_map), std::move(m_reductions), std::move(debug_name));
 	}
 
 	// NOCOMMIT Get rid of this, just do it in create_device_compute_task?
 	template <typename KernelFlavor, typename KernelName, int Dims, typename Kernel, typename... Reductions>
-	void make_device_kernel_launcher(const range<Dims>& global_range, const id<Dims>& global_offset,
+	std::unique_ptr<detail::command_launcher_storage_base> make_legacy_device_kernel_launcher(const range<Dims>& global_range, const id<Dims>& global_offset,
 	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_range, Kernel kernel, Reductions... reductions) {
-		assert(m_launcher == nullptr);
-
 		auto fn = [=](detail::device_queue& q, const subrange<3> execution_sr) {
 			return q.submit([&](sycl::handler& cgh) {
 				auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate_local_accessors(kernel, cgh);
@@ -586,13 +550,32 @@ class handler {
 			});
 		};
 
-		m_launcher = std::make_unique<detail::command_launcher_storage<decltype(fn)>>(std::move(fn));
+		return std::make_unique<detail::command_launcher_storage<decltype(fn)>>(std::move(fn));
+	}
+
+	template <typename KernelFlavor, typename KernelName, int Dims, typename Kernel, typename... Reductions>
+	detail::sycl_kernel_launcher make_sycl_kernel_launcher(const range<Dims>& global_range, const id<Dims>& global_offset,
+	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_range, Kernel kernel, Reductions... reductions) {
+		return [=](sycl::handler& cgh, const subrange<3>& execution_sr) {
+			auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate_local_accessors(kernel, cgh);
+
+			if constexpr(std::is_same_v<KernelFlavor, detail::simple_kernel_flavor>) {
+				detail::invoke_sycl_parallel_for<KernelName>(cgh, detail::range_cast<Dims>(execution_sr.range), detail::make_sycl_reduction(reductions)...,
+				    detail::bind_simple_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset)));
+			} else if constexpr(std::is_same_v<KernelFlavor, detail::nd_range_kernel_flavor>) {
+				detail::invoke_sycl_parallel_for<KernelName>(cgh, cl::sycl::nd_range{detail::range_cast<Dims>(execution_sr.range), local_range},
+				    detail::make_sycl_reduction(reductions)...,
+				    detail::bind_nd_range_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset),
+				        global_range / local_range, detail::id_cast<Dims>(execution_sr.offset) / local_range));
+			} else {
+				static_assert(detail::constexpr_false<KernelFlavor>);
+			}
+		};
 	}
 
 	template <int Dims, bool Collective, typename Kernel>
-	void make_host_task_launcher(Kernel kernel) {
+	std::unique_ptr<detail::command_launcher_storage_base> make_legacy_host_task_launcher(Kernel kernel) {
 		static_assert(Dims >= 0);
-		assert(m_launcher == nullptr);
 
 		auto fn = [kernel](detail::host_queue& q, const detail::collective_group_id cgid, const range<3>& global_size, const subrange<3>& sr) {
 			return q.submit(cgid, [kernel, global_size, sr](MPI_Comm comm) {
@@ -617,7 +600,30 @@ class handler {
 			});
 		};
 
-		m_launcher = std::make_unique<detail::command_launcher_storage<decltype(fn)>>(std::move(fn));
+		return std::make_unique<detail::command_launcher_storage<decltype(fn)>>(std::move(fn));
+	}
+
+	template <int Dims, bool Collective, typename Kernel>
+	detail::host_task_launcher make_host_task_launcher(Kernel kernel) {
+		static_assert(Dims >= 0);
+
+		return [kernel](const subrange<3>& execution_sr, [[maybe_unused]] const range<3>& global_size, [[maybe_unused]] MPI_Comm comm) {
+			if constexpr(Dims > 0) {
+				if constexpr(Collective) {
+					static_assert(Dims == 1);
+					const auto part = detail::make_collective_partition(detail::range_cast<1>(global_size), detail::subrange_cast<1>(execution_sr), comm);
+					kernel(part);
+				} else {
+					const auto part = detail::make_partition<Dims>(detail::range_cast<Dims>(global_size), detail::subrange_cast<Dims>(execution_sr));
+					kernel(part);
+				}
+			} else if constexpr(std::is_invocable_v<Kernel, const partition<0>&>) {
+				const auto part = detail::make_0d_partition();
+				kernel(part);
+			} else {
+				kernel();
+			}
+		};
 	}
 
 	std::unique_ptr<detail::command_group_task> into_task() && {
@@ -764,36 +770,64 @@ void handler::parallel_for_kernel_and_reductions(range<Dims> global_range, id<Di
 		static_assert(detail::constexpr_false<Kernel>, "DPC++ currently does not support more than one reduction variable per kernel");
 	}
 
+	assert(m_task == nullptr);
+
+	auto c_launcher = make_legacy_device_kernel_launcher<KernelFlavor, KernelName, Dims>(global_range, global_offset, local_range, kernel, reductions...);
+	auto launcher = make_sycl_kernel_launcher<KernelFlavor, KernelName, Dims>(global_range, global_offset, local_range, kernel, reductions...);
+
 	range<3> granularity = {1, 1, 1};
 	if constexpr(detail::kernel_flavor_traits<KernelFlavor, Dims>::has_local_size) {
 		for(int d = 0; d < Dims; ++d) {
 			granularity[d] = local_range[d];
 		}
 	}
+
 	const detail::task_geometry geometry{
 	    Dims, detail::range_cast<3>(global_range), detail::id_cast<3>(global_offset), get_constrained_granularity(granularity)};
-	make_device_kernel_launcher<KernelFlavor, KernelName, Dims>(global_range, global_offset, local_range, kernel, reductions...);
-	create_device_compute_task(geometry, detail::kernel_debug_name<KernelName>());
+	if(geometry.global_size.size() == 0) {
+		// TODO unless reductions are involved, this can be easily supported by not creating a task in case the execution range is empty.
+		// Edge case: If the task includes reductions that specify property::reduction::initialize_to_identity, we need to create a task that sets
+		// the buffer state to an empty pending_reduction_state in the graph_generator. This will cause a trivial reduction_command to be generated on
+		// each node that reads from the reduction output buffer, initializing it to the identity value locally.
+		throw std::runtime_error{"The execution range of device tasks must have at least one item"};
+	}
+	if(!m_side_effects.empty()) { throw std::runtime_error{"Side effects cannot be used in device kernels"}; }
+	m_task = detail::command_group_task::make_device_compute(
+	    m_tid, geometry, std::move(c_launcher), std::move(launcher), std::move(m_access_map), std::move(m_reductions), detail::kernel_debug_name<KernelName>());
 }
 
 // NOCOMMIT Can we move these up?
 template <typename Functor>
 void handler::host_task(on_master_node_tag, Functor kernel) {
-	make_host_task_launcher<0, false>(kernel); // NOCOMMIT Just do this in create_master_node_task?
-	create_master_node_task();
+	assert(m_task == nullptr);
+	auto c_launcher = make_legacy_host_task_launcher<0, false>(kernel);
+	auto launcher = make_host_task_launcher<0, false>(kernel);
+	m_task =
+	    detail::command_group_task::make_master_node(m_tid, std::move(c_launcher), std::move(launcher), std::move(m_access_map), std::move(m_side_effects));
 }
 
 template <typename Functor>
 void handler::host_task(experimental::collective_tag tag, Functor kernel) {
-	make_host_task_launcher<1, true>(kernel);
-	create_collective_task(tag.m_cgid);
+	assert(m_task == nullptr);
+	auto c_launcher = make_legacy_host_task_launcher<1, true>(kernel);
+	auto launcher = make_host_task_launcher<1, true>(kernel);
+	m_task = detail::command_group_task::make_host_collective(
+	    m_tid, tag.m_cgid, m_num_collective_nodes, std::move(c_launcher), std::move(launcher), std::move(m_access_map), std::move(m_side_effects));
 }
 
 template <int Dims, typename Functor>
 void handler::host_task(range<Dims> global_range, id<Dims> global_offset, Functor kernel) {
 	const detail::task_geometry geometry{Dims, detail::range_cast<3>(global_range), detail::id_cast<3>(global_offset), get_constrained_granularity({1, 1, 1})};
-	make_host_task_launcher<Dims, false>(kernel);
-	create_host_compute_task(geometry);
+	assert(m_task == nullptr);
+	if(geometry.global_size.size() == 0) {
+		// TODO this can be easily supported by not creating a task in case the execution range is empty
+		throw std::runtime_error{"The execution range of distributed host tasks must have at least one item"};
+	}
+
+	auto c_launcher = make_legacy_host_task_launcher<Dims, false>(kernel);
+	auto launcher = make_host_task_launcher<Dims, false>(kernel);
+	m_task = detail::command_group_task::make_host_compute(
+	    m_tid, geometry, std::move(c_launcher), std::move(launcher), std::move(m_access_map), std::move(m_side_effects), std::move(m_reductions));
 }
 
 // NOCOMMIT (later): Can we move reduction stuff into separate header?
