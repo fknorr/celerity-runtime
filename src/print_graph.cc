@@ -426,15 +426,15 @@ namespace detail {
 				    const auto debug_info = kinstr.get_debug_info();
 				    if(debug_info) {
 					    // TODO does not correctly label master-node / collective host tasks
-					    fmt::format_to(back, " ({}-compute T{}, exectuion C{})", isa<device_kernel_instruction>(&kinstr) ? "device" : "host",
-					        debug_info->cg_tid, debug_info->execution_cid);
+					    fmt::format_to(back, " ({}-compute T{}, exectuion C{})", isa<sycl_kernel_instruction>(&kinstr) ? "device" : "host", debug_info->cg_tid,
+					        debug_info->execution_cid);
 				    }
 				    dot += "<br/><b>kernel</b>";
 				    if(debug_info && !debug_info->kernel_debug_name.empty()) {
 					    dot += " ";
 					    dot += debug_info->kernel_debug_name; // TODO escape?
 				    }
-				    if(const auto dkinstr = dynamic_cast<const device_kernel_instruction*>(&kinstr)) {
+				    if(const auto dkinstr = dynamic_cast<const sycl_kernel_instruction*>(&kinstr)) {
 					    fmt::format_to(back, " on D{}", dkinstr->get_device_id());
 				    }
 				    fmt::format_to(back, " {}", kinstr.get_execution_range());

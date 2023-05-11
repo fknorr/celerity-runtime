@@ -336,7 +336,10 @@ namespace detail {
 			return (*m_c_launcher)(std::forward<Args>(args)...);
 		}
 
-		const launcher& get_launcher() const { return m_launcher; }
+		template <typename Launcher>
+		const Launcher& get_launcher() const {
+			return std::get<Launcher>(m_launcher);
+		}
 
 		// TODO: What happens when the same hint is added several times?
 		// TODO: Are there combinations of hints that aren't allowed? Where would that be validated?

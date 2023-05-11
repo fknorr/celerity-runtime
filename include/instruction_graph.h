@@ -1,10 +1,9 @@
 #pragma once
 
-#include "allscale/api/user/data/grid.h"
 #include "grid.h"
 #include "intrusive_graph.h"
 #include "ranges.h"
-#include "task.h"
+#include "task.h" // TODO the only dependencies on task.h are launcher types and contiguous_box_set, consider moving those
 #include "types.h"
 #include "utils.h"
 
@@ -17,7 +16,7 @@ class alloc_instruction;
 class free_instruction;
 class copy_instruction;
 class kernel_instruction;
-class device_kernel_instruction;
+class sycl_kernel_instruction;
 class host_kernel_instruction;
 class send_instruction;
 class recv_instruction;
@@ -36,7 +35,7 @@ struct instruction_debug_info {
 
 class instruction : public intrusive_graph_node<instruction> {
   public:
-	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const copy_instruction&, const device_kernel_instruction&,
+	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const copy_instruction&, const sycl_kernel_instruction&,
 	    const host_kernel_instruction&, const send_instruction&, const recv_instruction&, const horizon_instruction&, const epoch_instruction&>;
 
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
@@ -130,8 +129,7 @@ struct free_instruction_debug_info final : instruction_debug_info {
 
 class free_instruction final : public instruction {
   public:
-	explicit free_instruction(const instruction_id iid, const instruction_port port, const allocation_id aid)
-	    : instruction(iid), m_port(port), m_aid(aid) {}
+	explicit free_instruction(const instruction_id iid, const instruction_port port, const allocation_id aid) : instruction(iid), m_port(port), m_aid(aid) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_port get_target_port() const override { return m_port; }
@@ -165,9 +163,9 @@ struct copy_instruction_debug_info final : instruction_debug_info {
 // TODO maybe template this on Dims?
 class copy_instruction final : public instruction {
   public:
-	explicit copy_instruction(const instruction_id iid, const instruction_port port, const int dims, const memory_id source_memory, const allocation_id source_allocation,
-	    const range<3>& source_range, const id<3>& offset_in_source, const memory_id dest_memory, const allocation_id dest_allocation,
-	    const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
+	explicit copy_instruction(const instruction_id iid, const instruction_port port, const int dims, const memory_id source_memory,
+	    const allocation_id source_allocation, const range<3>& source_range, const id<3>& offset_in_source, const memory_id dest_memory,
+	    const allocation_id dest_allocation, const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
 	    : instruction(iid), m_port(port), m_source_memory(source_memory), m_source_allocation(source_allocation), m_dest_memory(dest_memory),
 	      m_dest_allocation(dest_allocation), m_dims(dims), m_source_range(source_range), m_dest_range(dest_range), m_offset_in_source(offset_in_source),
 	      m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
@@ -237,13 +235,12 @@ struct kernel_instruction_debug_info final : instruction_debug_info {
 	      allocation_buffer_map(std::move(allocation_buffer_map)) {}
 };
 
+// TODO is a common base class for host and device "kernels" the right thing to do? On the host these are not called kernels but "host tasks" everywhere else.
 class kernel_instruction : public instruction {
   public:
-	explicit kernel_instruction(
-	    const instruction_id iid, const command_group_task* cg_task, const subrange<3>& execution_range, access_allocation_map allocation_map)
-	    : instruction(iid), m_cg_task(cg_task), m_execution_range(execution_range), m_allocation_map(std::move(allocation_map)) {}
+	explicit kernel_instruction(const instruction_id iid, const subrange<3>& execution_range, access_allocation_map allocation_map)
+	    : instruction(iid), m_allocation_map(std::move(allocation_map)) {}
 
-	const command_group_task& get_command_group_task() const { return *m_cg_task; }
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
 	const access_allocation_map& get_allocation_map() const { return m_allocation_map; }
 
@@ -251,42 +248,45 @@ class kernel_instruction : public instruction {
 	void set_debug_info(const kernel_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
-	const command_group_task* m_cg_task; // TODO just store a reference to the launcher? We would not really need horizon keepalive guarantees that way
 	subrange<3> m_execution_range;
 	access_allocation_map m_allocation_map;
 };
 
-// TODO is the distinction between "device kernel" and "host kernel" optimal? "SYCL kernel", "CUDA kernel", "host kernel" might be necessary to decide
-// which type of dependency edge (events, host continuations, streams) to insert between them
-class device_kernel_instruction final : public kernel_instruction {
+class sycl_kernel_instruction final : public kernel_instruction {
   public:
-	explicit device_kernel_instruction(const instruction_id iid, const instruction_port port, const command_group_task* cg_task, const device_id did,
-	    const subrange<3>& execution_range, access_allocation_map allocation_map)
-	    : kernel_instruction(iid, cg_task, execution_range, std::move(allocation_map)), m_port(port), m_device_id(did) {
-		assert(cg_task->get_execution_target() == execution_target::device);
-	}
+	explicit sycl_kernel_instruction(
+	    const instruction_id iid, const device_id did, sycl_kernel_launcher launcher, const subrange<3>& execution_range, access_allocation_map allocation_map)
+	    : kernel_instruction(iid, execution_range, std::move(allocation_map)), m_device_id(did), m_launcher(std::move(launcher)) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_port get_target_port() const override { return m_port; }
+	instruction_port get_target_port() const override { return instruction_port::sycl_async; }
 
 	device_id get_device_id() const { return m_device_id; }
+	void launch(sycl::handler& cgh) const {
+		m_launcher(cgh, get_execution_range()); // TODO where does m_allocation_map go?
+	}
 
   private:
-	instruction_port m_port;
 	device_id m_device_id;
+	sycl_kernel_launcher m_launcher;
 };
 
 class host_kernel_instruction final : public kernel_instruction {
   public:
 	using kernel_instruction::kernel_instruction;
-	host_kernel_instruction(
-	    const instruction_id iid, const command_group_task* cg_task, const subrange<3>& execution_range, access_allocation_map allocation_map)
-	    : kernel_instruction(iid, cg_task, execution_range, std::move(allocation_map)) {
-		assert(cg_task->get_execution_target() == execution_target::host);
-	}
+	host_kernel_instruction(const instruction_id iid, host_task_launcher launcher, const subrange<3>& execution_range, const range<3>& global_range,
+	    access_allocation_map allocation_map)
+	    : kernel_instruction(iid, execution_range, std::move(allocation_map)), m_launcher(std::move(launcher)), m_global_range(global_range) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_port get_target_port() const override { return instruction_port::host; }
+
+	const range<3>& get_global_range() const { return m_global_range; }
+	void launch(MPI_Comm comm) const { m_launcher(get_execution_range(), m_global_range, comm); }
+
+  private:
+	host_task_launcher m_launcher;
+	range<3> m_global_range;
 };
 
 struct pilot_message {

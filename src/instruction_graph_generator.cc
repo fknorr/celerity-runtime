@@ -604,12 +604,13 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		if(tsk.get_execution_target() == execution_target::device) {
 			assert(instr.execution_sr.range.size() > 0);
 			assert(instr.mid != host_memory_id);
-			kernel_instr =
-			    &create<device_kernel_instruction>(get_kernel_launch_port(instr.did), &tsk, instr.did, instr.execution_sr, std::move(allocation_map));
+			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
+			kernel_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.mid == host_memory_id);
-			kernel_instr = &create<host_kernel_instruction>(&tsk, instr.execution_sr, std::move(allocation_map));
+			kernel_instr =
+			    &create<host_kernel_instruction>(tsk.get_launcher<host_task_launcher>(), instr.execution_sr, tsk.get_global_size(), std::move(allocation_map));
 		}
 
 		kernel_instr->set_debug_info(kernel_instruction_debug_info(ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map)));

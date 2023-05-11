@@ -222,6 +222,7 @@ set(SOURCES
   src/distributed_graph_generator.cc
   src/graph_serializer.cc
   src/instruction_graph_generator.cc
+  src/instruction_scheduler.cc
   src/local_devices.cc
   src/print_graph.cc
   src/print_utils.cc

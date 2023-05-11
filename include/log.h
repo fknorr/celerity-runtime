@@ -91,3 +91,13 @@ struct fmt::formatter<celerity::detail::log_map<Es...>> {
 		return out;
 	}
 };
+
+namespace celerity::detail {
+
+template <typename... Fmt>
+[[noreturn]] void panic(Fmt&&... args) {
+	CELERITY_CRITICAL(std::forward<Fmt>(args)...);
+	abort();
+}
+
+} // namespace celerity::detail
