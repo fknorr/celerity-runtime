@@ -596,7 +596,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			const auto& alloc = *allocation_it;
 			const auto [access_offset, access_range] = grid_box_to_subrange(accessed_box);
 			const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
-			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset};
+			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset, {access_offset, access_range}};
 			allocation_buffer_map[i] = buffer_allocation_info{bid, buffer.debug_name, alloc.box};
 		}
 

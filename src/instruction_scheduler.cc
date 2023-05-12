@@ -1,6 +1,7 @@
 #include "instruction_scheduler.h"
 #include "buffer_storage.h" // TODO included for CELERITY_CUDA_CHECK, consider moving that
-#include <cuda_runtime.h>   // TODO move CUDA stuff to separate source
+#include "closure_hydrator.h"
+#include <cuda_runtime.h> // TODO move CUDA stuff to separate source
 
 namespace celerity::detail {
 
@@ -118,7 +119,16 @@ class sycl_queue : public out_of_order_instruction_queue {
 			}
 			utils::match(
 			    instr, //
-			    [&](const sycl_kernel_instruction& skinstr) { skinstr.launch(cgh /* TODO , m_allocation_mgr */); },
+			    [&](const sycl_kernel_instruction& skinstr) {
+				    std::vector<closure_hydrator::NOCOMMIT_info> access_infos;
+				    access_infos.reserve(skinstr.get_allocation_map().size());
+				    for(const auto& aa : skinstr.get_allocation_map()) {
+					    access_infos.push_back(closure_hydrator::NOCOMMIT_info{
+					        target::device, m_allocation_mgr->get_pointer(aa.aid), aa.allocation_range, aa.offset_in_allocation, aa.buffer_subrange});
+				    }
+				    closure_hydrator::get_instance().prepare(std::move(access_infos));
+				    skinstr.launch(cgh);
+			    },
 			    [](const auto& /* other */) { panic("invalid instruction type for sycl_queue"); });
 		});
 		return std::make_unique<sycl_event_impl>(std::move(sycl_event));

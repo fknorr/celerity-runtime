@@ -213,9 +213,10 @@ struct reads_writes {
 };
 
 struct access_allocation {
-	allocation_id allocation;
+	allocation_id aid;
 	range<3> allocation_range;
-	id<3> access_offset;
+	id<3> offset_in_allocation;
+	subrange<3> buffer_subrange;
 };
 
 using access_allocation_map = std::vector<access_allocation>;

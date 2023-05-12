@@ -447,8 +447,8 @@ namespace detail {
 						    print_buffer_allocation(debug_info->allocation_buffer_map[i]);
 						    dot += " via ";
 					    }
-					    fmt::format_to(back, "A{} ([{},{},{}]) +[{},{},{}]", amap[i].allocation, amap[i].allocation_range[0], amap[i].allocation_range[1],
-					        amap[i].allocation_range[2], amap[i].access_offset[0], amap[i].access_offset[1], amap[i].access_offset[2]);
+					    fmt::format_to(back, "A{} ([{},{},{}]) +[{},{},{}]", amap[i].aid, amap[i].allocation_range[0], amap[i].allocation_range[1],
+					        amap[i].allocation_range[2], amap[i].offset_in_allocation[0], amap[i].offset_in_allocation[1], amap[i].offset_in_allocation[2]);
 				    }
 				    end_node();
 			    },
