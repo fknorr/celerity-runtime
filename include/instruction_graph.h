@@ -281,9 +281,11 @@ class host_kernel_instruction final : public kernel_instruction {
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_port get_target_port() const override { return instruction_port::host; }
-
 	const range<3>& get_global_range() const { return m_global_range; }
-	void launch(MPI_Comm comm) const { m_launcher(get_execution_range(), m_global_range, comm); }
+
+	std::function<void()> bind(MPI_Comm comm) const {
+		return [l = m_launcher, er = get_execution_range(), gr = m_global_range, comm] { l(er, gr, comm); };
+	}
 
   private:
 	host_task_launcher m_launcher;
