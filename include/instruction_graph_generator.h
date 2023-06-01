@@ -18,16 +18,11 @@ class task_manager;
 
 class instruction_graph_generator {
   public:
-	enum class platform { // TODO
-		host,
-		sycl,
-	};
 	struct device_info {
-		instruction_graph_generator::platform platform;
-		// TODO platform-specific device id (i.e. cuda <int> device enumerator) necessary in case of heterogeneous machines
+		std::set<instruction_backend> backends;
 	};
 
-	explicit instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices);
+	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices);
 
 	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
 
@@ -178,7 +173,7 @@ class instruction_graph_generator {
 	allocation_id m_next_aid = 0;
 	int m_next_p2p_tag = 10;
 	const task_manager& m_tm;
-	std::vector<device_info> m_devices;
+	std::map<device_id, device_info> m_devices;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
 	std::unordered_set<instruction*> m_execution_front;
@@ -207,10 +202,9 @@ class instruction_graph_generator {
 	// TODO we want a class like detail::local_devices to do the conversion, but without the runtime dependency (i.e. host_queue).
 	memory_id device_to_memory_id(const device_id did) const { return did + 1; }
 
-	platform get_memory_platform(const memory_id mid) const;
-	instruction_port get_allocation_port(const memory_id mid) const;
-	instruction_port get_copy_port(const memory_id from_mid, const memory_id to_mid) const;
-	instruction_port get_kernel_launch_port(const device_id did) const;
+	instruction_backend get_allocation_backend(const memory_id mid) const;
+	instruction_backend get_copy_backend(const memory_id from_mid, const memory_id to_mid) const;
+	instruction_backend get_kernel_launch_backend(const device_id did) const;
 
 	void apply_epoch(instruction* const epoch) {
 		for(auto& [_, buffer] : m_buffers) {

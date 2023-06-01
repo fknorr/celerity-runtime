@@ -39,19 +39,28 @@ using instruction_queue_event = std::shared_ptr<instruction_queue_event_impl>;
 class in_order_instruction_queue {
   public:
 	virtual ~in_order_instruction_queue() = default;
-	virtual instruction_queue_event submit(const instruction& instr) = 0;
+	virtual instruction_queue_event submit(std::unique_ptr<instruction> instr) = 0;
 	virtual void wait_on(const instruction_queue_event& evt) = 0;
 };
 
 class out_of_order_instruction_queue {
   public:
 	virtual ~out_of_order_instruction_queue() = default;
-	virtual instruction_queue_event submit(const instruction& instr, const std::vector<instruction_queue_event>& dependencies) = 0;
+	virtual instruction_queue_event submit(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) = 0;
 };
 
 class instruction_scheduler {
   public:
-	void submit(const instruction& instr);
+	instruction_scheduler(std::unordered_map<device_id, int> cuda_device_ids, std::unordered_map<device_id, sycl::queue> sycl_queues);
+	~instruction_scheduler();
+	instruction_scheduler(instruction_scheduler&&) = default;
+	instruction_scheduler& operator=(instruction_scheduler&&) = default;
+
+	void submit(std::unique_ptr<instruction> instr);
+
+  private:
+	struct impl;
+	std::unique_ptr<impl> m_impl;
 };
 
 } // namespace celerity::detail

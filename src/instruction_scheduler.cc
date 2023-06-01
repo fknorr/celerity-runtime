@@ -23,15 +23,17 @@ class cuda_event final : public instruction_queue_event_impl {
 };
 
 class cuda_stream final : public in_order_instruction_queue {
-	explicit cuda_stream(allocation_manager& am) : m_allocation_mgr(&am) {
+  public:
+	explicit cuda_stream(const int cuda_device_id, allocation_manager& am) : m_allocation_mgr(&am) {
+		CELERITY_CUDA_CHECK(cudaSetDevice, cuda_device_id);
 		cudaStream_t stream;
 		CELERITY_CUDA_CHECK(cudaStreamCreate, &stream);
 		m_stream = std::unique_ptr<CUstream_st, deleter>(stream);
 	}
 
-	instruction_queue_event submit(const instruction& instr) override {
+	instruction_queue_event submit(std::unique_ptr<instruction> instr) override {
 		utils::match(
-		    instr, //
+		    *instr, //
 		    [this](const alloc_instruction& ainstr) { submit_malloc(ainstr); }, [this](const free_instruction& finstr) { submit_free(finstr); },
 		    [this](const copy_instruction& cinstr) { submit_copy(cinstr); },
 		    [&](const auto& /* other */) { panic("Invalid instruction type on cuda_stream"); });
@@ -126,13 +128,13 @@ class sycl_queue : public out_of_order_instruction_queue {
   public:
 	explicit sycl_queue(sycl::queue q, allocation_manager& am) : m_queue(std::move(q)), m_allocation_mgr(&am) {}
 
-	instruction_queue_event submit(const instruction& instr, const std::vector<instruction_queue_event>& dependencies) override {
+	instruction_queue_event submit(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) override {
 		auto sycl_event = m_queue.submit([&](sycl::handler& cgh) {
 			for(auto& dep : dependencies) {
 				cgh.depends_on(dynamic_cast<const sycl_event_impl&>(*dep).get());
 			}
 			utils::match(
-			    instr, //
+			    *instr, //
 			    [&](const sycl_kernel_instruction& skinstr) {
 				    std::vector<closure_hydrator::NOCOMMIT_info> access_infos;
 				    access_infos.reserve(skinstr.get_allocation_map().size());
@@ -178,9 +180,9 @@ class host_thread_queue : public in_order_instruction_queue {
 	host_thread_queue& operator=(const host_thread_queue&) = delete;
 	~host_thread_queue() { push(stop{}); }
 
-	instruction_queue_event submit(const instruction& instr) override {
+	instruction_queue_event submit(std::unique_ptr<instruction> instr) override {
 		auto op = utils::match(
-		    instr, //
+		    *instr, //
 		    [&](const host_kernel_instruction& hkinstr) { return hkinstr.bind(MPI_COMM_WORLD /* TODO have a communicator registry */); },
 		    [](const auto& /* other */) -> operation { panic("invalid instruction type for host_thread_queue"); });
 		const auto t = push(std::move(op));
@@ -295,7 +297,7 @@ class multiplex_instruction_queue : public out_of_order_instruction_queue {
 		assert(!m_queues.empty());
 	}
 
-	virtual instruction_queue_event submit(const instruction& instr, const std::vector<instruction_queue_event>& dependencies) {
+	instruction_queue_event submit(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) override {
 		queue_index target_queue_index;
 		if(dependencies.empty()) {
 			// Unconstrained case: choose a random queue.
@@ -327,7 +329,7 @@ class multiplex_instruction_queue : public out_of_order_instruction_queue {
 			}
 		}
 
-		auto evt = m_queues[target_queue_index]->submit(instr);
+		auto evt = m_queues[target_queue_index]->submit(std::move(instr));
 		return std::make_shared<event>(target_queue_index, std::move(evt));
 	}
 
@@ -336,6 +338,116 @@ class multiplex_instruction_queue : public out_of_order_instruction_queue {
 	queue_index m_round_robin_index = 0;
 };
 
-void instruction_scheduler::submit(const instruction& instr) { instr.get_target_port(); }
+struct instruction_scheduler::impl {
+	multiplex_instruction_queue host_queue;
+	std::unordered_map<device_id, int> cuda_device_ids;
+	std::unordered_map<device_id, multiplex_instruction_queue> cuda_queues;
+	std::unordered_map<device_id, sycl_queue> sycl_queues;
+	std::unique_ptr<allocation_manager> alloc_manager;
+	std::unordered_map<instruction_id, std::unique_ptr<instruction>> queued_instructions;
+	std::unordered_map<instruction_id, instruction_queue_event> active_instructions; // TODO how to GC?
+
+	out_of_order_instruction_queue* select_queue(const instruction& isntr);
+	out_of_order_instruction_queue* select_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids);
+	out_of_order_instruction_queue* select_queue(const instruction_backend backend, const device_id did);
+};
+
+instruction_scheduler::instruction_scheduler(std::unordered_map<device_id, int> cuda_device_ids, std::unordered_map<device_id, sycl::queue> sycl_queues) {
+	constexpr size_t num_host_threads = 4;
+	constexpr size_t num_cuda_streams_per_device = 4;
+
+	auto am = std::make_unique<allocation_manager>();
+
+	std::vector<std::unique_ptr<in_order_instruction_queue>> host_instr_queues;
+	host_instr_queues.reserve(num_host_threads);
+	for(size_t i = 0; i < num_host_threads; ++i) {
+		host_instr_queues.emplace_back(std::make_unique<host_thread_queue>());
+	}
+
+	std::unordered_map<device_id, multiplex_instruction_queue> cuda_instr_queues;
+	for(const auto& [did, cuda_did] : cuda_device_ids) {
+		std::vector<std::unique_ptr<in_order_instruction_queue>> cuda_streams;
+		cuda_streams.reserve(num_cuda_streams_per_device);
+		for(size_t i = 0; i < num_host_threads; ++i) {
+			cuda_streams.emplace_back(std::make_unique<cuda_stream>(cuda_did, *am));
+		}
+		cuda_instr_queues.emplace(did, multiplex_instruction_queue(std::move(cuda_streams)));
+	}
+
+	std::unordered_map<device_id, sycl_queue> sycl_instr_queues;
+	for(const auto& [did, q] : sycl_queues) {
+		sycl_instr_queues.emplace(did, sycl_queue(q, *am));
+	}
+
+	m_impl.reset(new impl{
+	    multiplex_instruction_queue(std::move(host_instr_queues)),
+	    std::move(cuda_device_ids),
+	    std::move(cuda_instr_queues),
+	    std::move(sycl_instr_queues),
+	    std::move(am),
+		/* queued_instructions = */ {},
+		/* active_instructions = */ {},
+	});
+}
+
+instruction_scheduler::~instruction_scheduler() = default;
+
+void instruction_scheduler::submit(std::unique_ptr<instruction> instr) {
+	std::vector<instruction_queue_event> dependencies;
+	size_t num_pending_dependencies = 0;
+	for(const auto& dep : instr->get_dependencies()) {
+		if(const auto active = m_impl->active_instructions.find(dep.node->get_id()); active != m_impl->active_instructions.end()) {
+			dependencies.push_back(active->second);
+		} else {
+			++num_pending_dependencies;
+		}
+	}
+
+	if(num_pending_dependencies == 0) {
+		const auto target_queue = m_impl->select_queue(*instr);
+		target_queue->submit(std::move(instr), std::move(dependencies));
+	}
+}
+
+out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids) {
+	const auto find_in_device_map = [&](auto& device_map) {
+		assert(std::all_of(mids.begin(), mids.end(), [&](const memory_id mid) { return mid == host_memory_id || device_map.count(mid - 1) > 0; }));
+		for (const auto mid: mids) {
+			if (mid == host_memory_id) continue;
+			const device_id did = mid - 1;
+			if (const auto it = device_map.find(did); it != device_map.end()) {
+				return &it->second;
+			}
+		}
+		panic("no matching instruction queue");
+	};
+
+	switch(backend) {
+	case instruction_backend::host:
+		assert(std::all_of(mids.begin(), mids.end(), [](const memory_id mid) { return mid == host_memory_id; }));
+		return &host_queue;
+	case instruction_backend::sycl: return find_in_device_map(sycl_queues);
+	case instruction_backend::cuda: return find_in_device_map(cuda_queues);
+	}
+}
+
+out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const instruction_backend backend, const device_id did) {
+	switch(backend) {
+	case instruction_backend::host: panic("cannot select host backend for device");
+	case instruction_backend::sycl: return &sycl_queues.at(did);
+	case instruction_backend::cuda: return &cuda_queues.at(did);
+	}
+}
+
+out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const instruction& instr) {
+	return utils::match(
+	    instr, [&](const alloc_instruction& ainstr) { return select_queue(ainstr.get_backend(), {ainstr.get_memory_id()}); },
+	    [&](const free_instruction& finstr) { return select_queue(finstr.get_backend(), {host_memory_id /* TODO finstr.get_memory_id() */}); },
+	    [&](const copy_instruction& cinstr) {
+		    return select_queue(cinstr.get_backend(), {cinstr.get_source_memory(), cinstr.get_dest_memory()});
+	    },
+	    [&](const sycl_kernel_instruction& skinstr) { return select_queue(instruction_backend::sycl, skinstr.get_device_id()); },
+	    [&](const auto& /* default */) -> out_of_order_instruction_queue* { return &host_queue; });
+}
 
 } // namespace celerity::detail

@@ -339,10 +339,10 @@ namespace detail {
 
 		const auto begin_node = [&](const instruction& instr, const std::string_view& shape) {
 			fmt::format_to(back, "I{}[", instr.get_id());
-			switch(instr.get_target_port()) {
-			case instruction_port::host: break;
-			case instruction_port::sycl:
-			case instruction_port::sycl_async: dot += "color=darkorange2,"; break;
+			switch(instr.get_backend()) {
+			case instruction_backend::host: break;
+			case instruction_backend::sycl: dot += "color=darkorange2,"; break;
+			case instruction_backend::cuda: dot += "color=green3,"; break;
 			}
 			fmt::format_to(back, "shape={},label=<", shape);
 		};

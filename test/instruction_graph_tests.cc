@@ -138,13 +138,17 @@ class idag_test_context {
 	friend class idag_task_builder;
 
   public:
-	explicit idag_test_context(size_t num_nodes, node_id my_nid, size_t num_devices_per_node) : m_num_nodes(num_nodes), m_my_nid(my_nid) {
+	explicit idag_test_context(size_t num_nodes, node_id my_nid, size_t num_devices_per_node) : m_my_nid(my_nid) {
 		m_rm = std::make_unique<reduction_manager>();
 		m_tm = std::make_unique<task_manager>(num_nodes, nullptr /* host_queue */);
 		m_cdag = std::make_unique<command_graph>();
 		m_dggen = std::make_unique<distributed_graph_generator>(num_nodes, 1 /* devices per node, TODO */, my_nid, *m_cdag, *m_tm);
-		m_iggen = std::make_unique<instruction_graph_generator>(
-		    *m_tm, std::vector<instruction_graph_generator::device_info>(num_devices_per_node, {instruction_graph_generator::platform::sycl}));
+
+		std::map<device_id, instruction_graph_generator::device_info> devices;
+		for(device_id did = 0; did < num_devices_per_node; ++did) {
+			devices.emplace(did, instruction_graph_generator::device_info{{instruction_backend::cuda, instruction_backend::sycl}});
+		}
+		m_iggen = std::make_unique<instruction_graph_generator>(*m_tm, std::move(devices));
 
 		m_tm->NOMERGE_generate_collectives = false; // TODO temporary until we implement collectives
 		m_tm->register_task_callback([this](const task* const tsk) {
@@ -186,7 +190,6 @@ class idag_test_context {
 	const instruction_graph& get_instruction_graph() { return m_iggen->get_graph(); }
 
   private:
-	size_t m_num_nodes;
 	node_id m_my_nid;
 	buffer_id m_next_buffer_id = 0;
 	host_object_id m_next_host_object_id = 0;
