@@ -193,9 +193,18 @@ class instruction_graph_generator {
 		return *ptr;
 	}
 
-	void add_dependency(instruction& from, instruction& to, const dependency_kind kind) {
-		from.add_dependency({&to, kind, dependency_origin::instruction});
-		if(kind == dependency_kind::true_dep) { m_execution_front.erase(&to); }
+	void add_dependency(instruction& from, instruction& to) {
+		dependency_origin origin;
+		if (from.get_backend() == instruction_backend::cuda && to.get_backend() == instruction_backend::cuda) {
+			origin = dependency_origin::instruction_via_cuda;
+		} else if (from.get_backend() == instruction_backend::sycl && to.get_backend() == instruction_backend::sycl) {
+			origin = dependency_origin::instruction_via_sycl;
+		} else {
+			// TODO attempt to use SYCL interop events if possible (and if that is even a thing)?
+			origin = dependency_origin::instruction_via_host;
+		}
+		from.add_dependency({&to, dependency_kind::true_dep, origin});
+		 m_execution_front.erase(&to);
 	}
 
 	// This mapping will differ for architectures that share memory between host and device or between devices.
@@ -225,7 +234,7 @@ class instruction_graph_generator {
 
 	void collapse_execution_front_to(instruction* const horizon) {
 		for(const auto instr : m_execution_front) {
-			if(instr != horizon) { horizon->add_dependency({instr, dependency_kind::true_dep, dependency_origin::instruction}); }
+			if(instr != horizon) { horizon->add_dependency({instr, dependency_kind::true_dep, dependency_origin::instruction_via_host}); }
 		}
 		m_execution_front.clear();
 		m_execution_front.insert(horizon);
