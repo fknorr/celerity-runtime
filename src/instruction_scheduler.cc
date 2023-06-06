@@ -3,6 +3,10 @@
 #include "closure_hydrator.h"
 #include <cuda_runtime.h> // TODO move CUDA stuff to separate source
 
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+
 namespace celerity::detail {
 
 class cuda_event final : public instruction_queue_event_impl {
@@ -12,6 +16,15 @@ class cuda_event final : public instruction_queue_event_impl {
 		CELERITY_CUDA_CHECK(cudaEventCreateWithFlags, &event, cudaEventDisableTiming);
 		m_event = std::unique_ptr<CUevent_st, deleter>(event);
 	}
+
+	bool has_completed() const override {
+		switch(const auto result = cudaEventQuery(m_event.get())) {
+		case cudaSuccess: return true;
+		case cudaErrorNotReady: return false;
+		default: panic("cudaEventQuery: {}", cudaGetErrorString(result));
+		}
+	}
+
 	void block_on() override { CELERITY_CUDA_CHECK(cudaEventSynchronize, m_event.get()); }
 	cudaEvent_t get() const { return m_event.get(); }
 
@@ -117,6 +130,9 @@ class cuda_stream final : public in_order_instruction_queue {
 class sycl_event_impl : public instruction_queue_event_impl {
   public:
 	sycl_event_impl(sycl::event event) : m_event(std::move(event)) {}
+	bool has_completed() const override {
+		return m_event.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete;
+	}
 	void block_on() override { m_event.wait(); }
 	const sycl::event& get() const { return m_event; }
 
@@ -168,7 +184,8 @@ class host_thread_queue : public in_order_instruction_queue {
 		host_thread_queue* get_queue() const { return m_queue; }
 		tick get_tick() const { return m_tick; }
 
-		virtual void block_on() override { m_queue->block_on(m_tick); }
+		bool has_completed() const override { return m_queue->has_completed(m_tick); }
+		void block_on() override { m_queue->block_on(m_tick); }
 
 	  private:
 		host_thread_queue* m_queue;
@@ -203,12 +220,12 @@ class host_thread_queue : public in_order_instruction_queue {
 
 	std::thread m_thread;
 
-	std::mutex m_queue_mutex;
+	mutable std::mutex m_queue_mutex;
 	tick m_next_tick = 1;
 	std::queue<token> m_queue;
 	std::condition_variable m_queue_nonempty;
 
-	std::mutex m_tick_mutex;
+	mutable std::mutex m_tick_mutex;
 	tick m_last_tick = 0;
 	std::condition_variable m_tick;
 
@@ -260,6 +277,11 @@ class host_thread_queue : public in_order_instruction_queue {
 		return t;
 	}
 
+	bool has_completed(tick t) const {
+		std::lock_guard lock(m_tick_mutex);
+		return m_last_tick >= t;
+	}
+
 	void block_on(tick t) {
 		std::unique_lock lock(m_tick_mutex);
 		while(m_last_tick < t) {
@@ -286,7 +308,8 @@ class multiplex_instruction_queue : public out_of_order_instruction_queue {
 		queue_index get_queue_index() const { return m_queue_index; }
 		const instruction_queue_event& get_queue_event() const { return m_event; }
 
-		virtual void block_on() override { m_event->block_on(); }
+		bool has_completed() const override { return m_event->has_completed(); }
+		void block_on() override { m_event->block_on(); }
 
 	  private:
 		queue_index m_queue_index;
@@ -338,86 +361,171 @@ class multiplex_instruction_queue : public out_of_order_instruction_queue {
 	queue_index m_round_robin_index = 0;
 };
 
-struct instruction_scheduler::impl {
+class polling_instruction_observer {
+  public:
+	class delegate {
+	  public:
+		delegate() = default;
+		delegate(const delegate&) = delete;
+		delegate& operator=(const delegate&) = delete;
+		virtual ~delegate() = default;
+		virtual void event_completed(const instruction_id iid, instruction_queue_event event) = 0;
+	};
+
+	explicit polling_instruction_observer(delegate* delegate) : m_delegate(delegate), m_thread(&polling_instruction_observer::thread_main, this) {}
+
+	polling_instruction_observer(const polling_instruction_observer&) = delete;
+	polling_instruction_observer& operator=(const polling_instruction_observer&) = delete;
+
+	~polling_instruction_observer() {
+		{
+			std::lock_guard lock(m_mutex);
+			m_exit = true;
+		}
+		m_unpause.notify_one();
+	}
+
+	void notify_on_completion(const instruction_id iid, instruction_queue_event event) {
+		bool maybe_paused;
+		{
+			std::lock_guard lock(m_mutex);
+			maybe_paused = m_active_events.empty();
+			m_active_events.emplace_back(iid, std::move(event));
+		}
+		if(maybe_paused) { m_unpause.notify_one(); }
+	}
+
+  private:
+	std::mutex m_mutex;
+	delegate* m_delegate;
+	bool m_exit = false;
+	std::condition_variable m_unpause;
+	std::vector<std::pair<instruction_id, instruction_queue_event>> m_active_events;
+	std::thread m_thread;
+
+	void thread_main() {
+		decltype(m_active_events) completed;
+		std::unique_lock lock(m_mutex);
+		for(;;) {
+			while(!m_exit && m_active_events.empty()) {
+				m_unpause.wait(lock); // TODO consider only pausing when the entire runtime is idle
+			}
+			if(m_exit) break;
+
+			const auto first_completed =
+			    std::remove_if(m_active_events.begin(), m_active_events.end(), [](const auto& pair) { return pair.second->has_completed(); });
+			if(first_completed == m_active_events.end()) continue;
+
+			completed.assign(std::make_move_iterator(first_completed), std::make_move_iterator(m_active_events.end()));
+			m_active_events.erase(first_completed, m_active_events.end());
+
+			lock.unlock();
+			for(auto& [iid, evt] : completed) {
+				m_delegate->event_completed(std::move(iid), evt);
+			}
+			completed.clear();
+			lock.lock();
+		}
+	}
+};
+
+class instruction_backlog final : private polling_instruction_observer::delegate {
+  public:
+	class delegate {
+	  public:
+		delegate() = default;
+		delegate(const delegate&) = delete;
+		delegate& operator=(const delegate&) = delete;
+		virtual ~delegate() = default;
+		virtual void dependencies_satisfied(std::unique_ptr<instruction> instr) = 0;
+	};
+
+	explicit instruction_backlog(delegate* delegate) : m_delegate(delegate), m_observer(this) {}
+
+	void push(std::unique_ptr<instruction> instr, std::vector<std::pair<instruction_id, instruction_queue_event>> incomplete_dependencies) {
+		{
+			std::lock_guard lock(m_mutex);
+			const auto iid = instr->get_id();
+			m_pending_instructions.emplace(iid, pending_instruction{std::move(instr), incomplete_dependencies.size()});
+			for(const auto& [dep_iid, dep_event] : incomplete_dependencies) {
+				m_waiting_on.emplace(dep_iid, iid);
+			}
+		}
+		// m_observer is thread-safe, keep lock duration short
+		for(auto& [dep_iid, dep_event] : incomplete_dependencies) {
+			m_observer.notify_on_completion(dep_iid, std::move(dep_event));
+		}
+	}
+
+  private:
+	struct pending_instruction {
+		std::unique_ptr<instruction> instr;
+		size_t num_incomplete_dependencies;
+	};
+
+	std::mutex m_mutex;
+	delegate* m_delegate;
+	polling_instruction_observer m_observer;
+	std::unordered_multimap<instruction_id /* dependency */, instruction_id /* pending instruction */> m_waiting_on;
+	std::unordered_map<instruction_id, pending_instruction> m_pending_instructions;
+
+	void event_completed(const instruction_id iid, instruction_queue_event event) override {
+		std::vector<std::unique_ptr<instruction>> satisfied;
+		{
+			std::lock_guard lock(m_mutex);
+			const auto [first, last] = m_waiting_on.equal_range(iid);
+			for(auto it = first; it != last;) {
+				auto& pending = m_pending_instructions.at(it->second);
+				assert(pending.num_incomplete_dependencies > 0);
+				pending.num_incomplete_dependencies -= 1;
+				if(pending.num_incomplete_dependencies == 0) {
+					satisfied.push_back(std::move(pending.instr));
+					it = m_waiting_on.erase(it);
+				} else {
+					++it;
+				}
+			}
+		}
+		for(auto& instr : satisfied) {
+			m_delegate->dependencies_satisfied(std::move(instr));
+		}
+	}
+};
+
+struct instruction_scheduler::impl : instruction_backlog::delegate {
+	std::mutex mutex;
+	std::unique_ptr<allocation_manager> alloc_manager;
 	multiplex_instruction_queue host_queue;
 	std::unordered_map<device_id, int> cuda_device_ids;
 	std::unordered_map<device_id, multiplex_instruction_queue> cuda_queues;
 	std::unordered_map<device_id, sycl_queue> sycl_queues;
-	std::unique_ptr<allocation_manager> alloc_manager;
 	std::unordered_map<instruction_id, std::unique_ptr<instruction>> queued_instructions;
-	std::unordered_map<instruction_id, instruction_queue_event> active_instructions; // TODO how to GC?
+	// TODO GC this on horizons / epochs. It should be tracking iids for finished instructions as well (mind the race around instructions finishing
+	// asynchronously)
+	std::unordered_map<instruction_id, instruction_queue_event> active_instructions;
+	instruction_backlog backlog;
+
+	impl(std::unique_ptr<allocation_manager> alloc_manager, multiplex_instruction_queue host_queue, std::unordered_map<device_id, int> cuda_device_ids,
+	    std::unordered_map<device_id, multiplex_instruction_queue> cuda_queues, std::unordered_map<device_id, sycl_queue> sycl_queues)
+	    : alloc_manager(std::move(alloc_manager)), host_queue(std::move(host_queue)), cuda_device_ids(std::move(cuda_device_ids)),
+	      cuda_queues(std::move(cuda_queues)), sycl_queues(std::move(sycl_queues)), backlog(this) {}
 
 	out_of_order_instruction_queue* select_queue(const instruction& isntr);
 	out_of_order_instruction_queue* select_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids);
 	out_of_order_instruction_queue* select_queue(const instruction_backend backend, const device_id did);
+
+	void submit(std::unique_ptr<instruction> instr);
+	void dependencies_satisfied_internal(std::unique_ptr<instruction> instr);
+	void dependencies_satisfied(std::unique_ptr<instruction> instr) override;
 };
-
-instruction_scheduler::instruction_scheduler(std::unordered_map<device_id, int> cuda_device_ids, std::unordered_map<device_id, sycl::queue> sycl_queues) {
-	constexpr size_t num_host_threads = 4;
-	constexpr size_t num_cuda_streams_per_device = 4;
-
-	auto am = std::make_unique<allocation_manager>();
-
-	std::vector<std::unique_ptr<in_order_instruction_queue>> host_instr_queues;
-	host_instr_queues.reserve(num_host_threads);
-	for(size_t i = 0; i < num_host_threads; ++i) {
-		host_instr_queues.emplace_back(std::make_unique<host_thread_queue>());
-	}
-
-	std::unordered_map<device_id, multiplex_instruction_queue> cuda_instr_queues;
-	for(const auto& [did, cuda_did] : cuda_device_ids) {
-		std::vector<std::unique_ptr<in_order_instruction_queue>> cuda_streams;
-		cuda_streams.reserve(num_cuda_streams_per_device);
-		for(size_t i = 0; i < num_host_threads; ++i) {
-			cuda_streams.emplace_back(std::make_unique<cuda_stream>(cuda_did, *am));
-		}
-		cuda_instr_queues.emplace(did, multiplex_instruction_queue(std::move(cuda_streams)));
-	}
-
-	std::unordered_map<device_id, sycl_queue> sycl_instr_queues;
-	for(const auto& [did, q] : sycl_queues) {
-		sycl_instr_queues.emplace(did, sycl_queue(q, *am));
-	}
-
-	m_impl.reset(new impl{
-	    multiplex_instruction_queue(std::move(host_instr_queues)),
-	    std::move(cuda_device_ids),
-	    std::move(cuda_instr_queues),
-	    std::move(sycl_instr_queues),
-	    std::move(am),
-		/* queued_instructions = */ {},
-		/* active_instructions = */ {},
-	});
-}
-
-instruction_scheduler::~instruction_scheduler() = default;
-
-void instruction_scheduler::submit(std::unique_ptr<instruction> instr) {
-	std::vector<instruction_queue_event> dependencies;
-	size_t num_pending_dependencies = 0;
-	for(const auto& dep : instr->get_dependencies()) {
-		if(const auto active = m_impl->active_instructions.find(dep.node->get_id()); active != m_impl->active_instructions.end()) {
-			dependencies.push_back(active->second);
-		} else {
-			++num_pending_dependencies;
-		}
-	}
-
-	if(num_pending_dependencies == 0) {
-		const auto target_queue = m_impl->select_queue(*instr);
-		target_queue->submit(std::move(instr), std::move(dependencies));
-	}
-}
 
 out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids) {
 	const auto find_in_device_map = [&](auto& device_map) {
 		assert(std::all_of(mids.begin(), mids.end(), [&](const memory_id mid) { return mid == host_memory_id || device_map.count(mid - 1) > 0; }));
-		for (const auto mid: mids) {
-			if (mid == host_memory_id) continue;
+		for(const auto mid : mids) {
+			if(mid == host_memory_id) continue;
 			const device_id did = mid - 1;
-			if (const auto it = device_map.find(did); it != device_map.end()) {
-				return &it->second;
-			}
+			if(const auto it = device_map.find(did); it != device_map.end()) { return &it->second; }
 		}
 		panic("no matching instruction queue");
 	};
@@ -449,5 +557,70 @@ out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const 
 	    [&](const sycl_kernel_instruction& skinstr) { return select_queue(instruction_backend::sycl, skinstr.get_device_id()); },
 	    [&](const auto& /* default */) -> out_of_order_instruction_queue* { return &host_queue; });
 }
+
+instruction_scheduler::instruction_scheduler(std::unordered_map<device_id, int> cuda_device_ids, std::unordered_map<device_id, sycl::queue> sycl_queues) {
+	constexpr size_t num_host_threads = 4;
+	constexpr size_t num_cuda_streams_per_device = 4;
+
+	auto am = std::make_unique<allocation_manager>();
+
+	std::vector<std::unique_ptr<in_order_instruction_queue>> host_instr_queues;
+	host_instr_queues.reserve(num_host_threads);
+	for(size_t i = 0; i < num_host_threads; ++i) {
+		host_instr_queues.emplace_back(std::make_unique<host_thread_queue>());
+	}
+
+	std::unordered_map<device_id, multiplex_instruction_queue> cuda_instr_queues;
+	for(const auto& [did, cuda_did] : cuda_device_ids) {
+		std::vector<std::unique_ptr<in_order_instruction_queue>> cuda_streams;
+		cuda_streams.reserve(num_cuda_streams_per_device);
+		for(size_t i = 0; i < num_host_threads; ++i) {
+			cuda_streams.emplace_back(std::make_unique<cuda_stream>(cuda_did, *am));
+		}
+		cuda_instr_queues.emplace(did, multiplex_instruction_queue(std::move(cuda_streams)));
+	}
+
+	std::unordered_map<device_id, sycl_queue> sycl_instr_queues;
+	for(const auto& [did, q] : sycl_queues) {
+		sycl_instr_queues.emplace(did, sycl_queue(q, *am));
+	}
+
+	m_impl.reset(new impl(std::move(am), multiplex_instruction_queue(std::move(host_instr_queues)), std::move(cuda_device_ids), std::move(cuda_instr_queues),
+	    std::move(sycl_instr_queues)));
+}
+
+instruction_scheduler::~instruction_scheduler() = default;
+
+void instruction_scheduler::impl::submit(std::unique_ptr<instruction> instr) {
+	std::lock_guard lock(mutex);
+
+	std::vector<instruction_queue_event> dependencies;
+	size_t num_pending_dependencies = 0;
+	for(const auto& dep : instr->get_dependencies()) {
+		if(const auto active = active_instructions.find(dep.node->get_id()); active != active_instructions.end()) {
+			dependencies.push_back(active->second);
+		} else {
+			++num_pending_dependencies;
+		}
+	}
+
+	if(num_pending_dependencies == 0) {
+		const auto target_queue = select_queue(*instr);
+		target_queue->submit(std::move(instr), std::move(dependencies));
+	}
+}
+
+void instruction_scheduler::impl::dependencies_satisfied_internal(std::unique_ptr<instruction> instr) {
+	std::lock_guard lock(mutex);
+	const auto target_queue = select_queue(*instr);
+	target_queue->submit(std::move(instr), std::move(backend_dependencies));
+}
+
+void instruction_scheduler::impl::dependencies_satisfied(std::unique_ptr<instruction> instr) {
+	std::lock_guard lock(mutex);
+	dependencies_satisfied_internal(std::move(instr));
+}
+
+void instruction_scheduler::submit(std::unique_ptr<instruction> instr) { m_impl->submit(std::move(instr)); }
 
 } // namespace celerity::detail

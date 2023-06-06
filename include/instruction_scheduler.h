@@ -31,6 +31,7 @@ class allocation_manager {
 class instruction_queue_event_impl {
   public:
 	virtual ~instruction_queue_event_impl() = default;
+	virtual bool has_completed() const = 0;
 	virtual void block_on() = 0;
 };
 
