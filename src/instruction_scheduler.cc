@@ -2,6 +2,7 @@
 #include "buffer_storage.h" // TODO included for CELERITY_CUDA_CHECK, consider moving that
 #include "closure_hydrator.h"
 #include "instruction_graph.h"
+#include <atomic>
 #include <cuda_runtime.h> // TODO move CUDA stuff to separate source
 
 #include <condition_variable>
@@ -764,6 +765,63 @@ instruction_queue_event abstract_instruction_scheduler::submit_to_backend(std::u
 	auto event = m_delegate->submit_to_backend(std::move(instr), backend_deps);
 	m_poll_set.emplace_back(iid, event.get());
 	return event;
+}
+
+class threaded_instruction_scheduler {
+  public:
+	explicit threaded_instruction_scheduler(abstract_instruction_scheduler::delegate* delegate);
+	threaded_instruction_scheduler(const threaded_instruction_scheduler&) = delete;
+	threaded_instruction_scheduler& operator=(const threaded_instruction_scheduler&) = delete;
+	~threaded_instruction_scheduler();
+
+	void submit(std::unique_ptr<instruction> instr);
+
+  private:
+	abstract_instruction_scheduler m_scheduler;
+
+	std::atomic<bool> m_check_submission_queue; // don't contend the mutex
+	std::mutex m_submission_mutex;
+	std::queue<std::unique_ptr<instruction>> m_submission_queue;
+	bool m_no_more_submissions = false;
+
+	std::thread m_thread;
+
+	void thread_main();
+};
+
+threaded_instruction_scheduler::threaded_instruction_scheduler(abstract_instruction_scheduler::delegate* delegate)
+    : m_scheduler(delegate), m_thread(&threaded_instruction_scheduler::thread_main, this) {}
+
+threaded_instruction_scheduler::~threaded_instruction_scheduler() {
+	std::lock_guard lock(m_submission_mutex);
+	m_no_more_submissions = true;
+	m_check_submission_queue.store(true, std::memory_order_relaxed);
+}
+
+void threaded_instruction_scheduler::submit(std::unique_ptr<instruction> instr) {
+	std::lock_guard lock(m_submission_mutex);
+	assert(!m_no_more_submissions);
+	m_submission_queue.push(std::move(instr));
+	m_check_submission_queue.store(true, std::memory_order_relaxed);
+}
+
+void threaded_instruction_scheduler::thread_main() {
+	for(;;) {
+		bool no_more_submissions = false;
+		if(m_check_submission_queue.load(std::memory_order_relaxed)) {
+			std::lock_guard lock(m_submission_mutex);
+			while(!m_submission_queue.empty()) {
+				m_scheduler.submit(std::move(m_submission_queue.front()));
+				m_submission_queue.pop();
+			}
+			no_more_submissions = m_no_more_submissions;
+			m_check_submission_queue.store(false, std::memory_order_relaxed);
+		}
+
+		// TODO suspend the thread when there is nothing to do
+		const auto action = m_scheduler.poll_events();
+		if(action == abstract_instruction_scheduler::poll_action::idle_until_next_submit && no_more_submissions) break;
+	}
 }
 
 } // namespace celerity::detail
