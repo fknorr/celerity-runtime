@@ -1,11 +1,13 @@
 #include "instruction_scheduler.h"
 #include "buffer_storage.h" // TODO included for CELERITY_CUDA_CHECK, consider moving that
 #include "closure_hydrator.h"
+#include "instruction_graph.h"
 #include <cuda_runtime.h> // TODO move CUDA stuff to separate source
 
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <variant>
 
 namespace celerity::detail {
 
@@ -622,5 +624,146 @@ void instruction_scheduler::impl::dependencies_satisfied(std::unique_ptr<instruc
 }
 
 void instruction_scheduler::submit(std::unique_ptr<instruction> instr) { m_impl->submit(std::move(instr)); }
+
+
+class abstract_instruction_scheduler {
+  public:
+	class delegate {
+	  public:
+		delegate() = default;
+		delegate(const delegate&) = default;
+		delegate& operator=(const delegate&) = default;
+		virtual ~delegate() = default;
+		virtual instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies);
+	};
+
+	enum class poll_action {
+		poll_again,
+		idle_until_next_submit,
+	};
+
+	explicit abstract_instruction_scheduler(delegate* delegate) : m_delegate(delegate) {}
+
+	void submit(std::unique_ptr<instruction> instr);
+
+	poll_action poll_events();
+
+  private:
+	struct pending_instruction_info {
+		std::unique_ptr<instruction> instr;
+		size_t num_inorder_dependencies;
+		std::vector<instruction_id> inorder_submission_dependents;
+		std::vector<instruction_id> inorder_completion_dependents;
+	};
+	struct active_instruction_info {
+		instruction_backend backend;
+		instruction_queue_event event;
+		std::vector<instruction_id> inorder_completion_dependents;
+	};
+	struct finished_instruction_info {};
+	using instruction_info = std::variant<pending_instruction_info, active_instruction_info, finished_instruction_info>;
+
+	delegate* m_delegate;
+	std::unordered_map<instruction_id, instruction_info> m_visible_instructions;      // TODO GC on effective epoch
+	std::vector<std::pair<instruction_id, instruction_queue_event_impl*>> m_poll_set; // events are owned by m_visible_instructions
+
+	void fulfill_dependency(const std::vector<instruction_id>& dependents, std::vector<instruction_info*>& out_ready_set);
+
+	[[nodiscard]] instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr);
+};
+
+void abstract_instruction_scheduler::submit(std::unique_ptr<instruction> instr) {
+	const auto iid = instr->get_id();
+	const auto backend = instr->get_backend();
+
+	size_t num_inorder_dependencies = 0;
+	for(const auto& dep : instr->get_dependencies()) {
+		utils::match(
+		    m_visible_instructions.at(dep.node->get_id()),
+		    [&](pending_instruction_info& dep_piinfo) {
+			    if(dep_piinfo.instr->get_backend() == backend) {
+				    dep_piinfo.inorder_submission_dependents.push_back(iid);
+			    } else {
+				    dep_piinfo.inorder_completion_dependents.push_back(iid);
+			    }
+			    num_inorder_dependencies += 1;
+		    },
+		    [&](active_instruction_info& dep_aiinfo) {
+			    if(dep_aiinfo.backend != backend) {
+				    dep_aiinfo.inorder_completion_dependents.push_back(iid);
+				    num_inorder_dependencies += 1;
+			    }
+		    },
+		    [](const finished_instruction_info&) {});
+	}
+
+	if(num_inorder_dependencies == 0) {
+		auto event = submit_to_backend(std::move(instr));
+		m_visible_instructions.emplace(iid, active_instruction_info{backend, std::move(event), {}});
+	} else {
+		m_visible_instructions.emplace(iid, pending_instruction_info{std::move(instr), num_inorder_dependencies, {}, {}});
+	}
+}
+
+abstract_instruction_scheduler::poll_action abstract_instruction_scheduler::poll_events() {
+	if(m_poll_set.empty()) return poll_action::idle_until_next_submit;
+
+	const auto first_completed = std::partition(m_poll_set.begin(), m_poll_set.end(), [](const auto& pair) { return !pair.second->has_completed(); });
+	if(first_completed == m_poll_set.end()) return poll_action::poll_again;
+
+	std::vector<instruction_info*> ready_set;
+	for(auto it = first_completed; it != m_poll_set.end(); ++it) {
+		const auto [iid, evt] = *it;
+		auto& iinfo = m_visible_instructions.at(iid);
+		auto& aiinfo = std::get<active_instruction_info>(iinfo);
+		fulfill_dependency(aiinfo.inorder_completion_dependents, ready_set);
+		iinfo = finished_instruction_info{};
+	}
+
+	m_poll_set.erase(first_completed, m_poll_set.end());
+
+	std::vector<instruction_info*> next_ready_set;
+	while(!ready_set.empty()) {
+		for(const auto iinfo : ready_set) {
+			auto& piinfo = std::get<pending_instruction_info>(*iinfo);
+			fulfill_dependency(piinfo.inorder_submission_dependents, next_ready_set);
+
+			const auto backend = piinfo.instr->get_backend();
+			auto event = submit_to_backend(std::move(piinfo.instr));
+			*iinfo = active_instruction_info{backend, std::move(event), std::move(piinfo.inorder_completion_dependents)};
+		}
+		ready_set.clear();
+		std::swap(ready_set, next_ready_set);
+	}
+
+	return m_poll_set.empty() ? poll_action::idle_until_next_submit : poll_action::poll_again;
+}
+
+void abstract_instruction_scheduler::fulfill_dependency(const std::vector<instruction_id>& dependents, std::vector<instruction_info*>& out_ready_set) {
+	for(const auto dependent_iid : dependents) {
+		auto& dependent_iinfo = m_visible_instructions.at(dependent_iid);
+		auto& dependent_piinfo = std::get<pending_instruction_info>(dependent_iinfo);
+		assert(dependent_piinfo.num_inorder_dependencies > 0);
+		dependent_piinfo.num_inorder_dependencies -= 1;
+		if(dependent_piinfo.num_inorder_dependencies == 0) { out_ready_set.push_back(&dependent_iinfo); }
+	}
+}
+
+instruction_queue_event abstract_instruction_scheduler::submit_to_backend(std::unique_ptr<instruction> instr) {
+	const auto iid = instr->get_id();
+	const auto deps = instr->get_dependencies();
+	std::vector<instruction_queue_event> backend_deps;
+	for(auto& dep : deps) {
+		const auto& dep_iinfo = m_visible_instructions.at(dep.node->get_id());
+		if(!std::holds_alternative<finished_instruction_info>(dep_iinfo)) {
+			const auto& dep_aiinfo = std::get<active_instruction_info>(dep_iinfo);
+			assert(dep_aiinfo.backend == instr->get_backend());
+			backend_deps.push_back(dep_aiinfo.event);
+		}
+	}
+	auto event = m_delegate->submit_to_backend(std::move(instr), backend_deps);
+	m_poll_set.emplace_back(iid, event.get());
+	return event;
+}
 
 } // namespace celerity::detail
