@@ -1,15 +1,29 @@
 #include "instruction_executor.h"
 
 #include "fmt_internals.h"
+#include "instruction_backend.h"
 #include "instruction_graph.h"
 #include "instruction_queue.h"
 #include "utils.h"
+#include <type_traits>
 
 namespace celerity::detail {
 
 instruction_executor::instruction_executor(
     std::unique_ptr<allocation_manager> alloc_manager, std::unique_ptr<out_of_order_instruction_queue> host_queue, device_queue_map device_queues)
-    : m_alloc_manager(std::move(alloc_manager)), m_host_queue(std::move(host_queue)), m_device_queues(std::move(device_queues)), m_scheduler(this) {}
+    : m_alloc_manager(std::move(alloc_manager)), m_host_queue(std::move(host_queue)), m_device_queues(std::move(device_queues)), m_scheduler(this) {
+	using int_backend = std::underlying_type_t<instruction_backend>;
+	std::fill(std::begin(m_backend_graph_ordering_support), std::end(m_backend_graph_ordering_support), true);
+	if(dynamic_cast<graph_order_instruction_queue*>(host_queue.get()) == nullptr) {
+		m_backend_graph_ordering_support[static_cast<int_backend>(instruction_backend::host)] = false;
+	}
+	for(const auto& [did_backend, queue] : m_device_queues) {
+		if(dynamic_cast<graph_order_instruction_queue*>(queue.get()) == nullptr) {
+			const auto& [did, backend] = did_backend;
+			m_backend_graph_ordering_support[static_cast<int_backend>(backend)] = false;
+		}
+	}
+}
 
 void instruction_executor::submit(std::unique_ptr<instruction> instr) { m_scheduler.submit(std::move(instr)); }
 
@@ -51,8 +65,18 @@ out_of_order_instruction_queue* instruction_executor::select_backend_queue(const
 }
 
 instruction_queue_event instruction_executor::submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) {
-	const auto target_queue = select_backend_queue(*instr);
+	const auto target_queue = dynamic_cast<graph_order_instruction_queue*>(select_backend_queue(*instr));
+	assert(target_queue != nullptr && "backend queue not support graph ordering even though we told the scheduler it does");
 	return target_queue->submit(std::move(instr), std::move(dependencies));
+}
+
+instruction_queue_event instruction_executor::submit_to_backend(std::unique_ptr<instruction> instr) {
+	const auto target_queue = select_backend_queue(*instr);
+	return target_queue->submit(std::move(instr));
+}
+
+bool instruction_executor::backend_supports_graph_ordering(const instruction_backend backend) const {
+	return backend != instruction_backend::host; // we enforce this through the types in device_queue_map
 }
 
 } // namespace celerity::detail

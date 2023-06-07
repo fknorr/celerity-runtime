@@ -1,7 +1,7 @@
 #include "instruction_scheduler.h"
 
-#include "instruction_graph.h"
 #include "allocation_manager.h"
+#include "instruction_graph.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -14,13 +14,14 @@ namespace celerity::detail {
 void instruction_scheduler::submit(std::unique_ptr<instruction> instr) {
 	const auto iid = instr->get_id();
 	const auto backend = instr->get_backend();
+	const auto backend_supports_graph_ordering = m_delegate->backend_supports_graph_ordering(backend);
 
 	size_t num_inorder_dependencies = 0;
 	for(const auto& dep : instr->get_dependencies()) {
 		utils::match(
 		    m_visible_instructions.at(dep.node->get_id()),
 		    [&](pending_instruction_info& dep_piinfo) {
-			    if(dep_piinfo.instr->get_backend() == backend) {
+			    if(dep_piinfo.instr->get_backend() == backend && backend_supports_graph_ordering) {
 				    dep_piinfo.inorder_submission_dependents.push_back(iid);
 			    } else {
 				    dep_piinfo.inorder_completion_dependents.push_back(iid);
@@ -91,6 +92,7 @@ void instruction_scheduler::fulfill_dependency(const std::vector<instruction_id>
 instruction_queue_event instruction_scheduler::submit_to_backend(std::unique_ptr<instruction> instr) {
 	const auto iid = instr->get_id();
 	const auto deps = instr->get_dependencies();
+
 	std::vector<instruction_queue_event> backend_deps;
 	for(auto& dep : deps) {
 		const auto& dep_iinfo = m_visible_instructions.at(dep.node->get_id());
@@ -100,7 +102,12 @@ instruction_queue_event instruction_scheduler::submit_to_backend(std::unique_ptr
 			backend_deps.push_back(dep_aiinfo.event);
 		}
 	}
-	auto event = m_delegate->submit_to_backend(std::move(instr), backend_deps);
+	assert(backend_deps.empty() || m_delegate->backend_supports_graph_ordering(instr->get_backend()));
+
+	auto event = backend_deps.empty() //
+	                 ? m_delegate->submit_to_backend(std::move(instr))
+	                 : m_delegate->submit_to_backend(std::move(instr), backend_deps);
+
 	m_poll_set.emplace_back(iid, event.get());
 	return event;
 }

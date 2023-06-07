@@ -19,7 +19,15 @@ class instruction_scheduler {
 		delegate(const delegate&) = default;
 		delegate& operator=(const delegate&) = default;
 		virtual ~delegate() = default;
-		virtual instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies);
+
+		// will only be called for instructions whose backend_supports_graph_ordering
+		virtual instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) = 0;
+
+		// may be called for any backend
+		virtual instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr) { return submit_to_backend(std::move(instr), {}); }
+
+		// true if backend uses graph_order_instruction_queues
+		virtual bool backend_supports_graph_ordering(const instruction_backend backend) const = 0;
 	};
 
 	enum class poll_action {

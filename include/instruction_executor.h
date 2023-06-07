@@ -1,6 +1,7 @@
 #pragma once
 
 #include "allocation_manager.h"
+#include "instruction_backend.h"
 #include "instruction_queue.h"
 #include "instruction_scheduler.h"
 #include "utils.h"
@@ -13,7 +14,7 @@ class instruction_executor final : private instruction_scheduler::delegate {
 
 	instruction_executor(
 	    std::unique_ptr<allocation_manager> alloc_manager, std::unique_ptr<out_of_order_instruction_queue> host_queue, device_queue_map device_queues);
-	
+
 	void submit(std::unique_ptr<instruction> instr);
 
   private:
@@ -21,6 +22,7 @@ class instruction_executor final : private instruction_scheduler::delegate {
 	std::unique_ptr<allocation_manager> m_alloc_manager;
 	std::unique_ptr<out_of_order_instruction_queue> m_host_queue;
 	device_queue_map m_device_queues;
+	bool m_backend_graph_ordering_support[num_instruction_backends];
 
 	async_instruction_scheduler m_scheduler;
 
@@ -28,7 +30,9 @@ class instruction_executor final : private instruction_scheduler::delegate {
 	out_of_order_instruction_queue* select_backend_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids);
 	out_of_order_instruction_queue* select_backend_queue(const instruction_backend backend, const device_id did);
 
+	instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr) override;
 	instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) override;
+	bool backend_supports_graph_ordering(const instruction_backend backend) const override;
 };
 
 } // namespace celerity::detail

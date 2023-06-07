@@ -17,6 +17,12 @@ class instruction_queue_event_impl {
 
 using instruction_queue_event = std::shared_ptr<instruction_queue_event_impl>;
 
+class out_of_order_instruction_queue {
+  public:
+	virtual ~out_of_order_instruction_queue() = default;
+	virtual instruction_queue_event submit(std::unique_ptr<instruction> instr) = 0;
+};
+
 class in_order_instruction_queue {
   public:
 	virtual ~in_order_instruction_queue() = default;
@@ -24,10 +30,11 @@ class in_order_instruction_queue {
 	virtual void wait_on(const instruction_queue_event& evt) = 0;
 };
 
-class out_of_order_instruction_queue {
+class graph_order_instruction_queue : public out_of_order_instruction_queue {
   public:
-	virtual ~out_of_order_instruction_queue() = default;
+	virtual ~graph_order_instruction_queue() = default;
 	virtual instruction_queue_event submit(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) = 0;
+	instruction_queue_event submit(std::unique_ptr<instruction> instr) override { return submit(std::move(instr), {}); }
 };
 
 // Turns multiple in_order_instruction_queues into an out_of_order_instruction_queue.
@@ -36,11 +43,11 @@ class out_of_order_instruction_queue {
 //   - For CUDA we might want to have separate Kernel / D2H / H2D copy streams for maximum utilization
 //   - Async submissions do not really do anything for host code, we should rather submit these just in time to avoid needlessly blocking inside host threads to
 //     wait for events from their sibling queues
-class multiplex_instruction_queue : public out_of_order_instruction_queue {
+class multiplex_instruction_queue : public graph_order_instruction_queue {
   public:
 	explicit multiplex_instruction_queue(std::vector<std::unique_ptr<in_order_instruction_queue>> in_order_queues);
 
-	instruction_queue_event submit(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) override;
+	instruction_queue_event submit(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) final;
 
   private:
 	std::vector<std::unique_ptr<in_order_instruction_queue>> m_inorder_queues;

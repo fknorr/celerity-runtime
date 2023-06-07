@@ -5,7 +5,7 @@
 
 namespace celerity::detail {
 
-class sycl_instruction_queue : public out_of_order_instruction_queue {
+class sycl_instruction_queue final : public graph_order_instruction_queue {
   public:
 	explicit sycl_instruction_queue(sycl::queue q, allocation_manager& am);
 
@@ -16,4 +16,4 @@ class sycl_instruction_queue : public out_of_order_instruction_queue {
 	allocation_manager* m_allocation_mgr;
 };
 
-}
+} // namespace celerity::detail
