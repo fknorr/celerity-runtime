@@ -342,6 +342,7 @@ namespace detail {
 			fmt::format_to(back, "I{}[", instr.get_id());
 			switch(instr.get_backend()) {
 			case instruction_backend::host: break;
+			case instruction_backend::mpi: dot += "color=deeppink2,"; break;
 			case instruction_backend::sycl: dot += "color=darkorange2,"; break;
 			case instruction_backend::cuda: dot += "color=green3,"; break;
 			}

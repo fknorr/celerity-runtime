@@ -228,6 +228,7 @@ set(SOURCES
   src/instruction_graph_generator.cc
   src/instruction_queue.cc
   src/instruction_scheduler.cc
+  src/mpi_instruction_queue.cc
   src/local_devices.cc
   src/print_graph.cc
   src/print_utils.cc

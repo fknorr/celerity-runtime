@@ -310,7 +310,7 @@ class send_instruction final : public instruction {
 	    : instruction(iid), m_to_nid(to_nid), m_tag(tag), m_aid(aid), m_bytes(bytes) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::host; }
+	instruction_backend get_backend() const override { return instruction_backend::mpi; }
 
 	node_id get_dest_node_id() const { return m_to_nid; }
 	int get_tag() const { return m_tag; }
@@ -346,7 +346,7 @@ class recv_instruction final : public instruction {
 	      m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::host; }
+	instruction_backend get_backend() const override { return instruction_backend::mpi; }
 
 	transfer_id get_transfer_id() const { return m_transfer_id; }
 	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }

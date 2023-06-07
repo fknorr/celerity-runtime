@@ -12,8 +12,8 @@ class instruction_executor final : private instruction_scheduler::delegate {
   public:
 	using device_queue_map = std::unordered_map<std::pair<device_id, instruction_backend>, std::unique_ptr<out_of_order_instruction_queue>, utils::pair_hash>;
 
-	instruction_executor(
-	    std::unique_ptr<allocation_manager> alloc_manager, std::unique_ptr<out_of_order_instruction_queue> host_queue, device_queue_map device_queues);
+	instruction_executor(std::unique_ptr<allocation_manager> alloc_manager, std::unique_ptr<out_of_order_instruction_queue> host_queue,
+	    std::unique_ptr<out_of_order_instruction_queue> mpi_queue, device_queue_map device_queues);
 
 	void submit(std::unique_ptr<instruction> instr);
 
@@ -21,6 +21,7 @@ class instruction_executor final : private instruction_scheduler::delegate {
 	// only accessed by instruction scheduler thread
 	std::unique_ptr<allocation_manager> m_alloc_manager;
 	std::unique_ptr<out_of_order_instruction_queue> m_host_queue;
+	std::unique_ptr<out_of_order_instruction_queue> m_mpi_queue;
 	device_queue_map m_device_queues;
 	bool m_backend_graph_ordering_support[num_instruction_backends];
 

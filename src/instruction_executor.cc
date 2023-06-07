@@ -5,19 +5,28 @@
 #include "instruction_graph.h"
 #include "instruction_queue.h"
 #include "utils.h"
+
 #include <type_traits>
 
 namespace celerity::detail {
 
-instruction_executor::instruction_executor(
-    std::unique_ptr<allocation_manager> alloc_manager, std::unique_ptr<out_of_order_instruction_queue> host_queue, device_queue_map device_queues)
-    : m_alloc_manager(std::move(alloc_manager)), m_host_queue(std::move(host_queue)), m_device_queues(std::move(device_queues)), m_scheduler(this) {
+instruction_executor::instruction_executor(std::unique_ptr<allocation_manager> alloc_manager, std::unique_ptr<out_of_order_instruction_queue> host_queue,
+    std::unique_ptr<out_of_order_instruction_queue> mpi_queue, device_queue_map device_queues)
+    : m_alloc_manager(std::move(alloc_manager)), m_host_queue(std::move(host_queue)), m_mpi_queue(std::move(mpi_queue)),
+      m_device_queues(std::move(device_queues)), m_scheduler(this) {
 	using int_backend = std::underlying_type_t<instruction_backend>;
 	std::fill(std::begin(m_backend_graph_ordering_support), std::end(m_backend_graph_ordering_support), true);
-	if(dynamic_cast<graph_order_instruction_queue*>(host_queue.get()) == nullptr) {
+
+	assert(m_host_queue != nullptr);
+	if(dynamic_cast<graph_order_instruction_queue*>(m_host_queue.get()) == nullptr) {
 		m_backend_graph_ordering_support[static_cast<int_backend>(instruction_backend::host)] = false;
 	}
+	assert(m_mpi_queue != nullptr);
+	if(dynamic_cast<graph_order_instruction_queue*>(m_mpi_queue.get()) == nullptr) {
+		m_backend_graph_ordering_support[static_cast<int_backend>(instruction_backend::mpi)] = false;
+	}
 	for(const auto& [did_backend, queue] : m_device_queues) {
+		assert(queue != nullptr);
 		if(dynamic_cast<graph_order_instruction_queue*>(queue.get()) == nullptr) {
 			const auto& [did, backend] = did_backend;
 			m_backend_graph_ordering_support[static_cast<int_backend>(backend)] = false;
@@ -59,9 +68,12 @@ out_of_order_instruction_queue* instruction_executor::select_backend_queue(const
 	    [&](const free_instruction& finstr) { return select_backend_queue(finstr.get_backend(), {host_memory_id /* TODO finstr.get_memory_id() */}); },
 	    [&](const copy_instruction& cinstr) {
 		    return select_backend_queue(cinstr.get_backend(), {cinstr.get_source_memory(), cinstr.get_dest_memory()});
-	    },
+	    }, //
 	    [&](const sycl_kernel_instruction& skinstr) { return select_backend_queue(instruction_backend::sycl, skinstr.get_device_id()); },
-	    [&](const auto& /* default */) -> out_of_order_instruction_queue* { return m_host_queue.get(); });
+	    [&](const send_instruction&) { return m_mpi_queue.get(); }, [&](const recv_instruction&) { return m_mpi_queue.get(); },
+	    [&](const host_kernel_instruction&) { return m_host_queue.get(); }, //
+	    [&](const horizon_instruction&) { return m_host_queue.get(); },     //
+	    [&](const epoch_instruction&) { return m_host_queue.get(); });
 }
 
 instruction_queue_event instruction_executor::submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) {

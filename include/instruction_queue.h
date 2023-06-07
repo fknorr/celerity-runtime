@@ -12,7 +12,7 @@ class instruction_queue_event_impl {
   public:
 	virtual ~instruction_queue_event_impl() = default;
 	virtual bool has_completed() const = 0;
-	virtual void block_on() = 0;
+	virtual void block_on() = 0; // TODO will we actually be using this anywhere? If not, remove it, and simplify host_instruction_queue_event!
 };
 
 using instruction_queue_event = std::shared_ptr<instruction_queue_event_impl>;
