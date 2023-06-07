@@ -216,6 +216,7 @@ set(SOURCES
   src/buffer_transfer_manager.cc
   src/command_graph.cc
   src/config.cc
+  src/cuda_instruction_queue.cc
   src/device_queue.cc
   src/executor.cc
   src/fmt_internals.cc
@@ -231,6 +232,7 @@ set(SOURCES
   src/print_utils.cc
   src/runtime.cc
   src/scheduler.cc
+  src/sycl_instruction_queue.cc
   src/task.cc
   src/task_manager.cc
   # src/transformers/naive_split.cc

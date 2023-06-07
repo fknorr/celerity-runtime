@@ -1,6 +1,7 @@
 #include "instruction_executor.h"
 
 #include "fmt_internals.h"
+#include "instruction_graph.h"
 #include "instruction_queue.h"
 #include "utils.h"
 
@@ -8,7 +9,9 @@ namespace celerity::detail {
 
 instruction_executor::instruction_executor(
     std::unique_ptr<allocation_manager> alloc_manager, std::unique_ptr<out_of_order_instruction_queue> host_queue, device_queue_map device_queues)
-    : instruction_scheduler(this), m_alloc_manager(std::move(alloc_manager)), m_host_queue(std::move(host_queue)), m_device_queues(std::move(device_queues)) {}
+    : m_alloc_manager(std::move(alloc_manager)), m_host_queue(std::move(host_queue)), m_device_queues(std::move(device_queues)), m_scheduler(this) {}
+
+void instruction_executor::submit(std::unique_ptr<instruction> instr) { m_scheduler.submit(std::move(instr)); }
 
 out_of_order_instruction_queue* instruction_executor::select_backend_queue(const instruction_backend backend, const device_id did) {
 	const auto it = m_device_queues.find({did, backend});
