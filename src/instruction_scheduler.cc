@@ -513,16 +513,17 @@ struct instruction_scheduler::impl : instruction_backlog::delegate {
 	    : alloc_manager(std::move(alloc_manager)), host_queue(std::move(host_queue)), cuda_device_ids(std::move(cuda_device_ids)),
 	      cuda_queues(std::move(cuda_queues)), sycl_queues(std::move(sycl_queues)), backlog(this) {}
 
-	out_of_order_instruction_queue* select_queue(const instruction& isntr);
-	out_of_order_instruction_queue* select_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids);
-	out_of_order_instruction_queue* select_queue(const instruction_backend backend, const device_id did);
+	out_of_order_instruction_queue* select_backend_queue(const instruction& isntr);
+	out_of_order_instruction_queue* select_backend_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids);
+	out_of_order_instruction_queue* select_backend_queue(const instruction_backend backend, const device_id did);
 
 	void submit(std::unique_ptr<instruction> instr);
 	void dependencies_satisfied_internal(std::unique_ptr<instruction> instr);
 	void dependencies_satisfied(std::unique_ptr<instruction> instr) override;
 };
 
-out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids) {
+out_of_order_instruction_queue* instruction_scheduler::impl::select_backend_queue(
+    const instruction_backend backend, const std::initializer_list<memory_id>& mids) {
 	const auto find_in_device_map = [&](auto& device_map) {
 		assert(std::all_of(mids.begin(), mids.end(), [&](const memory_id mid) { return mid == host_memory_id || device_map.count(mid - 1) > 0; }));
 		for(const auto mid : mids) {
@@ -542,7 +543,7 @@ out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const 
 	}
 }
 
-out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const instruction_backend backend, const device_id did) {
+out_of_order_instruction_queue* instruction_scheduler::impl::select_backend_queue(const instruction_backend backend, const device_id did) {
 	switch(backend) {
 	case instruction_backend::host: panic("cannot select host backend for device");
 	case instruction_backend::sycl: return &sycl_queues.at(did);
@@ -550,14 +551,14 @@ out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const 
 	}
 }
 
-out_of_order_instruction_queue* instruction_scheduler::impl::select_queue(const instruction& instr) {
+out_of_order_instruction_queue* instruction_scheduler::impl::select_backend_queue(const instruction& instr) {
 	return utils::match(
-	    instr, [&](const alloc_instruction& ainstr) { return select_queue(ainstr.get_backend(), {ainstr.get_memory_id()}); },
-	    [&](const free_instruction& finstr) { return select_queue(finstr.get_backend(), {host_memory_id /* TODO finstr.get_memory_id() */}); },
+	    instr, [&](const alloc_instruction& ainstr) { return select_backend_queue(ainstr.get_backend(), {ainstr.get_memory_id()}); },
+	    [&](const free_instruction& finstr) { return select_backend_queue(finstr.get_backend(), {host_memory_id /* TODO finstr.get_memory_id() */}); },
 	    [&](const copy_instruction& cinstr) {
-		    return select_queue(cinstr.get_backend(), {cinstr.get_source_memory(), cinstr.get_dest_memory()});
+		    return select_backend_queue(cinstr.get_backend(), {cinstr.get_source_memory(), cinstr.get_dest_memory()});
 	    },
-	    [&](const sycl_kernel_instruction& skinstr) { return select_queue(instruction_backend::sycl, skinstr.get_device_id()); },
+	    [&](const sycl_kernel_instruction& skinstr) { return select_backend_queue(instruction_backend::sycl, skinstr.get_device_id()); },
 	    [&](const auto& /* default */) -> out_of_order_instruction_queue* { return &host_queue; });
 }
 
@@ -608,14 +609,14 @@ void instruction_scheduler::impl::submit(std::unique_ptr<instruction> instr) {
 	}
 
 	if(num_pending_dependencies == 0) {
-		const auto target_queue = select_queue(*instr);
+		const auto target_queue = select_backend_queue(*instr);
 		target_queue->submit(std::move(instr), std::move(dependencies));
 	}
 }
 
 void instruction_scheduler::impl::dependencies_satisfied_internal(std::unique_ptr<instruction> instr) {
 	std::lock_guard lock(mutex);
-	const auto target_queue = select_queue(*instr);
+	const auto target_queue = select_backend_queue(*instr);
 	target_queue->submit(std::move(instr), std::move(backend_dependencies));
 }
 
@@ -779,10 +780,11 @@ class threaded_instruction_scheduler {
   private:
 	abstract_instruction_scheduler m_scheduler;
 
-	std::atomic<bool> m_check_submission_queue; // don't contend the mutex
-	std::mutex m_submission_mutex;
+	std::atomic<bool> m_new_state = true;
+	std::mutex m_mutex;
 	std::queue<std::unique_ptr<instruction>> m_submission_queue;
 	bool m_no_more_submissions = false;
+	std::condition_variable m_resume_thread;
 
 	std::thread m_thread;
 
@@ -793,35 +795,120 @@ threaded_instruction_scheduler::threaded_instruction_scheduler(abstract_instruct
     : m_scheduler(delegate), m_thread(&threaded_instruction_scheduler::thread_main, this) {}
 
 threaded_instruction_scheduler::~threaded_instruction_scheduler() {
-	std::lock_guard lock(m_submission_mutex);
-	m_no_more_submissions = true;
-	m_check_submission_queue.store(true, std::memory_order_relaxed);
+	{
+		std::lock_guard lock(m_mutex);
+		m_no_more_submissions = true;
+		m_new_state.store(true, std::memory_order_relaxed);
+	}
+	m_resume_thread.notify_one();
 }
 
 void threaded_instruction_scheduler::submit(std::unique_ptr<instruction> instr) {
-	std::lock_guard lock(m_submission_mutex);
-	assert(!m_no_more_submissions);
-	m_submission_queue.push(std::move(instr));
-	m_check_submission_queue.store(true, std::memory_order_relaxed);
+	{
+		std::lock_guard lock(m_mutex);
+		assert(!m_no_more_submissions);
+		m_submission_queue.push(std::move(instr));
+		m_new_state.store(true, std::memory_order_relaxed);
+	}
+	m_resume_thread.notify_one();
 }
 
 void threaded_instruction_scheduler::thread_main() {
-	for(;;) {
-		bool no_more_submissions = false;
-		if(m_check_submission_queue.load(std::memory_order_relaxed)) {
-			std::lock_guard lock(m_submission_mutex);
+	using poll_action = abstract_instruction_scheduler::poll_action;
+
+	auto next_action = poll_action::idle_until_next_submit;
+	bool exit_when_idle = false;
+	while(next_action == poll_action::poll_again || !exit_when_idle) {
+		if(m_new_state.load(std::memory_order_relaxed)) {
+			std::unique_lock lock(m_mutex);
+			if(next_action == poll_action::idle_until_next_submit) {
+				while(m_submission_queue.empty() && !m_no_more_submissions) {
+					m_resume_thread.wait(lock);
+				}
+			}
 			while(!m_submission_queue.empty()) {
 				m_scheduler.submit(std::move(m_submission_queue.front()));
 				m_submission_queue.pop();
 			}
-			no_more_submissions = m_no_more_submissions;
-			m_check_submission_queue.store(false, std::memory_order_relaxed);
+			exit_when_idle = m_no_more_submissions;
+			m_new_state.store(false, std::memory_order_relaxed);
 		}
 
-		// TODO suspend the thread when there is nothing to do
-		const auto action = m_scheduler.poll_events();
-		if(action == abstract_instruction_scheduler::poll_action::idle_until_next_submit && no_more_submissions) break;
+		next_action = m_scheduler.poll_events();
 	}
+}
+
+class instruction_executor : private abstract_instruction_scheduler::delegate {
+  public:
+	void submit(std::unique_ptr<instruction> instr) { m_scheduler.submit(std::move(instr)); }
+
+  private:
+	instruction_executor(std::unique_ptr<allocation_manager> alloc_manager, multiplex_instruction_queue host_queue,
+	    std::unordered_map<device_id, int> cuda_device_ids, std::unordered_map<device_id, multiplex_instruction_queue> cuda_queues,
+	    std::unordered_map<device_id, sycl_queue> sycl_queues)
+	    : m_alloc_manager(std::move(alloc_manager)), m_host_queue(std::move(host_queue)), m_cuda_device_ids(std::move(cuda_device_ids)),
+	      m_cuda_queues(std::move(cuda_queues)), m_sycl_queues(std::move(sycl_queues)), m_scheduler(this) {}
+
+	// only accessed by instruction scheduler thread
+	std::unique_ptr<allocation_manager> m_alloc_manager;
+	multiplex_instruction_queue m_host_queue;
+	std::unordered_map<device_id, int> m_cuda_device_ids;
+	std::unordered_map<device_id, multiplex_instruction_queue> m_cuda_queues;
+	std::unordered_map<device_id, sycl_queue> m_sycl_queues;
+
+	// thread-safe
+	threaded_instruction_scheduler m_scheduler;
+
+	out_of_order_instruction_queue* select_backend_queue(const instruction& isntr);
+	out_of_order_instruction_queue* select_backend_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids);
+	out_of_order_instruction_queue* select_backend_queue(const instruction_backend backend, const device_id did);
+
+	instruction_queue_event submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) override;
+};
+
+out_of_order_instruction_queue* instruction_executor::select_backend_queue(const instruction_backend backend, const std::initializer_list<memory_id>& mids) {
+	const auto find_in_device_map = [&](auto& device_map) {
+		assert(std::all_of(mids.begin(), mids.end(), [&](const memory_id mid) { return mid == host_memory_id || device_map.count(mid - 1) > 0; }));
+		for(const auto mid : mids) {
+			if(mid == host_memory_id) continue;
+			const device_id did = mid - 1;
+			if(const auto it = device_map.find(did); it != device_map.end()) { return &it->second; }
+		}
+		panic("no matching instruction queue");
+	};
+
+	switch(backend) {
+	case instruction_backend::host:
+		assert(std::all_of(mids.begin(), mids.end(), [](const memory_id mid) { return mid == host_memory_id; }));
+		return &m_host_queue;
+	case instruction_backend::sycl: return find_in_device_map(m_sycl_queues);
+	case instruction_backend::cuda: return find_in_device_map(m_cuda_queues);
+	}
+}
+
+out_of_order_instruction_queue* instruction_executor::select_backend_queue(const instruction_backend backend, const device_id did) {
+	switch(backend) {
+	case instruction_backend::host: panic("cannot select host backend for device");
+	case instruction_backend::sycl: return &m_sycl_queues.at(did);
+	case instruction_backend::cuda: return &m_cuda_queues.at(did);
+	}
+}
+
+out_of_order_instruction_queue* instruction_executor::select_backend_queue(const instruction& instr) {
+	return utils::match(
+	    instr, //
+	    [&](const alloc_instruction& ainstr) { return select_backend_queue(ainstr.get_backend(), {ainstr.get_memory_id()}); },
+	    [&](const free_instruction& finstr) { return select_backend_queue(finstr.get_backend(), {host_memory_id /* TODO finstr.get_memory_id() */}); },
+	    [&](const copy_instruction& cinstr) {
+		    return select_backend_queue(cinstr.get_backend(), {cinstr.get_source_memory(), cinstr.get_dest_memory()});
+	    },
+	    [&](const sycl_kernel_instruction& skinstr) { return select_backend_queue(instruction_backend::sycl, skinstr.get_device_id()); },
+	    [&](const auto& /* default */) -> out_of_order_instruction_queue* { return &m_host_queue; });
+}
+
+instruction_queue_event instruction_executor::submit_to_backend(std::unique_ptr<instruction> instr, const std::vector<instruction_queue_event>& dependencies) {
+	const auto target_queue = select_backend_queue(*instr);
+	return target_queue->submit(std::move(instr), std::move(dependencies));
 }
 
 } // namespace celerity::detail
