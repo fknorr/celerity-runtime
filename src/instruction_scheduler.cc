@@ -1,4 +1,6 @@
 #include "instruction_scheduler.h"
+
+#include "instruction_graph.h"
 #include "allocation_manager.h"
 
 #include <atomic>

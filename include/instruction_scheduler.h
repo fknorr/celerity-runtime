@@ -1,11 +1,12 @@
 #pragma once
 
-#include "instruction_graph.h"
+#include "instruction_backend.h"
 #include "instruction_queue.h"
 #include "types.h"
 
 #include <memory>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace celerity::detail {

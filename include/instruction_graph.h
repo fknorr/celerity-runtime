@@ -1,6 +1,7 @@
 #pragma once
 
 #include "grid.h"
+#include "instruction_backend.h"
 #include "intrusive_graph.h"
 #include "ranges.h"
 #include "task.h" // TODO the only dependencies on task.h are launcher types and contiguous_box_set, consider moving those
@@ -22,12 +23,6 @@ class send_instruction;
 class recv_instruction;
 class horizon_instruction;
 class epoch_instruction;
-
-enum class instruction_backend {
-	host,
-	sycl,
-	cuda,
-};
 
 struct instruction_debug_info {
 	virtual ~instruction_debug_info() = default;

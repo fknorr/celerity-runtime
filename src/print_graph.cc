@@ -5,6 +5,7 @@
 
 #include "command.h"
 #include "command_graph.h"
+#include "fmt_internals.h"
 #include "grid.h"
 #include "instruction_graph.h"
 #include "spdlog/fmt/bundled/core.h"
@@ -344,7 +345,7 @@ namespace detail {
 			case instruction_backend::sycl: dot += "color=darkorange2,"; break;
 			case instruction_backend::cuda: dot += "color=green3,"; break;
 			}
-			fmt::format_to(back, "shape={},label=<", shape);
+			fmt::format_to(back, "shape={},label=<{} ", shape, instr.get_backend());
 		};
 
 		const auto end_node = [&] { fmt::format_to(back, ">];"); };

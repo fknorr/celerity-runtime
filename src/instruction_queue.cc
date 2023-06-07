@@ -1,5 +1,6 @@
-#include "allocation_manager.h"
 #include "instruction_queue.h"
+
+#include "allocation_manager.h"
 #include "buffer_storage.h" // TODO included for CELERITY_CUDA_CHECK, consider moving that
 #include "closure_hydrator.h"
 #include "instruction_graph.h"

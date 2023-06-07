@@ -218,6 +218,7 @@ set(SOURCES
   src/config.cc
   src/device_queue.cc
   src/executor.cc
+  src/fmt_internals.cc
   # src/graph_generator.cc
   src/distributed_graph_generator.cc
   src/graph_serializer.cc

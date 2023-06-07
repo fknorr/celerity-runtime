@@ -1,4 +1,6 @@
 #include "instruction_executor.h"
+
+#include "fmt_internals.h"
 #include "instruction_queue.h"
 #include "utils.h"
 
@@ -10,7 +12,7 @@ instruction_executor::instruction_executor(
 
 out_of_order_instruction_queue* instruction_executor::select_backend_queue(const instruction_backend backend, const device_id did) {
 	const auto it = m_device_queues.find({did, backend});
-	if(it == m_device_queues.end()) panic("no matching instruction queue");
+	if(it == m_device_queues.end()) panic("no instruction queue for D{} on {}", did, backend);
 	return it->second.get();
 }
 
@@ -24,10 +26,12 @@ out_of_order_instruction_queue* instruction_executor::select_backend_queue(const
 	for(const auto mid : mids) {
 		if(mid == host_memory_id) continue;
 		const device_id did = mid - 1;
+		// even though we always select the first the queue of the first device in `mids`, we still enforce that there is a backend queue for all devices
+		// (should be enough to diagnose an instruction attempting to copy from and Nvidia to an AMD device through CUDA, for example)
 		const auto queue = select_backend_queue(backend, did);
 		if(selected_queue == nullptr) selected_queue = queue;
 	}
-	if(selected_queue == nullptr) panic("no matching instruction queue");
+	if(selected_queue == nullptr) panic("no common instruction queue for M{} on {}", fmt::join(mids, ","), backend);
 	return selected_queue;
 }
 
