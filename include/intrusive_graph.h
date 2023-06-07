@@ -16,19 +16,12 @@ namespace detail {
 		true_dep = 1, // True data flow or temporal dependency
 	};
 
-	// TODO rethink this enum entirely.
-	//   - for TDAG / CDAG, this is purely debug info
-	//   - for IDAG, it determines how dependencies are scheduled
-	//        - also, the IDAG scheduler could figure this out pretty easily on its own
-	//   - enumerating all these possibilities here is above the abstraction level of intrusive_graph
 	enum class dependency_origin {
 		dataflow,                       // buffer access dependencies generate task and command dependencies
 		collective_group_serialization, // all nodes must execute kernels within the same collective group in the same order
 		execution_front,                // horizons and epochs are temporally ordered after all preceding tasks or commands on the same node
 		last_epoch,                     // nodes without other true-dependencies require an edge to the last epoch for temporal ordering
-		instruction_via_host,
-		instruction_via_sycl,
-		instruction_via_cuda,
+		instruction,
 	};
 
 	// TODO: Move to utility header..?

@@ -119,7 +119,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		auto& dest = memory.allocations.emplace_back(m_next_aid++, dest_box, buffer.range);
 		const auto alloc_instr = &create<alloc_instruction>(get_allocation_backend(mid), dest.aid, mid, dest.box.area() * buffer.elem_size, buffer.elem_align);
 		alloc_instr->set_debug_info(alloc_instruction_debug_info(bid, buffer.debug_name, dest_box));
-		add_dependency(*alloc_instr, *m_last_epoch);
+		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 		dest.record_write(dest.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
 		for(auto& source : memory.allocations) {
@@ -154,13 +154,13 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
-					add_dependency(*copy_instr, *dep_instr);
+					add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 				}
 				source.record_read(copy_box, copy_instr);
 
 				for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
 					for(const auto dep_instr : front.front) {
-						add_dependency(*copy_instr, *dep_instr);
+						add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 					}
 				}
 				dest.record_write(copy_box, copy_instr);
@@ -176,7 +176,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		    free_instruction_debug_info(mid, allocation.box.area() * buffer.elem_size, buffer.elem_align, bid, buffer.debug_name, allocation.box));
 		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
-				add_dependency(*free_instr, *dep_instr);
+				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep);
 			}
 		}
 	}
@@ -253,10 +253,10 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
 							for(const auto dep_instr : front.front) {
-								add_dependency(*recv_instr, *dep_instr);
+								add_dependency(*recv_instr, *dep_instr, dependency_kind::true_dep);
 							}
 						}
-						add_dependency(*recv_instr, *m_last_epoch);
+						add_dependency(*recv_instr, *m_last_epoch, dependency_kind::true_dep);
 						alloc.record_write(recv_box, recv_instr);
 
 						buffer.original_writers.update_region(recv_box, recv_instr);
@@ -365,13 +365,13 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
 						assert(last_writer_instr != nullptr);
-						add_dependency(*copy_instr, *last_writer_instr);
+						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
 					}
 					source.record_read(copy.region, copy_instr);
 
 					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
 						for(const auto dep_instr : front.front) {
-							add_dependency(*copy_instr, *dep_instr);
+							add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 						}
 					}
 					dest.record_write(copy.region, copy_instr);
@@ -442,7 +442,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				// TODO copy-pasta
 				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
 					assert(last_writer_instr != nullptr);
-					add_dependency(*copy_instr, *last_writer_instr);
+					add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
 				}
 				source.record_read(copy_box, copy_instr);
 
@@ -629,7 +629,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto reads_from_alloc = GridRegion<3>::intersect(rw.reads, alloc.box);
 				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(reads_from_alloc)) {
 					assert(last_writer_instr != nullptr);
-					add_dependency(*instr.instruction, *last_writer_instr);
+					add_dependency(*instr.instruction, *last_writer_instr, dependency_kind::true_dep);
 				}
 			}
 		}
@@ -640,7 +640,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto writes_to_alloc = GridRegion<3>::intersect(rw.writes, alloc.box);
 				for(const auto& [_, front] : alloc.access_fronts.get_region_values(writes_to_alloc)) {
 					for(const auto dep_instr : front.front) {
-						add_dependency(*instr.instruction, *dep_instr);
+						add_dependency(*instr.instruction, *dep_instr, dependency_kind::true_dep);
 					}
 				}
 			}
@@ -648,13 +648,13 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		for(const auto& [hoid, order] : instr.se_map) {
 			assert(instr.mid == host_memory_id);
 			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
-				add_dependency(*instr.instruction, *last_side_effect);
+				add_dependency(*instr.instruction, *last_side_effect, dependency_kind::true_dep);
 			}
 		}
 		if(tsk.get_collective_group_id() != collective_group_id(0) /* 0 means "no collective group association" */) {
 			assert(instr.mid == host_memory_id);
 			auto& group = m_collective_groups[tsk.get_collective_group_id()]; // allow default-insertion since we do not register CGs explicitly
-			if(group.last_host_task) { add_dependency(*instr.instruction, *group.last_host_task); }
+			if(group.last_host_task) { add_dependency(*instr.instruction, *group.last_host_task, dependency_kind::true_dep); }
 		}
 	}
 
@@ -691,7 +691,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
 		const auto deps = instr.instruction->get_dependencies();
 		if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
-			add_dependency(*instr.instruction, *m_last_epoch);
+			add_dependency(*instr.instruction, *m_last_epoch, dependency_kind::true_dep);
 		}
 	}
 }
@@ -717,21 +717,21 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			// this allocation is not associated with a buffer (and thus not tracked in m_buffers), so we add all dependencies immediately
 			const auto alloc_instr = &create<alloc_instruction>(instruction_backend::host, m_next_aid++, host_memory_id, bytes, buffer.elem_align);
 			alloc_instr->set_debug_info(alloc_instruction_debug_info(/* alloc_origin::send */));
-			add_dependency(*alloc_instr, *m_last_epoch);
+			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 
 			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, alloc_instr->get_allocation_id());
 			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*copy_instr, *alloc_instr);
+				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
 			}
 			const int tag = create_pilot_message(bid, box);
 			const auto send_instr = &create<send_instruction>(pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
 			send_instr->set_debug_info(send_instruction_debug_info(pcmd.get_cid(), bid, buffer.debug_name, box));
 			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*send_instr, *copy_instr);
+				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep);
 			}
 			const auto free_instr = &create<free_instruction>(instruction_backend::host, alloc_instr->get_allocation_id());
 			free_instr->set_debug_info(free_instruction_debug_info(host_memory_id, bytes, buffer.elem_align));
-			add_dependency(*free_instr, *send_instr);
+			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep);
 		});
 	}
 }

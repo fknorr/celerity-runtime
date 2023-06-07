@@ -20,9 +20,6 @@ namespace detail {
 		case dependency_origin::collective_group_serialization: return "color=blue";
 		case dependency_origin::execution_front: return "color=orange";
 		case dependency_origin::last_epoch: return "color=orchid";
-		case dependency_origin::instruction_via_host: return "";
-		case dependency_origin::instruction_via_sycl: return "color=darkorange2,";
-		case dependency_origin::instruction_via_cuda: return "color=green3,";
 		default: return "";
 		}
 	}
