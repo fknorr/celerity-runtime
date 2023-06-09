@@ -35,8 +35,6 @@ class instruction : public intrusive_graph_node<instruction> {
 
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
-	instruction(const instruction&) = delete;
-	instruction& operator=(const instruction&) = delete;
 	virtual ~instruction() = default;
 
 	virtual void accept(const_visitor& visitor) const = 0;
@@ -291,6 +289,7 @@ class host_kernel_instruction final : public kernel_instruction {
 struct pilot_message {
 	int tag;
 	buffer_id buffer;
+	transfer_id transfer;
 	GridBox<3> box;
 };
 
@@ -306,21 +305,25 @@ struct send_instruction_debug_info final : instruction_debug_info {
 
 class send_instruction final : public instruction {
   public:
-	explicit send_instruction(const instruction_id iid, const node_id to_nid, const int tag, const allocation_id aid, const size_t bytes)
-	    : instruction(iid), m_to_nid(to_nid), m_tag(tag), m_aid(aid), m_bytes(bytes) {}
+	explicit send_instruction(
+	    const instruction_id iid, const transfer_id trid, const node_id to_nid, const int tag, const allocation_id aid, const size_t bytes)
+	    : instruction(iid), m_transfer_id(trid), m_to_nid(to_nid), m_tag(tag), m_aid(aid), m_bytes(bytes) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_backend get_backend() const override { return instruction_backend::mpi; }
 
+	transfer_id get_transfer_id() const { return m_transfer_id; }
 	node_id get_dest_node_id() const { return m_to_nid; }
 	int get_tag() const { return m_tag; }
 	allocation_id get_allocation_id() const { return m_aid; }
 	size_t get_size_bytes() const { return m_bytes; }
+	// TODO offset_bytes, if we send directly from a host buffer allocation?
 
 	const send_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<send_instruction_debug_info>(); }
 	void set_debug_info(const send_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
+	transfer_id m_transfer_id;
 	node_id m_to_nid;
 	int m_tag;
 	allocation_id m_aid;
@@ -338,16 +341,17 @@ struct recv_instruction_debug_info final : instruction_debug_info {
 
 class recv_instruction final : public instruction {
   public:
-	// We don't make the effort of tracking the command ids of (pending) await-pushes
-	explicit recv_instruction(const instruction_id iid, const transfer_id trid, const memory_id dest_memory, const allocation_id dest_allocation,
-	    const int dims, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer, const range<3>& recv_range,
-	    const size_t elem_size)
-	    : instruction(iid), m_transfer_id(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_dims(dims), m_alloc_range(alloc_range),
-	      m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
+	explicit recv_instruction(const instruction_id iid, const buffer_id bid, const transfer_id trid, const memory_id dest_memory,
+	    const allocation_id dest_allocation, const int dims, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer,
+	    const range<3>& recv_range, const size_t elem_size)
+	    : instruction(iid), m_buffer_id(bid), m_transfer_id(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_dims(dims),
+	      m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range),
+	      m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_backend get_backend() const override { return instruction_backend::mpi; }
 
+	buffer_id get_buffer_id() const { return m_buffer_id; }
 	transfer_id get_transfer_id() const { return m_transfer_id; }
 	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }
 	memory_id get_dest_memory_id() const { return m_dest_memory; }
@@ -362,6 +366,7 @@ class recv_instruction final : public instruction {
 	void set_debug_info(const recv_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
+	buffer_id m_buffer_id;
 	transfer_id m_transfer_id;
 	memory_id m_dest_memory;
 	allocation_id m_dest_allocation;

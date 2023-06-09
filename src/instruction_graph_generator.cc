@@ -246,7 +246,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						const auto [alloc_offset, alloc_range] = grid_box_to_subrange(alloc.box);
 						const auto [recv_offset, recv_range] = grid_box_to_subrange(recv_box);
 						const auto recv_instr = &create<recv_instruction>(
-						    trid, mid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
+						    bid, trid, mid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
 						command_id await_push_cid = 1234; // TODO where do we get this from without changing non-debug code paths too much?
 						recv_instr->set_debug_info(recv_instruction_debug_info(await_push_cid, bid, buffer.debug_name));
 
@@ -455,9 +455,9 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 }
 
 
-int instruction_graph_generator::create_pilot_message(buffer_id bid, const GridBox<3>& box) {
+int instruction_graph_generator::create_pilot_message(const buffer_id bid, const transfer_id trid, const GridBox<3>& box) {
 	int tag = m_next_p2p_tag++;
-	m_pilots.push_back(pilot_message{tag, bid, box});
+	m_pilots.push_back(pilot_message{tag, bid, trid, box});
 	return tag;
 }
 
@@ -723,8 +723,8 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
 			}
-			const int tag = create_pilot_message(bid, box);
-			const auto send_instr = &create<send_instruction>(pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
+			const int tag = create_pilot_message(bid, pcmd.get_transfer_id(), box);
+			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
 			send_instr->set_debug_info(send_instruction_debug_info(pcmd.get_cid(), bid, buffer.debug_name, box));
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep);

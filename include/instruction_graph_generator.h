@@ -241,7 +241,7 @@ class instruction_graph_generator {
 
 	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const GridBox<3>& box, const memory_id out_mid, const allocation_id out_aid);
 
-	int create_pilot_message(buffer_id bid, const GridBox<3>& box);
+	int create_pilot_message(buffer_id bid, transfer_id trid, const GridBox<3>& box);
 
 	void compile_execution_command(const execution_command& ecmd);
 

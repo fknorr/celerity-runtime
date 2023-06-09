@@ -16,6 +16,8 @@ namespace detail {
 		true_dep = 1, // True data flow or temporal dependency
 	};
 
+	// TODO rethink this enum. It is purely debug-info, but leaks higher-level concepts into intrusive_graph.
+	// Maybe turn it into an optional annotation?
 	enum class dependency_origin {
 		dataflow,                       // buffer access dependencies generate task and command dependencies
 		collective_group_serialization, // all nodes must execute kernels within the same collective group in the same order
