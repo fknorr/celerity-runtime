@@ -232,6 +232,7 @@ set(SOURCES
   src/local_devices.cc
   src/print_graph.cc
   src/print_utils.cc
+  src/recv_arbiter.cc
   src/runtime.cc
   src/scheduler.cc
   src/sycl_instruction_queue.cc
