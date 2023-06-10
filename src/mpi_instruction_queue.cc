@@ -30,7 +30,7 @@ class mpi_instruction_queue_event : public instruction_queue_event_impl {
 	mutable MPI_Request m_request;
 };
 
-struct mpi_instruction_queue::impl : recv_arbiter::delegate {
+struct mpi_instruction_queue::impl final : recv_arbiter::delegate {
 	MPI_Comm comm;
 	const allocation_manager* alloc_mgr;
 

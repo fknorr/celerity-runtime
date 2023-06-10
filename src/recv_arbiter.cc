@@ -40,10 +40,21 @@ class deferred_instruction_queue_event : public instruction_queue_event_impl {
 
   private:
 	mutable std::mutex m_mutex;
-	mutable instruction_queue_event m_event;
+	instruction_queue_event m_event;
 	std::condition_variable m_event_set;
 };
 
+// TODO this is a draft implementation - needs significant rework.
+// - there will usually be multiple pilot messages (at least one per source node) for each recv_instruction. We need to track the partial state of having 0 or 1
+// recv_instruction and any number of pilot messages, until the merged region of pilot boxes matches the entire recv.
+// - if we receive all pilots in advance, there can be a trade-off between minimizing the number of allocations and host-to-device copies, and overlapping
+// receives and copies as much as possible.
+// - the default should arguably be to receive every box into its own staging buffer, and doing RDMA recvs as the fast path where possible. The temporary
+// allocation mechanism will probably bypass the allocation_manager since there won't be any benefit in keeping that indirection (other than testing?)
+// - there should not really be a need to prepare_recv() before submit_recv() unless this allows us to perform some really expensive layout or schedule in
+// advance. At least this is true as long as recvs do not overwrite data that is read by a (proximate) predecessor instruction, in which case we could
+// reliably decide early on which recvs need staging buffers. This again needs to be handled with care to avoid pre-allocating (and potentially exhausting)
+// memory too early.
 struct recv_arbiter::impl {
 	using deferred_event_ptr = std::shared_ptr<deferred_instruction_queue_event>;
 	using await_push_id = std::pair<buffer_id, transfer_id>;
@@ -147,7 +158,7 @@ recv_arbiter::impl::pending_recv recv_arbiter::impl::create_pending_recv(const d
 	} else {
 		// TODO this needs to either
 		// a) generate a mini-IDAG for alloc -> recv -> copy -> free
-		// b) rely on (not yet thougth out) conditional nodes in the IDAG that are enabled when this branch is taken
+		// b) rely on (not yet thought out) conditional nodes in the IDAG that are enabled when this branch is taken
 		// Option b) would also let the IDAG generator assign the allocation ids.
 		// Maybe this is best implemented by allowing branches / generic conditional nodes in the IDAG?
 		//   - if we do that, we can signal the branch condition here to begin the allocation
