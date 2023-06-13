@@ -19,8 +19,10 @@ class recv_arbiter {
 		delegate& operator=(const delegate&) = delete;
 		virtual ~delegate() = default;
 
+		// TODO from live discussion: We can get away without any staging by using MPI_Type_create_subarray. MPI_Irecvs could be dispatched ASAP depending
+		// on when pilots and instructions arrive, with all recvs being attached to the same queue event. We should later benchmark whether theses strided recvs
+		// work with RDMA or if manual staging can outperform (some) implementations (which would require more elaborate dynamic IDAG generation).
 		virtual instruction_queue_event begin_recv(allocation_id dest, size_t offset_bytes, size_t size_bytes, node_id source, int tag) = 0;
-		// TODO how to begin staged recvs?
 	};
 
 	explicit recv_arbiter(delegate* delegate);
