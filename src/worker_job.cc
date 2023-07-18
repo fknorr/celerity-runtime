@@ -281,7 +281,9 @@ namespace detail {
 			for(size_t i = 0; i < reductions.size(); ++i) {
 				const auto& rd = reductions[i];
 				const auto mode = rd.init_from_buffer ? access_mode::read_write : access_mode::discard_write;
-				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), rd.bid, mode, subrange<3>{{}, range<3>{1, 1, 1}});
+				// HACK: Shift accessed element by one for each GPU
+				const auto did = m_queue.get_id();
+				const auto info = m_buffer_mngr.access_device_buffer(m_queue.get_memory_id(), rd.bid, mode, subrange<3>{{did, 0, 0}, range<3>{1, 1, 1}});
 				while(!info.pending_transfers.is_done()) {} // There is probably no point in trying to overlap this with anything
 				m_reduction_ptrs.push_back(info.ptr);
 			}
@@ -311,7 +313,11 @@ namespace detail {
 			const auto data = std::get<execution_data>(pkg.data);
 			auto tsk = m_task_mngr.get_task(data.tid);
 			closure_hydrator::get_instance().arm(target::device, std::move(m_accessor_infos));
-			m_event = tsk->launch(m_queue, data.sr, m_reduction_ptrs, data.initialize_reductions);
+			// HACK: Only one chunk may initialize the reduction (assuming it will be on device 0, which, at the time of hacking, is true)
+			//       This assumes that reduction chunks are NOT oversubscribed
+			//       (Alternatively we could ensure that all per-GPU elements other than the first are reset to 0 after each reduction)
+			const bool initialize_reductions = data.initialize_reductions && (data.HACK_total_local_reductions == 1 || m_queue.get_id() == 0);
+			m_event = tsk->launch(m_queue, data.sr, m_reduction_ptrs, initialize_reductions);
 			// {
 			// 	const auto msg = fmt::format("{}: Job submitted to SYCL (blocked on transfers until now!)", pkg.cid);
 			// 	TracyMessage(msg.c_str(), msg.size());
@@ -345,12 +351,28 @@ namespace detail {
 			}
 #endif
 
+			++(*data.HACK_executed_reductions);
 			for(const auto& reduction : tsk->get_reductions()) {
 				const auto element_size = m_buffer_mngr.get_buffer_info(reduction.bid).element_size;
-				auto operand = make_uninitialized_payload<std::byte>(element_size);
-				const auto evt = m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {1, 1, 1}}, operand.get_pointer());
-				evt.wait();
-				m_reduction_mngr.push_overlapping_reduction_data(reduction.rid, m_local_nid, std::move(operand));
+
+				if(data.HACK_total_local_reductions > 1) {
+					if(*data.HACK_executed_reductions == data.HACK_total_local_reductions) {
+						// This was the last local reduction, perform second level of intermediate reduction across GPUs
+						auto per_gpu_results = make_uninitialized_payload<std::byte>(data.HACK_total_local_reductions * element_size);
+						m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {data.HACK_total_local_reductions, 1, 1}}, per_gpu_results.get_pointer()).wait();
+						auto local_result = m_reduction_mngr.HACK_reduce_per_gpu_results(
+						    reduction.rid, m_local_nid, std::move(per_gpu_results), data.HACK_total_local_reductions);
+						// We need to also write the result back to the buffer (instead of just pushing it to the reduction manager),
+						// in case we'll have to transfer this data to remote nodes.
+						memcpy(m_buffer_mngr.access_host_buffer(reduction.bid, access_mode::discard_write, {{}, {1, 1, 1}}).ptr, local_result.get_pointer(),
+						    element_size);
+						m_reduction_mngr.push_overlapping_reduction_data(reduction.rid, m_local_nid, std::move(local_result));
+					}
+				} else {
+					auto operand = make_uninitialized_payload<std::byte>(element_size);
+					m_buffer_mngr.get_buffer_data(reduction.bid, {{}, {1, 1, 1}}, operand.get_pointer()).wait();
+					m_reduction_mngr.push_overlapping_reduction_data(reduction.rid, m_local_nid, std::move(operand));
+				}
 			}
 
 			if(m_queue.is_profiling_enabled()) {

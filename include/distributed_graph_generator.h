@@ -70,6 +70,9 @@ class distributed_graph_generator {
 		// but mark it as having a pending reduction. The final reduction will then be generated when the buffer
 		// is used in a subsequent read requirement. This avoids generating unnecessary reduction commands.
 		std::optional<reduction_info> pending_reduction;
+
+		// For multi-GPU we need to remember multiple last writers. BIG OOF.
+		std::vector<command_id> HACK_reduction_writers;
 	};
 
   public:

@@ -187,6 +187,21 @@ class command_query {
 		    m_commands_by_node.begin(), m_commands_by_node.end(), size_t(0), [](size_t current, auto& cmds) { return current + cmds.size(); });
 	}
 
+	/**
+	 * Returns the number of commands per node, if it is the same, throws otherwise.
+	 */
+	size_t count_per_node() const {
+		if(m_commands_by_node.empty()) return 0;
+		const size_t count = m_commands_by_node[0].size();
+		for(size_t i = 1; i < m_commands_by_node.size(); ++i) {
+			if(m_commands_by_node[i].size() != count) {
+				throw query_exception(
+				    fmt::format("Different number of commands across nodes (node 0: {}, node {}: {})", count, i, m_commands_by_node[i].size()));
+			}
+		}
+		return count;
+	}
+
 	bool empty() const { return count() == 0; }
 
 	command_query subtract(const command_query& other) const {

@@ -151,6 +151,9 @@ namespace detail {
 		void set_device_id(device_id id) { m_device_id = id; }
 		device_id get_device_id() const { return m_device_id; }
 
+		size_t HACK_total_local_reductions = 0;
+		std::shared_ptr<size_t> HACK_executed_reductions = nullptr;
+
 	  private:
 		subrange<3> m_execution_range;
 		bool m_initialize_reductions = false;
@@ -184,6 +187,9 @@ namespace detail {
 		subrange<3> sr;
 		bool initialize_reductions;
 		device_id did;
+
+		size_t HACK_total_local_reductions = 0;
+		std::shared_ptr<size_t> HACK_executed_reductions = nullptr;
 	};
 
 	struct push_data {

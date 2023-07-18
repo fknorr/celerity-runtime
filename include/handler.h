@@ -268,7 +268,7 @@ namespace detail {
 		if(vars.get_range().size() != 1) {
 			// Like SYCL 2020, Celerity only supports reductions to unit-sized buffers. This allows us to avoid tracking different parts of the buffer
 			// as distributed_state and pending_reduction_state.
-			throw std::runtime_error("Only unit-sized buffers can be reduction targets");
+			// throw std::runtime_error("Only unit-sized buffers can be reduction targets"); // NOCOMMIT Disabled for multi-GPU hack
 		}
 
 		const auto bid = detail::get_buffer_id(vars);

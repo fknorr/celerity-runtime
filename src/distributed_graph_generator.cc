@@ -119,7 +119,8 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 	//   - Inputs to the final reduction command are ordered by origin node ids to guarantee bit-identical results. It is not possible to distinguish
 	//     more than one chunk per node in the serialized commands, so different nodes can produce different final reduction results for non-associative
 	//     or non-commutative operations
-	if(!tsk.get_reductions().empty()) { assert(m_cdag.task_command_count(tsk.get_id()) <= 1); }
+	// HACK: We do support this now, albeit only with an ugly workaround
+	// if(!tsk.get_reductions().empty()) { assert(m_cdag.task_command_count(tsk.get_id()) <= 1); }
 
 	// Commands without any other true-dependency must depend on the active epoch command to ensure they cannot be re-ordered before the epoch.
 	// Need to check count b/c for some tasks we may not have generated any commands locally.
@@ -173,6 +174,13 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 	// Buffers that currently are in a pending reduction state will receive a new buffer state after a reduction has been generated.
 	std::unordered_map<buffer_id, buffer_state> post_reduction_buffer_states;
 
+	// Remember for which reductions we have already generated reduction commands.
+	// This is required in case there are multiple local chunks.
+	std::unordered_map<reduction_id, reduction_command*> generated_reductions;
+
+	// Oof...
+	std::vector<command_id> HACK_local_writer_cmds;
+
 	// Remember all generated pushes for determining intra-task anti-dependencies.
 	std::vector<push_command*> generated_pushes;
 
@@ -205,16 +213,25 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 		// Processing remote chunks on the other hand doesn't require knowledge of the devices available on that particular node.
 		// The same push commands generated for a single remote chunk also apply to the effective chunks generated on that node.
 		std::vector<chunk<3>> effective_chunks;
-		// NOCOMMIT FIXME: We currerntly don't support multiple local chunks for a task with side effects,
+		std::vector<device_id> device_assignments; // NOCOMMIT Back-ported during rebase conflict (originally part of [SPLIT] series)
+		// NOCOMMIT FIXME: We currently don't support multiple local chunks for a task with side effects,
 		// as this will generate dependencies between chunks. Figure out how we want to deal with this.
+		size_t HACK_local_reductions_count = tsk.get_reductions().empty() ? 0 : 1;
+		std::shared_ptr<size_t> HACK_executed_reductions_ptr = std::make_shared<size_t>(0);
 		if(is_local_chunk && m_num_local_devices > 1 && tsk.has_variable_split() && tsk.get_side_effect_map().empty()) {
 			effective_chunks = split_equal(distributed_chunks[i], tsk.get_granularity(), m_num_local_devices, tsk.get_dimensions());
+			if(!tsk.get_reductions().empty()) { HACK_local_reductions_count = effective_chunks.size(); }
+			device_assignments.resize(effective_chunks.size()); // We may not have a chunk for each device due to split constraints
+			std::iota(device_assignments.begin(), device_assignments.end(), 0);
 		} else {
 			effective_chunks.push_back(distributed_chunks[i]);
+			device_assignments.push_back(0);
 		}
 
-		device_id did = 0;
-		for(const auto& chnk : effective_chunks) {
+		assert(!is_local_chunk || !tsk.has_variable_split() || effective_chunks.size() == device_assignments.size());
+
+		for(size_t j = 0; j < effective_chunks.size(); ++j) {
+			const auto& chnk = effective_chunks[j];
 			auto requirements = get_buffer_requirements_for_mapped_access(tsk, chnk, tsk.get_global_size());
 
 			// Add requirements for reductions
@@ -227,6 +244,13 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 				}
 #endif
 				requirements[reduction.bid][rmode] = GridRegion<3>{{1, 1, 1}};
+
+				// HACK: Each local reduction initializer writes to a separate location in the buffer
+				{
+					assert(HACK_local_reductions_count > 0);
+					requirements[reduction.bid][rmode] =
+					    GridRegion<3>{{static_cast<long>(device_assignments[j]), 0, 0}, {static_cast<long>(device_assignments[j]) + 1, 1, 1}};
+				}
 			}
 
 			abstract_command* cmd = nullptr;
@@ -235,7 +259,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 					cmd = create_command<fence_command>(tsk.get_id());
 				} else {
 					cmd = create_command<execution_command>(tsk.get_id(), subrange{chnk});
-					static_cast<execution_command*>(cmd)->set_device_id(did++);
+					static_cast<execution_command*>(cmd)->set_device_id(device_assignments[j]);
 
 					// Go over all reductions that are to be performed *during* the execution of this chunk,
 					// not to be confused with any pending reductions that need to be finalized *before* the
@@ -244,10 +268,14 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 					// we have to include it in exactly one of the per-node intermediate reductions.
 					for(const auto& reduction : tsk.get_reductions()) {
 						if(nid == reduction_initializer_nid && reduction.init_from_buffer) {
-							static_cast<execution_command*>(cmd)->set_is_reduction_initializer(true);
+							static_cast<execution_command*>(cmd)->set_is_reduction_initializer(
+							    HACK_local_reductions_count == 1 || device_assignments[j] == 0); // Only first chunk initializes
 							break;
 						}
 					}
+
+					static_cast<execution_command*>(cmd)->HACK_total_local_reductions = HACK_local_reductions_count;
+					static_cast<execution_command*>(cmd)->HACK_executed_reductions = HACK_executed_reductions_ptr;
 				}
 
 				if(tsk.get_type() == task_type::collective) {
@@ -359,6 +387,8 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 
 						per_buffer_local_writes[bid] = GridRegion<3>::merge(per_buffer_local_writes[bid], req);
 						per_buffer_last_writer_update_list[bid].push_back({req, cmd->get_cid()});
+
+						HACK_local_writer_cmds.push_back(cmd->get_cid());
 					}
 				}
 
@@ -372,21 +402,31 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 					assert(local_last_writer.size() == 1);
 
 					if(is_local_chunk) {
-						auto* const reduce_cmd = create_command<reduction_command>(reduction);
+						if(generated_reductions.count(reduction.rid) == 0) {
+							auto* const reduce_cmd = create_command<reduction_command>(reduction);
+							generated_reductions.emplace(reduction.rid, reduce_cmd);
 
-						// Only generate a true dependency on the last writer if this node participated in the intermediate result computation.
-						if(local_last_writer[0].second.is_fresh()) {
-							m_cdag.add_dependency(reduce_cmd, m_cdag.get(local_last_writer[0].second), dependency_kind::true_dep, dependency_origin::dataflow);
+							// Only generate a true dependency on the last writer if this node participated in the intermediate result computation.
+							if(local_last_writer[0].second.is_fresh()) {
+								// m_cdag.add_dependency(
+								// reduce_cmd, m_cdag.get(local_last_writer[0].second), dependency_kind::true_dep, dependency_origin::dataflow);
+								for(auto lw : buffer_state.HACK_reduction_writers) {
+									m_cdag.add_dependency(reduce_cmd, m_cdag.get(lw), dependency_kind::true_dep, dependency_origin::dataflow);
+								}
+							}
+
+							auto* const ap_cmd = create_command<await_push_command>(bid, reduction.rid, trid, subrange_to_grid_box(sr));
+							m_cdag.add_dependency(reduce_cmd, ap_cmd, dependency_kind::true_dep, dependency_origin::dataflow);
+							generate_epoch_dependencies(ap_cmd);
+
+							m_cdag.add_dependency(cmd, reduce_cmd, dependency_kind::true_dep, dependency_origin::dataflow);
+
+							// Reduction command becomes the last writer (this may be overriden if this task also writes to the reduction buffer)
+							post_reduction_buffer_states.at(bid).local_last_writer.update_box(box, reduce_cmd->get_cid());
+						} else {
+							// We already generated a reduction command for a another chunk on this node, reuse it
+							m_cdag.add_dependency(cmd, generated_reductions.at(reduction.rid), dependency_kind::true_dep, dependency_origin::dataflow);
 						}
-
-						auto* const ap_cmd = create_command<await_push_command>(bid, reduction.rid, trid, subrange_to_grid_box(sr));
-						m_cdag.add_dependency(reduce_cmd, ap_cmd, dependency_kind::true_dep, dependency_origin::dataflow);
-						generate_epoch_dependencies(ap_cmd);
-
-						m_cdag.add_dependency(cmd, reduce_cmd, dependency_kind::true_dep, dependency_origin::dataflow);
-
-						// Reduction command becomes the last writer (this may be overriden if this task also writes to the reduction buffer)
-						post_reduction_buffer_states.at(bid).local_last_writer.update_box(box, reduce_cmd->get_cid());
 					} else {
 						// Push an empty range if we don't have any fresh data on this node
 						const bool notification_only = !local_last_writer[0].second.is_fresh();
@@ -399,7 +439,10 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 							generate_epoch_dependencies(push_cmd);
 						} else {
 							m_command_buffer_reads[push_cmd->get_cid()][bid] = GridRegion<3>::merge(m_command_buffer_reads[push_cmd->get_cid()][bid], box);
-							m_cdag.add_dependency(push_cmd, m_cdag.get(local_last_writer[0].second), dependency_kind::true_dep, dependency_origin::dataflow);
+							// m_cdag.add_dependency(push_cmd, m_cdag.get(local_last_writer[0].second), dependency_kind::true_dep, dependency_origin::dataflow);
+							for(auto lw : buffer_state.HACK_reduction_writers) {
+								m_cdag.add_dependency(push_cmd, m_cdag.get(lw), dependency_kind::true_dep, dependency_origin::dataflow);
+							}
 						}
 
 						// Mark the reduction result as replicated so we don't generate data transfers to this node
@@ -441,6 +484,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 	if(distributed_chunks.size() > 1) {
 		for(const auto& reduction : tsk.get_reductions()) {
 			m_buffer_states.at(reduction.bid).pending_reduction = reduction;
+			m_buffer_states.at(reduction.bid).HACK_reduction_writers = std::move(HACK_local_writer_cmds);
 
 			// In some cases this node may not actually participate in the computation of the
 			// intermediate reduction result (because there was no chunk). If so, mark the

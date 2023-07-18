@@ -66,17 +66,17 @@ TEST_CASE("discarding the reduction result from a execution_command will not gen
 
 TEST_CASE("distributed_graph_generator does not generate multiple reduction commands for redundant requirements",
     "[distributed_graph_generator][command-graph][reductions]") {
-	// NOCOMMIT Also test for multiple devices (GENERATE?) - does not work yet, we expect a single reduction initializer chunk
-	dist_cdag_test_context dctx(4);
+	const size_t num_local_gpus = GENERATE(1, 2);
+	dist_cdag_test_context dctx(4, num_local_gpus);
 
 	const range<1> test_range = {64};
-	auto buf0 = dctx.create_buffer(range<1>(1));
+	auto buf0 = dctx.create_buffer(range<1>(2)); // NOCOMMIT HACK For multi-GPU
 
 	dctx.device_compute<class UKN(reduce)>(test_range).reduce(buf0, false /* include_current_buffer_value */).submit();
 
 	SECTION("in a single task") {
-		dctx.master_node_host_task().read(buf0, acc::all{}).read_write(buf0, acc::all{}).write(buf0, acc::all{}).submit();
-		CHECK(dctx.query(command_type::reduction).count() == 1);
+		dctx.device_compute<class UKN(kernel)>(test_range).read(buf0, acc::all{}).read_write(buf0, acc::one_to_one{}).write(buf0, acc::one_to_one{}).submit();
+		CHECK(dctx.query(command_type::reduction).count_per_node() == 1);
 	}
 
 	SECTION("across multiple tasks") {
@@ -214,4 +214,17 @@ TEST_CASE("reductions that do not include the current value generate anti-depend
 	const auto tid_write = dctx.master_node_host_task().discard_write(buf0, acc::all{}).submit();
 	const auto tid_reduce = dctx.device_compute<class UKN(reduce)>(range<1>(1)).reduce(buf0, false /* include_current_buffer_value */).submit();
 	CHECK(dctx.query(tid_write).have_successors(dctx.query(tid_reduce), dependency_kind::anti_dep));
+}
+
+TEST_CASE("hacky multi-GPU reductions generate a dependency between all local chunks and reduction / transfer commands",
+    "[distributed_graph_generator][command-graph][reductions]") {
+	dist_cdag_test_context dctx(2, 4);
+	auto buf0 = dctx.create_buffer(range<1>(4));
+
+	const auto tid_reduce = dctx.device_compute<class UKN(reduce)>(range<1>(128)).reduce(buf0, false /* include_current_buffer_value */).submit();
+	const auto reducer_cmds = dctx.query(command_type::execution);
+	const auto tid_read = dctx.device_compute<class UKN(read)>(range<1>(128)).read(buf0, acc::all{}).submit();
+
+	CHECK(reducer_cmds.have_successors(dctx.query(command_type::reduction), dependency_kind::true_dep));
+	CHECK(reducer_cmds.have_successors(dctx.query(command_type::push), dependency_kind::true_dep));
 }

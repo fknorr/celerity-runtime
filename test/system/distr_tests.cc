@@ -23,8 +23,8 @@ namespace detail {
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "simple reductions produce the expected results", "[reductions]") {
 #if CELERITY_FEATURE_SCALAR_REDUCTIONS
 		size_t N = 1000;
-		buffer<size_t, 1> sum_buf{{1}};
-		buffer<size_t, 1> max_buf{{1}};
+		buffer<size_t, 1> sum_buf{{4}}; // NOCOMMIT For hacky multi-GPU support
+		buffer<size_t, 1> max_buf{{4}}; // NOCOMMIT For hacky multi-GPU support
 
 		distr_queue q;
 		const auto initialize_to_identity = cl::sycl::property::reduction::initialize_to_identity{};
@@ -61,7 +61,7 @@ namespace detail {
 
 		const int N = 1000;
 		const int init = 42;
-		buffer<int, 1> sum(&init, range{1});
+		buffer<int, 1> sum(&init, range{4}); // NOCOMMIT For hacky multi-GPU support
 		q.submit([&](handler& cgh) {
 			cgh.parallel_for<class UKN(kernel)>(
 			    range{N}, reduction(sum, cgh, cl::sycl::plus<int>{} /* don't initialize to identity */), [=](celerity::item<1> item, auto& sum) { sum += 1; });
@@ -82,7 +82,7 @@ namespace detail {
 
 		const int N = 1000;
 
-		buffer<int, 1> sum(range{1});
+		buffer<int, 1> sum(range{4}); // NOCOMMIT For hacky multi-GPU support
 		q.submit([&](handler& cgh) {
 			cgh.parallel_for<class UKN(kernel)>(range{N}, reduction(sum, cgh, cl::sycl::plus<int>{}, cl::sycl::property::reduction::initialize_to_identity{}),
 			    [=](celerity::item<1> item, auto& sum) { sum += 1; });
@@ -109,7 +109,7 @@ namespace detail {
 
 		const int N = 1000;
 
-		buffer<int, 1> sum(range{1});
+		buffer<int, 1> sum(range{4}); // NOCOMMIT For hacky multi-GPU support
 		q.submit([&](handler& cgh) {
 			cgh.parallel_for<class UKN(produce)>(range{N}, reduction(sum, cgh, cl::sycl::plus<int>{}, cl::sycl::property::reduction::initialize_to_identity{}),
 			    [=](celerity::item<1> item, auto& sum) { sum += static_cast<int>(item.get_linear_id()); });
@@ -144,7 +144,7 @@ namespace detail {
 
 		{
 			distr_queue q;
-			buffer<int, 1> sum(range{1});
+			buffer<int, 1> sum(range{4}); // NOCOMMIT For hacky multi-GPU support
 			q.submit([&](handler& cgh) {
 				cgh.parallel_for<class UKN(produce)>(range{100},
 				    reduction(sum, cgh, cl::sycl::plus<int>{}, cl::sycl::property::reduction::initialize_to_identity{}),
