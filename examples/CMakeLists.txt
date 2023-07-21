@@ -25,6 +25,7 @@ endfunction()
 add_example(convolution)
 add_example(hello_world)
 add_example(matmul)
+add_example(gassimulation)
 add_example(syncing)
 add_example(wave_sim)
 
