@@ -241,7 +241,7 @@ namespace detail {
 
 			if(!m_buffer_mngr.try_lock(pkg.cid, m_queue.get_memory_id(), tsk->get_buffer_access_map().get_accessed_buffers())) { return false; }
 
-			CELERITY_TRACE("Submit kernel to SYCL");
+			CELERITY_TRACE("Dispatch data transfers");
 
 			const auto& access_map = tsk->get_buffer_access_map();
 			const auto& reductions = tsk->get_reductions();

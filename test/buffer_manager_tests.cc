@@ -260,6 +260,35 @@ namespace detail {
 		SECTION("unless accessed range does not fully cover previous buffer size (using host buffers)") { run_test(access_target::host, true); }
 	}
 
+	// Regression test: Since we did not check whether regions to retain were stale, resizing a buffer would cause the BM to copy newer data from a different
+	// memory which was currently being written by another task (nasty to debug!). This happened between two GPUs, but host/device uses same code paths.
+	TEST_CASE_METHOD(test_utils::buffer_manager_fixture,
+	    "buffer_manager does not erroneously retain data from other memories when resizing buffer using consumer access mode", "[buffer_manager]") {
+		auto& bm = get_buffer_manager();
+		auto bid = bm.register_buffer<size_t, 1>(range<3>(128, 1, 1));
+
+		// Initialize first half of buffer on host
+		buffer_for_each<size_t, 1, access_mode::discard_write, class UKN(init_first_half)>(
+		    bid, access_target::host, {64}, {0}, [](id<1> idx, size_t& value) { value = idx[0]; });
+
+		// Overwrite on device
+		buffer_for_each<size_t, 1, access_mode::discard_write, class UKN(init_first_half)>(
+		    bid, access_target::device, {64}, {0}, [](id<1> idx, size_t& value) { value = 100 + idx[0]; });
+
+		// Access second half on host using consumer access mode (read_write), causing resize
+		buffer_for_each<size_t, 1, access_mode::read_write, class UKN(init_first_half)>(
+		    bid, access_target::host, {64}, {64}, [](id<1> idx, size_t& value) { value = idx[0]; });
+
+		// Get pointer without updating first half
+		auto info = access_host_buffer_sync<size_t, 1>(bid, access_mode::read, {{64}, {64}});
+
+		// Verify that device data has not been copied to host during resize
+		for(size_t i = 0; i < 64; ++i) {
+			// In fact, the previous contents should also not have been retained (b/c they are stale)
+			REQUIRE_LOOP(is_valid_buffer_test_mode_pattern(static_cast<size_t*>(info.ptr)[i]));
+		}
+	}
+
 	TEST_CASE_METHOD(test_utils::buffer_manager_fixture, "buffer_manager ensures coherence between device and host buffers", "[buffer_manager]") {
 		auto& bm = get_buffer_manager();
 		auto bid = bm.register_buffer<size_t, 1>(range<3>(512, 1, 1));

@@ -385,7 +385,14 @@ namespace detail {
 		const GridRegion<3> retain_region = ([&]() {
 			GridRegion<3> result = coherent_box;
 			if(previous_buffer.is_allocated()) {
-				result = GridRegion<3>::merge(result, subrange_to_grid_box({previous_buffer.offset, previous_buffer.storage->get_range()}));
+				auto to_retain = GridRegion<3>::difference(subrange_to_grid_box({previous_buffer.offset, previous_buffer.storage->get_range()}), coherent_box);
+				const auto data_locations = m_newest_data_location.at(bid).get_region_values(to_retain);
+				for(const auto& [box, locs] : data_locations) {
+					// No need to retain stale data
+					// TODO: Only retain data that *only* this memory has (= is authoritative source)?
+					if(!locs.test(mid)) { to_retain = GridRegion<3>::difference(to_retain, box); }
+				}
+				result = GridRegion<3>::merge(result, to_retain);
 			}
 			return result;
 		})(); // IIFE
