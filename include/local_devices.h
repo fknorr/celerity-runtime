@@ -8,11 +8,10 @@ namespace celerity::detail {
 
 class config;
 
-// This is a very simplistic initial implementation
 // TODO: It would be neat if we could model host/RAM as just another device / memory.
 class local_devices {
   public:
-	void init(const config& cfg, const device_or_selector& dos = auto_select_device{});
+	void init(const config& cfg, const devices_or_selector& dos = auto_select_devices{});
 
 	host_queue& get_host_queue() {
 		assert(m_is_initialized);

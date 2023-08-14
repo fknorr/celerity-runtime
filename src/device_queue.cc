@@ -1,18 +1,11 @@
 #include "device_queue.h"
 
-#include <CL/sycl.hpp>
+#include <algorithm>
 
 #include "log.h"
-#include "workaround.h"
 
 namespace celerity {
 namespace detail {
-
-	void device_queue::init(const config& cfg, const device_or_selector& user_device_or_selector) {
-		auto device = std::visit(
-		    [&cfg](const auto& value) { return ::celerity::detail::pick_device(cfg, value, cl::sycl::platform::get_platforms()); }, user_device_or_selector);
-		init(cfg, device);
-	}
 
 	void device_queue::init(const config& cfg, sycl::device device) {
 		assert(m_sycl_queue == nullptr);

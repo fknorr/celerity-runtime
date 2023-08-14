@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic
 Versioning](http://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Removed
+
+- Removed `distr_queue` constructor and `celerity::runtime::init` overloads receiving a single `sycl::device`.
+
 ## [0.4.0] - 2023-07-13
 
 We recommend using the following SYCL versions with this release:

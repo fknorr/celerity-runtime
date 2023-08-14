@@ -39,7 +39,7 @@ namespace detail {
 		/**
 		 * @param user_device_or_selector This optional device (overriding any other device selection strategy) or device selector can be provided by the user.
 		 */
-		static void init(int* argc, char** argv[], device_or_selector user_device_or_selector = auto_select_device{});
+		static void init(int* argc, char** argv[], devices_or_selector user_devices_or_selector = auto_select_devices{});
 
 		static bool is_initialized() { return instance != nullptr; }
 		static runtime& get_instance();
@@ -64,8 +64,6 @@ namespace detail {
 		experimental::bench::detail::user_benchmarker& get_user_benchmarker() const { return *m_user_bench; }
 
 		host_queue& get_host_queue() const { return m_local_devices->get_host_queue(); }
-
-		device_queue& get_device_queue() const { return m_local_devices->get_device_queue(0); } // NOCOMMIT What do we even need this for anyway?
 
 		buffer_manager& get_buffer_manager() const;
 
@@ -105,7 +103,7 @@ namespace detail {
 		std::unique_ptr<task_manager> m_task_mngr;
 		std::unique_ptr<executor> m_exec;
 
-		runtime(int* argc, char** argv[], device_or_selector user_device_or_selector);
+		runtime(int* argc, char** argv[], devices_or_selector user_devices_or_selector);
 		runtime(const runtime&) = delete;
 		runtime(runtime&&) = delete;
 

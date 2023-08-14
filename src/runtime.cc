@@ -54,9 +54,9 @@ namespace detail {
 		m_mpi_finalized = true;
 	}
 
-	void runtime::init(int* argc, char** argv[], device_or_selector user_device_or_selector) {
+	void runtime::init(int* argc, char** argv[], devices_or_selector user_devices_or_selector) {
 		assert(!instance);
-		instance = std::unique_ptr<runtime>(new runtime(argc, argv, user_device_or_selector));
+		instance = std::unique_ptr<runtime>(new runtime(argc, argv, user_devices_or_selector));
 	}
 
 	runtime& runtime::get_instance() {
@@ -103,7 +103,7 @@ namespace detail {
 #endif
 	}
 
-	runtime::runtime(int* argc, char** argv[], device_or_selector user_device_or_selector) {
+	runtime::runtime(int* argc, char** argv[], devices_or_selector user_devices_or_selector) {
 		if(m_test_mode) {
 			assert(m_test_active && "initializing the runtime from a test without a runtime_fixture");
 		} else {
@@ -135,7 +135,7 @@ namespace detail {
 		cgf_diagnostics::make_available();
 
 		m_local_devices = std::make_unique<local_devices>();
-		m_local_devices->init(*m_cfg, user_device_or_selector);
+		m_local_devices->init(*m_cfg, user_devices_or_selector);
 
 		// Initialize worker classes (but don't start them up yet)
 		m_buffer_mngr = std::make_unique<buffer_manager>(*m_local_devices, [this](buffer_manager::buffer_lifecycle_event event, buffer_id bid) {

@@ -85,9 +85,7 @@ namespace detail {
 
 
 	struct config_testspy {
-		static void set_mock_device_cfg(config& cfg, const device_config& d_cfg) { cfg.m_device_cfg = d_cfg; }
 		static void set_mock_host_cfg(config& cfg, const host_config& h_cfg) { cfg.m_host_cfg = h_cfg; }
-		static std::optional<device_config> get_device_config(config& cfg) { return cfg.m_device_cfg; }
 	};
 
 
@@ -318,7 +316,7 @@ namespace test_utils {
 
 	class local_devices_fixture : public mpi_fixture { // mpi_fixture for config
 	  public:
-		local_devices_fixture() : m_cfg(nullptr, nullptr) { m_devices.init(m_cfg, detail::auto_select_device{}); }
+		local_devices_fixture() : m_cfg(nullptr, nullptr) { m_devices.init(m_cfg, detail::auto_select_devices{}); }
 
 		~local_devices_fixture() {
 			for(size_t i = 0; i < m_devices.num_compute_devices(); ++i) {
