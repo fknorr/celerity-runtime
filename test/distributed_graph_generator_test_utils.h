@@ -176,7 +176,7 @@ class command_query {
 					if(utils::as<task_command>(cmd)->get_tid() != *task_filter) continue;
 				}
 				if(type_filter.has_value()) {
-					if(get_type(cmd) != *type_filter) continue;
+					if(cmd->get_type() != *type_filter) continue;
 				}
 				filtered[nid].insert(cmd);
 			}
@@ -283,7 +283,7 @@ class command_query {
 	bool have_type(const command_type expected) const {
 		assert_not_empty(__FUNCTION__);
 		return for_all_commands([expected](const node_id nid, const abstract_command* cmd) {
-			const auto received = get_type(cmd);
+			const auto received = cmd->get_type();
 			if(received != expected) {
 				UNSCOPED_INFO(fmt::format("Expected command {} on node {} to have type '{}' but found type '{}'", cmd->get_cid(), nid, get_type_name(expected),
 				    get_type_name(received)));
@@ -442,17 +442,6 @@ class command_query {
 	template <typename T, typename... Ts>
 	static constexpr std::optional<T> get_optional(Ts... ts) {
 		return get_optional<T>(std::tuple(ts...));
-	}
-
-	static command_type get_type(const abstract_command* cmd) {
-		if(utils::isa<epoch_command>(cmd)) return command_type::epoch;
-		if(utils::isa<horizon_command>(cmd)) return command_type::horizon;
-		if(utils::isa<execution_command>(cmd)) return command_type::execution;
-		if(utils::isa<push_command>(cmd)) return command_type::push;
-		if(utils::isa<await_push_command>(cmd)) return command_type::await_push;
-		if(utils::isa<reduction_command>(cmd)) return command_type::reduction;
-		if(utils::isa<fence_command>(cmd)) return command_type::fence;
-		throw query_exception("Unknown command type");
 	}
 
 	static std::string get_type_name(const command_type type) {

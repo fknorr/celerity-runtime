@@ -1,6 +1,8 @@
 #include "recorders.h"
 #include "buffer_manager.h"
+#include "command.h"
 #include "task_manager.h"
+#include "utils.h"
 
 #include <regex>
 
@@ -53,18 +55,6 @@ void task_recorder::record_task(const task& tsk) { //
 }
 
 // Commands
-
-command_type get_command_type(const abstract_command& cmd) {
-	if(utils::isa<epoch_command>(&cmd)) return command_type::epoch;
-	if(utils::isa<horizon_command>(&cmd)) return command_type::horizon;
-	if(utils::isa<execution_command>(&cmd)) return command_type::execution;
-	if(utils::isa<push_command>(&cmd)) return command_type::push;
-	if(utils::isa<await_push_command>(&cmd)) return command_type::await_push;
-	if(utils::isa<reduction_command>(&cmd)) return command_type::reduction;
-	if(utils::isa<fence_command>(&cmd)) return command_type::fence;
-	CELERITY_CRITICAL("Unexpected command type");
-	std::terminate();
-}
 
 std::optional<epoch_action> get_epoch_action(const abstract_command& cmd) {
 	const auto* epoch_cmd = dynamic_cast<const epoch_command*>(&cmd);
@@ -183,7 +173,7 @@ std::optional<collective_group_id> get_collective_group_id(const abstract_comman
 }
 
 command_record::command_record(const abstract_command& cmd, const task_manager* task_mngr, const buffer_manager* buff_mngr)
-    : cid(cmd.get_cid()), type(get_command_type(cmd)), epoch_action(get_epoch_action(cmd)), execution_range(get_execution_range(cmd)),
+    : cid(cmd.get_cid()), type(cmd.get_type()), epoch_action(get_epoch_action(cmd)), execution_range(get_execution_range(cmd)),
       reduction_id(get_reduction_id(cmd)), buffer_id(get_buffer_id(cmd)), buffer_name(get_cmd_buffer_name(buffer_id, buff_mngr)), target(get_target(cmd)),
       await_region(get_await_region(cmd)), push_range(get_push_range(cmd)), transfer_id(get_transfer_id(cmd)), task_id(get_task_id(cmd)),
       task_geometry(get_task_geometry(cmd, task_mngr)), is_reduction_initializer(get_is_reduction_initializer(cmd)),
