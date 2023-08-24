@@ -6,10 +6,12 @@
 #include <utility>
 #include <vector>
 
+#include "bounding_box_set.h"
 #include "device_queue.h"
 #include "grid.h"
 #include "host_queue.h"
 #include "intrusive_graph.h"
+#include "launcher.h"
 #include "lifetime_extending_state.h"
 #include "range_mapper.h"
 #include "types.h"
@@ -109,6 +111,16 @@ namespace detail {
 
 		box<3> get_requirements_for_nth_access(const size_t n, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
 
+		std::vector<const range_mapper_base*> get_range_mappers(const buffer_id bid) const {
+			std::vector<const range_mapper_base*> rms;
+			for(const auto& [a_bid, a_rm] : m_accesses) {
+				if(a_bid == bid) { rms.push_back(a_rm.get()); }
+			}
+			return rms;
+		}
+
+		bounding_box_set get_required_contiguous_boxes(const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
+
 	  private:
 		std::vector<std::pair<buffer_id, std::unique_ptr<range_mapper_base>>> m_accesses;
 	};
@@ -201,6 +213,11 @@ namespace detail {
 		template <typename... Args>
 		auto launch(Args&&... args) const {
 			return (*m_launcher)(std::forward<Args>(args)...);
+		}
+
+		template<typename Launcher>
+		Launcher get_launcher() const {
+			return Launcher(); // TODO stub
 		}
 
 		void extend_lifetime(std::shared_ptr<lifetime_extending_state> state) { m_attached_state.emplace_back(std::move(state)); }

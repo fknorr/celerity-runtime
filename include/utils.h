@@ -1,12 +1,10 @@
 #pragma once
 
+#include "log.h"
 #include <cstdint>
 #include <functional>
-<<<<<<< HEAD
 #include <string>
-=======
 #include <optional>
->>>>>>> 30fa38f ([IDAG] Implement utils::match on class hierarchies through visitor pattern)
 #include <type_traits>
 #include <variant>
 
@@ -272,5 +270,11 @@ std::string simplify_task_name(const std::string& demangled_type_name);
 
 // escapes "<", ">", and "&" with their corresponding HTML escape sequences
 std::string escape_for_dot_label(std::string str);
+
+template<typename ...FmtArgs>
+[[noreturn]] void panic(const FmtArgs &...fmt_args) {
+	CELERITY_CRITICAL(fmt_args...);
+	throw std::runtime_error(fmt::format(fmt_args...));
+}
 
 } // namespace celerity::detail::utils

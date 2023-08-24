@@ -35,7 +35,7 @@ void distributed_graph_generator::add_buffer(const buffer_id bid, const int dims
 }
 
 // We simply split in the first dimension for now
-static std::vector<chunk<3>> split_equal(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks, const int dims) {
+std::vector<chunk<3>> split_equal(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks, const int dims) {
 #ifndef NDEBUG
 	assert(num_chunks > 0);
 	for(int d = 0; d < dims; ++d) {

@@ -33,6 +33,16 @@ namespace detail {
 		return subrange<3>{};
 	}
 
+	subrange<3> apply_range_mapper(const range_mapper_base* rm, const chunk<3>& chnk, int kernel_dims) {
+		switch(kernel_dims) {
+		case 0: return apply_range_mapper<0>(rm, chunk_cast<0>(chnk));
+		case 1: return apply_range_mapper<1>(rm, chunk_cast<1>(chnk));
+		case 2: return apply_range_mapper<2>(rm, chunk_cast<2>(chnk));
+		case 3: return apply_range_mapper<3>(rm, chunk_cast<3>(chnk));
+		default: assert(!"Unreachable");
+		}
+	}
+
 	region<3> buffer_access_map::get_mode_requirements(
 	    const buffer_id bid, const access_mode mode, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const {
 		box_vector<3> boxes;
@@ -44,18 +54,16 @@ namespace detail {
 	}
 
 	box<3> buffer_access_map::get_requirements_for_nth_access(const size_t n, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const {
-		const auto& [_, rm] = m_accesses[n];
+		return apply_range_mapper(m_accesses[n].second.get(), chunk<3>{sr.offset, sr.range, global_size}, kernel_dims);
+	}
 
-		chunk<3> chnk{sr.offset, sr.range, global_size};
-		subrange<3> req;
-		switch(kernel_dims) {
-		case 0: req = apply_range_mapper<0>(rm.get(), chunk_cast<0>(chnk)); break;
-		case 1: req = apply_range_mapper<1>(rm.get(), chunk_cast<1>(chnk)); break;
-		case 2: req = apply_range_mapper<2>(rm.get(), chunk_cast<2>(chnk)); break;
-		case 3: req = apply_range_mapper<3>(rm.get(), chunk_cast<3>(chnk)); break;
-		default: assert(!"Unreachable");
+	bounding_box_set buffer_access_map::get_required_contiguous_boxes(
+	    const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const {
+		bounding_box_set boxes;
+		for(const auto& [a_bid, a_rm] : m_accesses) {
+			if(a_bid == bid) { boxes.insert(apply_range_mapper(a_rm.get(), chunk<3>{sr.offset, sr.range, global_size}, kernel_dims)); }
 		}
-		return req;
+		return boxes;
 	}
 
 	void side_effect_map::add_side_effect(const host_object_id hoid, const experimental::side_effect_order order) {

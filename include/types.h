@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdlib>
 #include <functional>
 #include <utility>
@@ -57,6 +58,10 @@ MAKE_PHANTOM_TYPE(reduction_id, size_t)
 MAKE_PHANTOM_TYPE(host_object_id, size_t)
 MAKE_PHANTOM_TYPE(hydration_id, size_t);
 MAKE_PHANTOM_TYPE(transfer_id, size_t)
+MAKE_PHANTOM_TYPE(memory_id, size_t)
+MAKE_PHANTOM_TYPE(device_id, size_t)
+MAKE_PHANTOM_TYPE(allocation_id, size_t)
+MAKE_PHANTOM_TYPE(instruction_id, size_t)
 
 
 // declared in this header for include-dependency reasons
@@ -75,4 +80,14 @@ struct reduction_info {
 };
 
 constexpr node_id master_node_id = 0;
+
+inline constexpr memory_id host_memory_id = 0;
+
+inline memory_id to_memory_id(const device_id& did) { return did + 1; }
+
+inline memory_id to_device_id(const memory_id& mid) {
+	assert(mid != host_memory_id);
+	return mid - 1;
+}
+
 } // namespace celerity::detail
