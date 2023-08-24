@@ -159,6 +159,7 @@ namespace test_utils {
 	class mock_buffer_factory;
 	class mock_host_object_factory;
 	class dist_cdag_test_context;
+	class idag_test_context;
 
 	template <int Dims>
 	class mock_buffer {
@@ -175,6 +176,7 @@ namespace test_utils {
 	  private:
 		friend class mock_buffer_factory;
 		friend class dist_cdag_test_context;
+		friend class idag_test_context;
 
 		detail::buffer_id m_id;
 		range<Dims> m_size;
@@ -191,6 +193,7 @@ namespace test_utils {
 	  private:
 		friend class mock_host_object_factory;
 		friend class dist_cdag_test_context;
+		friend class idag_test_context;
 
 		detail::host_object_id m_id;
 

@@ -113,4 +113,8 @@ class command_recorder {
 	const buffer_manager* m_buff_mngr;
 };
 
+class instruction_recorder {
+	// TODO stub
+};
+
 } // namespace celerity::detail

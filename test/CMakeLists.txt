@@ -35,6 +35,7 @@ set(TEST_TARGETS
   graph_compaction_tests
   grid_tests
   intrusive_graph_tests
+  instruction_graph_tests
   print_graph_tests
   region_map_tests
   range_tests
