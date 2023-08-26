@@ -16,6 +16,7 @@ namespace celerity::detail {
 
 class abstract_command;
 class task_manager;
+class instruction_recorder;
 
 class instruction_graph_generator {
   public:
@@ -23,7 +24,7 @@ class instruction_graph_generator {
 		std::set<instruction_backend> backends;
 	};
 
-	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices);
+	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder *recorder = nullptr);
 
 	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
 
@@ -181,6 +182,7 @@ class instruction_graph_generator {
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;
+	instruction_recorder *m_recorder;
 
 	static memory_id next_location(const data_location& location, memory_id first);
 

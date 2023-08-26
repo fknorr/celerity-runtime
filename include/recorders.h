@@ -1,6 +1,7 @@
 #pragma once
 
 #include "command.h"
+#include "instruction_graph.h"
 #include "task.h"
 
 namespace celerity::detail {
@@ -113,8 +114,190 @@ class command_recorder {
 	const buffer_manager* m_buff_mngr;
 };
 
+struct buffer_allocation_record {
+	detail::buffer_id buffer_id;
+	std::string debug_name;
+	box<3> box;
+};
+
+using instruction_dependency_list = std::vector<dependency_record<command_id>>;
+
+struct instruction_record_base {
+	instruction_id id;
+	instruction_backend backend;
+	instruction_dependency_list dependencies;
+
+	explicit instruction_record_base(const instruction& instr) : id(instr.get_id()), backend(instr.get_backend()) {
+		// TODO deps
+	}
+};
+
+struct alloc_instruction_record : instruction_record_base {
+	enum class alloc_origin {
+		buffer,
+		send,
+	};
+
+	detail::allocation_id allocation_id;
+	detail::memory_id memory_id;
+	size_t size;
+	size_t alignment;
+	alloc_origin origin;
+	std::optional<buffer_allocation_record> buffer_allocation;
+
+	alloc_instruction_record(const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation)
+	    : instruction_record_base(ainstr), allocation_id(ainstr.get_allocation_id()), memory_id(ainstr.get_memory_id()), size(ainstr.get_size()),
+	      alignment(ainstr.get_alignment()), origin(origin), buffer_allocation(std::move(buffer_allocation)) {}
+};
+
+struct free_instruction_record : instruction_record_base {
+	instruction_id id;
+	instruction_backend backend;
+	detail::allocation_id allocation_id;
+	detail::memory_id memory_id;
+	size_t size;
+	size_t alignment;
+	std::optional<buffer_allocation_record> buffer_allocation;
+
+	free_instruction_record(const free_instruction& finstr, const detail::memory_id mid, const size_t size, const size_t alignment,
+	    std::optional<buffer_allocation_record> buffer_allocation)
+	    : instruction_record_base(finstr), allocation_id(finstr.get_allocation_id()), memory_id(mid), size(size), alignment(alignment),
+	      buffer_allocation(std::move(buffer_allocation)) {}
+};
+
+struct copy_instruction_record : instruction_record_base {
+	enum class copy_origin {
+		linearize,
+		resize,
+		coherence,
+	};
+
+	memory_id source_memory;
+	allocation_id source_allocation;
+	memory_id dest_memory;
+	allocation_id dest_allocation;
+	int dimensions;
+	range<3> source_range;
+	range<3> dest_range;
+	celerity::id<3> offset_in_source;
+	celerity::id<3> offset_in_dest;
+	range<3> copy_range;
+	size_t elemend_size;
+	copy_origin origin;
+	buffer_id buffer;
+	std::string buffer_debug_name;
+	detail::box<3> box;
+
+	copy_instruction_record(
+	    const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3>& box)
+	    : instruction_record_base(cinstr), source_memory(cinstr.get_source_memory()), source_allocation(cinstr.get_source_allocation()),
+	      dest_memory(cinstr.get_dest_memory()), dest_allocation(cinstr.get_dest_allocation()), dimensions(cinstr.get_dimensions()),
+	      source_range(cinstr.get_source_range()), dest_range(cinstr.get_dest_range()), offset_in_source(cinstr.get_offset_in_source()),
+	      offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), elemend_size(cinstr.get_element_size()), origin(origin),
+	      buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
+};
+
+struct kernel_instruction_record : instruction_record_base {
+	subrange<3> execution_range;
+	access_allocation_map allocation_map;
+	task_id command_group_task_id;
+	command_id execution_command_id;
+	std::string kernel_debug_name;
+	std::vector<buffer_allocation_record> allocation_buffer_map;
+
+	kernel_instruction_record(const kernel_instruction& kinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
+	    std::vector<buffer_allocation_record> allocation_buffer_map)
+	    : instruction_record_base(kinstr), execution_range(kinstr.get_execution_range()), allocation_map(kinstr.get_allocation_map()),
+	      command_group_task_id(cg_tid), execution_command_id(execution_cid), kernel_debug_name(std::move(kernel_debug_name)),
+	      allocation_buffer_map(std::move(allocation_buffer_map)) {}
+};
+
+struct host_kernel_instruction_record : kernel_instruction_record {
+	host_kernel_instruction_record(const host_kernel_instruction& hkinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
+	    std::vector<buffer_allocation_record> allocation_buffer_map)
+	    : kernel_instruction_record(hkinstr, cg_tid, execution_cid, std::move(kernel_debug_name), std::move(allocation_buffer_map)) {}
+};
+
+struct sycl_kernel_instruction_record : kernel_instruction_record {
+	detail::device_id device_id;
+
+	sycl_kernel_instruction_record(const sycl_kernel_instruction& skinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
+	    std::vector<buffer_allocation_record> allocation_buffer_map)
+	    : kernel_instruction_record(skinstr, cg_tid, execution_cid, std::move(kernel_debug_name), std::move(allocation_buffer_map)),
+	      device_id(skinstr.get_device_id()) {}
+};
+
+struct send_instruction_record : instruction_record_base {
+	transfer_id transfer_id;
+	node_id dest_node_id;
+	int tag;
+	allocation_id allocation_id;
+	size_t size_bytes;
+	command_id push_cid;
+	buffer_id buffer;
+	std::string buffer_debug_name;
+	box<3> box;
+
+	send_instruction_record(
+	    const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3> box)
+	    : instruction_record_base(sinstr), transfer_id(sinstr.get_transfer_id()), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()),
+	      allocation_id(sinstr.get_allocation_id()), size_bytes(sinstr.get_size_bytes()), push_cid(push_cid), buffer(buffer),
+	      buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
+};
+
+struct recv_instruction_record : instruction_record_base {
+	buffer_id buffer_id;
+	transfer_id transfer_id;
+	memory_id dest_memory_id;
+	allocation_id dest_allocation_id;
+	int dimensions;
+	range<3> allocation_range;
+	celerity::id<3> offset_in_allocation;
+	celerity::id<3> offset_in_buffer;
+	range<3> recv_range;
+	size_t element_size;
+	command_id await_push_cid;
+	detail::buffer_id buffer;
+	std::string buffer_debug_name;
+
+	recv_instruction_record(const recv_instruction& rinstr, const command_id await_push_cid, const detail::buffer_id buffer, std::string buffer_debug_name)
+	    : instruction_record_base(rinstr), buffer_id(rinstr.get_buffer_id()), transfer_id(rinstr.get_transfer_id()),
+	      dest_memory_id(rinstr.get_dest_memory_id()), dest_allocation_id(rinstr.get_dest_allocation_id()), dimensions(rinstr.get_dimensions()),
+	      allocation_range(rinstr.get_allocation_range()), offset_in_allocation(rinstr.get_offset_in_allocation()),
+	      offset_in_buffer(rinstr.get_offset_in_buffer()), recv_range(rinstr.get_recv_range()), element_size(rinstr.get_element_size()),
+	      await_push_cid(await_push_cid), buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)) {}
+};
+
+struct horizon_instruction_record : instruction_record_base {
+	task_id horizon_task_id;
+	command_id horizon_command_id;
+
+	horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid)
+	    : instruction_record_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid) {}
+};
+
+struct epoch_instruction_record : instruction_record_base {
+	instruction_id id;
+	task_id epoch_task_id;
+	command_id epoch_command_id;
+
+	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid)
+	    : instruction_record_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid) {}
+};
+
+using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, copy_instruction_record, kernel_instruction_record,
+    send_instruction_record, recv_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+
 class instruction_recorder {
-	// TODO stub
+  public:
+	using instruction_records = std::vector<instruction_record>;
+
+	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
+
+	const instruction_records& get_instruction() const { return m_recorded_instructions; }
+
+  private:
+	instruction_records m_recorded_instructions;
 };
 
 } // namespace celerity::detail

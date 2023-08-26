@@ -24,10 +24,6 @@ class recv_instruction;
 class horizon_instruction;
 class epoch_instruction;
 
-struct instruction_debug_info {
-	virtual ~instruction_debug_info() = default;
-};
-
 class instruction : public intrusive_graph_node<instruction> {
   public:
 	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const copy_instruction&, const sycl_kernel_instruction&,
@@ -42,45 +38,12 @@ class instruction : public intrusive_graph_node<instruction> {
 
 	instruction_id get_id() const { return m_id; }
 
-	const instruction_debug_info* get_debug_info() const { return m_debug_info.get(); }
-
-  protected:
-	template <typename DebugInfo>
-	const DebugInfo* get_debug_info() const {
-		return static_cast<const DebugInfo*>(m_debug_info.get());
-	}
-
-	template <typename DebugInfo>
-	void set_debug_info(const DebugInfo& debug_info) {
-		m_debug_info = std::make_unique<DebugInfo>(debug_info);
-	}
-
   private:
 	instruction_id m_id;
-	std::unique_ptr<instruction_debug_info> m_debug_info; // TODO consider making this available only with CELERITY_ENABLE_DEBUG
 };
 
 struct instruction_id_less {
 	bool operator()(const instruction* const lhs, const instruction* const rhs) const { return lhs->get_id() < rhs->get_id(); }
-};
-
-struct buffer_allocation_info {
-	buffer_id bid;
-	std::string debug_name;
-	box<3> box;
-};
-
-struct alloc_instruction_debug_info final : instruction_debug_info {
-	enum class alloc_origin {
-		buffer,
-		send,
-	};
-	alloc_origin origin;
-	std::optional<buffer_allocation_info> buffer_allocation;
-
-	alloc_instruction_debug_info() : origin(alloc_origin::send) {}
-	alloc_instruction_debug_info(const buffer_id bid, std::string buffer_debug_name, const box<3>& box)
-	    : origin(alloc_origin::buffer), buffer_allocation{buffer_allocation_info{bid, std::move(buffer_debug_name), box}} {}
 };
 
 class alloc_instruction final : public instruction {
@@ -97,27 +60,12 @@ class alloc_instruction final : public instruction {
 	size_t get_size() const { return m_size; }
 	size_t get_alignment() const { return m_alignment; }
 
-	const alloc_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<alloc_instruction_debug_info>(); }
-	void set_debug_info(const alloc_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
-
   private:
 	instruction_backend m_backend;
 	allocation_id m_aid;
 	memory_id m_mid;
 	size_t m_size;
 	size_t m_alignment;
-};
-
-struct free_instruction_debug_info final : instruction_debug_info {
-	memory_id mid;
-	size_t size;
-	size_t alignment;
-	std::optional<buffer_allocation_info> buffer_allocation;
-
-	free_instruction_debug_info(const memory_id mid, const size_t size, const size_t alignment) : mid(mid), size(size), alignment(alignment) {}
-	free_instruction_debug_info(
-	    const memory_id mid, const size_t size, const size_t alignment, const buffer_id bid, std::string buffer_debug_name, const box<3>& box)
-	    : mid(mid), size(size), alignment(alignment), buffer_allocation{buffer_allocation_info{bid, std::move(buffer_debug_name), box}} {}
 };
 
 class free_instruction final : public instruction {
@@ -130,27 +78,9 @@ class free_instruction final : public instruction {
 
 	allocation_id get_allocation_id() const { return m_aid; }
 
-	const free_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<free_instruction_debug_info>(); }
-	void set_debug_info(const free_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
-
   private:
 	instruction_backend m_backend;
 	allocation_id m_aid;
-};
-
-struct copy_instruction_debug_info final : instruction_debug_info {
-	enum class copy_origin {
-		linearize,
-		resize,
-		coherence,
-	};
-	copy_origin origin;
-	buffer_id buffer;
-	std::string buffer_debug_name;
-	detail::box<3> box;
-
-	copy_instruction_debug_info(const copy_origin origin, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3>& box)
-	    : origin(origin), buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
 };
 
 // copy_instruction: either copy or linearize
@@ -178,9 +108,6 @@ class copy_instruction final : public instruction {
 	const id<3>& get_offset_in_dest() const { return m_offset_in_dest; }
 	const range<3>& get_copy_range() const { return m_copy_range; }
 	size_t get_element_size() const { return m_elem_size; }
-
-	const copy_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<copy_instruction_debug_info>(); }
-	void set_debug_info(const copy_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
 	instruction_backend m_backend;
@@ -218,18 +145,6 @@ using access_allocation_map = std::vector<access_allocation>;
 // TODO maybe overhaul buffer_access_map to provide this functionality?
 using buffer_read_write_map = std::unordered_map<buffer_id, reads_writes>;
 
-struct kernel_instruction_debug_info final : instruction_debug_info {
-	task_id cg_tid;
-	command_id execution_cid;
-	std::string kernel_debug_name;
-	std::vector<buffer_allocation_info> allocation_buffer_map;
-
-	kernel_instruction_debug_info(
-	    const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name, std::vector<buffer_allocation_info> allocation_buffer_map)
-	    : cg_tid(cg_tid), execution_cid(execution_cid), kernel_debug_name(std::move(kernel_debug_name)),
-	      allocation_buffer_map(std::move(allocation_buffer_map)) {}
-};
-
 // TODO is a common base class for host and device "kernels" the right thing to do? On the host these are not called kernels but "host tasks" everywhere else.
 class kernel_instruction : public instruction {
   public:
@@ -238,9 +153,6 @@ class kernel_instruction : public instruction {
 
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
 	const access_allocation_map& get_allocation_map() const { return m_allocation_map; }
-
-	const kernel_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<kernel_instruction_debug_info>(); }
-	void set_debug_info(const kernel_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
 	subrange<3> m_execution_range;
@@ -293,16 +205,6 @@ struct pilot_message {
 	box<3> box;
 };
 
-struct send_instruction_debug_info final : instruction_debug_info {
-	command_id push_cid;
-	buffer_id buffer;
-	std::string buffer_debug_name;
-	box<3> box;
-
-	send_instruction_debug_info(const command_id push_cid, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3> box)
-	    : push_cid(push_cid), buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
-};
-
 class send_instruction final : public instruction {
   public:
 	explicit send_instruction(
@@ -319,24 +221,12 @@ class send_instruction final : public instruction {
 	size_t get_size_bytes() const { return m_bytes; }
 	// TODO offset_bytes, if we send directly from a host buffer allocation?
 
-	const send_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<send_instruction_debug_info>(); }
-	void set_debug_info(const send_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
-
   private:
 	transfer_id m_transfer_id;
 	node_id m_to_nid;
 	int m_tag;
 	allocation_id m_aid;
 	size_t m_bytes;
-};
-
-struct recv_instruction_debug_info final : instruction_debug_info {
-	command_id await_push_cid;
-	buffer_id buffer;
-	std::string buffer_debug_name;
-
-	recv_instruction_debug_info(const command_id await_push_cid, const buffer_id buffer, std::string buffer_debug_name)
-	    : await_push_cid(await_push_cid), buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)) {}
 };
 
 class recv_instruction final : public instruction {
@@ -362,9 +252,6 @@ class recv_instruction final : public instruction {
 	const range<3>& get_recv_range() const { return m_recv_range; }
 	size_t get_element_size() const { return m_elem_size; }
 
-	const recv_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<recv_instruction_debug_info>(); }
-	void set_debug_info(const recv_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
-
   private:
 	buffer_id m_buffer_id;
 	transfer_id m_transfer_id;
@@ -378,12 +265,6 @@ class recv_instruction final : public instruction {
 	size_t m_elem_size;
 };
 
-struct horizon_instruction_debug_info final : instruction_debug_info {
-	command_id horizon_cid;
-
-	explicit horizon_instruction_debug_info(const command_id horizon_cid) : horizon_cid(horizon_cid) {}
-};
-
 class horizon_instruction final : public instruction {
   public:
 	explicit horizon_instruction(const instruction_id iid, const task_id horizon_tid) : instruction(iid), m_horizon_tid(horizon_tid) {}
@@ -393,17 +274,8 @@ class horizon_instruction final : public instruction {
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_backend get_backend() const override { return instruction_backend::host; }
 
-	const horizon_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<horizon_instruction_debug_info>(); }
-	void set_debug_info(const horizon_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
-
   private:
 	task_id m_horizon_tid;
-};
-
-struct epoch_instruction_debug_info final : instruction_debug_info {
-	command_id epoch_cid;
-
-	explicit epoch_instruction_debug_info(const command_id epoch_cid) : epoch_cid(epoch_cid) {}
 };
 
 class epoch_instruction final : public instruction {
@@ -414,9 +286,6 @@ class epoch_instruction final : public instruction {
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_backend get_backend() const override { return instruction_backend::host; }
-
-	const epoch_instruction_debug_info* get_debug_info() const { return instruction::get_debug_info<epoch_instruction_debug_info>(); }
-	void set_debug_info(const epoch_instruction_debug_info& debug_info) { instruction::set_debug_info(debug_info); }
 
   private:
 	task_id m_epoch_tid;

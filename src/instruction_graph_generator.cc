@@ -4,6 +4,7 @@
 #include "grid.h"
 #include "instruction_graph.h"
 #include "intrusive_graph.h"
+#include "recorders.h"
 #include "task.h"
 #include "task_manager.h"
 #include "types.h"
@@ -12,11 +13,11 @@
 
 namespace celerity::detail {
 
-instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices)
-    : m_tm(tm), m_devices(std::move(devices)) {
+instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder* const recorder)
+    : m_tm(tm), m_devices(std::move(devices)), m_recorder(recorder) {
 	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const auto& kv) { return memory_id(std::get<0>(kv) + 1) < max_memories; }));
 	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */));
-	initial_epoch->set_debug_info(epoch_instruction_debug_info(command_id(0 /* or so we assume */)));
+	if(m_recorder != nullptr) { m_recorder->record_instruction(epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */))); }
 	m_last_epoch = initial_epoch;
 }
 
@@ -117,7 +118,6 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		auto& dest = memory.allocations.emplace_back(buffer.dims, m_next_aid++, dest_box, buffer.range);
 		const auto alloc_instr =
 		    &create<alloc_instruction>(get_allocation_backend(mid), dest.aid, mid, dest.box.get_area() * buffer.elem_size, buffer.elem_align);
-		alloc_instr->set_debug_info(alloc_instruction_debug_info(bid, buffer.debug_name, dest_box));
 		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 		dest.record_write(dest.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
@@ -150,7 +150,6 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 				const auto copy_instr = &create<copy_instruction>(get_allocation_backend(mid), buffer.dims, mid, source.aid, source_range,
 				    copy_offset - source_offset, mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
-				copy_instr->set_debug_info(copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::resize, bid, buffer.debug_name, copy_box));
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
@@ -164,6 +163,16 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 					}
 				}
 				dest.record_write(copy_box, copy_instr);
+
+				if(m_recorder != nullptr) {
+					m_recorder->record_instruction(
+					    copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::resize, bid, buffer.debug_name, copy_box));
+				}
+			}
+
+			if(m_recorder != nullptr) {
+				m_recorder->record_instruction(alloc_instruction_record(
+				    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.debug_name, dest_box}));
 			}
 		}
 	}
@@ -172,18 +181,20 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	for(const auto free_aid : free_after_reallocation) {
 		const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
 		const auto free_instr = &create<free_instruction>(get_allocation_backend(mid), allocation.aid);
-		free_instr->set_debug_info(
-		    free_instruction_debug_info(mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align, bid, buffer.debug_name, allocation.box));
 		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
 				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep);
 			}
 		}
+		if(m_recorder != nullptr) {
+			m_recorder->record_instruction(free_instruction_record(*free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align,
+			    buffer_allocation_record{bid, buffer.debug_name, allocation.box}));
+		}
 	}
 
-	// TODO garbage-collect allocations that are both stale and not written to? We cannot re-fetch buffer subranges from their original producer without some
-	// sort of inter-node pull semantics if the GC turned out to be a misprediction, but we can swap allocations to the host when we run out of device memory.
-	// Basically we would annotate each allocation with an last-used value to implement LRU semantics.
+	// TODO garbage-collect allocations that are both stale and not written to? We cannot re-fetch buffer subranges from their original producer without
+	// some sort of inter-node pull semantics if the GC turned out to be a misprediction, but we can swap allocations to the host when we run out of device
+	// memory. Basically we would annotate each allocation with an last-used value to implement LRU semantics.
 
 	const auto end_retain_after_allocation = std::remove_if(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) {
 		return std::any_of(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const auto aid) { return alloc.aid == aid; });
@@ -249,7 +260,6 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						const auto recv_instr = &create<recv_instruction>(
 						    bid, trid, mid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
 						command_id await_push_cid = 1234; // TODO where do we get this from without changing non-debug code paths too much?
-						recv_instr->set_debug_info(recv_instruction_debug_info(await_push_cid, bid, buffer.debug_name));
 
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
@@ -261,18 +271,23 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						alloc.record_write(recv_box, recv_instr);
 
 						buffer.original_writers.update_region(recv_box, recv_instr);
+
+						if(m_recorder != nullptr) {
+							m_recorder->record_instruction(recv_instruction_record(*recv_instr, await_push_cid, bid, buffer.debug_name));
+						}
 					}
 				}
 				// TODO assert that the entire region is consumed (... eventually?)
 
-				// TODO this always transfers to a single memory, which is suboptimal. Find a way to implement "device broadcast" from a single receive buffer.
-				// This will probably require explicit handling of the receive buffer inside the IDAG.
+				// TODO this always transfers to a single memory, which is suboptimal. Find a way to implement "device broadcast" from a single receive
+				// buffer. This will probably require explicit handling of the receive buffer inside the IDAG.
 				//
 				// How to realize this in the presence of CUDA-aware MPI? We want to have RDMA MPI_Recv to device buffers as the happy path, and a copy from
 				// receive buffer as fallback - but only in the absence of a broadcast condition.
 				// 	 - annotate recv_instructions with the desired allocation to RDMA to (if any)
 				//   - have a conditional copy_instruction following it, in case the RDMA fails (or should the buffer_transfer_manager dispatch that copy?)
-				//   - in case of a RDMA failure, or when we want to broadcast, we need a release_transfer_instruction to hand the transfer_allocation_id back
+				//   - in case of a RDMA failure, or when we want to broadcast, we need a release_transfer_instruction to hand the transfer_allocation_id
+				//   back
 				// 	   to the buffer_transfer_manager (again kinda conditional on whether we did an RDMA receive or not)
 				buffer.newest_data_location.update_region(accepted_transfer_region, data_location().set(mid));
 				buffer.pending_await_pushes.update_region(accepted_transfer_region, transfer_id());
@@ -301,8 +316,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 #ifndef NDEBUG
 			for(const auto& [box, sources] : region_sources) {
 				// TODO for convenience, we want to accept read-write access by the first kernel that ever touches a given buffer range (think a read-write
-				//  kernel in a loop). However we still want to be able to detect the error condition of not having received a buffer region that was produced
-				//  by some other kernel in the past.
+				//  kernel in a loop). However we still want to be able to detect the error condition of not having received a buffer region that was
+				//  produced by some other kernel in the past.
 				assert(sources.any() && "trying to read data that is neither found locally nor has been await-pushed before");
 			}
 #endif
@@ -361,8 +376,6 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 					const auto copy_instr = &create<copy_instruction>(copy_backend, buffer.dims, copy.source_mid, source.aid, source_range,
 					    copy_offset - source_offset, copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
-					copy_instr->set_debug_info(
-					    copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::coherence, bid, buffer.debug_name, copy_box));
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
 						assert(last_writer_instr != nullptr);
@@ -378,6 +391,11 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					dest.record_write(copy.region, copy_instr);
 					for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
 						buffer.newest_data_location.update_region(box, data_location(location).set(copy.dest_mid));
+					}
+
+					if(m_recorder != nullptr) {
+						m_recorder->record_instruction(
+						    copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.debug_name, copy_box));
 					}
 				}
 			}
@@ -438,7 +456,6 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				const auto [dest_offset, dest_range] = box.get_subrange();
 				const auto copy_instr = &create<copy_instruction>(copy_backend, buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset,
 				    out_mid, out_aid, dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
-				copy_instr->set_debug_info(copy_instruction_debug_info(copy_instruction_debug_info::copy_origin::linearize, bid, buffer.debug_name, copy_box));
 
 				// TODO copy-pasta
 				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
@@ -448,6 +465,11 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				source.record_read(copy_box, copy_instr);
 
 				copy_instrs.push_back(copy_instr);
+
+				if(m_recorder != nullptr) {
+					m_recorder->record_instruction(
+					    copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::linearize, bid, buffer.debug_name, copy_box));
+				}
 			}
 		}
 	}
@@ -577,7 +599,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	for(auto& instr : cmd_instrs) {
 		access_allocation_map allocation_map(bam.get_num_accesses());
-		std::vector<buffer_allocation_info> allocation_buffer_map(bam.get_num_accesses()); // TODO debug only
+		std::vector<buffer_allocation_record> allocation_buffer_map(bam.get_num_accesses()); // TODO debug only
 
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
@@ -591,7 +613,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			const auto [access_offset, access_range] = accessed_box.get_subrange();
 			const auto [alloc_offset, alloc_range] = alloc.box.get_subrange();
 			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset, {access_offset, access_range}};
-			allocation_buffer_map[i] = buffer_allocation_info{bid, buffer.debug_name, alloc.box};
+			allocation_buffer_map[i] = buffer_allocation_record{bid, buffer.debug_name, alloc.box};
 		}
 
 		kernel_instruction* kernel_instr;
@@ -599,15 +621,25 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			assert(instr.execution_sr.range.size() > 0);
 			assert(instr.mid != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			kernel_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
+			const auto sycl_kernel_instr =
+			    &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
+			kernel_instr = sycl_kernel_instr;
+			if(m_recorder != nullptr) {
+				m_recorder->record_instruction(
+				    sycl_kernel_instruction_record(*sycl_kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map)));
+			}
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.mid == host_memory_id);
-			kernel_instr =
+			const auto host_kernel_instr =
 			    &create<host_kernel_instruction>(tsk.get_launcher<host_task_launcher>(), instr.execution_sr, tsk.get_global_size(), std::move(allocation_map));
+			kernel_instr = host_kernel_instr;
+			if(m_recorder != nullptr) {
+				m_recorder->record_instruction(
+				    host_kernel_instruction_record(*host_kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map)));
+			}
 		}
 
-		kernel_instr->set_debug_info(kernel_instruction_debug_info(ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map)));
 		instr.instruction = kernel_instr;
 	}
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
@@ -662,7 +694,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			buffer.original_writers.update_region(rw.writes, instr.instruction);
 
 			for(auto& alloc : buffer.memories[instr.mid].allocations) {
-				for (const auto& box: rw.writes.get_boxes()) {
+				for(const auto& box : rw.writes.get_boxes()) {
 					const auto write_box = box_intersection(alloc.box, box);
 					if(!write_box.empty()) { alloc.record_write(write_box, instr.instruction); }
 				}
@@ -705,12 +737,11 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 	}
 
 	for(auto& [writer, region] : writer_regions) {
-		for (const auto& box: region.get_boxes()) {
+		for(const auto& box : region.get_boxes()) {
 			const auto bytes = box.get_area() * buffer.elem_size;
 
 			// this allocation is not associated with a buffer (and thus not tracked in m_buffers), so we add all dependencies immediately
 			const auto alloc_instr = &create<alloc_instruction>(instruction_backend::host, m_next_aid++, host_memory_id, bytes, buffer.elem_align);
-			alloc_instr->set_debug_info(alloc_instruction_debug_info(/* alloc_origin::send */));
 			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 
 			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, alloc_instr->get_allocation_id());
@@ -719,13 +750,17 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			}
 			const int tag = create_pilot_message(bid, pcmd.get_transfer_id(), box);
 			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
-			send_instr->set_debug_info(send_instruction_debug_info(pcmd.get_cid(), bid, buffer.debug_name, box));
 			for(const auto copy_instr : copy_instrs) {
 				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep);
 			}
 			const auto free_instr = &create<free_instruction>(instruction_backend::host, alloc_instr->get_allocation_id());
-			free_instr->set_debug_info(free_instruction_debug_info(host_memory_id, bytes, buffer.elem_align));
 			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep);
+
+			if(m_recorder != nullptr) {
+				m_recorder->record_instruction(alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::send, std::nullopt));
+				m_recorder->record_instruction(send_instruction_record(*send_instr, pcmd.get_cid(), bid, buffer.debug_name, box));
+				m_recorder->record_instruction(free_instruction_record(*free_instr, host_memory_id, bytes, buffer.elem_align, std::nullopt));
+			}
 		}
 	}
 }
@@ -752,17 +787,17 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 	    },
 	    [&](const horizon_command& hcmd) {
 		    const auto horizon = &create<horizon_instruction>(hcmd.get_tid());
-		    horizon->set_debug_info(horizon_instruction_debug_info(hcmd.get_cid()));
 		    collapse_execution_front_to(horizon);
 		    if(m_last_horizon) { apply_epoch(m_last_horizon); }
 		    m_last_horizon = horizon;
+		    if(m_recorder != nullptr) { m_recorder->record_instruction(horizon_instruction_record(*horizon, hcmd.get_cid())); }
 	    },
 	    [&](const epoch_command& ecmd) {
 		    const auto epoch = &create<epoch_instruction>(ecmd.get_tid());
-		    epoch->set_debug_info(epoch_instruction_debug_info(ecmd.get_cid()));
 		    collapse_execution_front_to(epoch);
 		    apply_epoch(epoch);
 		    m_last_horizon = nullptr;
+		    if(m_recorder != nullptr) { m_recorder->record_instruction(epoch_instruction_record(*epoch, ecmd.get_cid())); }
 	    },
 	    [](const auto& /* unhandled */) {
 		    assert(!"unhandled command type");
