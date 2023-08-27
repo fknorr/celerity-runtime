@@ -17,7 +17,7 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
     : m_tm(tm), m_devices(std::move(devices)), m_recorder(recorder) {
 	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const auto& kv) { return memory_id(std::get<0>(kv) + 1) < max_memories; }));
 	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */));
-	if(m_recorder != nullptr) { m_recorder->record_instruction(epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */))); }
+	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
 }
 
@@ -165,14 +165,13 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 				dest.record_write(copy_box, copy_instr);
 
 				if(m_recorder != nullptr) {
-					m_recorder->record_instruction(
-					    copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::resize, bid, buffer.debug_name, copy_box));
+					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::resize, bid, buffer.debug_name, copy_box);
 				}
 			}
 
 			if(m_recorder != nullptr) {
-				m_recorder->record_instruction(alloc_instruction_record(
-				    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.debug_name, dest_box}));
+				*m_recorder << alloc_instruction_record(
+				    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.debug_name, dest_box});
 			}
 		}
 	}
@@ -187,8 +186,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 			}
 		}
 		if(m_recorder != nullptr) {
-			m_recorder->record_instruction(free_instruction_record(*free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align,
-			    buffer_allocation_record{bid, buffer.debug_name, allocation.box}));
+			*m_recorder << free_instruction_record(*free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align,
+			    buffer_allocation_record{bid, buffer.debug_name, allocation.box});
 		}
 	}
 
@@ -272,9 +271,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 						buffer.original_writers.update_region(recv_box, recv_instr);
 
-						if(m_recorder != nullptr) {
-							m_recorder->record_instruction(recv_instruction_record(*recv_instr, await_push_cid, bid, buffer.debug_name));
-						}
+						if(m_recorder != nullptr) { *m_recorder << recv_instruction_record(*recv_instr, await_push_cid, bid, buffer.debug_name); }
 					}
 				}
 				// TODO assert that the entire region is consumed (... eventually?)
@@ -394,8 +391,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					}
 
 					if(m_recorder != nullptr) {
-						m_recorder->record_instruction(
-						    copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.debug_name, copy_box));
+						*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.debug_name, copy_box);
 					}
 				}
 			}
@@ -467,8 +463,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				copy_instrs.push_back(copy_instr);
 
 				if(m_recorder != nullptr) {
-					m_recorder->record_instruction(
-					    copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::linearize, bid, buffer.debug_name, copy_box));
+					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::linearize, bid, buffer.debug_name, copy_box);
 				}
 			}
 		}
@@ -481,6 +476,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 int instruction_graph_generator::create_pilot_message(const buffer_id bid, const transfer_id trid, const box<3>& box) {
 	int tag = m_next_p2p_tag++;
 	m_pilots.push_back(pilot_message{tag, bid, trid, box});
+	if(m_recorder != nullptr) { *m_recorder << m_pilots.back(); }
 	return tag;
 }
 
@@ -621,26 +617,18 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			assert(instr.execution_sr.range.size() > 0);
 			assert(instr.mid != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			const auto sycl_kernel_instr =
-			    &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
-			kernel_instr = sycl_kernel_instr;
-			if(m_recorder != nullptr) {
-				m_recorder->record_instruction(
-				    sycl_kernel_instruction_record(*sycl_kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map)));
-			}
+			kernel_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.mid == host_memory_id);
-			const auto host_kernel_instr =
+			kernel_instr =
 			    &create<host_kernel_instruction>(tsk.get_launcher<host_task_launcher>(), instr.execution_sr, tsk.get_global_size(), std::move(allocation_map));
-			kernel_instr = host_kernel_instr;
-			if(m_recorder != nullptr) {
-				m_recorder->record_instruction(
-				    host_kernel_instruction_record(*host_kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map)));
-			}
 		}
 
 		instr.instruction = kernel_instr;
+		if(m_recorder != nullptr) {
+			*m_recorder << kernel_instruction_record(*kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map));
+		}
 	}
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
@@ -757,9 +745,9 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep);
 
 			if(m_recorder != nullptr) {
-				m_recorder->record_instruction(alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::send, std::nullopt));
-				m_recorder->record_instruction(send_instruction_record(*send_instr, pcmd.get_cid(), bid, buffer.debug_name, box));
-				m_recorder->record_instruction(free_instruction_record(*free_instr, host_memory_id, bytes, buffer.elem_align, std::nullopt));
+				*m_recorder << alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::send, std::nullopt);
+				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), bid, buffer.debug_name, box);
+				*m_recorder << free_instruction_record(*free_instr, host_memory_id, bytes, buffer.elem_align, std::nullopt);
 			}
 		}
 	}
@@ -790,14 +778,14 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		    collapse_execution_front_to(horizon);
 		    if(m_last_horizon) { apply_epoch(m_last_horizon); }
 		    m_last_horizon = horizon;
-		    if(m_recorder != nullptr) { m_recorder->record_instruction(horizon_instruction_record(*horizon, hcmd.get_cid())); }
+		    if(m_recorder != nullptr) { *m_recorder << horizon_instruction_record(*horizon, hcmd.get_cid()); }
 	    },
 	    [&](const epoch_command& ecmd) {
 		    const auto epoch = &create<epoch_instruction>(ecmd.get_tid());
 		    collapse_execution_front_to(epoch);
 		    apply_epoch(epoch);
 		    m_last_horizon = nullptr;
-		    if(m_recorder != nullptr) { m_recorder->record_instruction(epoch_instruction_record(*epoch, ecmd.get_cid())); }
+		    if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*epoch, ecmd.get_cid()); }
 	    },
 	    [](const auto& /* unhandled */) {
 		    assert(!"unhandled command type");

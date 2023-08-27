@@ -54,16 +54,22 @@ struct task_record {
 
 class task_recorder {
   public:
-	using task_record = std::vector<task_record>;
+	using task_records = std::vector<task_record>;
 
 	task_recorder(const buffer_manager* buff_mngr = nullptr) : m_buff_mngr(buff_mngr) {}
 
 	void record_task(const task& tsk);
 
-	const task_record& get_tasks() const { return m_recorded_tasks; }
+	const task_records& get_tasks() const { return m_recorded_tasks; }
+
+	const task_record& get_task(const task_id tid) const {
+		const auto it = std::find_if(m_recorded_tasks.begin(), m_recorded_tasks.end(), [tid](const task_record& rec) { return rec.tid == tid; });
+		assert(it != m_recorded_tasks.end());
+		return *it;
+	}
 
   private:
-	task_record m_recorded_tasks;
+	task_records m_recorded_tasks;
 	const buffer_manager* m_buff_mngr;
 };
 
@@ -100,16 +106,22 @@ struct command_record {
 
 class command_recorder {
   public:
-	using command_record = std::vector<command_record>;
+	using command_records = std::vector<command_record>;
 
 	command_recorder(const task_manager* task_mngr, const buffer_manager* buff_mngr = nullptr) : m_task_mngr(task_mngr), m_buff_mngr(buff_mngr) {}
 
 	void record_command(const abstract_command& com);
 
-	const command_record& get_commands() const { return m_recorded_commands; }
+	const command_records& get_commands() const { return m_recorded_commands; }
+
+	const command_record& get_command(const command_id cid) const {
+		const auto it = std::find_if(m_recorded_commands.begin(), m_recorded_commands.end(), [cid](const command_record& rec) { return rec.cid == cid; });
+		assert(it != m_recorded_commands.end());
+		return *it;
+	}
 
   private:
-	command_record m_recorded_commands;
+	command_records m_recorded_commands;
 	const task_manager* m_task_mngr;
 	const buffer_manager* m_buff_mngr;
 };
@@ -120,7 +132,7 @@ struct buffer_allocation_record {
 	box<3> box;
 };
 
-using instruction_dependency_list = std::vector<dependency_record<command_id>>;
+using instruction_dependency_list = std::vector<dependency_record<instruction_id>>;
 
 struct instruction_record_base {
 	instruction_id id;
@@ -128,7 +140,11 @@ struct instruction_record_base {
 	instruction_dependency_list dependencies;
 
 	explicit instruction_record_base(const instruction& instr) : id(instr.get_id()), backend(instr.get_backend()) {
-		// TODO deps
+		const auto& deps = instr.get_dependencies();
+		dependencies.reserve(deps.size());
+		for(auto& d : deps) {
+			dependencies.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});
+		}
 	}
 };
 
@@ -182,7 +198,7 @@ struct copy_instruction_record : instruction_record_base {
 	celerity::id<3> offset_in_source;
 	celerity::id<3> offset_in_dest;
 	range<3> copy_range;
-	size_t elemend_size;
+	size_t element_size;
 	copy_origin origin;
 	buffer_id buffer;
 	std::string buffer_debug_name;
@@ -193,11 +209,13 @@ struct copy_instruction_record : instruction_record_base {
 	    : instruction_record_base(cinstr), source_memory(cinstr.get_source_memory()), source_allocation(cinstr.get_source_allocation()),
 	      dest_memory(cinstr.get_dest_memory()), dest_allocation(cinstr.get_dest_allocation()), dimensions(cinstr.get_dimensions()),
 	      source_range(cinstr.get_source_range()), dest_range(cinstr.get_dest_range()), offset_in_source(cinstr.get_offset_in_source()),
-	      offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), elemend_size(cinstr.get_element_size()), origin(origin),
+	      offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), element_size(cinstr.get_element_size()), origin(origin),
 	      buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
 };
 
 struct kernel_instruction_record : instruction_record_base {
+	execution_target target;
+	std::optional<detail::device_id> device_id;
 	subrange<3> execution_range;
 	access_allocation_map allocation_map;
 	task_id command_group_task_id;
@@ -207,24 +225,11 @@ struct kernel_instruction_record : instruction_record_base {
 
 	kernel_instruction_record(const kernel_instruction& kinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
 	    std::vector<buffer_allocation_record> allocation_buffer_map)
-	    : instruction_record_base(kinstr), execution_range(kinstr.get_execution_range()), allocation_map(kinstr.get_allocation_map()),
-	      command_group_task_id(cg_tid), execution_command_id(execution_cid), kernel_debug_name(std::move(kernel_debug_name)),
-	      allocation_buffer_map(std::move(allocation_buffer_map)) {}
-};
-
-struct host_kernel_instruction_record : kernel_instruction_record {
-	host_kernel_instruction_record(const host_kernel_instruction& hkinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
-	    std::vector<buffer_allocation_record> allocation_buffer_map)
-	    : kernel_instruction_record(hkinstr, cg_tid, execution_cid, std::move(kernel_debug_name), std::move(allocation_buffer_map)) {}
-};
-
-struct sycl_kernel_instruction_record : kernel_instruction_record {
-	detail::device_id device_id;
-
-	sycl_kernel_instruction_record(const sycl_kernel_instruction& skinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
-	    std::vector<buffer_allocation_record> allocation_buffer_map)
-	    : kernel_instruction_record(skinstr, cg_tid, execution_cid, std::move(kernel_debug_name), std::move(allocation_buffer_map)),
-	      device_id(skinstr.get_device_id()) {}
+	    : instruction_record_base(kinstr), target(utils::isa<host_kernel_instruction>(&kinstr) ? execution_target::host : execution_target::device),
+	      device_id(
+	          utils::isa<sycl_kernel_instruction>(&kinstr) ? utils::as<sycl_kernel_instruction>(&kinstr)->get_device_id() : std::optional<detail::device_id>()),
+	      execution_range(kinstr.get_execution_range()), allocation_map(kinstr.get_allocation_map()), command_group_task_id(cg_tid),
+	      execution_command_id(execution_cid), kernel_debug_name(std::move(kernel_debug_name)), allocation_buffer_map(std::move(allocation_buffer_map)) {}
 };
 
 struct send_instruction_record : instruction_record_base {
@@ -291,13 +296,27 @@ using instruction_record = std::variant<alloc_instruction_record, free_instructi
 class instruction_recorder {
   public:
 	using instruction_records = std::vector<instruction_record>;
+	using pilot_messages = std::vector<pilot_message>;
 
 	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
+	void record_pilot_message(pilot_message pilot) { m_recorded_pilots.push_back(std::move(pilot)); }
 
-	const instruction_records& get_instruction() const { return m_recorded_instructions; }
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, instruction_record record) {
+		recorder.record_instruction(std::move(record));
+		return recorder;
+	}
+
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, pilot_message pilot) {
+		recorder.record_pilot_message(std::move(pilot));
+		return recorder;
+	}
+
+	const instruction_records& get_instructions() const { return m_recorded_instructions; }
+	const pilot_messages& get_pilot_messages() const { return m_recorded_pilots; }
 
   private:
 	instruction_records m_recorded_instructions;
+	pilot_messages m_recorded_pilots;
 };
 
 } // namespace celerity::detail
