@@ -14,7 +14,9 @@
 #include "access_modes.h"
 #include "command_graph.h"
 #include "distributed_graph_generator.h"
+#include "instruction_graph_generator.h"
 #include "print_graph.h"
+#include "recorders.h"
 #include "task_manager.h"
 #include "types.h"
 #include "utils.h"
@@ -27,15 +29,18 @@ using namespace celerity::detail;
 namespace celerity::test_utils {
 
 class dist_cdag_test_context;
+class idag_test_context;
 
+template <typename TestContext>
 class task_builder {
 	friend class dist_cdag_test_context;
+	friend class idag_test_context;
 
 	using action = std::function<void(handler&)>;
 
 	class step {
 	  public:
-		step(dist_cdag_test_context& dctx, std::deque<action> actions) : m_dctx(dctx), m_actions(std::move(actions)) {}
+		step(TestContext& dctx, std::deque<action> actions) : m_tctx(dctx), m_actions(std::move(actions)) {}
 
 		~step() noexcept(false) { // NOLINT(bugprone-exception-escape)
 			if(!m_actions.empty()) { throw std::runtime_error("Found incomplete task build. Did you forget to call submit()?"); }
@@ -46,7 +51,20 @@ class task_builder {
 		step& operator=(const step&) = delete;
 		step& operator=(step&&) = delete;
 
-		task_id submit();
+		task_id submit() {
+			assert(!m_actions.empty());
+			const auto tid = m_tctx.get_task_manager().submit_command_group([this](handler& cgh) {
+				while(!m_actions.empty()) {
+					auto a = m_actions.front();
+					a(cgh);
+					m_actions.pop_front();
+				}
+			});
+			m_tctx.build_task(tid);
+			m_tctx.maybe_build_horizon();
+			m_actions.clear();
+			return tid;
+		}
 
 		template <typename BufferT, typename RangeMapper>
 		step read(BufferT& buf, RangeMapper rmfn) {
@@ -69,7 +87,10 @@ class task_builder {
 		}
 
 		template <typename BufferT>
-		step reduce(BufferT& buf, const bool include_current_buffer_value);
+		inline step reduce(BufferT& buf, const bool include_current_buffer_value) {
+			return chain<step>([this, &buf, include_current_buffer_value](
+			                       handler& cgh) { add_reduction(cgh, m_tctx.create_reduction(buf.get_id(), include_current_buffer_value)); });
+		}
 
 		template <typename HostObjT>
 		step affect(HostObjT& host_obj, experimental::side_effect_order order = experimental::side_effect_order::sequential) {
@@ -82,14 +103,14 @@ class task_builder {
 		}
 
 	  private:
-		dist_cdag_test_context& m_dctx;
+		TestContext& m_tctx;
 		std::deque<action> m_actions;
 
 		template <typename StepT>
 		StepT chain(action a) {
 			static_assert(std::is_base_of_v<step, StepT>);
 			m_actions.push_front(std::move(a));
-			return StepT{m_dctx, std::move(m_actions)};
+			return StepT{m_tctx, std::move(m_actions)};
 		}
 	};
 
@@ -128,9 +149,9 @@ class task_builder {
 	}
 
   private:
-	dist_cdag_test_context& m_dctx;
+	TestContext& m_dctx;
 
-	task_builder(dist_cdag_test_context& dctx) : m_dctx(dctx) {}
+	task_builder(TestContext& dctx) : m_dctx(dctx) {}
 };
 
 template <typename T>
@@ -459,7 +480,7 @@ class command_query {
 };
 
 class dist_cdag_test_context {
-	friend class task_builder;
+	friend class task_builder<dist_cdag_test_context>;
 
   public:
 	dist_cdag_test_context(size_t num_nodes) : m_num_nodes(num_nodes), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder) {
@@ -603,25 +624,183 @@ class dist_cdag_test_context {
 	}
 };
 
-inline task_id task_builder::step::submit() {
-	assert(!m_actions.empty());
-	const auto tid = m_dctx.get_task_manager().submit_command_group([this](handler& cgh) {
-		while(!m_actions.empty()) {
-			auto a = m_actions.front();
-			a(cgh);
-			m_actions.pop_front();
-		}
-	});
-	m_dctx.build_task(tid);
-	m_dctx.maybe_build_horizon();
-	m_actions.clear();
-	return tid;
-}
+class idag_test_context {
+	friend class task_builder<idag_test_context>;
 
-template <typename BufferT>
-inline task_builder::step task_builder::step::reduce(BufferT& buf, const bool include_current_buffer_value) {
-	return chain<step>(
-	    [this, &buf, include_current_buffer_value](handler& cgh) { add_reduction(cgh, m_dctx.create_reduction(buf.get_id(), include_current_buffer_value)); });
-}
+  private:
+	static auto make_device_map(size_t num_devices) {
+		std::map<device_id, instruction_graph_generator::device_info> devices;
+		for(device_id did = 0; did < num_devices; ++did) {
+			devices.emplace(did, instruction_graph_generator::device_info{{instruction_backend::cuda, instruction_backend::sycl}});
+		}
+		return devices;
+	}
+
+  public:
+	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node)
+	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_rm(), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(&m_tm, nullptr),
+	      m_cdag(), m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(), m_iggen(m_tm, make_device_map(num_devices_per_node), &m_instr_recorder) {}
+
+	~idag_test_context() { maybe_log_graphs(); }
+
+	idag_test_context(const idag_test_context&) = delete;
+	idag_test_context(idag_test_context&&) = delete;
+	idag_test_context& operator=(const idag_test_context&) = delete;
+	idag_test_context& operator=(idag_test_context&&) = delete;
+
+	template <int Dims>
+	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
+		const buffer_id bid = m_next_buffer_id++;
+		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
+		m_tm.add_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
+		m_dggen.add_buffer(bid, Dims, range_cast<3>(size));
+		m_iggen.register_buffer(bid, Dims, range_cast<3>(size), 1 /* size */, 1 /* align */);
+		return buf;
+	}
+
+	test_utils::mock_host_object create_host_object() { return test_utils::mock_host_object{m_next_host_object_id++}; }
+
+	// TODO: Do we want to duplicate all step functions here, or have some sort of .task() initial builder?
+
+	template <typename Name = unnamed_kernel, int Dims>
+	auto device_compute(const range<Dims>& global_size, const id<Dims>& global_offset = {}) {
+		return task_builder(*this).device_compute<Name>(global_size, global_offset);
+	}
+
+	template <typename Name = unnamed_kernel, int Dims>
+	auto device_compute(const nd_range<Dims>& execution_range) {
+		return task_builder(*this).device_compute<Name>(execution_range);
+	}
+
+	template <int Dims>
+	auto host_task(const range<Dims>& global_size) {
+		return task_builder(*this).host_task(global_size);
+	}
+
+	auto master_node_host_task() { return task_builder(*this).master_node_host_task(); }
+
+	auto collective_host_task(experimental::collective_group group = experimental::default_collective_group) {
+		return task_builder(*this).collective_host_task(group);
+	}
+
+	task_id fence(test_utils::mock_host_object ho) {
+		side_effect_map side_effects;
+		side_effects.add_side_effect(ho.get_id(), experimental::side_effect_order::sequential);
+		return fence({}, std::move(side_effects));
+	}
+
+	template <int Dims>
+	task_id fence(test_utils::mock_buffer<Dims> buf, subrange<Dims> sr) {
+		buffer_access_map access_map;
+		access_map.add_access(buf.get_id(),
+		    std::make_unique<range_mapper<Dims, celerity::access::fixed<Dims>>>(celerity::access::fixed<Dims>(sr), access_mode::read, buf.get_range()));
+		return fence(std::move(access_map), {});
+	}
+
+	template <int Dims>
+	task_id fence(test_utils::mock_buffer<Dims> buf) {
+		return fence(buf, {{}, buf.get_range()});
+	}
+
+	task_id epoch(epoch_action action) {
+		const auto tid = m_tm.generate_epoch_task(action);
+		build_task(tid);
+		return tid;
+	}
+
+	// TODO
+	// template <typename... Filters>
+	// command_query query(Filters... filters) {
+	// 	return command_query(m_cdags).find_all(filters...);
+	// }
+
+	void set_horizon_step(const int step) { m_tm.set_horizon_step(step); }
+
+	task_manager& get_task_manager() { return m_tm; }
+
+	distributed_graph_generator& get_graph_generator() { return m_dggen; }
+
+	[[nodiscard]] std::string print_task_graph() { return detail::print_task_graph(m_task_recorder); }
+	[[nodiscard]] std::string print_command_graph() { return detail::print_command_graph(m_local_nid, m_cmd_recorder); }
+	[[nodiscard]] std::string print_instruction_graph() { return detail::print_instruction_graph(m_instr_recorder, m_cmd_recorder, m_task_recorder); }
+
+  private:
+	size_t m_num_nodes;
+	node_id m_local_nid;
+	buffer_id m_next_buffer_id = 0;
+	host_object_id m_next_host_object_id = 0;
+	reduction_id m_next_reduction_id = 1; // Start from 1 as rid 0 designates "no reduction" in push commands
+	std::optional<task_id> m_most_recently_built_horizon;
+	reduction_manager m_rm;
+	task_recorder m_task_recorder;
+	task_manager m_tm;
+	command_recorder m_cmd_recorder;
+	command_graph m_cdag;
+	distributed_graph_generator m_dggen;
+	instruction_recorder m_instr_recorder;
+	instruction_graph_generator m_iggen;
+
+	// According to Wikipedia https://en.wikipedia.org/wiki/Topological_sorting#Depth-first_search
+	static std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*> unmarked) {
+		std::unordered_set<abstract_command*> temporary_marked;
+		std::unordered_set<abstract_command*> permanent_marked;
+		std::vector<abstract_command*> sorted(unmarked.size());
+		auto sorted_front = sorted.rbegin();
+
+		const auto visit = [&](abstract_command* const cmd, auto& visit /* to allow recursion in lambda */) {
+			if(permanent_marked.count(cmd) != 0) return;
+			assert(temporary_marked.count(cmd) == 0 && "cyclic command graph");
+			unmarked.erase(cmd);
+			temporary_marked.insert(cmd);
+			for(const auto dep : cmd->get_dependents()) {
+				visit(dep.node, visit);
+			}
+			temporary_marked.erase(cmd);
+			permanent_marked.insert(cmd);
+			*sorted_front++ = cmd;
+		};
+
+		while(!unmarked.empty()) {
+			visit(*unmarked.begin(), visit);
+		}
+		return sorted;
+	}
+
+	reduction_info create_reduction(const buffer_id bid, const bool include_current_buffer_value) {
+		return reduction_info{m_next_reduction_id++, bid, include_current_buffer_value};
+	}
+
+	void build_task(const task_id tid) { compile_commands(m_dggen.build_task(*m_tm.get_task(tid))); }
+
+	void compile_commands(std::unordered_set<abstract_command*>&& cmds) {
+		for(const auto cmd : topsort(std::move(cmds))) {
+			m_iggen.compile(*cmd);
+		}
+	}
+
+	void maybe_build_horizon() {
+		const auto current_horizon = task_manager_testspy::get_current_horizon(m_tm);
+		if(m_most_recently_built_horizon != current_horizon) {
+			assert(current_horizon.has_value());
+			build_task(*current_horizon);
+		}
+		m_most_recently_built_horizon = current_horizon;
+	}
+
+	void maybe_log_graphs() {
+		if(test_utils::print_graphs) {
+			CELERITY_INFO("Task graph:\n\n{}\n", print_task_graph());
+			CELERITY_INFO("Command graph:\n\n{}\n", print_command_graph());
+			CELERITY_INFO("Instruction graph:\n\n{}\n", print_instruction_graph());
+		}
+	}
+
+	task_id fence(buffer_access_map access_map, side_effect_map side_effects) {
+		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), nullptr);
+		build_task(tid);
+		maybe_build_horizon();
+		return tid;
+	}
+};
 
 } // namespace celerity::test_utils

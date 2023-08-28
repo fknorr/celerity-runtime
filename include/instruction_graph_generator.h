@@ -24,7 +24,7 @@ class instruction_graph_generator {
 		std::set<instruction_backend> backends;
 	};
 
-	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder *recorder = nullptr);
+	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder *recorder);
 
 	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
 
