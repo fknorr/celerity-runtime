@@ -242,7 +242,7 @@ class instruction_graph_generator {
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
 	void satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads);
 
-	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, const allocation_id out_aid);
+	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction &ainstr);
 
 	int create_pilot_message(buffer_id bid, transfer_id trid, const box<3>& box);
 

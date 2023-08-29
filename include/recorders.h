@@ -159,8 +159,6 @@ struct alloc_instruction_record : instruction_record_base {
 };
 
 struct free_instruction_record : instruction_record_base {
-	instruction_id id;
-	instruction_backend backend;
 	detail::allocation_id allocation_id;
 	detail::memory_id memory_id;
 	size_t size;
@@ -253,7 +251,6 @@ struct horizon_instruction_record : instruction_record_base {
 };
 
 struct epoch_instruction_record : instruction_record_base {
-	instruction_id id;
 	task_id epoch_task_id;
 	command_id epoch_command_id;
 
@@ -269,15 +266,15 @@ class instruction_recorder {
 	using pilot_messages = std::vector<pilot_message>;
 
 	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
-	void record_pilot_message(pilot_message pilot) { m_recorded_pilots.push_back(std::move(pilot)); }
+	void record_pilot_message(const pilot_message &pilot) { m_recorded_pilots.push_back(pilot); }
 
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, instruction_record record) {
 		recorder.record_instruction(std::move(record));
 		return recorder;
 	}
 
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, pilot_message pilot) {
-		recorder.record_pilot_message(std::move(pilot));
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, const pilot_message &pilot) {
+		recorder.record_pilot_message(pilot);
 		return recorder;
 	}
 

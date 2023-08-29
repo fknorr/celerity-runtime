@@ -168,11 +168,11 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::resize, bid, buffer.debug_name, copy_box);
 				}
 			}
+		}
 
-			if(m_recorder != nullptr) {
-				*m_recorder << alloc_instruction_record(
-				    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.debug_name, dest_box});
-			}
+		if(m_recorder != nullptr) {
+			*m_recorder << alloc_instruction_record(
+			    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.debug_name, dest_box});
 		}
 	}
 
@@ -401,7 +401,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 
 std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_subrange(
-    const buffer_id bid, const box<3>& box, const memory_id out_mid, const allocation_id out_aid) {
+    const buffer_id bid, const box<3>& box, const memory_id out_mid, alloc_instruction &alloc_instr) {
 	auto& buffer = m_buffers.at(bid);
 
 	const auto box_sources = buffer.newest_data_location.get_region_values(box);
@@ -451,8 +451,9 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				const auto [copy_offset, copy_range] = copy_box.get_subrange();
 				const auto [dest_offset, dest_range] = box.get_subrange();
 				const auto copy_instr = &create<copy_instruction>(copy_backend, buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset,
-				    out_mid, out_aid, dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
+				    out_mid, alloc_instr.get_allocation_id(), dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
 
+				add_dependency(*copy_instr, alloc_instr, dependency_kind::true_dep);
 				// TODO copy-pasta
 				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
 					assert(last_writer_instr != nullptr);
@@ -495,6 +496,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		buffer_read_write_map rw_map;
 		side_effect_map se_map;
 		instruction* instruction = nullptr;
+		std::vector<buffer_allocation_record> allocation_buffer_map; // for kernel_instructions, if (m_recorder)
 	};
 	std::vector<partial_instruction> cmd_instrs;
 
@@ -595,7 +597,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	for(auto& instr : cmd_instrs) {
 		access_allocation_map allocation_map(bam.get_num_accesses());
-		std::vector<buffer_allocation_record> allocation_buffer_map(bam.get_num_accesses()); // TODO debug only
+		if(m_recorder != nullptr) { instr.allocation_buffer_map.resize(bam.get_num_accesses()); }
 
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
@@ -609,7 +611,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			const auto [access_offset, access_range] = accessed_box.get_subrange();
 			const auto [alloc_offset, alloc_range] = alloc.box.get_subrange();
 			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset, {access_offset, access_range}};
-			allocation_buffer_map[i] = buffer_allocation_record{bid, buffer.debug_name, alloc.box};
+			if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, buffer.debug_name, alloc.box}; }
 		}
 
 		kernel_instruction* kernel_instr;
@@ -626,9 +628,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 
 		instr.instruction = kernel_instr;
-		if(m_recorder != nullptr) {
-			*m_recorder << kernel_instruction_record(*kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(allocation_buffer_map));
-		}
 	}
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
@@ -698,7 +697,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	}
 
-	// 7) insert epoch and horizon dependencies, apply epochs
+	// 7) insert epoch and horizon dependencies, apply epochs, optionally record the instruction
 
 	for(auto& instr : cmd_instrs) {
 		// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
@@ -706,6 +705,13 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		const auto deps = instr.instruction->get_dependencies();
 		if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
 			add_dependency(*instr.instruction, *m_last_epoch, dependency_kind::true_dep);
+		}
+
+		if(m_recorder != nullptr) {
+			if(const auto kernel_instr = dynamic_cast<kernel_instruction*>(instr.instruction)) {
+				*m_recorder << kernel_instruction_record(
+				    *kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(instr.allocation_buffer_map));
+			}
 		}
 	}
 }
@@ -732,10 +738,8 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			const auto alloc_instr = &create<alloc_instruction>(instruction_backend::host, m_next_aid++, host_memory_id, bytes, buffer.elem_align);
 			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 
-			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, alloc_instr->get_allocation_id());
-			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
-			}
+			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, *alloc_instr);
+
 			const int tag = create_pilot_message(bid, pcmd.get_transfer_id(), box);
 			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
 			for(const auto copy_instr : copy_instrs) {

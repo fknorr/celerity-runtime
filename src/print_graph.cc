@@ -6,6 +6,7 @@
 #include "command.h"
 #include "command_graph.h"
 #include "grid.h"
+#include "instruction_backend.h"
 #include "task_manager.h"
 
 namespace celerity::detail {
@@ -44,6 +45,15 @@ const char* command_type_string(const command_type ct) {
 	case command_type::await_push: return "await push";
 	case command_type::reduction: return "reduction";
 	default: return "unknown";
+	}
+}
+
+const char* instruction_backend_string(const instruction_backend backend) {
+	switch(backend) {
+	case instruction_backend::host: return "Host";
+	case instruction_backend::mpi: return "MPI";
+	case instruction_backend::sycl: return "SYCL";
+	case instruction_backend::cuda: return "CUDA";
 	}
 }
 
@@ -264,7 +274,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		case instruction_backend::sycl: dot += "color=darkorange2,"; break;
 		case instruction_backend::cuda: dot += "color=green3,"; break;
 		}
-		fmt::format_to(back, "shape={},label=<{} ", shape, instr.backend);
+		fmt::format_to(back, "shape={},label=<{} ", shape, instruction_backend_string(instr.backend));
 	};
 
 	const auto end_node = [&] { fmt::format_to(back, ">];"); };
