@@ -139,13 +139,7 @@ struct instruction_record_base {
 	instruction_backend backend;
 	instruction_dependency_list dependencies;
 
-	explicit instruction_record_base(const instruction& instr) : id(instr.get_id()), backend(instr.get_backend()) {
-		const auto& deps = instr.get_dependencies();
-		dependencies.reserve(deps.size());
-		for(auto& d : deps) {
-			dependencies.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});
-		}
-	}
+	explicit instruction_record_base(const instruction& instr);
 };
 
 struct alloc_instruction_record : instruction_record_base {
@@ -161,9 +155,7 @@ struct alloc_instruction_record : instruction_record_base {
 	alloc_origin origin;
 	std::optional<buffer_allocation_record> buffer_allocation;
 
-	alloc_instruction_record(const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation)
-	    : instruction_record_base(ainstr), allocation_id(ainstr.get_allocation_id()), memory_id(ainstr.get_memory_id()), size(ainstr.get_size()),
-	      alignment(ainstr.get_alignment()), origin(origin), buffer_allocation(std::move(buffer_allocation)) {}
+	alloc_instruction_record(const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation);
 };
 
 struct free_instruction_record : instruction_record_base {
@@ -176,9 +168,7 @@ struct free_instruction_record : instruction_record_base {
 	std::optional<buffer_allocation_record> buffer_allocation;
 
 	free_instruction_record(const free_instruction& finstr, const detail::memory_id mid, const size_t size, const size_t alignment,
-	    std::optional<buffer_allocation_record> buffer_allocation)
-	    : instruction_record_base(finstr), allocation_id(finstr.get_allocation_id()), memory_id(mid), size(size), alignment(alignment),
-	      buffer_allocation(std::move(buffer_allocation)) {}
+	    std::optional<buffer_allocation_record> buffer_allocation);
 };
 
 struct copy_instruction_record : instruction_record_base {
@@ -205,12 +195,7 @@ struct copy_instruction_record : instruction_record_base {
 	detail::box<3> box;
 
 	copy_instruction_record(
-	    const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3>& box)
-	    : instruction_record_base(cinstr), source_memory(cinstr.get_source_memory()), source_allocation(cinstr.get_source_allocation()),
-	      dest_memory(cinstr.get_dest_memory()), dest_allocation(cinstr.get_dest_allocation()), dimensions(cinstr.get_dimensions()),
-	      source_range(cinstr.get_source_range()), dest_range(cinstr.get_dest_range()), offset_in_source(cinstr.get_offset_in_source()),
-	      offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), element_size(cinstr.get_element_size()), origin(origin),
-	      buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
+	    const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3>& box);
 };
 
 struct kernel_instruction_record : instruction_record_base {
@@ -224,12 +209,7 @@ struct kernel_instruction_record : instruction_record_base {
 	std::vector<buffer_allocation_record> allocation_buffer_map;
 
 	kernel_instruction_record(const kernel_instruction& kinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
-	    std::vector<buffer_allocation_record> allocation_buffer_map)
-	    : instruction_record_base(kinstr), target(utils::isa<host_kernel_instruction>(&kinstr) ? execution_target::host : execution_target::device),
-	      device_id(
-	          utils::isa<sycl_kernel_instruction>(&kinstr) ? utils::as<sycl_kernel_instruction>(&kinstr)->get_device_id() : std::optional<detail::device_id>()),
-	      execution_range(kinstr.get_execution_range()), allocation_map(kinstr.get_allocation_map()), command_group_task_id(cg_tid),
-	      execution_command_id(execution_cid), kernel_debug_name(std::move(kernel_debug_name)), allocation_buffer_map(std::move(allocation_buffer_map)) {}
+	    std::vector<buffer_allocation_record> allocation_buffer_map);
 };
 
 struct send_instruction_record : instruction_record_base {
@@ -244,10 +224,7 @@ struct send_instruction_record : instruction_record_base {
 	box<3> box;
 
 	send_instruction_record(
-	    const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3> box)
-	    : instruction_record_base(sinstr), transfer_id(sinstr.get_transfer_id()), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()),
-	      allocation_id(sinstr.get_allocation_id()), size_bytes(sinstr.get_size_bytes()), push_cid(push_cid), buffer(buffer),
-	      buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
+	    const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3> box);
 };
 
 struct recv_instruction_record : instruction_record_base {
@@ -265,20 +242,14 @@ struct recv_instruction_record : instruction_record_base {
 	detail::buffer_id buffer;
 	std::string buffer_debug_name;
 
-	recv_instruction_record(const recv_instruction& rinstr, const command_id await_push_cid, const detail::buffer_id buffer, std::string buffer_debug_name)
-	    : instruction_record_base(rinstr), buffer_id(rinstr.get_buffer_id()), transfer_id(rinstr.get_transfer_id()),
-	      dest_memory_id(rinstr.get_dest_memory_id()), dest_allocation_id(rinstr.get_dest_allocation_id()), dimensions(rinstr.get_dimensions()),
-	      allocation_range(rinstr.get_allocation_range()), offset_in_allocation(rinstr.get_offset_in_allocation()),
-	      offset_in_buffer(rinstr.get_offset_in_buffer()), recv_range(rinstr.get_recv_range()), element_size(rinstr.get_element_size()),
-	      await_push_cid(await_push_cid), buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)) {}
+	recv_instruction_record(const recv_instruction& rinstr, const command_id await_push_cid, const detail::buffer_id buffer, std::string buffer_debug_name);
 };
 
 struct horizon_instruction_record : instruction_record_base {
 	task_id horizon_task_id;
 	command_id horizon_command_id;
 
-	horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid)
-	    : instruction_record_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid) {}
+	horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid);
 };
 
 struct epoch_instruction_record : instruction_record_base {
@@ -286,8 +257,7 @@ struct epoch_instruction_record : instruction_record_base {
 	task_id epoch_task_id;
 	command_id epoch_command_id;
 
-	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid)
-	    : instruction_record_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid) {}
+	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid);
 };
 
 using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, copy_instruction_record, kernel_instruction_record,
