@@ -479,6 +479,11 @@ class command_query {
 	}
 };
 
+inline std::string make_test_graph_title(const std::string& default_title) {
+	const auto test_name = Catch::getResultCapture().getCurrentTestName();
+	return test_name.empty() ? default_title : fmt::format("{} - {}", default_title, test_name);
+}
+
 class dist_cdag_test_context {
 	friend class task_builder<dist_cdag_test_context>;
 
@@ -570,8 +575,10 @@ class dist_cdag_test_context {
 
 	distributed_graph_generator& get_graph_generator(node_id nid) { return *m_dggens.at(nid); }
 
-	[[nodiscard]] std::string print_task_graph() { return detail::print_task_graph(m_task_recorder); }
-	[[nodiscard]] std::string print_command_graph(node_id nid) { return detail::print_command_graph(nid, *m_cmd_recorders[nid]); }
+	[[nodiscard]] std::string print_task_graph() { return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph")); }
+	[[nodiscard]] std::string print_command_graph(node_id nid) {
+		return detail::print_command_graph(nid, *m_cmd_recorders[nid], make_test_graph_title("Command Graph"));
+	}
 
   private:
 	size_t m_num_nodes;
@@ -612,7 +619,7 @@ class dist_cdag_test_context {
 			for(node_id nid = 0; nid < m_num_nodes; ++nid) {
 				graphs.push_back(print_command_graph(nid));
 			}
-			CELERITY_INFO("Command graph:\n\n{}\n", combine_command_graphs(graphs));
+			CELERITY_INFO("Command graph:\n\n{}\n", combine_command_graphs(graphs, make_test_graph_title("Command Graph")));
 		}
 	}
 
@@ -721,9 +728,11 @@ class idag_test_context {
 
 	distributed_graph_generator& get_graph_generator() { return m_dggen; }
 
-	[[nodiscard]] std::string print_task_graph() { return detail::print_task_graph(m_task_recorder); }
-	[[nodiscard]] std::string print_command_graph() { return detail::print_command_graph(m_local_nid, m_cmd_recorder); }
-	[[nodiscard]] std::string print_instruction_graph() { return detail::print_instruction_graph(m_instr_recorder, m_cmd_recorder, m_task_recorder); }
+	[[nodiscard]] std::string print_task_graph() { return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph")); }
+	[[nodiscard]] std::string print_command_graph() { return detail::print_command_graph(m_local_nid, m_cmd_recorder, make_test_graph_title("Command Graph")); }
+	[[nodiscard]] std::string print_instruction_graph() {
+		return detail::print_instruction_graph(m_instr_recorder, m_cmd_recorder, m_task_recorder, make_test_graph_title("Instruction Graph"));
+	}
 
   private:
 	size_t m_num_nodes;

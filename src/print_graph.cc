@@ -100,8 +100,12 @@ std::string get_task_label(const task_record& tsk) {
 	return label;
 }
 
-std::string print_task_graph(const task_recorder& recorder) {
-	std::string dot = "digraph G {label=\"Task Graph\" ";
+std::string make_graph_preamble(const std::string &title) {
+	return fmt::format("digraph G{{label=\"{}\" ", title);
+}
+
+std::string print_task_graph(const task_recorder& recorder, const std::string &title) {
+	std::string dot = make_graph_preamble(title);
 
 	CELERITY_DEBUG("print_task_graph, {} entries", recorder.get_tasks().size());
 
@@ -169,9 +173,7 @@ std::string get_command_label(const node_id local_nid, const command_record& cmd
 	return label;
 }
 
-const std::string command_graph_preamble = "digraph G{label=\"Command Graph\" ";
-
-std::string print_command_graph(const node_id local_nid, const command_recorder& recorder) {
+std::string print_command_graph(const node_id local_nid, const command_recorder& recorder, const std::string &title) {
 	std::string main_dot;
 	std::map<task_id, std::string> task_subgraph_dot; // this map must be ordered!
 
@@ -223,7 +225,7 @@ std::string print_command_graph(const node_id local_nid, const command_recorder&
 		}
 	};
 
-	std::string result_dot = command_graph_preamble;
+	std::string result_dot = make_graph_preamble(title);
 	for(auto& [_, sg_dot] : task_subgraph_dot) {
 		result_dot += sg_dot;
 		result_dot += "}";
@@ -233,10 +235,11 @@ std::string print_command_graph(const node_id local_nid, const command_recorder&
 	return result_dot;
 }
 
-std::string combine_command_graphs(const std::vector<std::string>& graphs) {
-	std::string result_dot = command_graph_preamble;
+std::string combine_command_graphs(const std::vector<std::string>& graphs, const std::string &title) {
+	const auto preamble = make_graph_preamble(title);
+	std::string result_dot = make_graph_preamble(title);
 	for(const auto& g : graphs) {
-		result_dot += g.substr(command_graph_preamble.size(), g.size() - command_graph_preamble.size() - 1);
+		result_dot += g.substr(preamble.size(), g.size() - preamble.size() - 1);
 	}
 	result_dot += "}";
 	return result_dot;
@@ -261,8 +264,8 @@ std::string print_command_reference_label(const command_record cmd, const task_r
 	return cmd_label;
 }
 
-std::string print_instruction_graph(const instruction_recorder& irec, const command_recorder& crec, const task_recorder& trec) {
-	std::string dot = "digraph G{label=\"Instruction Graph\";";
+std::string print_instruction_graph(const instruction_recorder& irec, const command_recorder& crec, const task_recorder& trec, const std::string &title) {
+	std::string dot = make_graph_preamble(title);
 	const auto back = std::back_inserter(dot);
 
 	const auto begin_node = [&](const instruction_record_base& instr, const std::string_view& shape) {

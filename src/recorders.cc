@@ -217,7 +217,7 @@ kernel_instruction_record::kernel_instruction_record(const kernel_instruction& k
       device_id(
           utils::isa<sycl_kernel_instruction>(&kinstr) ? utils::as<sycl_kernel_instruction>(&kinstr)->get_device_id() : std::optional<detail::device_id>()),
       execution_range(kinstr.get_execution_range()), allocation_map(kinstr.get_allocation_map()), command_group_task_id(cg_tid),
-      execution_command_id(execution_cid), kernel_debug_name(simplify_and_escape_name(kernel_debug_name)),
+      execution_command_id(execution_cid), kernel_debug_name(utils::simplify_task_name(kernel_debug_name)),
       allocation_buffer_map(std::move(allocation_buffer_map)) {}
 
 send_instruction_record::send_instruction_record(
