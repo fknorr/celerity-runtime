@@ -75,6 +75,12 @@ class generic_event : public queue::event {
 
 void generic_queue::add_device(const device_id device, sycl::queue& queue) { m_device_queues.emplace(device, &queue); }
 
+void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+	return sycl::aligned_alloc_device(alignment, size, *m_device_queues.at(to_device_id(where)));
+}
+
+void generic_queue::free(const memory_id where, void* const allocation) { sycl::free(allocation, *m_device_queues.at(to_device_id(where))); }
+
 std::unique_ptr<queue::event> generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id target,
     const void* const source_base_ptr, void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset,
     const range<3>& target_range, const id<3>& target_offset, const range<3>& copy_range) {

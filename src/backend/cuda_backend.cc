@@ -108,6 +108,18 @@ struct cuda_event_deleter {
 
 using unique_cuda_event = std::unique_ptr<std::remove_pointer_t<cudaEvent_t>, cuda_event_deleter>;
 
+struct cuda_set_device_guard {
+	explicit cuda_set_device_guard(int cudid) {
+		CELERITY_CUDA_CHECK(cudaGetDevice, &cudid_before);
+		CELERITY_CUDA_CHECK(cudaSetDevice, cudid);
+	}
+	~cuda_set_device_guard() { CELERITY_CUDA_CHECK(cudaSetDevice, cudid_before); }
+	cuda_set_device_guard(const cuda_set_device_guard&) = delete;
+	cuda_set_device_guard& operator=(const cuda_set_device_guard&) = delete;
+
+	int cudid_before;
+}
+
 } // namespace celerity::detail::backend_detail
 
 namespace celerity::detail::backend {
@@ -138,10 +150,7 @@ cuda_queue::cuda_queue() : m_impl(std::make_unique<impl>()) {}
 
 void cuda_queue::add_device(device_id device, sycl::queue& queue) {
 	assert(m_impl->streams.find(device_id) == m_impl->streams.end());
-	const auto cuda_device_id = 0; // queue.get???();
-	int cuda_device_id_before;
-	CELERITY_CUDA_CHECK(cudaGetDevice, &cuda_device_id_before);
-	CELERITY_CUDA_CHECK(cudaSetDevice, cuda_device_id);
+	cuda_set_device_guard guard(999 /* ??? */);
 	impl::device_streams device_streams;
 	for(size_t i = 0; i < impl::copy_direction::count; ++i) {
 		cudaStream_t stream;
@@ -149,7 +158,19 @@ void cuda_queue::add_device(device_id device, sycl::queue& queue) {
 		device_streams[i] = backend_detail::unique_cuda_stream(stream);
 	}
 	m_impl.streams.emplace(device, std::move(device_streams));
-	CELERITY_CUDA_CHECK(cudaSetDevice, cuda_device_id_before);
+}
+
+void* cuda_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+	cuda_set_device_guard guard(999 /* ??? */);
+	void* ptr;
+	CELERITY_CUDA_CHECK(cudaMalloc, &ptr, size);
+	assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
+	return ptr;
+}
+
+void cuda_queue::free(const memory_id where, void* const allocation) {
+	cuda_set_device_guard guard(999 /* ??? */);
+	CELERITY_CUDA_CHECK(cudaFree, allocation);
 }
 
 std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,
