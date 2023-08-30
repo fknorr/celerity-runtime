@@ -85,7 +85,7 @@ inline constexpr memory_id host_memory_id = 0;
 
 inline memory_id to_memory_id(const device_id& did) { return did + 1; }
 
-inline memory_id to_device_id(const memory_id& mid) {
+inline device_id to_device_id(const memory_id& mid) {
 	assert(mid != host_memory_id);
 	return mid - 1;
 }

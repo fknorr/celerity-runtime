@@ -22,4 +22,14 @@ type get_effective_type(const sycl::device& device) {
 	return type::generic;
 }
 
+std::unique_ptr<queue> make_queue(type t) {
+	assert(t != type::unknown);
+
+#if defined(CELERITY_DETAIL_BACKEND_CUDA_ENABLED)
+	if(t == type::cuda) return std::make_unique<cuda_queue>();
+#endif
+
+	return std::make_unique<generic_queue>();
+}
+
 } // namespace celerity::detail::backend

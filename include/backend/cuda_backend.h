@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend/operations.h"
+#include "backend/queue.h"
 #include "backend/type.h"
 #include "ranges.h"
 
@@ -27,3 +28,22 @@ struct backend_operations<backend::type::cuda> {
 };
 
 } // namespace celerity::detail::backend_detail
+
+namespace celerity::detail::backend {
+
+class cuda_queue : public queue {
+  public:
+	cuda_queue();
+
+	void add_device(device_id device, sycl::queue& queue) override;
+
+	std::unique_ptr<event> memcpy_strided_device(int dims, memory_id source, memory_id dest, const void* source_base_ptr, void* target_base_ptr,
+	    size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset,
+	    const range<3>& copy_range) override;
+
+  private:
+	struct impl;
+	std::unique_ptr<impl> m_impl;
+};
+
+} // namespace celerity::detail::backend

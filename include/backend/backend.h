@@ -5,6 +5,7 @@
 #include "backend/generic_backend.h"
 #include "backend/traits.h"
 #include "backend/type.h"
+#include "types.h"
 
 // NOTE: These should not leak any symbols from the backend library (i.e. don't include it in the header)
 #if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
@@ -53,5 +54,7 @@ void memcpy_strided_device(sycl::queue& queue, const void* source_base_ptr, void
 		    queue, source_base_ptr, target_base_ptr, elem_size, source_range, source_offset, target_range, target_offset, copy_range);
 	});
 }
+
+std::unique_ptr<queue> make_queue(type t);
 
 } // namespace celerity::detail::backend
