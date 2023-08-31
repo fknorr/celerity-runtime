@@ -5,7 +5,7 @@
 
 #include "command_graph.h"
 #include "distributed_graph_generator.h"
-#include "executor.h"
+#include "instruction_graph_generator.h"
 #include "intrusive_graph.h"
 #include "task_manager.h"
 #include "test_utils.h"
@@ -239,8 +239,9 @@ class restartable_thread {
 
 class benchmark_scheduler final : public abstract_scheduler {
   public:
-	benchmark_scheduler(restartable_thread& worker_thread, std::unique_ptr<distributed_graph_generator> dggen)
-	    : abstract_scheduler(false, std::move(dggen)), m_worker_thread(worker_thread) {}
+	benchmark_scheduler(
+	    restartable_thread& worker_thread, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen)
+	    : abstract_scheduler(false, std::move(dggen), std::move(iggen)), m_worker_thread(worker_thread) {}
 
 	void startup() override {
 		m_worker_thread.start([this] { schedule(); });
@@ -263,8 +264,10 @@ struct scheduler_benchmark_context {
 	test_utils::mock_buffer_factory mbf;
 
 	explicit scheduler_benchmark_context(restartable_thread& thrd, size_t num_nodes)
-	    : num_nodes{num_nodes},                                                                                         //
-	      schdlr{thrd, std::make_unique<distributed_graph_generator>(num_nodes, 0 /* local_nid */, cdag, tm, nullptr)}, //
+	    : num_nodes{num_nodes}, //
+	      schdlr{thrd, std::make_unique<distributed_graph_generator>(num_nodes, 0 /* local_nid */, cdag, tm, nullptr),
+	          std::make_unique<instruction_graph_generator>(
+	              tm, std::map<device_id, instruction_graph_generator::device_info>(/* TODO */), nullptr /* recorder */)}, //
 	      mbf{tm, schdlr} {
 		tm.register_task_callback([this](const task* tsk) { schdlr.notify_task_created(tsk); });
 		schdlr.startup();

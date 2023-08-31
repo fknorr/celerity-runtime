@@ -1,37 +1,33 @@
 #include "scheduler.h"
 
 #include "distributed_graph_generator.h"
-#include "executor.h"
-#include "frame.h"
-#include "graph_serializer.h"
+#include "instruction_executor.h"
+#include "instruction_graph_generator.h"
 #include "named_threads.h"
 #include "utils.h"
 
 namespace celerity {
 namespace detail {
 
-	abstract_scheduler::abstract_scheduler(bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, executor& exec)
-	    : m_is_dry_run(is_dry_run), m_dggen(std::move(dggen)), m_exec(&exec) {
+	abstract_scheduler::abstract_scheduler(
+	    bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen, instruction_executor& exec)
+	    : m_is_dry_run(is_dry_run), m_dggen(std::move(dggen)), m_iggen(std::move(iggen)), m_exec(&exec) {
 		assert(m_dggen != nullptr);
+		assert(m_iggen != nullptr);
 	}
+
+	abstract_scheduler::abstract_scheduler(
+	    const bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen)
+	    : m_is_dry_run(is_dry_run), m_dggen(std::move(dggen)), m_iggen(std::move(iggen)), m_exec(nullptr) {
+		assert(m_dggen != nullptr);
+		assert(m_iggen != nullptr);
+	}
+
+	abstract_scheduler::~abstract_scheduler() = default;
 
 	void abstract_scheduler::shutdown() { notify(event_shutdown{}); }
 
 	void abstract_scheduler::schedule() {
-		graph_serializer serializer([this](command_pkg&& pkg) {
-			if(m_is_dry_run && pkg.get_command_type() != command_type::epoch && pkg.get_command_type() != command_type::horizon
-			    && pkg.get_command_type() != command_type::fence) {
-				// in dry runs, skip everything except epochs, horizons and fences
-				return;
-			}
-			if(m_is_dry_run && pkg.get_command_type() == command_type::fence) {
-				CELERITY_WARN("Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. "
-				              "The result of this operation will not match the expected output of an actual run.");
-			}
-			// Executor may not be set during tests / benchmarks
-			if(m_exec != nullptr) { m_exec->enqueue(std::move(pkg)); }
-		});
-
 		std::queue<event> in_flight_events;
 		bool shutdown = false;
 		while(!shutdown) {
@@ -49,11 +45,18 @@ namespace detail {
 				    event,
 				    [&](const event_task_available& e) {
 					    assert(e.tsk != nullptr);
-					    const auto cmds = m_dggen->build_task(*e.tsk);
-					    serializer.flush(cmds);
+					    for(const auto cmd : m_dggen->build_task(*e.tsk)) {
+						    const auto instr_batch = m_iggen->compile(*cmd);
+						    if(m_exec != nullptr) {
+							    for(const auto instr : instr_batch) {
+								    m_exec->submit(*instr);
+							    }
+						    }
+					    }
 				    },
 				    [&](const event_buffer_registered& e) { //
 					    m_dggen->add_buffer(e.bid, e.dims, e.range);
+					    m_iggen->register_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align);
 				    },
 				    [&](const event_shutdown&) {
 					    assert(in_flight_events.empty());

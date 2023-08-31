@@ -25,6 +25,8 @@
 #include "distributed_graph_generator.h"
 #include "executor.h"
 #include "host_object.h"
+#include "instruction_executor.h"
+#include "instruction_graph_generator.h"
 #include "log.h"
 #include "mpi_support.h"
 #include "named_threads.h"
@@ -152,11 +154,14 @@ namespace detail {
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
-		m_exec = std::make_unique<executor>(m_num_nodes, m_local_nid, *m_h_queue, *m_d_queue, *m_task_mngr, *m_buffer_mngr, *m_reduction_mngr);
+		m_exec = std::make_unique<instruction_executor>(); // TODO
 		m_cdag = std::make_unique<command_graph>();
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>(m_task_mngr.get(), m_buffer_mngr.get());
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
-		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), *m_exec);
+		std::map<device_id, instruction_graph_generator::device_info> devices; // TODO
+		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
+		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, devices, m_instruction_recorder.get());
+		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), *m_exec);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
 		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
@@ -190,7 +195,7 @@ namespace detail {
 		if(m_is_active) { throw runtime_already_started_error(); }
 		m_is_active = true;
 		m_schdlr->startup();
-		m_exec->startup();
+		// m_exec->startup(); TODO ??
 	}
 
 	void runtime::shutdown() {
@@ -203,7 +208,9 @@ namespace detail {
 
 		m_task_mngr->await_epoch(shutdown_epoch);
 
-		m_exec->shutdown();
+		// m_exec->shutdown(); TODO ??
+		m_exec.reset();
+
 		m_d_queue->wait();
 		m_h_queue->wait();
 
@@ -274,7 +281,7 @@ namespace detail {
 	void runtime::handle_buffer_registered(buffer_id bid) {
 		const auto& info = m_buffer_mngr->get_buffer_info(bid);
 		m_task_mngr->add_buffer(bid, info.dimensions, info.range, info.is_host_initialized);
-		m_schdlr->notify_buffer_registered(bid, info.dimensions, info.range);
+		m_schdlr->notify_buffer_registered(bid, info.dimensions, info.range, info.element_size, info.element_align);
 	}
 
 	void runtime::handle_buffer_unregistered(buffer_id bid) { maybe_destroy_runtime(); }

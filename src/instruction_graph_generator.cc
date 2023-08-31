@@ -757,7 +757,10 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 	}
 }
 
-void instruction_graph_generator::compile(const abstract_command& cmd) {
+std::vector<const instruction *>
+instruction_graph_generator::compile(const abstract_command& cmd) {
+	m_current_batch.clear();
+
 	utils::match(
 	    cmd,                                                                     //
 	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); }, //
@@ -795,6 +798,8 @@ void instruction_graph_generator::compile(const abstract_command& cmd) {
 		    assert(!"unhandled command type");
 		    std::abort();
 	    });
+
+	return m_current_batch;
 }
 
 } // namespace celerity::detail

@@ -36,7 +36,7 @@ class instruction_graph_generator {
 
 	void unregister_host_object(host_object_id hoid);
 
-	void compile(const abstract_command& cmd);
+	std::vector<const instruction *> compile(const abstract_command& cmd);
 
 	const instruction_graph& get_graph() const { return m_idag; }
 
@@ -182,6 +182,7 @@ class instruction_graph_generator {
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;
+	std::vector<const instruction *> m_current_batch;
 	instruction_recorder *m_recorder;
 
 	static memory_id next_location(const data_location& location, memory_id first);
@@ -193,6 +194,7 @@ class instruction_graph_generator {
 		const auto ptr = instr.get();
 		m_idag.insert(std::move(instr));
 		m_execution_front.insert(ptr);
+		m_current_batch.push_back(ptr);
 		return *ptr;
 	}
 

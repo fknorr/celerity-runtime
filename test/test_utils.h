@@ -55,7 +55,7 @@ namespace detail {
 
 	struct runtime_testspy {
 		static scheduler& get_schdlr(runtime& rt) { return *rt.m_schdlr; }
-		static executor& get_exec(runtime& rt) { return *rt.m_exec; }
+		static instruction_executor& get_exec(runtime& rt) { return *rt.m_exec; }
 		static size_t get_command_count(runtime& rt) { return rt.m_cdag->command_count(); }
 		static command_graph& get_cdag(runtime& rt) { return *rt.m_cdag; }
 		static std::string print_task_graph(runtime& rt) { return detail::print_task_graph(*rt.m_task_recorder); }
@@ -213,7 +213,7 @@ namespace test_utils {
 			const detail::buffer_id bid = m_next_buffer_id++;
 			const auto buf = mock_buffer<Dims>(bid, size);
 			if(m_task_mngr != nullptr) { m_task_mngr->add_buffer(bid, Dims, detail::range_cast<3>(size), mark_as_host_initialized); }
-			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_registered(bid, Dims, detail::range_cast<3>(size)); }
+			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_registered(bid, Dims, detail::range_cast<3>(size), 1, 1); }
 			if(m_dggen != nullptr) { m_dggen->add_buffer(bid, Dims, detail::range_cast<3>(size)); }
 			return buf;
 		}
