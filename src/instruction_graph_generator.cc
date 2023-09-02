@@ -16,7 +16,7 @@ namespace celerity::detail {
 instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder* const recorder)
     : m_tm(tm), m_devices(std::move(devices)), m_recorder(recorder) {
 	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const auto& kv) { return memory_id(std::get<0>(kv) + 1) < max_memories; }));
-	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */));
+	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */), epoch_action::none);
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
 }
@@ -401,7 +401,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 
 std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_subrange(
-    const buffer_id bid, const box<3>& box, const memory_id out_mid, alloc_instruction &alloc_instr) {
+    const buffer_id bid, const box<3>& box, const memory_id out_mid, alloc_instruction& alloc_instr) {
 	auto& buffer = m_buffers.at(bid);
 
 	const auto box_sources = buffer.newest_data_location.get_region_values(box);
@@ -757,8 +757,7 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 	}
 }
 
-std::vector<const instruction *>
-instruction_graph_generator::compile(const abstract_command& cmd) {
+std::vector<const instruction*> instruction_graph_generator::compile(const abstract_command& cmd) {
 	m_current_batch.clear();
 
 	utils::match(
@@ -788,7 +787,7 @@ instruction_graph_generator::compile(const abstract_command& cmd) {
 		    if(m_recorder != nullptr) { *m_recorder << horizon_instruction_record(*horizon, hcmd.get_cid()); }
 	    },
 	    [&](const epoch_command& ecmd) {
-		    const auto epoch = &create<epoch_instruction>(ecmd.get_tid());
+		    const auto epoch = &create<epoch_instruction>(ecmd.get_tid(), ecmd.get_epoch_action());
 		    collapse_execution_front_to(epoch);
 		    apply_epoch(epoch);
 		    m_last_horizon = nullptr;

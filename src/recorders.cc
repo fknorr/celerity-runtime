@@ -237,6 +237,6 @@ horizon_instruction_record::horizon_instruction_record(const horizon_instruction
     : instruction_record_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid) {}
 
 epoch_instruction_record::epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid)
-    : instruction_record_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid) {}
+    : instruction_record_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid), epoch_action(einstr.get_epoch_action()) {}
 
 } // namespace celerity::detail

@@ -169,7 +169,7 @@ class sycl_kernel_instruction final : public kernel_instruction {
 	instruction_backend get_backend() const override { return instruction_backend::sycl; }
 
 	device_id get_device_id() const { return m_device_id; }
-	const sycl_kernel_launcher &get_launcher() const { return m_launcher; }
+	const sycl_kernel_launcher& get_launcher() const { return m_launcher; }
 	void launch(sycl::handler& cgh) const {
 		m_launcher(cgh, get_execution_range()); // TODO where does m_allocation_map go?
 	}
@@ -190,9 +190,7 @@ class host_kernel_instruction final : public kernel_instruction {
 	instruction_backend get_backend() const override { return instruction_backend::host; }
 	const range<3>& get_global_range() const { return m_global_range; }
 
-	std::function<void()> bind(MPI_Comm comm) const {
-		return [l = m_launcher, er = get_execution_range(), gr = m_global_range, comm] { l(er, gr, comm); };
-	}
+	const host_task_launcher& get_launcher() const { return m_launcher; }
 
   private:
 	host_task_launcher m_launcher;
@@ -281,15 +279,18 @@ class horizon_instruction final : public instruction {
 
 class epoch_instruction final : public instruction {
   public:
-	explicit epoch_instruction(const instruction_id iid, const task_id epoch_tid) : instruction(iid), m_epoch_tid(epoch_tid) {}
+	explicit epoch_instruction(const instruction_id iid, const task_id epoch_tid, const epoch_action action)
+	    : instruction(iid), m_epoch_tid(epoch_tid), m_epoch_action(action) {}
 
 	task_id get_epoch_task_id() const { return m_epoch_tid; }
+	epoch_action get_epoch_action() const { return m_epoch_action; }
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_backend get_backend() const override { return instruction_backend::host; }
 
   private:
 	task_id m_epoch_tid;
+	epoch_action m_epoch_action;
 };
 
 class instruction_graph {

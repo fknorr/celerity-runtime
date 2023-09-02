@@ -3,8 +3,8 @@
 
 namespace celerity::detail {
 
-instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue)
-    : m_submission_queue_nonempty(false), m_backend_queue(std::move(backend_queue)), m_thread(std::bind(&instruction_executor::loop, this)) {}
+instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, delegate* dlg)
+    : m_delegate(dlg), m_submission_queue_nonempty(false), m_backend_queue(std::move(backend_queue)), m_thread(std::bind(&instruction_executor::loop, this)) {}
 
 instruction_executor::~instruction_executor() {
 	{
@@ -39,8 +39,7 @@ void instruction_executor::loop() {
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::vector<const instruction*> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
-	bool expecting_more_submissions = true;
-	while(expecting_more_submissions || !pending_instructions.empty() || !active_instructions.empty()) {
+	while(m_expecting_more_submissions || !pending_instructions.empty() || !active_instructions.empty()) {
 		for(auto active_it = active_instructions.begin(); active_it != active_instructions.end();) {
 			auto& [active_instr, active_info] = *active_it;
 			if(active_info.is_complete()) {
@@ -149,7 +148,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return m_backend_queue->launch_kernel(skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range());
 	    },
 	    [](const host_kernel_instruction& hkinstr) -> event {
-		    hkinstr.bind(MPI_COMM_WORLD)(); // TOOD MPI Communicators
+		    auto& launcher = hkinstr.get_launcher();
+		    // TODO launch in thread pool
+		    launcher(hkinstr.get_execution_range(), hkinstr.get_global_range(), MPI_COMM_WORLD); // TOOD MPI Communicators
 		    return completed_synchronous();
 	    },
 	    [](const send_instruction& sinstr) -> event {
@@ -160,12 +161,19 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    // TODO find associated pilot; then MPI_Irecv(...)
 		    return completed_synchronous();
 	    },
-	    [](const horizon_instruction&) -> event {
-		    // TODO notify dggen of completed horizon
+	    [&](const horizon_instruction& hinstr) -> event {
+		    if(m_delegate != nullptr) { m_delegate->checkpoint_passed(hinstr.get_horizon_task_id()); }
 		    return completed_synchronous();
 	    },
-	    [](const epoch_instruction&) -> event {
-		    // TODO notify dggen of completed epoch
+	    [&](const epoch_instruction& einstr) -> event {
+		    switch(einstr.get_epoch_action()) {
+		    case epoch_action::none: break;
+		    case epoch_action::barrier:
+			    MPI_Barrier(MPI_COMM_WORLD); // TODO this should not be in executor
+			    break;
+		    case epoch_action::shutdown: m_expecting_more_submissions = false; break;
+		    }
+		    if(m_delegate != nullptr) { m_delegate->checkpoint_passed(einstr.get_epoch_task_id()); }
 		    return completed_synchronous();
 	    });
 }

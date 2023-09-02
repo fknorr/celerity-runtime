@@ -7,7 +7,16 @@ namespace celerity::detail {
 
 class instruction_executor {
   public:
-	explicit instruction_executor(std::unique_ptr<backend::queue> backend_queue);
+	class delegate {
+	  protected:
+		delegate() = default;
+
+	  public:
+		virtual ~delegate() = default;
+		virtual void checkpoint_passed(task_id tid) = 0;
+	};
+
+	instruction_executor(std::unique_ptr<backend::queue> backend_queue, delegate *dlg);
 	instruction_executor(const instruction_executor&) = delete;
 	instruction_executor& operator=(const instruction_executor&) = delete;
 	~instruction_executor();
@@ -23,12 +32,15 @@ class instruction_executor {
 		void* pointer;
 	};
 
+	delegate *m_delegate;
+
 	// accessed by by both threads
 	std::mutex m_submission_mutex;
 	std::vector<const instruction*> m_submission_queue;
-	std::atomic<bool> m_submission_queue_nonempty;
+	std::atomic<bool> m_submission_queue_nonempty{false};
 
 	// accessed by executor thread only (unsynchronized)
+	bool m_expecting_more_submissions = true;
 	std::unique_ptr<backend::queue> m_backend_queue;
 	std::unordered_map<allocation_id, allocation> m_allocations;
 

@@ -253,6 +253,7 @@ struct horizon_instruction_record : instruction_record_base {
 struct epoch_instruction_record : instruction_record_base {
 	task_id epoch_task_id;
 	command_id epoch_command_id;
+	epoch_action epoch_action;
 
 	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid);
 };
@@ -266,14 +267,14 @@ class instruction_recorder {
 	using pilot_messages = std::vector<pilot_message>;
 
 	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
-	void record_pilot_message(const pilot_message &pilot) { m_recorded_pilots.push_back(pilot); }
+	void record_pilot_message(const pilot_message& pilot) { m_recorded_pilots.push_back(pilot); }
 
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, instruction_record record) {
 		recorder.record_instruction(std::move(record));
 		return recorder;
 	}
 
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, const pilot_message &pilot) {
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, const pilot_message& pilot) {
 		recorder.record_pilot_message(pilot);
 		return recorder;
 	}
