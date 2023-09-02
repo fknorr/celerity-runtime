@@ -1,4 +1,4 @@
-#include "backend/generic_backend.h"
+#include "backend/backend.h"
 
 #include "ranges.h"
 
@@ -58,36 +58,29 @@ std::vector<sycl::event> memcpy_strided_device_generic(sycl::queue& queue, const
 
 namespace celerity::detail::backend {
 
-class generic_event : public queue::event {
-  public:
-	generic_event(std::vector<sycl::event> wait_list) : m_incomplete(std::move(wait_list)) {}
-
-	bool is_complete() const override {
-		const auto last_incomplete = std::remove_if(m_incomplete.begin(), m_incomplete.end(),
-		    [](const sycl::event& evt) { return evt.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete; });
-		m_incomplete.erase(last_incomplete, m_incomplete.end());
-		return m_incomplete.empty();
+generic_queue::generic_queue(const std::vector<std::pair<device_id, sycl::device>>& devices) {
+	for(const auto& [did, sycl_dev] : devices) {
+		m_device_queues.emplace(did, sycl::queue(sycl_dev));
 	}
-
-  private:
-	mutable std::vector<sycl::event> m_incomplete;
-};
-
-void generic_queue::add_device(const device_id device, sycl::queue& queue) { m_device_queues.emplace(device, &queue); }
-
-void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
-	return sycl::aligned_alloc_device(alignment, size, *m_device_queues.at(to_device_id(where)));
 }
 
-void generic_queue::free(const memory_id where, void* const allocation) { sycl::free(allocation, *m_device_queues.at(to_device_id(where))); }
+std::pair<void*, std::unique_ptr<event>> generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+	const auto ptr = sycl::aligned_alloc_device(alignment, size, m_device_queues.at(to_device_id(where)));
+	return {ptr, std::make_unique<sycl_event>()}; // synchronous
+}
 
-std::unique_ptr<queue::event> generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id target,
-    const void* const source_base_ptr, void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset,
-    const range<3>& target_range, const id<3>& target_offset, const range<3>& copy_range) {
+std::unique_ptr<event> generic_queue::free(const memory_id where, void* const allocation) {
+	sycl::free(allocation, m_device_queues.at(to_device_id(where)));
+	return std::make_unique<sycl_event>(); // synchronous
+}
+
+std::unique_ptr<event> generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id target, const void* const source_base_ptr,
+    void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
+    const id<3>& target_offset, const range<3>& copy_range) {
 	assert(source != host_memory_id || target != host_memory_id);
-	auto& queue = *m_device_queues.at(to_device_id(source == host_memory_id ? target : source));
+	auto& queue = m_device_queues.at(to_device_id(source == host_memory_id ? target : source));
 	const auto dispatch_memcpy = [&](const auto dims) {
-		return std::make_unique<generic_event>(backend_detail::memcpy_strided_device_generic(queue, source_base_ptr, target_base_ptr, elem_size,
+		return std::make_unique<sycl_event>(backend_detail::memcpy_strided_device_generic(queue, source_base_ptr, target_base_ptr, elem_size,
 		    range_cast<dims.value>(source_range), id_cast<dims.value>(source_offset), range_cast<dims.value>(target_range), id_cast<dims.value>(target_offset),
 		    range_cast<dims.value>(copy_range)));
 	};
@@ -98,6 +91,10 @@ std::unique_ptr<queue::event> generic_queue::memcpy_strided_device(const int dim
 	case 3: return dispatch_memcpy(std::integral_constant<int, 3>());
 	default: abort();
 	}
+}
+
+std::unique_ptr<event> generic_queue::launch_kernel(device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range) {
+	return launch_sycl_kernel(m_device_queues.at(did), launcher, execution_range);
 }
 
 } // namespace celerity::detail::backend
