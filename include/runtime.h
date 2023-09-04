@@ -9,6 +9,7 @@
 #include "device_queue.h"
 #include "frame.h"
 #include "host_queue.h"
+#include "instruction_executor.h"
 #include "recorders.h"
 #include "types.h"
 
@@ -25,7 +26,6 @@ namespace detail {
 	class graph_serializer;
 	class command_graph;
 	class scheduler;
-	class instruction_executor;
 	class task_manager;
 	class host_object_manager;
 
@@ -34,7 +34,7 @@ namespace detail {
 		runtime_already_started_error() : std::runtime_error("The Celerity runtime has already been started") {}
 	};
 
-	class runtime {
+	class runtime final : private instruction_executor::delegate {
 		friend struct runtime_testspy;
 
 	  public:
@@ -118,6 +118,8 @@ namespace detail {
 		runtime(int* argc, char** argv[], device_or_selector user_device_or_selector);
 		runtime(const runtime&) = delete;
 		runtime(runtime&&) = delete;
+
+		void instruction_checkpoint_reached(task_id checkpoint_tid) override;
 
 		void handle_buffer_registered(buffer_id bid);
 		void handle_buffer_unregistered(buffer_id bid);

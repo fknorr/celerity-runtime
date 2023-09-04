@@ -193,6 +193,7 @@ set(SOURCES
   src/grid.cc
   src/instruction_executor.cc
   src/instruction_graph_generator.cc
+  src/mpi_communicator.cc
   src/print_graph.cc
   src/recorders.cc
   src/runtime.cc

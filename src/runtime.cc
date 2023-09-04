@@ -28,6 +28,7 @@
 #include "instruction_executor.h"
 #include "instruction_graph_generator.h"
 #include "log.h"
+#include "mpi_communicator.h"
 #include "mpi_support.h"
 #include "named_threads.h"
 #include "print_graph.h"
@@ -154,7 +155,8 @@ namespace detail {
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
-		m_exec = std::make_unique<instruction_executor>(nullptr /* backend TODO */, nullptr /* delegate TODO */);
+		m_exec = std::make_unique<instruction_executor>(
+		    nullptr /* backend TODO */, mpi_communicator_factory(MPI_COMM_WORLD), static_cast<instruction_executor::delegate*>(this));
 		m_cdag = std::make_unique<command_graph>();
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>(m_task_mngr.get(), m_buffer_mngr.get());
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
@@ -276,6 +278,10 @@ namespace detail {
 			}
 		}
 		return combine_command_graphs(graphs);
+	}
+
+	void runtime::instruction_checkpoint_reached(const task_id checkpoint_tid) {
+		// TODO trigger task / command deletion
 	}
 
 	void runtime::handle_buffer_registered(buffer_id bid) {

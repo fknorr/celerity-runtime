@@ -1,24 +1,21 @@
 #include "instruction_executor.h"
 #include "buffer_storage.h" // for memcpy_strided_host
+#include "communicator.h"
+#include <atomic>
+#include <mutex>
 
 namespace celerity::detail {
 
-instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, delegate* dlg)
-    : m_delegate(dlg), m_submission_queue_nonempty(false), m_backend_queue(std::move(backend_queue)), m_thread(std::bind(&instruction_executor::loop, this)) {}
+instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, const communicator_factory& comm_factory, delegate* dlg)
+    : m_delegate(dlg), m_backend_queue(std::move(backend_queue)), m_communicator(comm_factory.make_communicator(this)),
+      m_thread(&instruction_executor::loop, this) {}
 
 instruction_executor::~instruction_executor() {
-	{
-		std::lock_guard lock(m_submission_mutex);
-		m_submission_queue.push_back(nullptr);
-	}
+	m_submission_queue.push_back(nullptr /* sentinel for "no more submissions" */);
 	m_thread.join();
 }
 
-void instruction_executor::submit(const instruction& instr) {
-	std::lock_guard lock(m_submission_mutex);
-	m_submission_queue.push_back(&instr);
-	m_submission_queue_nonempty.store(true, std::memory_order_relaxed);
-}
+void instruction_executor::submit(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
 void instruction_executor::loop() {
 	struct pending_instruction_info {
@@ -29,13 +26,15 @@ void instruction_executor::loop() {
 
 		bool is_complete() const {
 			return utils::match(
-			    completion_event,                                                              //
-			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); }, //
+			    completion_event,                                                                   //
+			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },      //
+			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); }, //
 			    [](const completed_synchronous) { return true; });
 		};
 	};
 
 	std::vector<const instruction*> loop_submission_queue;
+	std::vector<pilot_message> loop_pilot_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::vector<const instruction*> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
@@ -60,23 +59,24 @@ void instruction_executor::loop() {
 			}
 		}
 
-		if(m_submission_queue_nonempty.load(std::memory_order_relaxed)) {
-			std::lock_guard lock(m_submission_mutex);
-			std::swap(m_submission_queue, loop_submission_queue);
-			m_submission_queue_nonempty.store(false, std::memory_order_relaxed);
+		if(m_submission_queue.swap_if_nonempty(loop_submission_queue)) {
+			for(const auto incoming_instr : loop_submission_queue) {
+				const auto n_unmet_dependencies = static_cast<size_t>(std::count_if(incoming_instr->get_dependencies().begin(),
+				    incoming_instr->get_dependencies().end(),
+				    [&](const instruction::dependency& dep) { return pending_instructions.count(dep.node) != 0 || active_instructions.count(dep.node) != 0; }));
+				if(n_unmet_dependencies > 0) {
+					pending_instructions.emplace(incoming_instr, pending_instruction_info{n_unmet_dependencies});
+				} else {
+					ready_instructions.push_back(incoming_instr);
+				}
+			}
+			loop_submission_queue.clear();
 		}
 
-		for(const auto incoming_instr : loop_submission_queue) {
-			const auto n_unmet_dependencies =
-			    static_cast<size_t>(std::count_if(incoming_instr->get_dependencies().begin(), incoming_instr->get_dependencies().end(),
-			        [&](const instruction::dependency& dep) { return pending_instructions.count(dep.node) != 0 || active_instructions.count(dep.node) != 0; }));
-			if(n_unmet_dependencies > 0) {
-				pending_instructions.emplace(incoming_instr, pending_instruction_info{n_unmet_dependencies});
-			} else {
-				ready_instructions.push_back(incoming_instr);
-			}
+		if(m_pilot_queue.swap_if_nonempty(loop_pilot_queue)) {
+			// TODO
+			loop_pilot_queue.clear();
 		}
-		loop_submission_queue.clear();
 
 		for(const auto ready_instr : ready_instructions) {
 			active_instructions.emplace(ready_instr, active_instruction_info{begin_executing(*ready_instr)});
@@ -162,7 +162,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return completed_synchronous();
 	    },
 	    [&](const horizon_instruction& hinstr) -> event {
-		    if(m_delegate != nullptr) { m_delegate->checkpoint_passed(hinstr.get_horizon_task_id()); }
+		    if(m_delegate != nullptr) { m_delegate->instruction_checkpoint_reached(hinstr.get_horizon_task_id()); }
 		    return completed_synchronous();
 	    },
 	    [&](const epoch_instruction& einstr) -> event {
@@ -173,9 +173,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 			    break;
 		    case epoch_action::shutdown: m_expecting_more_submissions = false; break;
 		    }
-		    if(m_delegate != nullptr) { m_delegate->checkpoint_passed(einstr.get_epoch_task_id()); }
+		    if(m_delegate != nullptr) { m_delegate->instruction_checkpoint_reached(einstr.get_epoch_task_id()); }
 		    return completed_synchronous();
 	    });
 }
+
+void instruction_executor::pilot_message_received(node_id from, const pilot_message& pilot) { m_pilot_queue.push_back(pilot); }
 
 } // namespace celerity::detail
