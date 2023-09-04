@@ -40,7 +40,7 @@ class mpi_communicator final : public communicator {
 	node_id get_local_node_id() const override;
 	void send_pilot_message(node_id to, const pilot_message& pilot) override;
 	std::unique_ptr<communicator::event> send_payload(node_id to, int tag, const void* base, const stride& stride) override;
-	std::unique_ptr<communicator::event> receive_payload(node_id to, int tag, void* base, const stride& stride) override;
+	std::unique_ptr<communicator::event> receive_payload(node_id from, int tag, void* base, const stride& stride) override;
 
   private:
 	inline constexpr static int pilot_tag = -1;

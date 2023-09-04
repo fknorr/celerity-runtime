@@ -215,7 +215,7 @@ struct send_instruction_record : instruction_record_base {
 	node_id dest_node_id;
 	int tag;
 	allocation_id allocation_id;
-	size_t size_bytes;
+	size_t size_bytes; TODO
 	command_id push_cid;
 	buffer_id buffer;
 	std::string buffer_debug_name;

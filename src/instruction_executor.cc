@@ -1,13 +1,14 @@
 #include "instruction_executor.h"
 #include "buffer_storage.h" // for memcpy_strided_host
 #include "communicator.h"
+#include "recv_arbiter.h"
 #include <atomic>
 #include <mutex>
 
 namespace celerity::detail {
 
 instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, const communicator_factory& comm_factory, delegate* dlg)
-    : m_delegate(dlg), m_backend_queue(std::move(backend_queue)), m_communicator(comm_factory.make_communicator(this)),
+    : m_delegate(dlg), m_backend_queue(std::move(backend_queue)), m_communicator(comm_factory.make_communicator(this)), m_recv_arbiter(*m_communicator),
       m_thread(&instruction_executor::loop, this) {}
 
 instruction_executor::~instruction_executor() {
@@ -29,12 +30,13 @@ void instruction_executor::loop() {
 			    completion_event,                                                                   //
 			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },      //
 			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); }, //
+			    [](const recv_arbiter::event& evt) { return evt.is_complete(); },                   //
 			    [](const completed_synchronous) { return true; });
 		};
 	};
 
 	std::vector<const instruction*> loop_submission_queue;
-	std::vector<pilot_message> loop_pilot_queue;
+	std::vector<std::pair<node_id, pilot_message>> loop_pilot_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::vector<const instruction*> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
@@ -74,7 +76,9 @@ void instruction_executor::loop() {
 		}
 
 		if(m_pilot_queue.swap_if_nonempty(loop_pilot_queue)) {
-			// TODO
+			for(auto& [source, pilot] : loop_pilot_queue) {
+				m_recv_arbiter.push_pilot_message(source, pilot);
+			}
 			loop_pilot_queue.clear();
 		}
 
@@ -153,13 +157,19 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    launcher(hkinstr.get_execution_range(), hkinstr.get_global_range(), MPI_COMM_WORLD); // TOOD MPI Communicators
 		    return completed_synchronous();
 	    },
-	    [](const send_instruction& sinstr) -> event {
-		    // TODO MPI_Isend(...)
-		    return completed_synchronous();
+	    [&](const send_instruction& sinstr) -> event {
+		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id()).pointer;
+		    const communicator::stride stride{
+		        sinstr.get_allocation_range(),
+		        subrange<3>{sinstr.get_offset_in_allocation(), sinstr.get_send_range()},
+		        sinstr.get_element_size(),
+		    };
+		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
 	    },
-	    [](const recv_instruction&) -> event {
-		    // TODO find associated pilot; then MPI_Irecv(...)
-		    return completed_synchronous();
+	    [&](const recv_instruction& rinstr) -> event {
+		    const auto allocation_base = m_allocations.at(rinstr.get_dest_allocation_id()).pointer;
+		    return m_recv_arbiter.begin_aggregated_recv(rinstr.get_transfer_id(), allocation_base, rinstr.get_allocation_range(), rinstr.get_offset_in_buffer(),
+		        rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size());
 	    },
 	    [&](const horizon_instruction& hinstr) -> event {
 		    if(m_delegate != nullptr) { m_delegate->instruction_checkpoint_reached(hinstr.get_horizon_task_id()); }
@@ -178,6 +188,6 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    });
 }
 
-void instruction_executor::pilot_message_received(node_id from, const pilot_message& pilot) { m_pilot_queue.push_back(pilot); }
+void instruction_executor::pilot_message_received(const node_id from, const pilot_message& pilot) { m_pilot_queue.push_back(std::pair{from, pilot}); }
 
 } // namespace celerity::detail

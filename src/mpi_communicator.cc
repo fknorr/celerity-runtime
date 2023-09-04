@@ -70,10 +70,10 @@ std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_i
 	return std::make_unique<event>(req);
 }
 
-std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const node_id to, const int tag, void* const base, const stride& stride) {
+std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const node_id from, const int tag, void* const base, const stride& stride) {
 	MPI_Request req;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
-	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_comm, &req);
+	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), tag, m_comm, &req);
 	return std::make_unique<event>(req);
 }
 

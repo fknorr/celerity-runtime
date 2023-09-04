@@ -734,6 +734,11 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 		for(const auto& box : region.get_boxes()) {
 			const auto bytes = box.get_area() * buffer.elem_size;
 
+			// TODO
+			// 1. transpose: group by allocation
+			// 2. generate one send_instruction per written-allocation-box
+
+#if 0
 			// this allocation is not associated with a buffer (and thus not tracked in m_buffers), so we add all dependencies immediately
 			const auto alloc_instr = &create<alloc_instruction>(instruction_backend::host, m_next_aid++, host_memory_id, bytes, buffer.elem_align);
 			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
@@ -753,6 +758,7 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), bid, buffer.debug_name, box);
 				*m_recorder << free_instruction_record(*free_instr, host_memory_id, bytes, buffer.elem_align, std::nullopt);
 			}
+#endif
 		}
 	}
 }

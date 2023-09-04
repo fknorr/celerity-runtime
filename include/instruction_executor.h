@@ -4,6 +4,7 @@
 #include "communicator.h"
 #include "double_buffered_queue.h"
 #include "instruction_graph.h"
+#include "recv_arbiter.h"
 
 namespace celerity::detail {
 
@@ -33,7 +34,7 @@ class instruction_executor final : private communicator::delegate {
 
   private:
 	struct completed_synchronous {};
-	using event = std::variant<std::unique_ptr<backend::event>, std::unique_ptr<communicator::event>, completed_synchronous>;
+	using event = std::variant<std::unique_ptr<backend::event>, std::unique_ptr<communicator::event>, recv_arbiter::event, completed_synchronous>;
 
 	struct allocation {
 		memory_id memory;
@@ -46,13 +47,14 @@ class instruction_executor final : private communicator::delegate {
 	double_buffered_queue<const instruction*> m_submission_queue;
 
 	// accessed by by main and communicator threads
-	double_buffered_queue<pilot_message> m_pilot_queue;
+	double_buffered_queue<std::pair<node_id, pilot_message>> m_pilot_queue;
 
 	// accessed by executor thread only (unsynchronized)
 	bool m_expecting_more_submissions = true;
 	std::unique_ptr<backend::queue> m_backend_queue;
 	std::unordered_map<allocation_id, allocation> m_allocations;
 	std::unique_ptr<communicator> m_communicator;
+	recv_arbiter m_recv_arbiter;
 
 	std::thread m_thread;
 

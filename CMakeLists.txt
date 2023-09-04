@@ -196,6 +196,7 @@ set(SOURCES
   src/mpi_communicator.cc
   src/print_graph.cc
   src/recorders.cc
+  src/recv_arbiter.cc
   src/runtime.cc
   src/scheduler.cc
   src/task.cc

@@ -206,9 +206,10 @@ struct pilot_message {
 
 class send_instruction final : public instruction {
   public:
-	explicit send_instruction(
-	    const instruction_id iid, const transfer_id trid, const node_id to_nid, const int tag, const allocation_id aid, const size_t bytes)
-	    : instruction(iid), m_transfer_id(trid), m_to_nid(to_nid), m_tag(tag), m_aid(aid), m_bytes(bytes) {}
+	explicit send_instruction(const instruction_id iid, const transfer_id trid, const node_id to_nid, const int tag, const allocation_id source_allocation,
+	    const range<3>& alloc_range, const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
+	    : instruction(iid), m_transfer_id(trid), m_to_nid(to_nid), m_tag(tag), m_source_allocation(source_allocation), m_alloc_range(alloc_range),
+	      m_offset_in_alloc(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_backend get_backend() const override { return instruction_backend::mpi; }
@@ -216,16 +217,21 @@ class send_instruction final : public instruction {
 	transfer_id get_transfer_id() const { return m_transfer_id; }
 	node_id get_dest_node_id() const { return m_to_nid; }
 	int get_tag() const { return m_tag; }
-	allocation_id get_allocation_id() const { return m_aid; }
-	size_t get_size_bytes() const { return m_bytes; }
-	// TODO offset_bytes, if we send directly from a host buffer allocation?
+	allocation_id get_source_allocation_id() const { return m_source_allocation; }
+	const range<3>& get_allocation_range() const { return m_alloc_range; }
+	const id<3>& get_offset_in_allocation() const { return m_offset_in_alloc; }
+	const range<3>& get_send_range() const { return m_send_range; }
+	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	transfer_id m_transfer_id;
 	node_id m_to_nid;
 	int m_tag;
-	allocation_id m_aid;
-	size_t m_bytes;
+	allocation_id m_source_allocation;
+	range<3> m_alloc_range;
+	id<3> m_offset_in_alloc;
+	range<3> m_send_range;
+	size_t m_elem_size;
 };
 
 class recv_instruction final : public instruction {
