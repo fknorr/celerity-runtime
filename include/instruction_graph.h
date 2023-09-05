@@ -239,9 +239,8 @@ class recv_instruction final : public instruction {
 	explicit recv_instruction(const instruction_id iid, const buffer_id bid, const transfer_id trid, const memory_id dest_memory,
 	    const allocation_id dest_allocation, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer,
 	    const range<3>& recv_range, const size_t elem_size)
-	    : instruction(iid), m_buffer_id(bid), m_transfer_id(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation),
-	      m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range),
-	      m_elem_size(elem_size) {}
+	    : instruction(iid), m_buffer_id(bid), m_transfer_id(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_alloc_range(alloc_range),
+	      m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	instruction_backend get_backend() const override { return instruction_backend::mpi; }

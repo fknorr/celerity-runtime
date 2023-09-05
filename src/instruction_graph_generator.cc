@@ -28,7 +28,7 @@ void instruction_graph_generator::register_buffer(buffer_id bid, int dims, range
 }
 
 void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, std::string name) {
-	if(const auto it = m_buffers.find(bid); it != m_buffers.end()) { it->second.debug_name = std::move(name); }
+	if(m_recorder != nullptr) { m_recorder->record_buffer_debug_name(bid, name); }
 }
 
 void instruction_graph_generator::unregister_buffer(buffer_id bid) { m_buffers.erase(bid); }
@@ -81,7 +81,7 @@ instruction_backend instruction_graph_generator::get_kernel_launch_backend(const
 	return instruction_backend::sycl;
 }
 
-void instruction_graph_generator::allocate_contiguously(const buffer_id bid, const memory_id mid, const std::vector<box<3>>& boxes) {
+void instruction_graph_generator::allocate_contiguously(const buffer_id bid, const memory_id mid, const box_vector<3>& boxes) {
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories[mid];
 
@@ -164,15 +164,12 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 				}
 				dest.record_write(copy_box, copy_instr);
 
-				if(m_recorder != nullptr) {
-					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::resize, bid, buffer.debug_name, copy_box);
-				}
+				if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::resize, bid, copy_box); }
 			}
 		}
 
 		if(m_recorder != nullptr) {
-			*m_recorder << alloc_instruction_record(
-			    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.debug_name, dest_box});
+			*m_recorder << alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, dest_box});
 		}
 	}
 
@@ -186,8 +183,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 			}
 		}
 		if(m_recorder != nullptr) {
-			*m_recorder << free_instruction_record(*free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align,
-			    buffer_allocation_record{bid, buffer.debug_name, allocation.box});
+			*m_recorder << free_instruction_record(
+			    *free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align, buffer_allocation_record{bid, allocation.box});
 		}
 	}
 
@@ -258,7 +255,6 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						const auto [recv_offset, recv_range] = recv_box.get_subrange();
 						const auto recv_instr = &create<recv_instruction>(
 						    bid, trid, mid, alloc.aid, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
-						command_id await_push_cid = 1234; // TODO where do we get this from without changing non-debug code paths too much?
 
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
@@ -271,7 +267,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 						buffer.original_writers.update_region(recv_box, recv_instr);
 
-						if(m_recorder != nullptr) { *m_recorder << recv_instruction_record(*recv_instr, await_push_cid, bid, buffer.debug_name); }
+						if(m_recorder != nullptr) { *m_recorder << recv_instruction_record(*recv_instr); }
 					}
 				}
 				// TODO assert that the entire region is consumed (... eventually?)
@@ -391,7 +387,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					}
 
 					if(m_recorder != nullptr) {
-						*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.debug_name, copy_box);
+						*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, copy_box);
 					}
 				}
 			}
@@ -464,7 +460,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				copy_instrs.push_back(copy_instr);
 
 				if(m_recorder != nullptr) {
-					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::linearize, bid, buffer.debug_name, copy_box);
+					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::linearize, bid, copy_box);
 				}
 			}
 		}
@@ -474,10 +470,10 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 }
 
 
-int instruction_graph_generator::create_pilot_message(const buffer_id bid, const transfer_id trid, const box<3>& box) {
+int instruction_graph_generator::create_pilot_message(const node_id target, const buffer_id bid, const transfer_id trid, const box<3>& box) {
 	int tag = m_next_p2p_tag++;
 	m_pilots.push_back(pilot_message{tag, bid, trid, box});
-	if(m_recorder != nullptr) { *m_recorder << m_pilots.back(); }
+	if(m_recorder != nullptr) { *m_recorder << pilot_message_record(m_pilots.back(), target); }
 	return tag;
 }
 
@@ -562,7 +558,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	// 2) allocate memory
 
-	std::unordered_map<std::pair<buffer_id, memory_id>, std::vector<box<3>>, utils::pair_hash> not_contiguously_allocated_boxes;
+	std::unordered_map<std::pair<buffer_id, memory_id>, box_vector<3>, utils::pair_hash> not_contiguously_allocated_boxes;
 	for(const auto& insn : cmd_instrs) {
 		for(const auto& [bid, rw] : insn.rw_map) {
 			const auto& memory = m_buffers.at(bid).memories[insn.mid];
@@ -611,7 +607,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			const auto [access_offset, access_range] = accessed_box.get_subrange();
 			const auto [alloc_offset, alloc_range] = alloc.box.get_subrange();
 			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset, {access_offset, access_range}};
-			if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, buffer.debug_name, alloc.box}; }
+			if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, alloc.box}; }
 		}
 
 		kernel_instruction* kernel_instr;
@@ -739,16 +735,20 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 
 	for(auto& [writer, region] : writer_regions) {
 		for(const auto& box : region.get_boxes()) {
-			const int tag = create_pilot_message(bid, pcmd.get_transfer_id(), box);
+			const int tag = create_pilot_message(pcmd.get_target(), bid, pcmd.get_transfer_id(), box);
 
 			const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
 			assert(allocation != nullptr); // we allocate_contiguously above
 
+			const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
 			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, allocation->aid, allocation->box.get_range(),
-			    box.get_offset() - allocation->box.get_offset(), box.get_range(), buffer.elem_size);
+			    offset_in_allocation, box.get_range(), buffer.elem_size);
 			add_dependency(*send_instr, *writer, dependency_kind::true_dep);
 
-			if(m_recorder != nullptr) { *m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), bid, buffer.debug_name, box); }
+			if(m_recorder != nullptr) {
+				const auto offset_in_buffer = box.get_offset();
+				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), bid, offset_in_buffer);
+			}
 		}
 	}
 }
@@ -774,6 +774,7 @@ std::vector<const instruction*> instruction_graph_generator::compile(const abstr
 #endif
 		    buffer.newest_data_location.update_region(region, data_location()); // not present anywhere locally
 		    buffer.pending_await_pushes.update_region(region, apcmd.get_transfer_id());
+		    if(m_recorder != nullptr) { m_recorder->record_await_push_command_id(apcmd.get_transfer_id(), apcmd.get_cid()); }
 	    },
 	    [&](const horizon_command& hcmd) {
 		    const auto horizon = &create<horizon_instruction>(hcmd.get_tid());

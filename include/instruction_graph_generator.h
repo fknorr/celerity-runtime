@@ -136,7 +136,6 @@ class instruction_graph_generator {
 		region_map<data_location> newest_data_location;
 		region_map<instruction*> original_writers;
 		region_map<transfer_id> pending_await_pushes;
-		std::string debug_name;
 
 		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
 		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), newest_data_location(range, dims),
@@ -241,7 +240,7 @@ class instruction_graph_generator {
 
 	// Re-allocation of one buffer on one memory never interacts with other buffers or other memories backing the same buffer, this function can be called
 	// in any order of allocation requirements without generating additional dependencies.
-	void allocate_contiguously(const buffer_id bid, const memory_id mid, const std::vector<box<3>>& boxes);
+	void allocate_contiguously(const buffer_id bid, const memory_id mid, const box_vector<3>& boxes);
 
 	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
@@ -249,7 +248,7 @@ class instruction_graph_generator {
 
 	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction& ainstr);
 
-	int create_pilot_message(buffer_id bid, transfer_id trid, const box<3>& box);
+	int create_pilot_message(node_id target, buffer_id bid, transfer_id trid, const box<3>& box);
 
 	void compile_execution_command(const execution_command& ecmd);
 

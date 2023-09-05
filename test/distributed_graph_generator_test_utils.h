@@ -649,7 +649,10 @@ class idag_test_context {
 	      m_cdag(), m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
 	      m_iggen(m_tm, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
-	~idag_test_context() { maybe_log_graphs(); }
+	~idag_test_context() {
+		build_task(m_tm.generate_epoch_task(epoch_action::shutdown));
+		maybe_log_graphs();
+	}
 
 	idag_test_context(const idag_test_context&) = delete;
 	idag_test_context(idag_test_context&&) = delete;

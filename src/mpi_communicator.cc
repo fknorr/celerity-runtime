@@ -92,8 +92,8 @@ MPI_Datatype mpi_communicator::get_scalar_type(const size_t bytes) const {
 MPI_Datatype mpi_communicator::get_array_type(const stride& stride) const {
 	if(const auto it = m_array_type_cache.find(stride); it != m_array_type_cache.end()) { return it->second.get(); }
 
-	const int dims = stride.allocation.get_min_dimensions();
-	assert(stride.subrange.get_min_dimensions() <= dims);
+	const int dims = detail::get_effective_dims(stride.allocation);
+	assert(detail::get_effective_dims(stride.subrange) <= dims);
 
 	int size_array[3];
 	int subsize_array[3];

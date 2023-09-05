@@ -128,7 +128,6 @@ class command_recorder {
 
 struct buffer_allocation_record {
 	detail::buffer_id buffer_id;
-	std::string debug_name;
 	box<3> box;
 };
 
@@ -166,7 +165,7 @@ struct free_instruction_record : instruction_record_base {
 	std::optional<buffer_allocation_record> buffer_allocation;
 
 	free_instruction_record(const free_instruction& finstr, const detail::memory_id mid, const size_t size, const size_t alignment,
-	    std::optional<buffer_allocation_record> buffer_allocation);
+	    const std::optional<buffer_allocation_record>& buffer_allocation);
 };
 
 struct copy_instruction_record : instruction_record_base {
@@ -189,11 +188,9 @@ struct copy_instruction_record : instruction_record_base {
 	size_t element_size;
 	copy_origin origin;
 	buffer_id buffer;
-	std::string buffer_debug_name;
 	detail::box<3> box;
 
-	copy_instruction_record(
-	    const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3>& box);
+	copy_instruction_record(const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, const detail::box<3>& box);
 };
 
 struct kernel_instruction_record : instruction_record_base {
@@ -206,7 +203,7 @@ struct kernel_instruction_record : instruction_record_base {
 	std::string kernel_debug_name;
 	std::vector<buffer_allocation_record> allocation_buffer_map;
 
-	kernel_instruction_record(const kernel_instruction& kinstr, const task_id cg_tid, const command_id execution_cid, std::string kernel_debug_name,
+	kernel_instruction_record(const kernel_instruction& kinstr, const task_id cg_tid, const command_id execution_cid, const std::string& kernel_debug_name,
 	    std::vector<buffer_allocation_record> allocation_buffer_map);
 };
 
@@ -221,11 +218,9 @@ struct send_instruction_record : instruction_record_base {
 	size_t element_size;
 	command_id push_cid;
 	buffer_id buffer;
-	std::string buffer_debug_name;
-	box<3> box;
+	celerity::id<3> offset_in_buffer;
 
-	send_instruction_record(
-	    const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3> box);
+	send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, const celerity::id<3>& offset_in_buffer);
 };
 
 struct recv_instruction_record : instruction_record_base {
@@ -238,11 +233,8 @@ struct recv_instruction_record : instruction_record_base {
 	celerity::id<3> offset_in_buffer;
 	range<3> recv_range;
 	size_t element_size;
-	command_id await_push_cid;
-	detail::buffer_id buffer;
-	std::string buffer_debug_name;
 
-	recv_instruction_record(const recv_instruction& rinstr, const command_id await_push_cid, const detail::buffer_id buffer, std::string buffer_debug_name);
+	recv_instruction_record(const recv_instruction& rinstr);
 };
 
 struct horizon_instruction_record : instruction_record_base {
@@ -263,30 +255,42 @@ struct epoch_instruction_record : instruction_record_base {
 using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, copy_instruction_record, kernel_instruction_record,
     send_instruction_record, recv_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
+struct pilot_message_record : pilot_message {
+	node_id receiver;
+
+	pilot_message_record(const pilot_message& pilot, const node_id receiver);
+};
+
 class instruction_recorder {
   public:
 	using instruction_records = std::vector<instruction_record>;
-	using pilot_messages = std::vector<pilot_message>;
+	using pilot_messages = std::vector<pilot_message_record>;
 
+	void record_await_push_command_id(const transfer_id trid, const command_id cid) { m_await_push_cids.emplace(trid, cid); }
+	void record_buffer_debug_name(const buffer_id bid, const std::string& debug_name) { m_buffer_debug_names.emplace(bid, debug_name); }
 	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
-	void record_pilot_message(const pilot_message& pilot) { m_recorded_pilots.push_back(pilot); }
+	void record_pilot_message(const pilot_message_record& pilot) { m_recorded_pilots.push_back(pilot); }
 
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, instruction_record record) {
 		recorder.record_instruction(std::move(record));
 		return recorder;
 	}
 
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, const pilot_message& pilot) {
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, const pilot_message_record& pilot) {
 		recorder.record_pilot_message(pilot);
 		return recorder;
 	}
 
 	const instruction_records& get_instructions() const { return m_recorded_instructions; }
 	const pilot_messages& get_pilot_messages() const { return m_recorded_pilots; }
+	command_id get_await_push_command_id(const transfer_id trid) const;
+	const std::string& get_buffer_debug_name(const buffer_id bid) const;
 
   private:
 	instruction_records m_recorded_instructions;
 	pilot_messages m_recorded_pilots;
+	std::unordered_map<transfer_id, command_id> m_await_push_cids;
+	std::unordered_map<buffer_id, std::string> m_buffer_debug_names;
 };
 
 } // namespace celerity::detail
