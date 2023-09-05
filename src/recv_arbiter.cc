@@ -6,33 +6,39 @@
 
 namespace celerity::detail {
 
-bool recv_arbiter::event::is_complete() const { return m_arbiter->forget_if_complete(m_trid); }
+bool recv_arbiter::event::is_complete() const {
+	// TODO dropping an event without calling is_complete() => true will keep stale entries around
+	return m_arbiter->forget_if_complete(m_trid, m_bid);
+}
 
-recv_arbiter::event recv_arbiter::begin_aggregated_recv(const transfer_id trid, void* const allocation_base, const range<3>& allocation_range,
-    const id<3>& allocation_offset_in_buffer, const id<3>& recv_offset_in_allocation, const range<3>& recv_range, size_t elem_size) {
+recv_arbiter::event recv_arbiter::begin_aggregated_recv(const transfer_id trid, const buffer_id bid, void* const allocation_base,
+    const range<3>& allocation_range, const id<3>& allocation_offset_in_buffer, const id<3>& recv_offset_in_allocation, const range<3>& recv_range,
+    size_t elem_size) {
+	const auto key = std::pair(trid, bid);
 	auto new_state = waiting_for_communication{{}, allocation_base, allocation_range, allocation_offset_in_buffer, recv_offset_in_allocation,
 	    subrange(recv_offset_in_allocation, recv_range), elem_size};
-	if(const auto it = m_active.find(trid); it != m_active.end()) {
+	if(const auto it = m_active.find(key); it != m_active.end()) {
 		auto& [_, active_state] = *it;
 		for(auto [source, pilot] : std::get<waiting_for_begin>(active_state).pilots) {
 			begin_individual_recv(new_state, source, pilot);
 		}
 		active_state = std::move(new_state);
 	} else {
-		m_active.emplace(trid, std::move(new_state));
+		m_active.emplace(key, std::move(new_state));
 		std::vector<std::unique_ptr<communicator::event>> active_individual_recvs;
 	}
-	return event{*this, trid};
+	return event(*this, trid, bid);
 }
 
 void recv_arbiter::push_pilot_message(const node_id source, const pilot_message& pilot) {
-	if(const auto it = m_active.find(pilot.transfer); it != m_active.end()) {
+	const auto key = std::pair(pilot.transfer, pilot.buffer);
+	if(const auto it = m_active.find(key); it != m_active.end()) {
 		utils::match(
 		    it->second, //
 		    [&](waiting_for_begin& state) { state.pilots.emplace_back(source, pilot); },
 		    [&](waiting_for_communication& state) { begin_individual_recv(state, source, pilot); });
 	} else {
-		m_active.emplace(pilot.transfer, waiting_for_begin{{{source, pilot}}});
+		m_active.emplace(key, waiting_for_begin{{{source, pilot}}});
 	}
 }
 
@@ -50,8 +56,9 @@ void recv_arbiter::begin_individual_recv(waiting_for_communication& state, const
 	state.pending_recv_region_in_allocation = region_difference(state.pending_recv_region_in_allocation, box(stride.subrange));
 }
 
-bool recv_arbiter::forget_if_complete(const transfer_id trid) {
-	const auto active = m_active.find(trid);
+bool recv_arbiter::forget_if_complete(const transfer_id trid, const buffer_id bid) {
+	const auto key = std::pair(trid, bid);
+	const auto active = m_active.find(key);
 	if(active == m_active.end()) return true;
 
 	auto& state = std::get<waiting_for_communication>(active->second);

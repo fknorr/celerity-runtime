@@ -168,8 +168,8 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const recv_instruction& rinstr) -> event {
 		    const auto allocation_base = m_allocations.at(rinstr.get_dest_allocation_id()).pointer;
-		    return m_recv_arbiter.begin_aggregated_recv(rinstr.get_transfer_id(), allocation_base, rinstr.get_allocation_range(), rinstr.get_offset_in_buffer(),
-		        rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size());
+		    return m_recv_arbiter.begin_aggregated_recv(rinstr.get_transfer_id(), rinstr.get_buffer_id(), allocation_base, rinstr.get_allocation_range(),
+		        rinstr.get_offset_in_buffer(), rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size());
 	    },
 	    [&](const horizon_instruction& hinstr) -> event {
 		    if(m_delegate != nullptr) { m_delegate->instruction_checkpoint_reached(hinstr.get_horizon_task_id()); }

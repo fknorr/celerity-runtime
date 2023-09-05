@@ -2,6 +2,7 @@
 
 #include "communicator.h"
 #include "instruction_graph.h" // for pilot_message. TODO?
+#include "utils.h"
 
 #include <unordered_map>
 #include <variant>
@@ -16,13 +17,14 @@ class recv_arbiter {
 
 	  private:
 		friend class recv_arbiter;
-		event(recv_arbiter& arbiter, const transfer_id trid) : m_arbiter(&arbiter), m_trid(trid) {}
+		event(recv_arbiter& arbiter, const transfer_id trid, const buffer_id bid) : m_arbiter(&arbiter), m_trid(trid), m_bid(bid) {}
 		recv_arbiter* m_arbiter;
 		transfer_id m_trid;
+		buffer_id m_bid;
 	};
 
 	explicit recv_arbiter(communicator& comm) : m_comm(&comm) {}
-	event begin_aggregated_recv(transfer_id trid, void* allocation, const range<3>& allocation_range, const id<3>& allocation_offset_in_buffer,
+	[[nodiscard]] event begin_aggregated_recv(transfer_id trid, buffer_id bid, void* allocation, const range<3>& allocation_range, const id<3>& allocation_offset_in_buffer,
 	    const id<3>& recv_offset_in_allocation, const range<3>& recv_range, size_t elem_size);
 	void push_pilot_message(const node_id source, const pilot_message& pilot);
 
@@ -42,10 +44,10 @@ class recv_arbiter {
 	using active_recv = std::variant<waiting_for_begin, waiting_for_communication>;
 
 	communicator* m_comm;
-	std::unordered_map<transfer_id, active_recv> m_active;
+	std::unordered_map<std::pair<transfer_id, buffer_id>, active_recv, utils::pair_hash> m_active;
 
 	void begin_individual_recv(waiting_for_communication& state, node_id source, const pilot_message& pilot);
-	bool forget_if_complete(const transfer_id trid);
+	bool forget_if_complete(const transfer_id trid, const buffer_id bid);
 };
 
 } // namespace celerity::detail

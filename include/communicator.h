@@ -54,8 +54,8 @@ class communicator {
 	virtual size_t get_num_nodes() const = 0;
 	virtual node_id get_local_node_id() const = 0;
 	virtual void send_pilot_message(node_id to, const pilot_message& pilot) = 0;
-	virtual std::unique_ptr<event> send_payload(node_id to, int pilot_tag, const void* base, const stride& stride) = 0;
-	virtual std::unique_ptr<event> receive_payload(node_id from, int pilot_tag, void* base, const stride& stride) = 0;
+	[[nodiscard]] virtual std::unique_ptr<event> send_payload(node_id to, int pilot_tag, const void* base, const stride& stride) = 0;
+	[[nodiscard]] virtual std::unique_ptr<event> receive_payload(node_id from, int pilot_tag, void* base, const stride& stride) = 0;
 };
 
 class communicator_factory {
