@@ -49,38 +49,6 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 	utils::panic("data is requested to be read, but not located in any memory");
 }
 
-instruction_backend instruction_graph_generator::get_allocation_backend(const memory_id mid) const {
-	if(mid == host_memory_id) return instruction_backend::host;
-
-	const device_id did = mid - 1;
-	const auto& backends = m_devices.at(did).backends;
-	for(const auto preferred_backend : {instruction_backend::cuda, instruction_backend::sycl}) {
-		if(backends.count(preferred_backend)) return preferred_backend;
-	}
-	utils::panic("no backend to allocate on D{}", did);
-}
-
-instruction_backend instruction_graph_generator::get_copy_backend(const memory_id from_mid, const memory_id to_mid) const {
-	if(from_mid == host_memory_id && to_mid == host_memory_id) return instruction_backend::host;
-
-	for(const auto preferred_backend : {instruction_backend::cuda, instruction_backend::sycl}) {
-		bool supported_by_both = true;
-		for(const auto mid : {from_mid, to_mid}) {
-			if(mid == host_memory_id) continue; // assume that any (device) backend can copy from and to host
-			const device_id did = mid - 1;
-			supported_by_both &= m_devices.at(did).backends.count(preferred_backend);
-		}
-		if(supported_by_both) return preferred_backend;
-	}
-	utils::panic("no backend to copy between M{} and M{}", from_mid, to_mid);
-}
-
-instruction_backend instruction_graph_generator::get_kernel_launch_backend(const device_id did) const {
-	const auto& backends = m_devices.at(did).backends;
-	if(backends.count(instruction_backend::sycl) == 0) utils::panic("cannot launch kernels on D{} which does not support SYCL", did);
-	return instruction_backend::sycl;
-}
-
 void instruction_graph_generator::allocate_contiguously(const buffer_id bid, const memory_id mid, const box_vector<3>& boxes) {
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories[mid];
@@ -117,7 +85,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	for(const auto& dest_box : new_allocations.get_boxes()) {
 		auto& dest = memory.allocations.emplace_back(buffer.dims, m_next_aid++, dest_box, buffer.range);
 		const auto alloc_instr =
-		    &create<alloc_instruction>(get_allocation_backend(mid), dest.aid, mid, dest.box.get_area() * buffer.elem_size, buffer.elem_align);
+		    &create<alloc_instruction>(dest.aid, mid, dest.box.get_area() * buffer.elem_size, buffer.elem_align);
 		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 		dest.record_write(dest.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
@@ -148,7 +116,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 				// TODO to avoid introducing a synchronization point on oversubscription, split into multiple copies if that will allow unimpeded
 				// oversubscribed-producer to oversubscribed-consumer data flow.
 
-				const auto copy_instr = &create<copy_instruction>(get_allocation_backend(mid), buffer.dims, mid, source.aid, source_range,
+				const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, source.aid, source_range,
 				    copy_offset - source_offset, mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
@@ -176,7 +144,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	// TODO consider keeping old allocations around until their box is written to in order to resolve "buffer-locking" anti-dependencies
 	for(const auto free_aid : free_after_reallocation) {
 		const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
-		const auto free_instr = &create<free_instruction>(get_allocation_backend(mid), allocation.aid);
+		const auto free_instr = &create<free_instruction>(allocation.aid);
 		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
 				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep);
@@ -352,7 +320,6 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 	for(auto& copy : pending_copies) {
 		assert(copy.dest_mid != copy.source_mid);
-		const auto copy_backend = get_copy_backend(copy.source_mid, copy.dest_mid);
 		auto& buffer = m_buffers.at(bid);
 		for(const box<3>& box : copy.region.get_boxes()) {
 			for(auto& source : buffer.memories[copy.source_mid].allocations) {
@@ -367,7 +334,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					const auto [dest_offset, dest_range] = dest.box.get_subrange();
 					const auto [copy_offset, copy_range] = copy_box.get_subrange();
 
-					const auto copy_instr = &create<copy_instruction>(copy_backend, buffer.dims, copy.source_mid, source.aid, source_range,
+					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range,
 					    copy_offset - source_offset, copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
@@ -437,7 +404,6 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 
 	std::vector<copy_instruction*> copy_instrs;
 	for(const auto& [source_mid, region] : pending_copies) {
-		const auto copy_backend = get_copy_backend(source_mid, out_mid);
 		for(const auto& source_box : region.get_boxes()) {
 			for(auto& source : buffer.memories[source_mid].allocations) {
 				const auto copy_box = box_intersection(source.box, source_box);
@@ -446,7 +412,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				const auto [source_offset, source_range] = source.box.get_subrange();
 				const auto [copy_offset, copy_range] = copy_box.get_subrange();
 				const auto [dest_offset, dest_range] = box.get_subrange();
-				const auto copy_instr = &create<copy_instruction>(copy_backend, buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset,
+				const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset,
 				    out_mid, alloc_instr.get_allocation_id(), dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
 
 				add_dependency(*copy_instr, alloc_instr, dependency_kind::true_dep);

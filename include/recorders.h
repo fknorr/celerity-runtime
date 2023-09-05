@@ -135,7 +135,6 @@ using instruction_dependency_list = std::vector<dependency_record<instruction_id
 
 struct instruction_record_base {
 	instruction_id id;
-	instruction_backend backend;
 	instruction_dependency_list dependencies;
 
 	explicit instruction_record_base(const instruction& instr);

@@ -185,7 +185,7 @@ void command_recorder::record_command(const abstract_command& com) { //
 	m_recorded_commands.emplace_back(com, m_task_mngr, m_buff_mngr);
 }
 
-instruction_record_base::instruction_record_base(const instruction& instr) : id(instr.get_id()), backend(instr.get_backend()) {
+instruction_record_base::instruction_record_base(const instruction& instr) : id(instr.get_id()) {
 	const auto& deps = instr.get_dependencies();
 	dependencies.reserve(deps.size());
 	for(auto& d : deps) {

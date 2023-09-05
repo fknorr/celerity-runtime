@@ -1,7 +1,6 @@
 #pragma once
 
 #include "grid.h"
-#include "instruction_backend.h"
 #include "intrusive_graph.h"
 #include "ranges.h"
 #include "task.h" // TODO the only dependencies on task.h are launcher types and contiguous_box_set, consider moving those
@@ -34,7 +33,6 @@ class instruction : public intrusive_graph_node<instruction> {
 	virtual ~instruction() = default;
 
 	virtual void accept(const_visitor& visitor) const = 0;
-	virtual instruction_backend get_backend() const = 0;
 
 	instruction_id get_id() const { return m_id; }
 
@@ -48,12 +46,10 @@ struct instruction_id_less {
 
 class alloc_instruction final : public instruction {
   public:
-	explicit alloc_instruction(
-	    const instruction_id iid, const instruction_backend backend, const allocation_id aid, const memory_id mid, const size_t size, const size_t alignment)
-	    : instruction(iid), m_backend(backend), m_aid(aid), m_mid(mid), m_size(size), m_alignment(alignment) {}
+	explicit alloc_instruction(const instruction_id iid, const allocation_id aid, const memory_id mid, const size_t size, const size_t alignment)
+	    : instruction(iid), m_aid(aid), m_mid(mid), m_size(size), m_alignment(alignment) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return m_backend; }
 
 	allocation_id get_allocation_id() const { return m_aid; }
 	memory_id get_memory_id() const { return m_mid; }
@@ -61,7 +57,6 @@ class alloc_instruction final : public instruction {
 	size_t get_alignment() const { return m_alignment; }
 
   private:
-	instruction_backend m_backend;
 	allocation_id m_aid;
 	memory_id m_mid;
 	size_t m_size;
@@ -70,16 +65,13 @@ class alloc_instruction final : public instruction {
 
 class free_instruction final : public instruction {
   public:
-	explicit free_instruction(const instruction_id iid, const instruction_backend backend, const allocation_id aid)
-	    : instruction(iid), m_backend(backend), m_aid(aid) {}
+	explicit free_instruction(const instruction_id iid, const allocation_id aid) : instruction(iid), m_aid(aid) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return m_backend; }
 
 	allocation_id get_allocation_id() const { return m_aid; }
 
   private:
-	instruction_backend m_backend;
 	allocation_id m_aid;
 };
 
@@ -87,15 +79,14 @@ class free_instruction final : public instruction {
 // TODO maybe template this on Dims?
 class copy_instruction final : public instruction {
   public:
-	explicit copy_instruction(const instruction_id iid, const instruction_backend backend, const int dims, const memory_id source_memory,
-	    const allocation_id source_allocation, const range<3>& source_range, const id<3>& offset_in_source, const memory_id dest_memory,
-	    const allocation_id dest_allocation, const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
-	    : instruction(iid), m_backend(backend), m_source_memory(source_memory), m_source_allocation(source_allocation), m_dest_memory(dest_memory),
+	explicit copy_instruction(const instruction_id iid, const int dims, const memory_id source_memory, const allocation_id source_allocation,
+	    const range<3>& source_range, const id<3>& offset_in_source, const memory_id dest_memory, const allocation_id dest_allocation,
+	    const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
+	    : instruction(iid), m_source_memory(source_memory), m_source_allocation(source_allocation), m_dest_memory(dest_memory),
 	      m_dest_allocation(dest_allocation), m_dims(dims), m_source_range(source_range), m_dest_range(dest_range), m_offset_in_source(offset_in_source),
 	      m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return m_backend; }
 
 	memory_id get_source_memory() const { return m_source_memory; }
 	allocation_id get_source_allocation() const { return m_source_allocation; }
@@ -110,7 +101,6 @@ class copy_instruction final : public instruction {
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
-	instruction_backend m_backend;
 	memory_id m_source_memory;
 	allocation_id m_source_allocation;
 	memory_id m_dest_memory;
@@ -166,7 +156,6 @@ class sycl_kernel_instruction final : public kernel_instruction {
 	    : kernel_instruction(iid, execution_range, std::move(allocation_map)), m_device_id(did), m_launcher(std::move(launcher)) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::sycl; }
 
 	device_id get_device_id() const { return m_device_id; }
 	const sycl_kernel_launcher& get_launcher() const { return m_launcher; }
@@ -187,7 +176,6 @@ class host_kernel_instruction final : public kernel_instruction {
 	    : kernel_instruction(iid, execution_range, std::move(allocation_map)), m_launcher(std::move(launcher)), m_global_range(global_range) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::host; }
 	const range<3>& get_global_range() const { return m_global_range; }
 
 	const host_task_launcher& get_launcher() const { return m_launcher; }
@@ -212,7 +200,6 @@ class send_instruction final : public instruction {
 	      m_offset_in_alloc(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::mpi; }
 
 	transfer_id get_transfer_id() const { return m_transfer_id; }
 	node_id get_dest_node_id() const { return m_to_nid; }
@@ -243,7 +230,6 @@ class recv_instruction final : public instruction {
 	      m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::mpi; }
 
 	buffer_id get_buffer_id() const { return m_buffer_id; }
 	transfer_id get_transfer_id() const { return m_transfer_id; }
@@ -274,7 +260,6 @@ class horizon_instruction final : public instruction {
 	task_id get_horizon_task_id() const { return m_horizon_tid; }
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::host; }
 
   private:
 	task_id m_horizon_tid;
@@ -289,7 +274,6 @@ class epoch_instruction final : public instruction {
 	epoch_action get_epoch_action() const { return m_epoch_action; }
 
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
-	instruction_backend get_backend() const override { return instruction_backend::host; }
 
   private:
 	task_id m_epoch_tid;

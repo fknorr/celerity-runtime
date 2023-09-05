@@ -638,7 +638,7 @@ class idag_test_context {
 	static auto make_device_map(size_t num_devices) {
 		std::map<device_id, instruction_graph_generator::device_info> devices;
 		for(device_id did = 0; did < num_devices; ++did) {
-			devices.emplace(did, instruction_graph_generator::device_info{{instruction_backend::cuda, instruction_backend::sycl}});
+			devices.emplace(did, instruction_graph_generator::device_info{});
 		}
 		return devices;
 	}

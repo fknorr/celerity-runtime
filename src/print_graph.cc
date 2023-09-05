@@ -6,7 +6,7 @@
 #include "command.h"
 #include "command_graph.h"
 #include "grid.h"
-#include "instruction_backend.h"
+#include "task.h"
 #include "task_manager.h"
 
 namespace celerity::detail {
@@ -45,15 +45,6 @@ const char* command_type_string(const command_type ct) {
 	case command_type::await_push: return "await push";
 	case command_type::reduction: return "reduction";
 	default: return "unknown";
-	}
-}
-
-const char* instruction_backend_string(const instruction_backend backend) {
-	switch(backend) {
-	case instruction_backend::host: return "Host";
-	case instruction_backend::mpi: return "MPI";
-	case instruction_backend::sycl: return "SYCL";
-	case instruction_backend::cuda: return "CUDA";
 	}
 }
 
@@ -272,16 +263,9 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 	std::string dot = make_graph_preamble(title);
 	const auto back = std::back_inserter(dot);
 
-	const auto begin_node = [&](const instruction_record_base& instr, const std::string_view& shape) {
+	const auto begin_node = [&](const instruction_record_base& instr, const std::string_view& shape, const std::string_view& color) {
 		// TODO consider moving the task-reference / command-reference printing here.
-		fmt::format_to(back, "I{}[", instr.id);
-		switch(instr.backend) {
-		case instruction_backend::host: break;
-		case instruction_backend::mpi: dot += "color=deeppink2,"; break;
-		case instruction_backend::sycl: dot += "color=darkorange2,"; break;
-		case instruction_backend::cuda: dot += "color=green3,"; break;
-		}
-		fmt::format_to(back, "shape={},label=<{} ", shape, instruction_backend_string(instr.backend));
+		fmt::format_to(back, "I{}[color={},shape={},label=<", instr.id, color, shape);
 	};
 
 	const auto end_node = [&] { fmt::format_to(back, ">];"); };
@@ -302,7 +286,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		utils::match(
 		    instr,
 		    [&](const alloc_instruction_record& ainstr) {
-			    begin_node(ainstr, "ellipse");
+			    begin_node(ainstr, "ellipse", "cyan3");
 			    fmt::format_to(back, "I{}<br/>", ainstr.id);
 			    switch(ainstr.origin) {
 			    case alloc_instruction_record::alloc_origin::send: dot += "send "; break;
@@ -317,7 +301,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const free_instruction_record& finstr) {
-			    begin_node(finstr, "ellipse");
+			    begin_node(finstr, "ellipse", "cyan3");
 			    fmt::format_to(back, "I{}<br/>", finstr.id);
 			    fmt::format_to(back, "<b>free</b> A{} on M{}", finstr.allocation_id, finstr.memory_id);
 			    if(finstr.buffer_allocation.has_value()) {
@@ -328,7 +312,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const copy_instruction_record& cinstr) {
-			    begin_node(cinstr, "ellipse");
+			    begin_node(cinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", cinstr.id);
 			    fmt::format_to(back, "{}D ", cinstr.dimensions);
 			    switch(cinstr.origin) {
@@ -344,16 +328,13 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const kernel_instruction_record& kinstr) {
-			    begin_node(kinstr, "box,margin=0.1");
+			    begin_node(kinstr, "box,margin=0.1", "darkorange2");
 			    fmt::format_to(back, "I{}", kinstr.id);
 			    // TODO does not correctly label master-node / collective host tasks
 			    fmt::format_to(back, " ({}-compute T{}, exectuion C{})", kinstr.target == execution_target::device ? "device" : "host",
 			        kinstr.command_group_task_id, kinstr.execution_command_id);
-			    dot += "<br/><b>kernel</b>";
-			    if(!kinstr.kernel_debug_name.empty()) {
-				    dot += " ";
-				    dot += kinstr.kernel_debug_name; // TODO escape?
-			    }
+			    fmt::format_to(back, "<br/><b>{} kernel</b>", kinstr.target == execution_target::device ? "device" : "host");
+			    if(!kinstr.kernel_debug_name.empty()) { fmt::format_to(back, " {}", kinstr.kernel_debug_name /* TODO escape? */); }
 			    if(kinstr.device_id.has_value()) { fmt::format_to(back, " on D{}", *kinstr.device_id); }
 			    fmt::format_to(back, " {}", kinstr.execution_range);
 
@@ -368,7 +349,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const send_instruction_record& sinstr) {
-			    begin_node(sinstr, "box");
+			    begin_node(sinstr, "box", "deeppink2");
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
 			    fmt::format_to(back, "<br/><b>send</b> transfer {} to N{} tag {}<br/>", sinstr.transfer_id, sinstr.dest_node_id, sinstr.tag);
 			    print_buffer_range(sinstr.buffer, subrange(sinstr.offset_in_buffer, sinstr.send_range));
@@ -378,7 +359,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const recv_instruction_record& rinstr) {
-			    begin_node(rinstr, "box");
+			    begin_node(rinstr, "box", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, irec.get_await_push_command_id(rinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>recv</b> transfer {}<br/>", rinstr.transfer_id);
 			    print_buffer_range(rinstr.buffer_id, subrange(rinstr.offset_in_buffer, rinstr.recv_range));
@@ -387,12 +368,12 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const horizon_instruction_record& hinstr) {
-			    begin_node(hinstr, "box,margin=0.1");
+			    begin_node(hinstr, "box,margin=0.1", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>horizon</b>", hinstr.id, hinstr.horizon_task_id, hinstr.horizon_command_id);
 			    end_node();
 		    },
 		    [&](const epoch_instruction_record& einstr) {
-			    begin_node(einstr, "box,margin=0.1");
+			    begin_node(einstr, "box,margin=0.1", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/>{}", einstr.id, einstr.epoch_task_id, einstr.epoch_command_id, get_epoch_label(einstr.epoch_action));
 			    end_node();
 		    });
