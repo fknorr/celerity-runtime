@@ -13,7 +13,9 @@ class event {
   public:
 	event() = default;
 	event(const event&) = delete;
+	event(event&&) = delete;
 	event& operator=(const event&) = delete;
+	event& operator=(event&&) = delete;
 	virtual ~event() = default;
 
 	virtual bool is_complete() const = 0;

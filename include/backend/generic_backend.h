@@ -47,6 +47,7 @@ class generic_queue : public queue {
 	std::unique_ptr<event> launch_kernel(device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range) override;
 
   private:
+	sycl::context m_context;
 	std::unordered_map<device_id, sycl::queue> m_device_queues;
 };
 

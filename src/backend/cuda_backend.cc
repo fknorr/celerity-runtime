@@ -4,6 +4,7 @@
 
 #include "log.h"
 #include "ranges.h"
+#include "types.h"
 
 #define CELERITY_STRINGIFY2(f) #f
 #define CELERITY_STRINGIFY(f) CELERITY_STRINGIFY2(f)
@@ -139,7 +140,7 @@ unique_cuda_event make_cuda_event() {
 
 namespace celerity::detail::backend {
 
-class cuda_event : public event {
+class cuda_event final : public event {
   public:
 	cuda_event(backend_detail::unique_cuda_event evt) : m_evt(std::move(evt)) {}
 
@@ -159,6 +160,12 @@ class cuda_event : public event {
 
   private:
 	backend_detail::unique_cuda_event m_evt;
+};
+
+// TODO dispatch "host" operations to thread queue and replace this type's implementation with a std::future
+class cuda_host_event final : public event {
+  public:
+	bool is_complete() const override { return true; }
 };
 
 struct cuda_queue::impl {
@@ -192,17 +199,29 @@ cuda_queue::cuda_queue(const std::vector<std::pair<device_id, sycl::device>>& de
 cuda_queue::~cuda_queue() = default;
 
 std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
-	const auto& dev = m_impl->devices.at(to_device_id(where));
 	void* ptr;
-	CELERITY_CUDA_CHECK(cudaMallocAsync, &ptr, size, dev.alloc_stream.get());
+	std::unique_ptr<event> evt;
+	if(where == host_memory_id) {
+		CELERITY_CUDA_CHECK(cudaMallocHost, &ptr, size, cudaHostAllocDefault);
+		evt = std::make_unique<cuda_host_event>();
+	} else {
+		const auto& dev = m_impl->devices.at(to_device_id(where));
+		CELERITY_CUDA_CHECK(cudaMallocAsync, &ptr, size, dev.alloc_stream.get());
+		evt = cuda_event::record(dev.alloc_stream.get());
+	}
 	assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
-	return {ptr, cuda_event::record(dev.alloc_stream.get())};
+	return {ptr, std::move(evt)};
 }
 
 std::unique_ptr<event> cuda_queue::free(const memory_id where, void* const allocation) {
-	const auto& dev = m_impl->devices.at(to_device_id(where));
-	CELERITY_CUDA_CHECK(cudaFreeAsync, allocation, dev.alloc_stream.get());
-	return cuda_event::record(dev.alloc_stream.get());
+	if(where == host_memory_id) {
+		CELERITY_CUDA_CHECK(cudaFreeHost, allocation);
+		return std::make_unique<cuda_host_event>();
+	} else {
+		const auto& dev = m_impl->devices.at(to_device_id(where));
+		CELERITY_CUDA_CHECK(cudaFreeAsync, allocation, dev.alloc_stream.get());
+		return cuda_event::record(dev.alloc_stream.get());
+	}
 }
 
 std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,

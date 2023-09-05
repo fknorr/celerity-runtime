@@ -89,41 +89,21 @@ void instruction_executor::loop() {
 	}
 }
 
-std::pair<void*, instruction_executor::event> instruction_executor::malloc(const memory_id memory, const size_t size, const size_t alignment) {
-	if(memory == host_memory_id) {
-		const auto ptr = std::aligned_alloc(alignment, size);
-		return {ptr, completed_synchronous()};
-	} else {
-		auto [ptr, event] = m_backend_queue->malloc(memory, size, alignment);
-		return {ptr, std::move(event)};
-	}
-}
-
-instruction_executor::event instruction_executor::free(const memory_id memory, void* const ptr) {
-	if(memory == host_memory_id) {
-		std::free(ptr);
-		return completed_synchronous();
-	} else {
-		return m_backend_queue->free(memory, ptr);
-	}
-}
-
 instruction_executor::event instruction_executor::begin_executing(const instruction& instr) {
 	// TODO submit synchronous operations to thread pool
 	return utils::match(
 	    instr,
 	    [&](const alloc_instruction& ainstr) -> event {
-		    auto [ptr, event] = malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
+		    auto [ptr, event] = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
 		    m_allocations.emplace(ainstr.get_allocation_id(), allocation{ainstr.get_memory_id(), ptr});
 		    return std::move(event);
 	    },
 	    [&](const free_instruction& ainstr) -> event {
 		    const auto it = m_allocations.find(ainstr.get_allocation_id());
 		    assert(it != m_allocations.end());
-		    const auto& [memory, ptr] = it->second;
-		    auto evt = free(memory, ptr);
+		    const auto [memory, ptr] = it->second;
 		    m_allocations.erase(it);
-		    return evt;
+		    return m_backend_queue->free(memory, ptr);
 	    },
 	    [&](const copy_instruction& ainstr) -> event {
 		    const auto source_base_ptr = m_allocations.at(ainstr.get_source_allocation()).pointer;

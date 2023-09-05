@@ -1,6 +1,8 @@
 #include "backend/backend.h"
 
 #include "ranges.h"
+#include "types.h"
+#include <hipSYCL/sycl/usm.hpp>
 
 namespace celerity::detail::backend_detail {
 
@@ -58,19 +60,33 @@ std::vector<sycl::event> memcpy_strided_device_generic(sycl::queue& queue, const
 
 namespace celerity::detail::backend {
 
-generic_queue::generic_queue(const std::vector<std::pair<device_id, sycl::device>>& devices) {
+std::vector<sycl::device> get_device_vector(const std::vector<std::pair<device_id, sycl::device>>& devices) {
+	std::vector<sycl::device> vector;
+	vector.reserve(devices.size());
+	for(auto& [did, dev] : devices) {
+		vector.push_back(dev);
+	}
+	return vector;
+}
+
+generic_queue::generic_queue(const std::vector<std::pair<device_id, sycl::device>>& devices) : m_context(get_device_vector(devices)) {
 	for(const auto& [did, sycl_dev] : devices) {
-		m_device_queues.emplace(did, sycl::queue(sycl_dev));
+		m_device_queues.emplace(did, sycl::queue(m_context, sycl_dev));
 	}
 }
 
 std::pair<void*, std::unique_ptr<event>> generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
-	const auto ptr = sycl::aligned_alloc_device(alignment, size, m_device_queues.at(to_device_id(where)));
+	void* ptr;
+	if(where == host_memory_id) {
+		ptr = sycl::aligned_alloc_host(alignment, size, m_device_queues.at(to_device_id(where)));
+	} else {
+		ptr = sycl::aligned_alloc_device(alignment, size, m_device_queues.at(to_device_id(where)));
+	}
 	return {ptr, std::make_unique<sycl_event>()}; // synchronous
 }
 
-std::unique_ptr<event> generic_queue::free(const memory_id where, void* const allocation) {
-	sycl::free(allocation, m_device_queues.at(to_device_id(where)));
+std::unique_ptr<event> generic_queue::free(const memory_id /* where */, void* const allocation) {
+	sycl::free(allocation, m_context);
 	return std::make_unique<sycl_event>(); // synchronous
 }
 

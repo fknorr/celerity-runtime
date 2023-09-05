@@ -62,9 +62,6 @@ class instruction_executor final : private communicator::delegate {
 
 	[[nodiscard]] event begin_executing(const instruction& instr);
 
-	[[nodiscard]] std::pair<void*, event> malloc(memory_id where, size_t size, size_t alignment);
-	[[nodiscard]] event free(memory_id where, void* allocation);
-
 	void pilot_message_received(node_id from, const pilot_message& pilot) override;
 };
 
