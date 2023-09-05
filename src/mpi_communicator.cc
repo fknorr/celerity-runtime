@@ -61,6 +61,8 @@ void mpi_communicator::send_pilot_message(const node_id to, const pilot_message&
 
 	// keep allocation until Isend has completed
 	m_outbound_pilots.emplace_back(std::move(stable_pilot), req);
+
+	// TODO this could create and cache an MPI_Datatype for the subsequent send
 }
 
 std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_id to, const int tag, const void* const base, const stride& stride) {
@@ -129,8 +131,10 @@ void mpi_communicator::listen() {
 			// immediately re-start MPI_Irecv to overlap with call to delegate
 			MPI_Irecv(&in_pilot, sizeof in_pilot, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_comm, &req);
 			if(m_delegate != nullptr) { m_delegate->pilot_message_received(from, pilot); }
+			// TODO this could create and cache an MPI_Datatype for the subsequent receive
 		}
 	}
+	MPI_Cancel(&req);
 	MPI_Request_free(&req);
 }
 
