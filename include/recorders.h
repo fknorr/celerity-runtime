@@ -214,8 +214,11 @@ struct send_instruction_record : instruction_record_base {
 	transfer_id transfer_id;
 	node_id dest_node_id;
 	int tag;
-	allocation_id allocation_id;
-	size_t size_bytes; TODO
+	allocation_id source_allocation_id;
+	range<3> allocation_range;
+	celerity::id<3> offset_in_allocation;
+	range<3> send_range;
+	size_t element_size;
 	command_id push_cid;
 	buffer_id buffer;
 	std::string buffer_debug_name;
@@ -230,7 +233,6 @@ struct recv_instruction_record : instruction_record_base {
 	transfer_id transfer_id;
 	memory_id dest_memory_id;
 	allocation_id dest_allocation_id;
-	int dimensions;
 	range<3> allocation_range;
 	celerity::id<3> offset_in_allocation;
 	celerity::id<3> offset_in_buffer;

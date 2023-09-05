@@ -374,7 +374,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
 			    fmt::format_to(back, "<br/><b>send</b> to N{} tag {}<br/>", sinstr.dest_node_id, sinstr.tag);
 			    print_buffer_range(sinstr.buffer, sinstr.buffer_debug_name, sinstr.box);
-			    fmt::format_to(back, "<br/>A{}, {} bytes", sinstr.allocation_id, sinstr.size_bytes);
+			    fmt::format_to(back, "<br/>from A{} ({}) + {}, {}x{} bytes", sinstr.source_allocation_id, sinstr.allocation_range, sinstr.offset_in_allocation,
+			        sinstr.send_range, sinstr.element_size);
 			    send_instructions_by_tag.emplace(sinstr.tag, sinstr.id);
 			    end_node();
 		    },
@@ -383,9 +384,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, rinstr.await_push_cid);
 			    fmt::format_to(back, "<br/><b>recv</b> transfer {}<br/>", rinstr.transfer_id);
 			    print_buffer_range(rinstr.buffer, rinstr.buffer_debug_name, subrange(rinstr.offset_in_buffer, rinstr.recv_range));
-			    fmt::format_to(back, "<br/>to A{} ([{},{},{}]) +[{},{},{}], {}D [{},{},{}]x{} bytes", rinstr.dest_allocation_id, rinstr.allocation_range[0],
-			        rinstr.allocation_range[1], rinstr.allocation_range[2], rinstr.offset_in_allocation[0], rinstr.offset_in_allocation[1],
-			        rinstr.offset_in_allocation[2], rinstr.dimensions, rinstr.recv_range[0], rinstr.recv_range[1], rinstr.recv_range[2], rinstr.element_size);
+			    fmt::format_to(back, "<br/>to A{} ({}) +{}, {}x{} bytes", rinstr.dest_allocation_id, rinstr.allocation_range, rinstr.offset_in_allocation,
+			        rinstr.recv_range, rinstr.element_size);
 			    end_node();
 		    },
 		    [&](const horizon_instruction_record& hinstr) {

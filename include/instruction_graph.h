@@ -237,9 +237,9 @@ class send_instruction final : public instruction {
 class recv_instruction final : public instruction {
   public:
 	explicit recv_instruction(const instruction_id iid, const buffer_id bid, const transfer_id trid, const memory_id dest_memory,
-	    const allocation_id dest_allocation, const int dims, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer,
+	    const allocation_id dest_allocation, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer,
 	    const range<3>& recv_range, const size_t elem_size)
-	    : instruction(iid), m_buffer_id(bid), m_transfer_id(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_dims(dims),
+	    : instruction(iid), m_buffer_id(bid), m_transfer_id(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation),
 	      m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range),
 	      m_elem_size(elem_size) {}
 
@@ -250,7 +250,6 @@ class recv_instruction final : public instruction {
 	transfer_id get_transfer_id() const { return m_transfer_id; }
 	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }
 	memory_id get_dest_memory_id() const { return m_dest_memory; }
-	int get_dimensions() const { return m_dims; }
 	const range<3>& get_allocation_range() const { return m_alloc_range; }
 	const id<3>& get_offset_in_allocation() const { return m_offset_in_alloc; }
 	const id<3>& get_offset_in_buffer() const { return m_offset_in_buffer; }
@@ -262,7 +261,6 @@ class recv_instruction final : public instruction {
 	transfer_id m_transfer_id;
 	memory_id m_dest_memory;
 	allocation_id m_dest_allocation;
-	int m_dims;
 	range<3> m_alloc_range;
 	id<3> m_offset_in_alloc;
 	id<3> m_offset_in_buffer;

@@ -223,13 +223,14 @@ kernel_instruction_record::kernel_instruction_record(const kernel_instruction& k
 send_instruction_record::send_instruction_record(
     const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, std::string buffer_debug_name, const detail::box<3> box)
     : instruction_record_base(sinstr), transfer_id(sinstr.get_transfer_id()), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()),
-      allocation_id(sinstr.get_source_allocation_id()), size_bytes(sinstr.get_size_bytes()), push_cid(push_cid), buffer(buffer),
-      buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
+      source_allocation_id(sinstr.get_source_allocation_id()), allocation_range(sinstr.get_allocation_range()),
+      offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
+      buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)), box(box) {}
 
 recv_instruction_record::recv_instruction_record(
     const recv_instruction& rinstr, const command_id await_push_cid, const detail::buffer_id buffer, std::string buffer_debug_name)
     : instruction_record_base(rinstr), buffer_id(rinstr.get_buffer_id()), transfer_id(rinstr.get_transfer_id()), dest_memory_id(rinstr.get_dest_memory_id()),
-      dest_allocation_id(rinstr.get_dest_allocation_id()), dimensions(rinstr.get_dimensions()), allocation_range(rinstr.get_allocation_range()),
+      dest_allocation_id(rinstr.get_dest_allocation_id()), allocation_range(rinstr.get_allocation_range()),
       offset_in_allocation(rinstr.get_offset_in_allocation()), offset_in_buffer(rinstr.get_offset_in_buffer()), recv_range(rinstr.get_recv_range()),
       element_size(rinstr.get_element_size()), await_push_cid(await_push_cid), buffer(buffer), buffer_debug_name(std::move(buffer_debug_name)) {}
 

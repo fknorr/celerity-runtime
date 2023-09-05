@@ -257,7 +257,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						const auto [alloc_offset, alloc_range] = alloc.box.get_subrange();
 						const auto [recv_offset, recv_range] = recv_box.get_subrange();
 						const auto recv_instr = &create<recv_instruction>(
-						    bid, trid, mid, alloc.aid, buffer.dims, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
+						    bid, trid, mid, alloc.aid, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
 						command_id await_push_cid = 1234; // TODO where do we get this from without changing non-debug code paths too much?
 
 						// TODO the dependency logic here is duplicated from copy-instruction generation
@@ -730,35 +730,25 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 		region = region_union(region, box);
 	}
 
+	for(auto& [_, region] : writer_regions) {
+		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
+		// writer without any effect from the order of operations
+		allocate_contiguously(bid, host_memory_id, region.get_boxes());
+		satisfy_read_requirements(bid, {{host_memory_id, region}});
+	}
+
 	for(auto& [writer, region] : writer_regions) {
 		for(const auto& box : region.get_boxes()) {
-			const auto bytes = box.get_area() * buffer.elem_size;
-
-			// TODO
-			// 1. transpose: group by allocation
-			// 2. generate one send_instruction per written-allocation-box
-
-#if 0
-			// this allocation is not associated with a buffer (and thus not tracked in m_buffers), so we add all dependencies immediately
-			const auto alloc_instr = &create<alloc_instruction>(instruction_backend::host, m_next_aid++, host_memory_id, bytes, buffer.elem_align);
-			add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
-
-			const auto copy_instrs = linearize_buffer_subrange(bid, box, host_memory_id, *alloc_instr);
-
 			const int tag = create_pilot_message(bid, pcmd.get_transfer_id(), box);
-			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, alloc_instr->get_allocation_id(), bytes);
-			for(const auto copy_instr : copy_instrs) {
-				add_dependency(*send_instr, *copy_instr, dependency_kind::true_dep);
-			}
-			const auto free_instr = &create<free_instruction>(instruction_backend::host, alloc_instr->get_allocation_id());
-			add_dependency(*free_instr, *send_instr, dependency_kind::true_dep);
 
-			if(m_recorder != nullptr) {
-				*m_recorder << alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::send, std::nullopt);
-				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), bid, buffer.debug_name, box);
-				*m_recorder << free_instruction_record(*free_instr, host_memory_id, bytes, buffer.elem_align, std::nullopt);
-			}
-#endif
+			const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
+			assert(allocation != nullptr); // we allocate_contiguously above
+
+			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, allocation->aid, allocation->box.get_range(),
+			    box.get_offset() - allocation->box.get_offset(), box.get_range(), buffer.elem_size);
+			add_dependency(*send_instr, *writer, dependency_kind::true_dep);
+
+			if(m_recorder != nullptr) { *m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), bid, buffer.debug_name, box); }
 		}
 	}
 }

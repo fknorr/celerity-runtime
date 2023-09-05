@@ -24,7 +24,7 @@ class instruction_graph_generator {
 		std::set<instruction_backend> backends;
 	};
 
-	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder *recorder);
+	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder* recorder);
 
 	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
 
@@ -36,7 +36,7 @@ class instruction_graph_generator {
 
 	void unregister_host_object(host_object_id hoid);
 
-	std::vector<const instruction *> compile(const abstract_command& cmd);
+	std::vector<const instruction*> compile(const abstract_command& cmd);
 
 	const instruction_graph& get_graph() const { return m_idag; }
 
@@ -113,9 +113,12 @@ class instruction_graph_generator {
 		// TODO bound the number of allocations per buffer in order to avoid runaway tracking overhead (similar to horizons)
 		std::vector<buffer_memory_per_allocation_data> allocations; // disjoint
 
-		bool is_allocated_contiguously(const box<3>& box) const {
-			return std::any_of(allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& a) { return a.box.covers(box); });
+		const buffer_memory_per_allocation_data* find_contiguous_allocation(const box<3>& box) const {
+			const auto it = std::find_if(allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& a) { return a.box.covers(box); });
+			return it != allocations.end() ? &*it : nullptr;
 		}
+
+		bool is_allocated_contiguously(const box<3>& box) const { return find_contiguous_allocation(box) != nullptr; }
 
 		void apply_epoch(instruction* const epoch) {
 			for(auto& alloc : allocations) {
@@ -182,8 +185,8 @@ class instruction_graph_generator {
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;
-	std::vector<const instruction *> m_current_batch;
-	instruction_recorder *m_recorder;
+	std::vector<const instruction*> m_current_batch;
+	instruction_recorder* m_recorder;
 
 	static memory_id next_location(const data_location& location, memory_id first);
 
@@ -244,7 +247,7 @@ class instruction_graph_generator {
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
 	void satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads);
 
-	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction &ainstr);
+	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction& ainstr);
 
 	int create_pilot_message(buffer_id bid, transfer_id trid, const box<3>& box);
 
