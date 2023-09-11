@@ -15,6 +15,8 @@ Versioning](http://semver.org/spec/v2.0.0.html).
 - Add new `experimental::constrain_split` API to limit how a kernel can be split (#?)
 - `distr_queue::fence` and `buffer_snapshot` are now stable, subsuming the `experimental::` APIs of the same name (#225)
 - Celerity now warns at runtime when a task declares reads from uninitialized buffers or writes with overlapping ranges between nodes (#224)
+- Introduce new `experimental::hint` API for providing the runtime with additional information on how to execute a task (#?)
+- Introduce new `experimental::hints::split_1d` and `experimental::hints::split_2d` task hints for controlling how a task is split into chunks (#?)
 
 ### Changed
 
