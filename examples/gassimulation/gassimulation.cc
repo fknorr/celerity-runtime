@@ -265,23 +265,27 @@ int main(int argc, char* argv[]) {
 		return result;
 	})();
 
-	fmt::print("Nodes={}, Threads={}, GPUs={}, x/y/z-dimension={}\n", cfg.nodes, (double)cfg.threads, (double)cfg.gpus,  (double)cfg.size);
+	// fmt::print("Nodes={}, Threads={}, GPUs={}, x/y/z-dimension={}\n", cfg.nodes, (double)cfg.threads, (double)cfg.gpus,  (double)cfg.size);
 
 	celerity::distr_queue queue;
+	queue.slow_full_sync();
 	double time = MPI_Wtime();
+
 	// Two Buffers to switch writing and empty buffer.
 	celerity::buffer<cell_t, 3> actual{celerity::range<3>(cfg.size, cfg.size, cfg.size)}; // next
 	celerity::buffer<cell_t, 3> swap{celerity::range<3>(cfg.size, cfg.size, cfg.size)};  // current
 	// Initialize with 0.0f.
 	zero(queue, swap);
 	initialize(queue, actual, cfg.size);
+	queue.slow_full_sync();
 	double timekernel = MPI_Wtime();
 
-	for (size_t i = 0; i < cfg.iteraqtions; i++) {
+	for (size_t i = 0; i < cfg.iterations; i++) {
 		update(queue, swap, actual, cfg.size);
 		update(queue, actual, swap, cfg.size);
 	}
 
+	queue.slow_full_sync();
 	double end_time = MPI_Wtime();
 	double totaltime = end_time-time;
 	double totalkerneltime = end_time-timekernel;
@@ -294,24 +298,26 @@ int main(int argc, char* argv[]) {
 	const celerity::experimental::host_object<std::ofstream> os;
 	queue.slow_full_sync();
 
-	FILE *file = fopen(cfg.exportfile.c_str(),"w"); // append file or create a file if it does not exist
-	queue.submit([&](celerity::handler& cgh) {
-		celerity::accessor actuall_buffer_all{actual, cgh, celerity::access::all{}, celerity::read_only_host_task};
-		cgh.host_task(celerity::on_master_node, [=] {
-			for(size_t x = 0; x < static_cast<size_t>(cfg.size); x++) {
-			for(size_t y = 0; y < static_cast<size_t>(cfg.size); y++) {
-			for(size_t z = 0; z < static_cast<size_t>(cfg.size); z++) {
-				cell_t zelle = actuall_buffer_all[{x,y,z}];
-				for (size_t j = 0; j < Q; j++) {
-					fprintf(file, "%.4f;", zelle[j]); // write
-				}
+	if (!cfg.exportfile.empty()) {
+		FILE *file = fopen(cfg.exportfile.c_str(),"w"); // append file or create a file if it does not exist
+		queue.submit([&](celerity::handler& cgh) {
+			celerity::accessor actuall_buffer_all{actual, cgh, celerity::access::all{}, celerity::read_only_host_task};
+			cgh.host_task(celerity::on_master_node, [=] {
+				for(size_t x = 0; x < static_cast<size_t>(cfg.size); x++) {
+				for(size_t y = 0; y < static_cast<size_t>(cfg.size); y++) {
+				for(size_t z = 0; z < static_cast<size_t>(cfg.size); z++) {
+					cell_t zelle = actuall_buffer_all[{x,y,z}];
+					for (size_t j = 0; j < Q; j++) {
+						fprintf(file, "%.4f;", zelle[j]); // write
+					}
+					fprintf(file, "\n"); // write
+				}}}
 				fprintf(file, "\n"); // write
-			}}}
-			fprintf(file, "\n"); // write
-			fclose(file);        // close file
-			printf("File created. Located in the project folder.\n");
+				fclose(file);        // close file
+				printf("File created. Located in the project folder.\n");
+			});
 		});
-	});
+	}
 
 	queue.slow_full_sync();
 
