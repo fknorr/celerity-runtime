@@ -34,6 +34,7 @@ set(TEST_TARGETS
   graph_gen_transfer_tests
   graph_compaction_tests
   grid_tests
+  hint_tests
   intrusive_graph_tests
   print_graph_tests
   region_map_tests
@@ -41,6 +42,7 @@ set(TEST_TARGETS
   runtime_tests
   runtime_deprecation_tests
   sycl_tests
+  split_tests
   task_graph_tests
   task_ring_buffer_tests
   test_utils_tests
