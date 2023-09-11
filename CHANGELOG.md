@@ -14,6 +14,7 @@ Versioning](http://semver.org/spec/v2.0.0.html).
 - Add new environment variables `CELERITY_HORIZON_STEP` and `CELERITY_HORIZON_MAX_PARALLELISM` to control Horizon generation (#199)
 - Add new `experimental::constrain_split` API to limit how a kernel can be split (#?)
 - `distr_queue::fence` and `buffer_snapshot` are now stable, subsuming the `experimental::` APIs of the same name (#225)
+- Introduce new `experimental::hint` API for providing the runtime with additional information on how to execute a task (#?)
 
 ### Changed
 
