@@ -6,6 +6,7 @@
 #include "include/array.h"
 
 #include <celerity.h>
+
 #ifdef __CUDACC__
 #define MSL_MANAGED __managed__
 #define MSL_CONSTANT __constant__
@@ -123,6 +124,7 @@ void initialize(celerity::distr_queue& queue, celerity::buffer<cell_t, 3> buf, s
 		celerity::accessor dw_buf{buf, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
 		cgh.parallel_for<class initialize>(buf.get_range(), [=](celerity::item<3> item) {
 			cell_t cell;
+#pragma unroll
 			for (size_t i = 0; i < Q; i++) {
 				float wi = wis[i];
 				float c = 1.0f;
@@ -173,6 +175,7 @@ void update(celerity::distr_queue& queue, celerity::buffer<cell_t, 3> buf_write,
 			const auto xid = item.get_id(2);
 
 			// Streaming.
+#pragma unroll
 			for (size_t i = 1; i < Q; i++) {
 				size_t sx = xid + offsets[i].x;
 				size_t sy = yid + offsets[i].y;
@@ -186,6 +189,7 @@ void update(celerity::distr_queue& queue, celerity::buffer<cell_t, 3> buf_write,
 			if (parts->exponent == 255 && parts->mantissa & flag_obstacle) {
 				if (parts->mantissa & flag_obstacle) {
 					cell_t cell2 = cell;
+#pragma unroll
 					for (size_t i = 1; i < Q; i++) {
 						cell[i] = cell2[opposite[i]];
 					}
@@ -198,12 +202,14 @@ void update(celerity::distr_queue& queue, celerity::buffer<cell_t, 3> buf_write,
 			float tau = 0.65;
 			float p = 0;
 			vec3f vp {0, 0, 0};
+#pragma unroll
 			for (size_t i = 0; i < Q; i++) {
 				p += cell[i];
 				vp += offsets[i] * cellwidth * cell[i];
 			}
 			vec3f v = p == 0 ? vp : vp * (1 / p);
 
+#pragma unroll
 			for (size_t i = 0; i < Q; i++) {
 				float wi = wis[i];
 				float c = 1.0f;
