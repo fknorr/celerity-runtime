@@ -84,8 +84,7 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 
 	for(const auto& dest_box : new_allocations.get_boxes()) {
 		auto& dest = memory.allocations.emplace_back(buffer.dims, m_next_aid++, dest_box, buffer.range);
-		const auto alloc_instr =
-		    &create<alloc_instruction>(dest.aid, mid, dest.box.get_area() * buffer.elem_size, buffer.elem_align);
+		const auto alloc_instr = &create<alloc_instruction>(dest.aid, mid, dest.box.get_area() * buffer.elem_size, buffer.elem_align);
 		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 		dest.record_write(dest.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
@@ -116,8 +115,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 				// TODO to avoid introducing a synchronization point on oversubscription, split into multiple copies if that will allow unimpeded
 				// oversubscribed-producer to oversubscribed-consumer data flow.
 
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, source.aid, source_range,
-				    copy_offset - source_offset, mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+				const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, source.aid, source_range, copy_offset - source_offset, mid, dest.aid,
+				    dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
@@ -334,8 +333,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					const auto [dest_offset, dest_range] = dest.box.get_subrange();
 					const auto [copy_offset, copy_range] = copy_box.get_subrange();
 
-					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range,
-					    copy_offset - source_offset, copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
+					    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
 						assert(last_writer_instr != nullptr);
@@ -412,8 +411,8 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 				const auto [source_offset, source_range] = source.box.get_subrange();
 				const auto [copy_offset, copy_range] = copy_box.get_subrange();
 				const auto [dest_offset, dest_range] = box.get_subrange();
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset,
-				    out_mid, alloc_instr.get_allocation_id(), dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
+				const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset, out_mid,
+				    alloc_instr.get_allocation_id(), dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
 
 				add_dependency(*copy_instr, alloc_instr, dependency_kind::true_dep);
 				// TODO copy-pasta
@@ -760,6 +759,12 @@ std::vector<const instruction*> instruction_graph_generator::compile(const abstr
 		    assert(!"unhandled command type");
 		    std::abort();
 	    });
+
+	if(m_recorder != nullptr) {
+		for(const auto instr : m_current_batch) {
+			m_recorder->record_dependencies(*instr);
+		}
+	}
 
 	return m_current_batch;
 }

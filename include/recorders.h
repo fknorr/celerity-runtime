@@ -269,6 +269,7 @@ class instruction_recorder {
 	void record_buffer_debug_name(const buffer_id bid, const std::string& debug_name) { m_buffer_debug_names.emplace(bid, debug_name); }
 	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
 	void record_pilot_message(const pilot_message_record& pilot) { m_recorded_pilots.push_back(pilot); }
+	void record_dependencies(const instruction& instr);
 
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, instruction_record record) {
 		recorder.record_instruction(std::move(record));

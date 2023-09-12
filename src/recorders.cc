@@ -185,13 +185,7 @@ void command_recorder::record_command(const abstract_command& com) { //
 	m_recorded_commands.emplace_back(com, m_task_mngr, m_buff_mngr);
 }
 
-instruction_record_base::instruction_record_base(const instruction& instr) : id(instr.get_id()) {
-	const auto& deps = instr.get_dependencies();
-	dependencies.reserve(deps.size());
-	for(auto& d : deps) {
-		dependencies.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});
-	}
-}
+instruction_record_base::instruction_record_base(const instruction& instr) : id(instr.get_id()) {}
 
 alloc_instruction_record::alloc_instruction_record(
     const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation)
@@ -248,5 +242,17 @@ const std::string& instruction_recorder::get_buffer_debug_name(const buffer_id b
 	return m_empty_debug_name;
 }
 
+void instruction_recorder::record_dependencies(const instruction& instr) {
+	const auto record = std::find_if(m_recorded_instructions.begin(), m_recorded_instructions.end(),
+	    [&](const instruction_record& r) { return utils::match(r, [](const auto& r) { return r.id; }) == instr.get_id(); });
+	assert(record != m_recorded_instructions.end());
+
+	const auto& graph_deps = instr.get_dependencies();
+	auto& record_deps = utils::match(*record, [](auto& r) -> auto& { return r.dependencies; });
+	record_deps.reserve(graph_deps.size());
+	for(auto& d : graph_deps) {
+		record_deps.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});
+	}
+}
 
 } // namespace celerity::detail
