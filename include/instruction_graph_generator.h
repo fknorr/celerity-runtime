@@ -37,6 +37,7 @@ class instruction_graph_generator {
 
 	void unregister_host_object(host_object_id hoid);
 
+	// Resulting instructions are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
 	std::vector<const instruction*> compile(const abstract_command& cmd);
 
 	const instruction_graph& get_graph() const { return m_idag; }

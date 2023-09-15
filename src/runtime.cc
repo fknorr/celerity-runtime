@@ -22,6 +22,7 @@
 #include "buffer_manager.h"
 #include "cgf_diagnostics.h"
 #include "command_graph.h"
+#include "device_queue.h"
 #include "distributed_graph_generator.h"
 #include "executor.h"
 #include "host_object.h"
@@ -155,20 +156,20 @@ namespace detail {
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
-		m_exec = std::make_unique<instruction_executor>(
-		    nullptr /* backend TODO */, mpi_communicator_factory(MPI_COMM_WORLD), static_cast<instruction_executor::delegate*>(this));
 		m_cdag = std::make_unique<command_graph>();
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>(m_task_mngr.get(), m_buffer_mngr.get());
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
-		std::map<device_id, instruction_graph_generator::device_info> devices; // TODO
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
-		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, devices, m_instruction_recorder.get());
+		auto device = utils::match(user_device_or_selector, [&](const auto& value) { return pick_device(*m_cfg, value, cl::sycl::platform::get_platforms()); });
+		auto iggen = std::make_unique<instruction_graph_generator>(
+		    *m_task_mngr, std::map<device_id, instruction_graph_generator::device_info>{{device_id(0), {}}}, m_instruction_recorder.get());
+		m_exec = std::make_unique<instruction_executor>(backend::make_queue(backend::get_type(device), {{device_id(0), device}}),
+		    mpi_communicator_factory(MPI_COMM_WORLD), static_cast<instruction_executor::delegate*>(this));
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), *m_exec);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
 		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
 		    get_build_type(), get_mimalloc_string());
-		m_d_queue->init(*m_cfg, user_device_or_selector);
 	}
 
 	runtime::~runtime() {

@@ -450,6 +450,8 @@ std::vector<chunk<3>> split_equal(const chunk<3>& full_chunk, const range<3>& gr
 void instruction_graph_generator::compile_execution_command(const execution_command& ecmd) {
 	const auto& tsk = *m_tm.get_task(ecmd.get_tid());
 
+	if(tsk.get_execution_target() == execution_target::device && m_devices.empty()) { utils::panic("no device on which to execute device kernel"); }
+
 	struct partial_instruction {
 		subrange<3> execution_sr;
 		device_id did = -1;
@@ -718,6 +720,16 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 	}
 }
 
+template <typename Iterator>
+bool is_topologically_sorted(Iterator begin, Iterator end) {
+	for(auto check = begin; check != end; ++check) {
+		for(const auto& dep : (*check)->get_dependencies()) {
+			if(std::find(std::next(check), end, dep.node) != end) return false;
+		}
+	}
+	return true;
+}
+
 std::vector<const instruction*> instruction_graph_generator::compile(const abstract_command& cmd) {
 	m_current_batch.clear();
 
@@ -766,6 +778,7 @@ std::vector<const instruction*> instruction_graph_generator::compile(const abstr
 		}
 	}
 
+	assert(is_topologically_sorted(m_current_batch.begin(), m_current_batch.end()));
 	return m_current_batch;
 }
 
