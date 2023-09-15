@@ -21,10 +21,42 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 	m_last_epoch = initial_epoch;
 }
 
-void instruction_graph_generator::register_buffer(buffer_id bid, int dims, range<3> range, const size_t elem_size, const size_t elem_align) {
-	[[maybe_unused]] const auto [_, inserted] =
-	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_devices.size() + 1));
+void instruction_graph_generator::register_buffer(
+    buffer_id bid, int dims, range<3> range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
+	const auto n_memories = m_devices.size() + 1; // + host_memory_id -- this is faulty just like device_to_memory_id()!
+	const auto [iter, inserted] = m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, n_memories));
 	assert(inserted);
+
+	if(host_initialized) {
+		// eagerly allocate and fill entire host buffer. TODO this should only be done as-needed as part of satisfy_read_requirements, but eager operations
+		// saves us from a) tracking user allocations (needs a separate memory_id) as well as generating chained user -> host -> device copies which we would
+		// want to do to guarantee that host -> device copies are always made from pinned memory.
+
+		auto& buffer = iter->second;
+		auto& host_memory = buffer.memories.at(host_memory_id);
+		const box entire_buffer = subrange({}, buffer.range);
+
+		// this will be the first allocation for the buffer - no need to go through allocate_contiguously()
+		const auto host_aid = m_next_aid++;
+		auto& alloc_instr = create<alloc_instruction>(host_aid, host_memory_id, range.size() * elem_size, elem_align);
+		add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep);
+
+		auto& init_instr = create<init_buffer_instruction>(bid, host_aid, range.size() * elem_size);
+		add_dependency(init_instr, alloc_instr, dependency_kind::true_dep);
+
+		auto& allocation = host_memory.allocations.emplace_back(buffer.dims, host_aid, entire_buffer, buffer.range);
+		allocation.record_write(entire_buffer, &init_instr);
+		buffer.original_writers.update_region(entire_buffer, &init_instr);
+		buffer.newest_data_location.update_region(entire_buffer, data_location().set(host_memory_id));
+
+		if(m_recorder != nullptr) {
+			*m_recorder << alloc_instruction_record(alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, entire_buffer});
+			*m_recorder << init_buffer_instruction_record(init_instr);
+		}
+
+		// we return the generated instructions with the next call to compile().
+		// TODO this should probably follow a callback mechanism instead - we currently do the same for the initial epoch.
+	}
 }
 
 void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, std::string name) {
@@ -191,7 +223,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					regions.push_back(std::move(intersection));
 					// if intersections above are actually subsets, we will end up with empty regions
 					regions.erase(std::remove_if(regions.begin(), regions.end(), std::mem_fn(&region<3>::empty)), regions.end());
-					goto restart;
+					goto restart; // NOLINT(cppcoreguidelines-avoid-goto)
 				}
 			}
 		}
@@ -731,8 +763,6 @@ bool is_topologically_sorted(Iterator begin, Iterator end) {
 }
 
 std::vector<const instruction*> instruction_graph_generator::compile(const abstract_command& cmd) {
-	m_current_batch.clear();
-
 	utils::match(
 	    cmd,                                                                     //
 	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); }, //
@@ -767,10 +797,8 @@ std::vector<const instruction*> instruction_graph_generator::compile(const abstr
 		    m_last_horizon = nullptr;
 		    if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*epoch, ecmd.get_cid()); }
 	    },
-	    [](const auto& /* unhandled */) {
-		    assert(!"unhandled command type");
-		    std::abort();
-	    });
+	    [](const reduction_command& rcmd) { utils::panic("unhandled command type"); },
+	    [](const fence_command& fcmd) { utils::panic("unhandled command type"); });
 
 	if(m_recorder != nullptr) {
 		for(const auto instr : m_current_batch) {
@@ -779,7 +807,7 @@ std::vector<const instruction*> instruction_graph_generator::compile(const abstr
 	}
 
 	assert(is_topologically_sorted(m_current_batch.begin(), m_current_batch.end()));
-	return m_current_batch;
+	return std::move(m_current_batch);
 }
 
 } // namespace celerity::detail

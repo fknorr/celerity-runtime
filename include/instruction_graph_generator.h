@@ -22,12 +22,12 @@ class instruction_graph_generator {
   public:
 	struct device_info {
 		// - which backends are supported?
-		// - which memory_id is "native" and which ones are supported?
+		// - which memory_id is "native" and which ones can be copied to / from?
 	};
 
 	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder* recorder);
 
-	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align);
+	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align, bool host_initialized);
 
 	void set_buffer_debug_name(buffer_id bid, std::string name);
 
@@ -209,7 +209,7 @@ class instruction_graph_generator {
 
 	// This mapping will differ for architectures that share memory between host and device or between devices.
 	// TODO we want a class like detail::local_devices to do the conversion, but without the runtime dependency (i.e. host_queue).
-	memory_id device_to_memory_id(const device_id did) const { return did + 1; }
+	memory_id device_to_memory_id(const device_id did) const { return to_memory_id(did); /* see impl - this is broken! */ }
 
 	void apply_epoch(instruction* const epoch) {
 		for(auto& [_, buffer] : m_buffers) {

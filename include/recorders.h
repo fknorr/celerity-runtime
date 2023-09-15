@@ -167,6 +167,14 @@ struct free_instruction_record : instruction_record_base {
 	    const std::optional<buffer_allocation_record>& buffer_allocation);
 };
 
+struct init_buffer_instruction_record : instruction_record_base {
+	detail::buffer_id buffer_id;
+	detail::allocation_id host_allocation_id;
+	size_t size;
+
+	explicit init_buffer_instruction_record(const init_buffer_instruction& ibinstr);
+};
+
 struct copy_instruction_record : instruction_record_base {
 	enum class copy_origin {
 		linearize,
@@ -251,8 +259,8 @@ struct epoch_instruction_record : instruction_record_base {
 	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid);
 };
 
-using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, copy_instruction_record, kernel_instruction_record,
-    send_instruction_record, recv_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, init_buffer_instruction_record, copy_instruction_record,
+    kernel_instruction_record, send_instruction_record, recv_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
 struct pilot_message_record : pilot_message {
 	node_id receiver;

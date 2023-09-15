@@ -56,7 +56,7 @@ namespace detail {
 				    },
 				    [&](const event_buffer_registered& e) { //
 					    m_dggen->add_buffer(e.bid, e.dims, e.range);
-					    m_iggen->register_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align);
+					    m_iggen->register_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.host_initialized);
 				    },
 				    [&](const event_shutdown&) {
 					    assert(in_flight_events.empty());

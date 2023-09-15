@@ -32,6 +32,8 @@ class instruction_executor final : private communicator::delegate {
 
 	void submit(const instruction& instr);
 
+	void announce_buffer_user_pointer(const buffer_id bid, const void *ptr);
+
   private:
 	struct completed_synchronous {};
 	using event = std::variant<std::unique_ptr<backend::event>, std::unique_ptr<communicator::event>, recv_arbiter::event, completed_synchronous>;
@@ -41,10 +43,12 @@ class instruction_executor final : private communicator::delegate {
 		void* pointer;
 	};
 
+	using submission = std::variant<const instruction*, std::pair<buffer_id, const void*>>;
+
 	delegate* m_delegate;
 
 	// accessed by by main and executor threads
-	double_buffered_queue<const instruction*> m_submission_queue;
+	double_buffered_queue<submission> m_submission_queue;
 
 	// accessed by by main and communicator threads
 	double_buffered_queue<std::pair<node_id, pilot_message>> m_pilot_queue;
@@ -52,6 +56,7 @@ class instruction_executor final : private communicator::delegate {
 	// accessed by executor thread only (unsynchronized)
 	bool m_expecting_more_submissions = true;
 	std::unique_ptr<backend::queue> m_backend_queue;
+	std::unordered_map<buffer_id, const void *> m_buffer_user_pointers;
 	std::unordered_map<allocation_id, allocation> m_allocations;
 	std::unique_ptr<communicator> m_communicator;
 	recv_arbiter m_recv_arbiter;

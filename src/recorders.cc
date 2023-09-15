@@ -197,6 +197,9 @@ free_instruction_record::free_instruction_record(const free_instruction& finstr,
     : instruction_record_base(finstr), allocation_id(finstr.get_allocation_id()), memory_id(mid), size(size), alignment(alignment),
       buffer_allocation(buffer_allocation) {}
 
+init_buffer_instruction_record::init_buffer_instruction_record(const init_buffer_instruction& ibinstr)
+    : instruction_record_base(ibinstr), buffer_id(ibinstr.get_buffer_id()), host_allocation_id(ibinstr.get_host_allocation_id()), size(ibinstr.get_size()) {}
+
 copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, const detail::box<3>& box)
     : instruction_record_base(cinstr), source_memory(cinstr.get_source_memory()), source_allocation(cinstr.get_source_allocation()),
       dest_memory(cinstr.get_dest_memory()), dest_allocation(cinstr.get_dest_allocation()), dimensions(cinstr.get_dimensions()),
@@ -248,7 +251,8 @@ void instruction_recorder::record_dependencies(const instruction& instr) {
 	assert(record != m_recorded_instructions.end());
 
 	const auto& graph_deps = instr.get_dependencies();
-	auto& record_deps = utils::match(*record, [](auto& r) -> auto& { return r.dependencies; });
+	auto& record_deps = utils::match(
+	    *record, [](auto& r) -> auto& { return r.dependencies; });
 	record_deps.reserve(graph_deps.size());
 	for(auto& d : graph_deps) {
 		record_deps.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});

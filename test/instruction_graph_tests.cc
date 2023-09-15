@@ -123,6 +123,14 @@ TEST_CASE("RSim pattern", "[instruction-graph]") {
 	}
 }
 
+TEST_CASE("hello world pattern (host initialization)", "[instruction-graph]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	const std::string input_str = "Ifmmp!Xpsme\"\x01";
+	auto buf = ictx.create_buffer<1>(input_str.size(), true /* host initialized */);
+
+	ictx.device_compute(buf.get_range()).read_write(buf, acc::one_to_one()).submit();
+	// ictx.fence(buf); TODO currently unimplemented
+}
 
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects

@@ -18,6 +18,8 @@ instruction_executor::~instruction_executor() {
 
 void instruction_executor::submit(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
+void instruction_executor::announce_buffer_user_pointer(const buffer_id bid, const void* const ptr) { m_submission_queue.push_back(std::pair(bid, ptr)); }
+
 void instruction_executor::loop() {
 	struct pending_instruction_info {
 		size_t n_unmet_dependencies;
@@ -35,7 +37,7 @@ void instruction_executor::loop() {
 		};
 	};
 
-	std::vector<const instruction*> loop_submission_queue;
+	std::vector<submission> loop_submission_queue;
 	std::vector<std::pair<node_id, pilot_message>> loop_pilot_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::vector<const instruction*> ready_instructions;
@@ -62,15 +64,25 @@ void instruction_executor::loop() {
 		}
 
 		if(m_submission_queue.swap_if_nonempty(loop_submission_queue)) {
-			for(const auto incoming_instr : loop_submission_queue) {
-				const auto n_unmet_dependencies = static_cast<size_t>(std::count_if(incoming_instr->get_dependencies().begin(),
-				    incoming_instr->get_dependencies().end(),
-				    [&](const instruction::dependency& dep) { return pending_instructions.count(dep.node) != 0 || active_instructions.count(dep.node) != 0; }));
-				if(n_unmet_dependencies > 0) {
-					pending_instructions.emplace(incoming_instr, pending_instruction_info{n_unmet_dependencies});
-				} else {
-					ready_instructions.push_back(incoming_instr);
-				}
+			for(const auto& submission : loop_submission_queue) {
+				utils::match(
+				    submission,
+				    [&](const instruction* incoming_instr) {
+					    const auto n_unmet_dependencies = static_cast<size_t>(std::count_if(
+					        incoming_instr->get_dependencies().begin(), incoming_instr->get_dependencies().end(), [&](const instruction::dependency& dep) {
+						        return pending_instructions.count(dep.node) != 0 || active_instructions.count(dep.node) != 0;
+					        }));
+					    if(n_unmet_dependencies > 0) {
+						    pending_instructions.emplace(incoming_instr, pending_instruction_info{n_unmet_dependencies});
+					    } else {
+						    ready_instructions.push_back(incoming_instr);
+					    }
+				    },
+				    [&](const std::pair<buffer_id, const void*> buffer_host_ptr) {
+					    const auto [bid, ptr] = buffer_host_ptr;
+					    assert(m_buffer_user_pointers.count(bid) == 0);
+					    m_buffer_user_pointers.emplace(bid, ptr);
+				    });
 			}
 			loop_submission_queue.clear();
 		}
@@ -104,6 +116,12 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto [memory, ptr] = it->second;
 		    m_allocations.erase(it);
 		    return m_backend_queue->free(memory, ptr);
+	    },
+	    [&](const init_buffer_instruction& ibinstr) -> event {
+		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
+		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id()).pointer;
+		    memcpy(host_ptr, user_ptr, ibinstr.get_size());
+			return completed_synchronous();
 	    },
 	    [&](const copy_instruction& ainstr) -> event {
 		    const auto source_base_ptr = m_allocations.at(ainstr.get_source_allocation()).pointer;

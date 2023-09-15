@@ -311,6 +311,12 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, " <br/>{}%{} bytes", finstr.size, finstr.alignment);
 			    end_node();
 		    },
+		    [&](const init_buffer_instruction_record& ibinstr) {
+			    begin_node(ibinstr, "ellipse", "green3");
+			    fmt::format_to(back, "I{}<br/>", ibinstr.id);
+			    fmt::format_to(back, "<b>init buffer</b> B{}<br/>via M0.A{}, {} bytes", ibinstr.buffer_id, ibinstr.host_allocation_id, ibinstr.size);
+			    end_node();
+		    },
 		    [&](const copy_instruction_record& cinstr) {
 			    begin_node(cinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", cinstr.id);

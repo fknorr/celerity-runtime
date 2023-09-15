@@ -288,7 +288,7 @@ namespace detail {
 	void runtime::handle_buffer_registered(buffer_id bid) {
 		const auto& info = m_buffer_mngr->get_buffer_info(bid);
 		m_task_mngr->add_buffer(bid, info.dimensions, info.range, info.is_host_initialized);
-		m_schdlr->notify_buffer_registered(bid, info.dimensions, info.range, info.element_size, info.element_align);
+		m_schdlr->notify_buffer_registered(bid, info.dimensions, info.range, info.element_size, info.element_align, info.is_host_initialized);
 	}
 
 	void runtime::handle_buffer_unregistered(buffer_id bid) { maybe_destroy_runtime(); }

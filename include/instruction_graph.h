@@ -14,6 +14,7 @@ namespace celerity::detail {
 class instruction;
 class alloc_instruction;
 class free_instruction;
+class init_buffer_instruction;
 class copy_instruction;
 class kernel_instruction;
 class sycl_kernel_instruction;
@@ -25,8 +26,9 @@ class epoch_instruction;
 
 class instruction : public intrusive_graph_node<instruction> {
   public:
-	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const copy_instruction&, const sycl_kernel_instruction&,
-	    const host_kernel_instruction&, const send_instruction&, const recv_instruction&, const horizon_instruction&, const epoch_instruction&>;
+	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const init_buffer_instruction&, const copy_instruction&,
+	    const sycl_kernel_instruction&, const host_kernel_instruction&, const send_instruction&, const recv_instruction&, const horizon_instruction&,
+	    const epoch_instruction&>;
 
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -73,6 +75,23 @@ class free_instruction final : public instruction {
 
   private:
 	allocation_id m_aid;
+};
+
+class init_buffer_instruction final : public instruction {
+  public:
+	explicit init_buffer_instruction(const instruction_id iid, const buffer_id bid, const allocation_id host_aid, const size_t size_bytes)
+	    : instruction(iid), m_bid(bid), m_host_aid(host_aid), m_size_bytes(size_bytes) {}
+
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+
+	buffer_id get_buffer_id() const { return m_bid; }
+	allocation_id get_host_allocation_id() const { return m_host_aid; }
+	size_t get_size() const { return m_size_bytes; }
+
+  private:
+	buffer_id m_bid;
+	allocation_id m_host_aid;
+	size_t m_size_bytes;
 };
 
 // copy_instruction: either copy or linearize
