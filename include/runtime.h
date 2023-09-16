@@ -119,7 +119,8 @@ namespace detail {
 		runtime(const runtime&) = delete;
 		runtime(runtime&&) = delete;
 
-		void instruction_checkpoint_reached(task_id checkpoint_tid) override;
+		void horizon_reached(task_id horizon_tid) override;
+		void epoch_reached(task_id epoch_tid) override;
 
 		void handle_buffer_registered(buffer_id bid);
 		void handle_buffer_unregistered(buffer_id bid);

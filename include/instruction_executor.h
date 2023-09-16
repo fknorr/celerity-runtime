@@ -20,7 +20,8 @@ class instruction_executor final : private communicator::delegate {
 		~delegate() = default; // do not allow destruction through base pointer
 
 	  public:
-		virtual void instruction_checkpoint_reached(task_id tid) = 0;
+		virtual void horizon_reached(task_id tid) = 0;
+		virtual void epoch_reached(task_id tid) = 0;
 	};
 
 	instruction_executor(std::unique_ptr<backend::queue> backend_queue, const communicator_factory& comm_factory, delegate* dlg);

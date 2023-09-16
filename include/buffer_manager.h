@@ -97,6 +97,7 @@ namespace detail {
 			size_t element_size = 0;
 			size_t element_align = 0;
 			bool is_host_initialized;
+			const void *host_init_ptr; // TODO temporary for instruction_executor
 			std::string debug_name = {};
 
 			device_buffer_factory construct_device;
@@ -146,7 +147,7 @@ namespace detail {
 				};
 				auto host_factory = [](const celerity::range<3>& r) { return std::make_unique<host_buffer_storage<DataT, Dims>>(range_cast<Dims>(r)); };
 				m_buffer_infos.emplace(
-				    bid, buffer_info{Dims, range, sizeof(DataT), alignof(DataT), is_host_initialized, {}, std::move(device_factory), std::move(host_factory)});
+				    bid, buffer_info{Dims, range, sizeof(DataT), alignof(DataT), is_host_initialized, host_init_ptr, {}, std::move(device_factory), std::move(host_factory)});
 				m_newest_data_location.emplace(bid, region_map<data_location>(range, Dims, data_location::nowhere));
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)

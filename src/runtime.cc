@@ -281,12 +281,20 @@ namespace detail {
 		return combine_command_graphs(graphs);
 	}
 
-	void runtime::instruction_checkpoint_reached(const task_id checkpoint_tid) {
-		// TODO trigger task / command deletion
+	void runtime::horizon_reached(const task_id horizon_tid) {
+		m_task_mngr->notify_horizon_reached(horizon_tid);
+	}
+
+	void runtime::epoch_reached(const task_id epoch_tid) {
+		m_task_mngr->notify_epoch_reached(epoch_tid);
 	}
 
 	void runtime::handle_buffer_registered(buffer_id bid) {
 		const auto& info = m_buffer_mngr->get_buffer_info(bid);
+		if (info.is_host_initialized) {
+			// before submitting to scheduler -> guarantees that executor is able to resolve the pointer
+			m_exec->announce_buffer_user_pointer(bid, info.host_init_ptr);
+		}
 		m_task_mngr->add_buffer(bid, info.dimensions, info.range, info.is_host_initialized);
 		m_schdlr->notify_buffer_registered(bid, info.dimensions, info.range, info.element_size, info.element_align, info.is_host_initialized);
 	}

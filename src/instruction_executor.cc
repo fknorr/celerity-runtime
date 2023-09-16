@@ -1,7 +1,9 @@
 #include "instruction_executor.h"
 #include "buffer_storage.h" // for memcpy_strided_host
+#include "closure_hydrator.h"
 #include "communicator.h"
 #include "recv_arbiter.h"
+
 #include <atomic>
 #include <mutex>
 
@@ -11,16 +13,16 @@ instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backe
     : m_delegate(dlg), m_backend_queue(std::move(backend_queue)), m_communicator(comm_factory.make_communicator(this)), m_recv_arbiter(*m_communicator),
       m_thread(&instruction_executor::loop, this) {}
 
-instruction_executor::~instruction_executor() {
-	m_submission_queue.push_back(nullptr /* sentinel for "no more submissions" */);
-	m_thread.join();
-}
+instruction_executor::~instruction_executor() { m_thread.join(); }
 
 void instruction_executor::submit(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
 void instruction_executor::announce_buffer_user_pointer(const buffer_id bid, const void* const ptr) { m_submission_queue.push_back(std::pair(bid, ptr)); }
 
 void instruction_executor::loop() {
+	set_thread_name(get_current_thread_handle(), "cy-executor");
+	closure_hydrator::make_available();
+
 	struct pending_instruction_info {
 		size_t n_unmet_dependencies;
 	};
@@ -53,8 +55,8 @@ void instruction_executor::loop() {
 						assert(pending_info.n_unmet_dependencies > 0);
 						pending_info.n_unmet_dependencies -= 1;
 						if(pending_info.n_unmet_dependencies == 0) {
-							pending_instructions.erase(pending_instr);
 							ready_instructions.push_back(pending_instr);
+							pending_instructions.erase(pending_it);
 						}
 					}
 				}
@@ -148,14 +150,37 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    }
 	    },
 	    [&](const sycl_kernel_instruction& skinstr) -> event {
+		    std::vector<closure_hydrator::accessor_info> accessor_infos;
+		    accessor_infos.reserve(skinstr.get_allocation_map().size());
+		    for(const auto& aa : skinstr.get_allocation_map()) {
+			    const auto ptr = m_allocations.at(aa.aid).pointer;
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+			    accessor_infos.push_back(
+			        closure_hydrator::accessor_info{ptr, aa.allocation_range, aa.offset_in_allocation, aa.buffer_subrange, nullptr /* TODO */});
+#else
+			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocation_range, aa.offset_in_allocation, aa.buffer_subrange});
+#endif
+		    }
+
 		    std::vector<void*> reduction_ptrs;     // TODO
 		    bool is_reduction_initializer = false; // TODO
+
+		    closure_hydrator::get_instance().arm(target::device, std::move(accessor_infos));
+
 		    return m_backend_queue->launch_kernel(
 		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, is_reduction_initializer);
 	    },
 	    [&](const host_kernel_instruction& hkinstr) -> event {
-		    auto& launch = hkinstr.get_launcher();
-		    // TODO launch in thread pool
+		    std::vector<closure_hydrator::accessor_info> accessor_infos;
+		    accessor_infos.reserve(hkinstr.get_allocation_map().size());
+		    for(const auto& aa : hkinstr.get_allocation_map()) {
+			    const auto ptr = m_allocations.at(aa.aid).pointer;
+			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocation_range, aa.offset_in_allocation, aa.buffer_subrange});
+		    }
+
+		    closure_hydrator::get_instance().arm(target::host_task, std::move(accessor_infos));
+
+		    const auto& launch = hkinstr.get_launcher();
 		    return launch(m_host_queue, hkinstr.get_execution_range());
 	    },
 	    [&](const send_instruction& sinstr) -> event {
@@ -173,7 +198,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		        rinstr.get_offset_in_buffer(), rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size());
 	    },
 	    [&](const horizon_instruction& hinstr) -> event {
-		    if(m_delegate != nullptr) { m_delegate->instruction_checkpoint_reached(hinstr.get_horizon_task_id()); }
+		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
 		    return completed_synchronous();
 	    },
 	    [&](const epoch_instruction& einstr) -> event {
@@ -184,7 +209,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 			    break;
 		    case epoch_action::shutdown: m_expecting_more_submissions = false; break;
 		    }
-		    if(m_delegate != nullptr) { m_delegate->instruction_checkpoint_reached(einstr.get_epoch_task_id()); }
+		    if(m_delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO tm doesn't expect us to actually execute the init epoch */) {
+			    m_delegate->epoch_reached(einstr.get_epoch_task_id());
+		    }
 		    return completed_synchronous();
 	    });
 }
