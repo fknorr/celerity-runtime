@@ -177,10 +177,8 @@ class sycl_kernel_instruction final : public kernel_instruction {
 	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	device_id get_device_id() const { return m_device_id; }
+
 	const sycl_kernel_launcher& get_launcher() const { return m_launcher; }
-	void launch(sycl::handler& cgh) const {
-		m_launcher(cgh, get_execution_range()); // TODO where does m_allocation_map go?
-	}
 
   private:
 	device_id m_device_id;

@@ -24,8 +24,8 @@ class recv_arbiter {
 	};
 
 	explicit recv_arbiter(communicator& comm) : m_comm(&comm) {}
-	[[nodiscard]] event begin_aggregated_recv(transfer_id trid, buffer_id bid, void* allocation, const range<3>& allocation_range, const id<3>& allocation_offset_in_buffer,
-	    const id<3>& recv_offset_in_allocation, const range<3>& recv_range, size_t elem_size);
+	[[nodiscard]] event begin_aggregated_recv(transfer_id trid, buffer_id bid, void* allocation, const range<3>& allocation_range,
+	    const id<3>& allocation_offset_in_buffer, const id<3>& recv_offset_in_allocation, const range<3>& recv_range, size_t elem_size);
 	void push_pilot_message(const node_id source, const pilot_message& pilot);
 
   private:

@@ -11,8 +11,9 @@ bool sycl_event::is_complete() const {
 	return m_incomplete.empty();
 }
 
-std::unique_ptr<event> launch_sycl_kernel(sycl::queue& queue, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range) {
-	auto event = queue.submit([&](sycl::handler& sycl_cgh) { launcher(sycl_cgh, execution_range); });
+std::unique_ptr<event> launch_sycl_kernel(sycl::queue& queue, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range,
+    const std::vector<void*>& reduction_ptrs, bool is_reduction_initializer) {
+	auto event = queue.submit([&](sycl::handler& sycl_cgh) { launcher(sycl_cgh, execution_range, reduction_ptrs, is_reduction_initializer); });
 #if CELERITY_WORKAROUND(HIPSYCL)
 	// hipSYCL does not guarantee that command groups are actually scheduled until an explicit await operation, which we cannot insert without
 	// blocking the executor loop (see https://github.com/illuhad/hipSYCL/issues/599). Instead, we explicitly flush the queue to be able to continue

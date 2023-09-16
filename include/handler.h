@@ -446,7 +446,7 @@ class handler {
 		}
 		const detail::task_geometry geometry{Dims, detail::range_cast<3>(global_range), detail::id_cast<3>(global_offset),
 		    get_constrained_granularity(global_range, detail::range_cast<Dims>(granularity))};
-		auto launcher = make_device_kernel_launcher<KernelFlavor, KernelName, Dims>(
+		auto launcher = make_sycl_kernel_launcher<KernelFlavor, KernelName, Dims>(
 		    global_range, global_offset, local_range, std::forward<Kernel>(kernel), std::index_sequence_for<Reductions...>(), reductions...);
 		create_device_compute_task(geometry, detail::kernel_debug_name<KernelName>(), std::move(launcher));
 	}
@@ -491,7 +491,7 @@ class handler {
 		return result;
 	}
 
-	void create_host_compute_task(detail::task_geometry geometry, std::unique_ptr<detail::command_launcher_storage_base> launcher) {
+	void create_host_compute_task(detail::task_geometry geometry, detail::command_group_launcher launcher) {
 		assert(m_task == nullptr);
 		if(geometry.global_size.size() == 0) {
 			// TODO this can be easily supported by not creating a task in case the execution range is empty
@@ -503,7 +503,7 @@ class handler {
 		m_task->set_debug_name(m_usr_def_task_name.value_or(""));
 	}
 
-	void create_device_compute_task(detail::task_geometry geometry, std::string debug_name, std::unique_ptr<detail::command_launcher_storage_base> launcher) {
+	void create_device_compute_task(detail::task_geometry geometry, std::string debug_name, detail::command_group_launcher launcher) {
 		assert(m_task == nullptr);
 		if(geometry.global_size.size() == 0) {
 			// TODO unless reductions are involved, this can be easily supported by not creating a task in case the execution range is empty.
@@ -519,14 +519,14 @@ class handler {
 		m_task->set_debug_name(m_usr_def_task_name.value_or(debug_name));
 	}
 
-	void create_collective_task(detail::collective_group_id cgid, std::unique_ptr<detail::command_launcher_storage_base> launcher) {
+	void create_collective_task(detail::collective_group_id cgid, detail::command_group_launcher launcher) {
 		assert(m_task == nullptr);
 		m_task = detail::task::make_collective(m_tid, cgid, m_num_collective_nodes, std::move(launcher), std::move(m_access_map), std::move(m_side_effects));
 
 		m_task->set_debug_name(m_usr_def_task_name.value_or(""));
 	}
 
-	void create_master_node_task(std::unique_ptr<detail::command_launcher_storage_base> launcher) {
+	void create_master_node_task(detail::command_group_launcher launcher) {
 		assert(m_task == nullptr);
 		m_task = detail::task::make_master_node(m_tid, std::move(launcher), std::move(m_access_map), std::move(m_side_effects));
 
@@ -534,7 +534,7 @@ class handler {
 	}
 
 	template <typename KernelFlavor, typename KernelName, int Dims, typename Kernel, size_t... ReductionIndices, typename... Reductions>
-	auto make_device_kernel_launcher(const range<Dims>& global_range, const id<Dims>& global_offset,
+	detail::sycl_kernel_launcher make_sycl_kernel_launcher(const range<Dims>& global_range, const id<Dims>& global_offset,
 	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_range, Kernel&& kernel,
 	    std::index_sequence<ReductionIndices...> /* indices */, Reductions... reductions) {
 		static_assert(std::is_copy_constructible_v<std::decay_t<Kernel>>, "Kernel functor must be copyable"); // Required for hydration
@@ -543,34 +543,30 @@ class handler {
 		// Although the diagnostics should always be available, we currently disable them for some test cases.
 		if(detail::cgf_diagnostics::is_available()) { detail::cgf_diagnostics::get_instance().check<target::device>(kernel, m_access_map); }
 
-		auto fn = [=](detail::device_queue& q, const subrange<3> execution_sr, const std::vector<void*>& reduction_ptrs, const bool is_reduction_initializer) {
-			return q.submit([&](sycl::handler& cgh) {
-				constexpr int sycl_dims = std::max(1, Dims);
-				// Copy once to hydrate accessors
-				auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate<target::device>(cgh, kernel);
-				if constexpr(std::is_same_v<KernelFlavor, detail::simple_kernel_flavor>) {
-					const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
-					detail::invoke_sycl_parallel_for<KernelName>(cgh, sycl_global_range,
-					    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices], is_reduction_initializer)...,
-					    detail::bind_simple_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset)));
-				} else if constexpr(std::is_same_v<KernelFlavor, detail::nd_range_kernel_flavor>) {
-					const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
-					const auto sycl_local_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(local_range));
-					detail::invoke_sycl_parallel_for<KernelName>(cgh, cl::sycl::nd_range{sycl_global_range, sycl_local_range},
-					    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices], is_reduction_initializer)...,
-					    detail::bind_nd_range_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset),
-					        global_range / local_range, detail::id_cast<Dims>(execution_sr.offset) / local_range));
-				} else {
-					static_assert(detail::constexpr_false<KernelFlavor>);
-				}
-			});
+		return [=](sycl::handler& sycl_cgh, const subrange<3>& execution_sr, const std::vector<void*>& reduction_ptrs, const bool is_reduction_initializer) {
+			constexpr int sycl_dims = std::max(1, Dims);
+			// Copy once to hydrate accessors
+			auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate<target::device>(sycl_cgh, kernel);
+			if constexpr(std::is_same_v<KernelFlavor, detail::simple_kernel_flavor>) {
+				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
+				detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, sycl_global_range,
+				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices], is_reduction_initializer)...,
+				    detail::bind_simple_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset)));
+			} else if constexpr(std::is_same_v<KernelFlavor, detail::nd_range_kernel_flavor>) {
+				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
+				const auto sycl_local_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(local_range));
+				detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, cl::sycl::nd_range{sycl_global_range, sycl_local_range},
+				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices], is_reduction_initializer)...,
+				    detail::bind_nd_range_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset),
+				        global_range / local_range, detail::id_cast<Dims>(execution_sr.offset) / local_range));
+			} else {
+				static_assert(detail::constexpr_false<KernelFlavor>);
+			}
 		};
-
-		return std::make_unique<detail::command_launcher_storage<decltype(fn)>>(std::move(fn));
 	}
 
 	template <int Dims, bool Collective, typename Kernel>
-	auto make_host_task_launcher(const range<3>& global_range, const detail::collective_group_id cgid, Kernel&& kernel) {
+	detail::host_task_launcher make_host_task_launcher(const range<3>& global_range, const detail::collective_group_id cgid, Kernel&& kernel) {
 		static_assert(Collective || std::is_invocable_v<Kernel> || std::is_invocable_v<Kernel, const partition<Dims>>,
 		    "Kernel for host task must be invocable with either no arguments or a celerity::partition<Dims>");
 		static_assert(!Collective || std::is_invocable_v<Kernel> || std::is_invocable_v<Kernel, const experimental::collective_partition>,
@@ -584,7 +580,7 @@ class handler {
 			detail::cgf_diagnostics::get_instance().check<target::host_task>(kernel, m_access_map, m_non_void_side_effects_count);
 		}
 
-		auto fn = [kernel, cgid, global_range](detail::host_queue& q, const subrange<3>& execution_sr) {
+		return [kernel, cgid, global_range](detail::host_queue& q, const subrange<3>& execution_sr) {
 			auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate<target::host_task>(kernel);
 			return q.submit(cgid, [hydrated_kernel, global_range, execution_sr](MPI_Comm comm) {
 				(void)global_range;
@@ -607,8 +603,6 @@ class handler {
 				}
 			});
 		};
-
-		return std::make_unique<detail::command_launcher_storage<decltype(fn)>>(std::move(fn));
 	}
 
 	std::unique_ptr<detail::task> into_task() && {

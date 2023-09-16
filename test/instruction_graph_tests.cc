@@ -3,12 +3,12 @@
 
 #include "command_graph.h"
 #include "distributed_graph_generator.h"
+#include "distributed_graph_generator_test_utils.h"
 #include "instruction_graph_generator.h"
 #include "print_graph.h"
 #include "recorders.h"
 #include "task_ring_buffer.h"
 #include "test_utils.h"
-#include "distributed_graph_generator_test_utils.h"
 
 
 using namespace celerity;

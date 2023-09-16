@@ -44,7 +44,8 @@ class generic_queue : public queue {
 	    size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset,
 	    const range<3>& copy_range) override;
 
-	std::unique_ptr<event> launch_kernel(device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range) override;
+	std::unique_ptr<event> launch_kernel(device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range,
+	    const std::vector<void*>& reduction_ptrs, bool is_reduction_initializer) override;
 
   private:
 	sycl::context m_context;

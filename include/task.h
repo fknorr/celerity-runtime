@@ -15,6 +15,7 @@
 #include "lifetime_extending_state.h"
 #include "range_mapper.h"
 #include "types.h"
+#include "utils.h"
 
 namespace celerity {
 
@@ -210,54 +211,57 @@ namespace detail {
 
 		fence_promise* get_fence_promise() const { return m_fence_promise.get(); }
 
-		template <typename... Args>
-		auto launch(Args&&... args) const {
-			return (*m_launcher)(std::forward<Args>(args)...);
+
+		sycl::event launch(
+		    device_queue& q, const subrange<3> execution_sr, const std::vector<void*>& reduction_ptrs, const bool is_reduction_initializer) const {
+			utils::panic("legacy launch");
 		}
 
-		template<typename Launcher>
+		std::future<host_queue::execution_info> launch(host_queue& q, const subrange<3>& execution_sr) const { utils::panic("legacy launch"); }
+
+		template <typename Launcher>
 		Launcher get_launcher() const {
-			return Launcher(); // TODO stub
+			return std::get<Launcher>(m_launcher);
 		}
 
 		void extend_lifetime(std::shared_ptr<lifetime_extending_state> state) { m_attached_state.emplace_back(std::move(state)); }
 
 		static std::unique_ptr<task> make_epoch(task_id tid, detail::epoch_action action) {
-			return std::unique_ptr<task>(new task(tid, task_type::epoch, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, action, nullptr));
+			return std::unique_ptr<task>(new task(tid, task_type::epoch, collective_group_id{}, task_geometry{}, {}, {}, {}, {}, action, nullptr));
 		}
 
-		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, side_effect_map side_effect_map, reduction_set reductions) {
+		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map,
+		    side_effect_map side_effect_map, reduction_set reductions) {
 			return std::unique_ptr<task>(new task(tid, task_type::host_compute, collective_group_id{}, geometry, std::move(launcher), std::move(access_map),
 			    std::move(side_effect_map), std::move(reductions), {}, nullptr));
 		}
 
-		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
-		    buffer_access_map access_map, reduction_set reductions) {
+		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map,
+		    reduction_set reductions) {
 			return std::unique_ptr<task>(new task(tid, task_type::device_compute, collective_group_id{}, geometry, std::move(launcher), std::move(access_map),
 			    {}, std::move(reductions), {}, nullptr));
 		}
 
-		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes,
-		    std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
+		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes, command_group_launcher launcher,
+		    buffer_access_map access_map, side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(range(num_collective_nodes)), {}, {1, 1, 1}};
 			return std::unique_ptr<task>(
 			    new task(tid, task_type::collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}, nullptr));
 		}
 
 		static std::unique_ptr<task> make_master_node(
-		    task_id tid, std::unique_ptr<command_launcher_storage_base> launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
+		    task_id tid, command_group_launcher launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
 			return std::unique_ptr<task>(new task(tid, task_type::master_node, collective_group_id{}, task_geometry{}, std::move(launcher),
 			    std::move(access_map), std::move(side_effect_map), {}, {}, nullptr));
 		}
 
 		static std::unique_ptr<task> make_horizon(task_id tid) {
-			return std::unique_ptr<task>(new task(tid, task_type::horizon, collective_group_id{}, task_geometry{}, nullptr, {}, {}, {}, {}, nullptr));
+			return std::unique_ptr<task>(new task(tid, task_type::horizon, collective_group_id{}, task_geometry{}, {}, {}, {}, {}, {}, nullptr));
 		}
 
 		static std::unique_ptr<task> make_fence(
 		    task_id tid, buffer_access_map access_map, side_effect_map side_effect_map, std::unique_ptr<fence_promise> fence_promise) {
-			return std::unique_ptr<task>(new task(tid, task_type::fence, collective_group_id{}, task_geometry{}, nullptr, std::move(access_map),
+			return std::unique_ptr<task>(new task(tid, task_type::fence, collective_group_id{}, task_geometry{}, {}, std::move(access_map),
 			    std::move(side_effect_map), {}, {}, std::move(fence_promise)));
 		}
 
@@ -266,7 +270,7 @@ namespace detail {
 		task_type m_type;
 		collective_group_id m_cgid;
 		task_geometry m_geometry;
-		std::unique_ptr<command_launcher_storage_base> m_launcher;
+		command_group_launcher m_launcher;
 		buffer_access_map m_access_map;
 		detail::side_effect_map m_side_effects;
 		reduction_set m_reductions;
@@ -275,7 +279,7 @@ namespace detail {
 		std::unique_ptr<fence_promise> m_fence_promise;
 		std::vector<std::shared_ptr<lifetime_extending_state>> m_attached_state;
 
-		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, std::unique_ptr<command_launcher_storage_base> launcher,
+		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, command_group_launcher launcher,
 		    buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions, detail::epoch_action epoch_action,
 		    std::unique_ptr<fence_promise> fence_promise)
 		    : m_tid(tid), m_type(type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),

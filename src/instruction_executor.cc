@@ -29,10 +29,11 @@ void instruction_executor::loop() {
 
 		bool is_complete() const {
 			return utils::match(
-			    completion_event,                                                                   //
-			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },      //
-			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); }, //
-			    [](const recv_arbiter::event& evt) { return evt.is_complete(); },                   //
+			    completion_event, //
+			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
+			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); },
+			    [](const recv_arbiter::event& evt) { return evt.is_complete(); },
+			    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; },
 			    [](const completed_synchronous) { return true; });
 		};
 	};
@@ -121,7 +122,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
 		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id()).pointer;
 		    memcpy(host_ptr, user_ptr, ibinstr.get_size());
-			return completed_synchronous();
+		    return completed_synchronous();
 	    },
 	    [&](const copy_instruction& ainstr) -> event {
 		    const auto source_base_ptr = m_allocations.at(ainstr.get_source_allocation()).pointer;
@@ -147,13 +148,15 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    }
 	    },
 	    [&](const sycl_kernel_instruction& skinstr) -> event {
-		    return m_backend_queue->launch_kernel(skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range());
+		    std::vector<void*> reduction_ptrs;     // TODO
+		    bool is_reduction_initializer = false; // TODO
+		    return m_backend_queue->launch_kernel(
+		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, is_reduction_initializer);
 	    },
-	    [](const host_kernel_instruction& hkinstr) -> event {
-		    auto& launcher = hkinstr.get_launcher();
+	    [&](const host_kernel_instruction& hkinstr) -> event {
+		    auto& launch = hkinstr.get_launcher();
 		    // TODO launch in thread pool
-		    launcher(hkinstr.get_execution_range(), hkinstr.get_global_range(), MPI_COMM_WORLD); // TOOD MPI Communicators
-		    return completed_synchronous();
+		    return launch(m_host_queue, hkinstr.get_execution_range());
 	    },
 	    [&](const send_instruction& sinstr) -> event {
 		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id()).pointer;
