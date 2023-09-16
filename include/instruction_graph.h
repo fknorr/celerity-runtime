@@ -158,7 +158,7 @@ using buffer_read_write_map = std::unordered_map<buffer_id, reads_writes>;
 class kernel_instruction : public instruction {
   public:
 	explicit kernel_instruction(const instruction_id iid, const subrange<3>& execution_range, access_allocation_map allocation_map)
-	    : instruction(iid), m_allocation_map(std::move(allocation_map)) {}
+	    : instruction(iid), m_execution_range(execution_range), m_allocation_map(std::move(allocation_map)) {}
 
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
 	const access_allocation_map& get_allocation_map() const { return m_allocation_map; }
