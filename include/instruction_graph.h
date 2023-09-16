@@ -185,6 +185,7 @@ class sycl_kernel_instruction final : public kernel_instruction {
 	sycl_kernel_launcher m_launcher;
 };
 
+// TODO rename to host_task_instruction
 class host_kernel_instruction final : public kernel_instruction {
   public:
 	using kernel_instruction::kernel_instruction;
