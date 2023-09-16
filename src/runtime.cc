@@ -214,7 +214,7 @@ namespace detail {
 		// m_exec->shutdown(); TODO ??
 		m_exec.reset();
 
-		m_d_queue->wait();
+		// m_d_queue->wait();
 		m_h_queue->wait();
 
 		if(spdlog::should_log(log_level::trace) && m_cfg->is_recording()) {
