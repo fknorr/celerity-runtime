@@ -74,7 +74,10 @@ void instruction_executor::loop() {
 				    [&](const instruction* incoming_instr) {
 					    const auto n_unmet_dependencies = static_cast<size_t>(std::count_if(
 					        incoming_instr->get_dependencies().begin(), incoming_instr->get_dependencies().end(), [&](const instruction::dependency& dep) {
-						        return pending_instructions.count(dep.node) != 0 || active_instructions.count(dep.node) != 0;
+								// TODO we really should have another unordered_set for the union of these
+						        return pending_instructions.count(dep.node) != 0
+						               || std::find(ready_instructions.begin(), ready_instructions.end(), dep.node) != ready_instructions.end()
+						               || active_instructions.count(dep.node) != 0;
 					        }));
 					    if(n_unmet_dependencies > 0) {
 						    pending_instructions.emplace(incoming_instr, pending_instruction_info{n_unmet_dependencies});
