@@ -5,13 +5,14 @@
 #include "log.h"
 #include "ranges.h"
 #include "types.h"
+#include "utils.h"
+
 
 #define CELERITY_STRINGIFY2(f) #f
 #define CELERITY_STRINGIFY(f) CELERITY_STRINGIFY2(f)
 #define CELERITY_CUDA_CHECK(f, ...)                                                                                                                            \
 	if(const auto cuda_check_result = (f)(__VA_ARGS__); cuda_check_result != cudaSuccess) {                                                                    \
-		CELERITY_CRITICAL(CELERITY_STRINGIFY(f) ": {}", cudaGetErrorString(cuda_check_result));                                                                \
-		abort();                                                                                                                                               \
+		utils::panic(CELERITY_STRINGIFY(f) ": {}", cudaGetErrorString(cuda_check_result));                                                                     \
 	}
 
 namespace celerity::detail::backend_detail {
@@ -155,7 +156,7 @@ class cuda_event final : public event {
 		switch(const auto result = cudaEventQuery(m_evt.get())) {
 		case cudaSuccess: return true;
 		case cudaErrorNotReady: return false;
-		default: CELERITY_CRITICAL("cudaEventQuery: {}", cudaGetErrorString(result)); abort();
+		default: utils::panic("cudaEventQuery: {}", cudaGetErrorString(result));
 		}
 	}
 

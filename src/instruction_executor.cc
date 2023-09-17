@@ -109,6 +109,16 @@ void instruction_executor::loop() {
 }
 
 instruction_executor::event instruction_executor::begin_executing(const instruction& instr) {
+	static constexpr auto log_accesses = [](const access_allocation_map& map) {
+		std::string acc_log;
+		for(size_t i = 0; i < map.size(); ++i) {
+			auto& aa = map[i];
+			fmt::format_to(std::back_inserter(acc_log), "{} A{} {}", i == 0 ? ", accessing" : ",", aa.aid,
+			    box(subrange(aa.offset_in_allocation, aa.buffer_subrange.range)));
+		}
+		return acc_log;
+	};
+
 	// TODO submit synchronous operations to thread pool
 	return utils::match(
 	    instr,
@@ -189,7 +199,8 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    }
 	    },
 	    [&](const sycl_kernel_instruction& skinstr) -> event {
-		    CELERITY_DEBUG("[executor] I{}: launch SYCL kernel on D{}, {}", skinstr.get_id(), skinstr.get_device_id(), skinstr.get_execution_range());
+		    CELERITY_DEBUG("[executor] I{}: launch SYCL kernel on D{}, {}{}", skinstr.get_id(), skinstr.get_device_id(), skinstr.get_execution_range(),
+		        log_accesses(skinstr.get_allocation_map()));
 
 		    std::vector<closure_hydrator::accessor_info> accessor_infos;
 		    accessor_infos.reserve(skinstr.get_allocation_map().size());
@@ -212,7 +223,8 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, is_reduction_initializer);
 	    },
 	    [&](const host_kernel_instruction& hkinstr) -> event {
-		    CELERITY_DEBUG("[executor] I{}: launch host task, {}", hkinstr.get_id(), hkinstr.get_execution_range());
+		    CELERITY_DEBUG(
+		        "[executor] I{}: launch host task, {}{}", hkinstr.get_id(), hkinstr.get_execution_range(), log_accesses(hkinstr.get_allocation_map()));
 
 		    std::vector<closure_hydrator::accessor_info> accessor_infos;
 		    accessor_infos.reserve(hkinstr.get_allocation_map().size());
