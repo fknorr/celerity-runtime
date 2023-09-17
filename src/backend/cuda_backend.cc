@@ -204,7 +204,7 @@ cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::
 		mem.copy_from_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
 		mem.copy_to_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
 		for(const auto& other_config : devices) {
-			if(other_config.native_memory == config.native_memory) continue;
+			// device can be its own "peer" - buffer resizes need to copy within the device's memory
 			mem.copy_to_peer_stream.emplace(other_config.native_memory, backend_detail::make_cuda_stream(dev.cuda_id));
 		}
 		m_impl->memories.emplace(config.native_memory, std::move(mem));
