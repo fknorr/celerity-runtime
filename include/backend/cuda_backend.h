@@ -35,7 +35,7 @@ class cuda_queue final : public queue {
   public:
 	using cuda_device_id = int;
 
-	explicit cuda_queue(const std::vector<std::pair<device_id, sycl::device>>& devices);
+	explicit cuda_queue(const std::vector<device_config>& devices);
 	~cuda_queue() override;
 
 	std::pair<void*, std::unique_ptr<event>> malloc(memory_id where, size_t size, size_t alignment) override;

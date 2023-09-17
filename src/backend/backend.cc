@@ -43,7 +43,7 @@ type get_effective_type(const sycl::device& device) {
 	return type::generic;
 }
 
-std::unique_ptr<queue> make_queue(type t, const std::vector<std::pair<device_id, sycl::device>>& devices) {
+std::unique_ptr<queue> make_queue(type t, const std::vector<device_config>& devices) {
 	assert(t != type::unknown);
 
 #if defined(CELERITY_DETAIL_BACKEND_CUDA_ENABLED)

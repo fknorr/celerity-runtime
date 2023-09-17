@@ -13,9 +13,9 @@
 
 namespace celerity::detail {
 
-instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder* const recorder)
+instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices, instruction_recorder* const recorder)
     : m_tm(tm), m_devices(std::move(devices)), m_recorder(recorder) {
-	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const auto& kv) { return memory_id(std::get<0>(kv) + 1) < max_memories; }));
+	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const device_info& info) { return info.native_memory < max_memories; }));
 	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */), epoch_action::none);
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
@@ -523,7 +523,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			auto& insn = cmd_instrs.emplace_back();
 			insn.execution_sr = subrange<3>(chunk.offset, chunk.range);
 			insn.did = did;
-			insn.mid = device_to_memory_id(did);
+			insn.mid = m_devices[did].native_memory;
 		}
 	} else {
 		// TODO oversubscribe distributed host tasks (but not if they have side effects)
@@ -532,8 +532,9 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		if(tsk.get_execution_target() == execution_target::device) {
 			// Assign work to the first device - note this may lead to load imbalance if there's multiple independent unsplittable tasks.
 			//   - but at the same time, keeping work on one device minimizes data transfers => this can only truly be solved through profiling.
-			insn.did = 0;
-			insn.mid = device_to_memory_id(insn.did);
+			const device_id did = 0;
+			insn.did = did;
+			insn.mid = m_devices[did].native_memory;
 		} else {
 			insn.mid = host_memory_id;
 		}

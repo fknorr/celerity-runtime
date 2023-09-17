@@ -104,11 +104,13 @@ struct cuda_set_device_guard {
 		CELERITY_CUDA_CHECK(cudaGetDevice, &cudid_before);
 		CELERITY_CUDA_CHECK(cudaSetDevice, cudid);
 	}
-	~cuda_set_device_guard() { CELERITY_CUDA_CHECK(cudaSetDevice, cudid_before); }
 	cuda_set_device_guard(const cuda_set_device_guard&) = delete;
+	cuda_set_device_guard(cuda_set_device_guard&&) = delete;
 	cuda_set_device_guard& operator=(const cuda_set_device_guard&) = delete;
+	cuda_set_device_guard& operator=(cuda_set_device_guard&&) = delete;
+	~cuda_set_device_guard() { CELERITY_CUDA_CHECK(cudaSetDevice, cudid_before); }
 
-	cuda_device_id cudid_before;
+	cuda_device_id cudid_before = -1;
 };
 
 struct cuda_stream_deleter {
@@ -118,7 +120,6 @@ struct cuda_stream_deleter {
 using unique_cuda_stream = std::unique_ptr<std::remove_pointer_t<cudaStream_t>, cuda_stream_deleter>;
 
 unique_cuda_stream make_cuda_stream(cuda_device_id id) {
-	cuda_set_device_guard set_device(id);
 	cudaStream_t stream;
 	CELERITY_CUDA_CHECK(cudaStreamCreateWithFlags, &stream, cudaStreamNonBlocking);
 	return unique_cuda_stream(stream);
@@ -172,27 +173,40 @@ struct cuda_queue::impl {
 	struct device {
 		cuda_device_id cuda_id;
 		sycl::queue sycl_queue;
+	};
+	struct memory {
+		cuda_device_id cuda_id;
 		backend_detail::unique_cuda_stream alloc_stream;
 		backend_detail::unique_cuda_stream copy_from_host_stream;
 		backend_detail::unique_cuda_stream copy_to_host_stream;
-		std::unordered_map<device_id, backend_detail::unique_cuda_stream> copy_to_peer_stream;
-
-		device(const sycl::device& sycl_device) : cuda_id(sycl_device.hipSYCL_device_id().get_id()), sycl_queue(sycl_device) {}
+		std::unordered_map<memory_id, backend_detail::unique_cuda_stream> copy_to_peer_stream;
 	};
+
 	std::unordered_map<device_id, device> devices;
+	std::unordered_map<memory_id, memory> memories;
 };
 
-cuda_queue::cuda_queue(const std::vector<std::pair<device_id, sycl::device>>& devices) : m_impl(std::make_unique<impl>()) {
-	for(auto& [did, sycl_dev] : devices) {
-		impl::device dev(sycl_dev);
-		dev.alloc_stream = backend_detail::make_cuda_stream(dev.cuda_id);
-		dev.copy_from_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
-		dev.copy_to_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
-		for(auto& [other_did, _] : devices) {
-			if(other_did == did) continue;
-			dev.copy_to_peer_stream.emplace(other_did, backend_detail::make_cuda_stream(dev.cuda_id));
+cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::make_unique<impl>()) {
+	for(const auto& config : devices) {
+		assert(m_impl->devices.count(config.device_id) == 0);
+		assert(m_impl->memories.count(config.native_memory) == 0); // TODO handle devices that share memory
+
+		const cuda_device_id cuda_id = config.sycl_device.hipSYCL_device_id().get_id();
+		backend_detail::cuda_set_device_guard set_device(cuda_id);
+
+		impl::device dev{cuda_id, sycl::queue(config.sycl_device)};
+		m_impl->devices.emplace(config.device_id, std::move(dev));
+
+		impl::memory mem;
+		mem.cuda_id = cuda_id;
+		mem.alloc_stream = backend_detail::make_cuda_stream(dev.cuda_id);
+		mem.copy_from_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
+		mem.copy_to_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
+		for(const auto& other_config : devices) {
+			if(other_config.native_memory == config.native_memory) continue;
+			mem.copy_to_peer_stream.emplace(other_config.native_memory, backend_detail::make_cuda_stream(dev.cuda_id));
 		}
-		m_impl->devices.emplace(did, std::move(dev));
+		m_impl->memories.emplace(config.native_memory, std::move(mem));
 	}
 }
 
@@ -205,9 +219,10 @@ std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id wher
 		CELERITY_CUDA_CHECK(cudaMallocHost, &ptr, size, cudaHostAllocDefault);
 		evt = std::make_unique<cuda_host_event>();
 	} else {
-		const auto& dev = m_impl->devices.at(to_device_id(where));
-		CELERITY_CUDA_CHECK(cudaMallocAsync, &ptr, size, dev.alloc_stream.get());
-		evt = cuda_event::record(dev.alloc_stream.get());
+		const auto& mem = m_impl->memories.at(where);
+		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
+		CELERITY_CUDA_CHECK(cudaMallocAsync, &ptr, size, mem.alloc_stream.get());
+		evt = cuda_event::record(mem.alloc_stream.get());
 	}
 	assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
 	return {ptr, std::move(evt)};
@@ -218,9 +233,10 @@ std::unique_ptr<event> cuda_queue::free(const memory_id where, void* const alloc
 		CELERITY_CUDA_CHECK(cudaFreeHost, allocation);
 		return std::make_unique<cuda_host_event>();
 	} else {
-		const auto& dev = m_impl->devices.at(to_device_id(where));
-		CELERITY_CUDA_CHECK(cudaFreeAsync, allocation, dev.alloc_stream.get());
-		return cuda_event::record(dev.alloc_stream.get());
+		const auto& mem = m_impl->memories.at(where);
+		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
+		CELERITY_CUDA_CHECK(cudaFreeAsync, allocation, mem.alloc_stream.get());
+		return cuda_event::record(mem.alloc_stream.get());
 	}
 }
 
@@ -228,9 +244,13 @@ std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const m
     void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
     const id<3>& target_offset, const range<3>& copy_range) {
 	assert(source != host_memory_id || dest != host_memory_id);
-	const auto stream = source == host_memory_id ? m_impl->devices.at(to_device_id(dest)).copy_from_host_stream.get()
-	                    : dest == host_memory_id ? m_impl->devices.at(to_device_id(source)).copy_to_host_stream.get()
-	                                             : m_impl->devices.at(to_device_id(source)).copy_to_peer_stream.at(to_device_id(dest)).get();
+
+	const auto& memory = source == host_memory_id ? m_impl->memories.at(dest) : m_impl->memories.at(source);
+	const auto stream = source == host_memory_id ? memory.copy_from_host_stream.get()
+	                    : dest == host_memory_id ? memory.copy_to_host_stream.get()
+	                                             : memory.copy_to_peer_stream.at(dest).get();
+
+	backend_detail::cuda_set_device_guard set_device(memory.cuda_id);
 
 	const auto dispatch_memcpy = [&](const auto dims) {
 		backend_detail::memcpy_strided_device_cuda(stream, source_base_ptr, target_base_ptr, elem_size, range_cast<dims.value>(source_range),

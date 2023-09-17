@@ -69,24 +69,31 @@ std::vector<sycl::device> get_device_vector(const std::vector<std::pair<device_i
 	return vector;
 }
 
-generic_queue::generic_queue(const std::vector<std::pair<device_id, sycl::device>>& devices) : m_context(get_device_vector(devices)) {
-	for(const auto& [did, sycl_dev] : devices) {
-		m_device_queues.emplace(did, sycl::queue(m_context, sycl_dev));
+generic_queue::generic_queue(const std::vector<device_config>& devices) {
+	m_memory_queues.emplace(host_memory_id, sycl::queue());
+
+	for(const auto& config : devices) {
+		assert(m_device_queues.count(config.device_id) == 0);
+		assert(m_memory_queues.count(config.native_memory) == 0); // TODO handle devices that share memory
+
+		sycl::queue queue(config.sycl_device);
+		m_device_queues.emplace(config.device_id, queue);
+		m_memory_queues.emplace(config.native_memory, queue);
 	}
 }
 
 std::pair<void*, std::unique_ptr<event>> generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
 	void* ptr;
 	if(where == host_memory_id) {
-		ptr = sycl::aligned_alloc_host(alignment, size, m_device_queues.at(to_device_id(where)));
+		ptr = sycl::aligned_alloc_host(alignment, size, m_memory_queues.at(host_memory_id));
 	} else {
-		ptr = sycl::aligned_alloc_device(alignment, size, m_device_queues.at(to_device_id(where)));
+		ptr = sycl::aligned_alloc_device(alignment, size, m_memory_queues.at(where));
 	}
 	return {ptr, std::make_unique<sycl_event>()}; // synchronous
 }
 
-std::unique_ptr<event> generic_queue::free(const memory_id /* where */, void* const allocation) {
-	sycl::free(allocation, m_context);
+std::unique_ptr<event> generic_queue::free(const memory_id where, void* const allocation) {
+	sycl::free(allocation, m_memory_queues.at(where));
 	return std::make_unique<sycl_event>(); // synchronous
 }
 
@@ -94,7 +101,7 @@ std::unique_ptr<event> generic_queue::memcpy_strided_device(const int dims, cons
     void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
     const id<3>& target_offset, const range<3>& copy_range) {
 	assert(source != host_memory_id || target != host_memory_id);
-	auto& queue = m_device_queues.at(to_device_id(source == host_memory_id ? target : source));
+	auto& queue = m_memory_queues.at(source == host_memory_id ? target : source);
 	const auto dispatch_memcpy = [&](const auto dims) {
 		return std::make_unique<sycl_event>(backend_detail::memcpy_strided_device_generic(queue, source_base_ptr, target_base_ptr, elem_size,
 		    range_cast<dims.value>(source_range), id_cast<dims.value>(source_offset), range_cast<dims.value>(target_range), id_cast<dims.value>(target_offset),

@@ -83,14 +83,4 @@ constexpr node_id master_node_id = 0;
 
 inline constexpr memory_id host_memory_id = 0; // backend-allocated memory, usually pinned
 
-// TODO  .--- these should not exist as pure functions! On some platforms the (pinned) host memory and device memory are identical, and there might not be a
-//       v    defined device_id -> memory_id mapping at all!
-
-inline memory_id to_memory_id(const device_id& did) { return did + 1; }
-
-inline device_id to_device_id(const memory_id& mid) {
-	assert(mid != host_memory_id);
-	return mid - 1;
-}
-
 } // namespace celerity::detail

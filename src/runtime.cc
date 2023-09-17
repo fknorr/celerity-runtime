@@ -159,12 +159,35 @@ namespace detail {
 		m_cdag = std::make_unique<command_graph>();
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>(m_task_mngr.get(), m_buffer_mngr.get());
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
+
+		// TODO very simplistic device selection: Select all GPUs, and assume that each has their own distinct memory
+		auto gpus = sycl::device::get_devices(sycl::info::device_type::gpu);
+		if(gpus.empty()) utils::panic("No GPUs found!");
+
+		const auto backend_type = backend::get_type(gpus[0]);
+		if(!std::all_of(gpus.begin(), gpus.end(), [&](const sycl::device& d) { return backend::get_type(d) == backend_type; })) {
+			utils::panic("Found multiple GPUs with different backends!");
+		}
+
+		std::vector<backend::device_config> backend_devices(gpus.size());
+		for(size_t i = 0; i < gpus.size(); ++i) {
+			backend_devices[i].device_id = i;
+			backend_devices[i].native_memory = 1 + i;
+			backend_devices[i].sycl_device = gpus[i];
+
+			CELERITY_INFO("Using device D{}, memory M{}: {} {}", backend_devices[i].device_id, backend_devices[i].native_memory,
+			    gpus[i].get_info<sycl::info::device::vendor>(), backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
+		}
+		m_exec = std::make_unique<instruction_executor>(
+		    backend::make_queue(backend_type, backend_devices), mpi_communicator_factory(MPI_COMM_WORLD), static_cast<instruction_executor::delegate*>(this));
+
+		std::vector<instruction_graph_generator::device_info> device_infos(gpus.size());
+		for(size_t i = 0; i < gpus.size(); ++i) {
+			device_infos[i].native_memory = memory_id(1 + i);
+		}
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
-		auto device = utils::match(user_device_or_selector, [&](const auto& value) { return pick_device(*m_cfg, value, cl::sycl::platform::get_platforms()); });
-		auto iggen = std::make_unique<instruction_graph_generator>(
-		    *m_task_mngr, std::map<device_id, instruction_graph_generator::device_info>{{device_id(0), {}}}, m_instruction_recorder.get());
-		m_exec = std::make_unique<instruction_executor>(backend::make_queue(backend::get_type(device), {{device_id(0), device}}),
-		    mpi_communicator_factory(MPI_COMM_WORLD), static_cast<instruction_executor::delegate*>(this));
+		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, std::move(device_infos), m_instruction_recorder.get());
+
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), *m_exec);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 

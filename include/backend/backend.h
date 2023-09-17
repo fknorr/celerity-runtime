@@ -55,6 +55,6 @@ void memcpy_strided_device(sycl::queue& queue, const void* source_base_ptr, void
 	});
 }
 
-std::unique_ptr<queue> make_queue(type t, const std::vector<std::pair<device_id, sycl::device>>& devices);
+std::unique_ptr<queue> make_queue(type t, const std::vector<device_config>& devices);
 
 } // namespace celerity::detail::backend

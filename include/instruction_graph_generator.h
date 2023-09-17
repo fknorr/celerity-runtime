@@ -9,8 +9,9 @@
 #include "types.h"
 
 #include <bitset>
-#include <set>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace celerity::detail {
 
@@ -21,11 +22,11 @@ class instruction_recorder;
 class instruction_graph_generator {
   public:
 	struct device_info {
-		// - which backends are supported?
-		// - which memory_id is "native" and which ones can be copied to / from?
+		memory_id native_memory;
+		// - which backends / features are supported?
 	};
 
-	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder* recorder);
+	explicit instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices, instruction_recorder* recorder);
 
 	void create_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align, bool host_initialized);
 
@@ -183,7 +184,7 @@ class instruction_graph_generator {
 	allocation_id m_next_aid = 0;
 	int m_next_p2p_tag = 10;
 	const task_manager& m_tm;
-	std::map<device_id, device_info> m_devices;
+	std::vector<device_info> m_devices;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
 	std::unordered_set<instruction*> m_execution_front;
@@ -210,10 +211,6 @@ class instruction_graph_generator {
 		from.add_dependency({&to, kind, dependency_origin::instruction});
 		if(kind == dependency_kind::true_dep) { m_execution_front.erase(&to); }
 	}
-
-	// This mapping will differ for architectures that share memory between host and device or between devices.
-	// TODO we want a class like detail::local_devices to do the conversion, but without the runtime dependency (i.e. host_queue).
-	memory_id device_to_memory_id(const device_id did) const { return to_memory_id(did); /* see impl - this is broken! */ }
 
 	void apply_epoch(instruction* const epoch) {
 		for(auto& [_, buffer] : m_buffers) {

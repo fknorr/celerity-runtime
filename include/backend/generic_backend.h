@@ -34,7 +34,7 @@ namespace celerity::detail::backend {
 
 class generic_queue : public queue {
   public:
-	explicit generic_queue(const std::vector<std::pair<device_id, sycl::device>>& devices);
+	explicit generic_queue(const std::vector<device_config>& devices);
 
 	std::pair<void*, std::unique_ptr<event>> malloc(memory_id where, size_t size, size_t alignment) override;
 
@@ -48,8 +48,8 @@ class generic_queue : public queue {
 	    const std::vector<void*>& reduction_ptrs, bool is_reduction_initializer) override;
 
   private:
-	sycl::context m_context;
 	std::unordered_map<device_id, sycl::queue> m_device_queues;
+	std::unordered_map<memory_id, sycl::queue> m_memory_queues;
 };
 
 } // namespace celerity::detail::backend

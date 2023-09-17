@@ -32,6 +32,12 @@ class sycl_event : public event {
 	mutable std::vector<sycl::event> m_incomplete;
 };
 
+struct device_config {
+	device_id device_id = 0;
+	memory_id native_memory = 1;
+	sycl::device sycl_device;
+};
+
 class queue {
   public:
 	queue() = default;
