@@ -317,6 +317,13 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<b>init buffer</b> B{}<br/>via M0.A{}, {} bytes", ibinstr.buffer_id, ibinstr.host_allocation_id, ibinstr.size);
 			    end_node();
 		    },
+		    [&](const export_instruction_record& einstr) {
+			    begin_node(einstr, "ellipse", "green3");
+			    fmt::format_to(back, "I{}<br/>", einstr.id);
+			    fmt::format_to(back, "<b>export</b> from M0.A{} ({})+{}, {}D {}x{} bytes", einstr.host_allocation_id, einstr.allocation_range,
+			        einstr.offset_in_allocation, einstr.dimensions, einstr.copy_range, einstr.element_size);
+			    end_node();
+		    },
 		    [&](const copy_instruction_record& cinstr) {
 			    begin_node(cinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", cinstr.id);
@@ -371,6 +378,15 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    print_buffer_range(rinstr.buffer_id, subrange(rinstr.offset_in_buffer, rinstr.recv_range));
 			    fmt::format_to(back, "<br/>to A{} ({}) +{}, {}x{} bytes", rinstr.dest_allocation_id, rinstr.allocation_range, rinstr.offset_in_allocation,
 			        rinstr.recv_range, rinstr.element_size);
+			    end_node();
+		    },
+		    [&](const fence_instruction_record& finstr) {
+			    begin_node(finstr, "box,margin=0.1", "darkorange");
+			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>fence</b><br/>", finstr.id, finstr.tid, finstr.cid);
+			    utils::match(
+			        finstr.variant, //
+			        [&](const fence_instruction_record::buffer_variant& buffer) { print_buffer_range(buffer.bid, buffer.box); },
+			        [&](const fence_instruction_record::host_object_variant& obj) { fmt::format_to(back, "<br/>H{}", obj.hoid); });
 			    end_node();
 		    },
 		    [&](const horizon_instruction_record& hinstr) {

@@ -752,6 +752,58 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 	}
 }
 
+
+void instruction_graph_generator::compile_fence_command(const fence_command& fcmd) {
+	const auto& tsk = *m_tm.get_task(fcmd.get_tid());
+	const auto& bam = tsk.get_buffer_access_map();
+	const auto& sem = tsk.get_side_effect_map();
+
+	// the fact that fence tasks use buffer_access_map and side_effect_map to describe their source is rather ugly
+	assert(bam.get_num_accesses() + sem.size() == 1);
+
+	for(const auto bid : bam.get_accessed_buffers()) {
+		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zero); // fence uses a fixed range mapper
+		assert(region.get_boxes().size() == 1);
+		const auto box = region.get_boxes().front();
+		// TODO explicitly verify support for empty-range buffer fences
+
+		auto& buffer = m_buffers.at(bid);
+		auto& memory = buffer.memories.at(host_memory_id);
+		if(!memory.is_allocated_contiguously(box)) { allocate_contiguously(bid, host_memory_id, {box}); }
+		const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
+		assert(allocation != nullptr);
+
+		satisfy_read_requirements(bid, {{host_memory_id, box}});
+
+		// TODO this should become copy_instruction as soon as IGGEN supports user_memory_id
+		const auto export_instr = &create<export_instruction>(allocation->aid, buffer.dims, allocation->box.get_range(),
+		    box.get_offset() - allocation->box.get_offset(), box.get_range(), buffer.elem_size, tsk.get_fence_promise()->get_snapshot_pointer());
+		for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
+			assert(dep_instr != nullptr);
+			add_dependency(*export_instr, *dep_instr, dependency_kind::true_dep);
+		}
+		allocation->record_read(box, export_instr);
+
+		const auto fence_instr = &create<fence_instruction>(tsk.get_fence_promise());
+		add_dependency(*fence_instr, *export_instr, dependency_kind::true_dep);
+
+		if(m_recorder != nullptr) {
+			*m_recorder << export_instruction_record(*export_instr);
+			*m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), bid, box.get_subrange());
+		}
+	}
+
+	for(const auto [hoid, _] : sem) {
+		auto& obj = m_host_objects.at(hoid);
+		const auto fence_instr = &create<fence_instruction>(tsk.get_fence_promise());
+		add_dependency(*fence_instr, *obj.last_side_effect, dependency_kind::true_dep);
+		obj.last_side_effect = fence_instr;
+
+		if(m_recorder != nullptr) { *m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), hoid); }
+	}
+}
+
+
 template <typename Iterator>
 bool is_topologically_sorted(Iterator begin, Iterator end) {
 	for(auto check = begin; check != end; ++check) {
@@ -797,8 +849,9 @@ std::vector<const instruction*> instruction_graph_generator::compile(const abstr
 		    m_last_horizon = nullptr;
 		    if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*epoch, ecmd.get_cid()); }
 	    },
-	    [](const reduction_command& rcmd) { utils::panic("unhandled command type"); },
-	    [](const fence_command& fcmd) { utils::panic("unhandled command type"); });
+	    [&](const reduction_command& rcmd) { utils::panic("unhandled command type"); }, //
+	    [&](const fence_command& fcmd) { compile_fence_command(fcmd); }                 //
+	);
 
 	if(m_recorder != nullptr) {
 		for(const auto instr : m_current_batch) {

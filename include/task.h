@@ -156,6 +156,7 @@ namespace detail {
 		virtual ~fence_promise() = default;
 
 		virtual void fulfill() = 0;
+		virtual void* get_snapshot_pointer() = 0;
 	};
 
 	struct task_geometry {
@@ -276,6 +277,8 @@ namespace detail {
 		reduction_set m_reductions;
 		std::string m_debug_name;
 		detail::epoch_action m_epoch_action;
+		// TODO I believe that `struct task` should not store command_group_launchers, fence_promise or other state that is related to execution instead of
+		// abstract DAG building. For user-initialized buffers we already notify the runtime -> executor of this state directly. Maybe also do that for these.
 		std::unique_ptr<fence_promise> m_fence_promise;
 		std::vector<std::shared_ptr<lifetime_extending_state>> m_attached_state;
 

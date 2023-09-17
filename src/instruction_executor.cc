@@ -74,7 +74,7 @@ void instruction_executor::loop() {
 				    [&](const instruction* incoming_instr) {
 					    const auto n_unmet_dependencies = static_cast<size_t>(std::count_if(
 					        incoming_instr->get_dependencies().begin(), incoming_instr->get_dependencies().end(), [&](const instruction::dependency& dep) {
-								// TODO we really should have another unordered_set for the union of these
+						        // TODO we really should have another unordered_set for the union of these
 						        return pending_instructions.count(dep.node) != 0
 						               || std::find(ready_instructions.begin(), ready_instructions.end(), dep.node) != ready_instructions.end()
 						               || active_instructions.count(dep.node) != 0;
@@ -137,6 +137,28 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
 		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id()).pointer;
 		    memcpy(host_ptr, user_ptr, ibinstr.get_size());
+		    return completed_synchronous();
+	    },
+	    [&](const export_instruction& einstr) -> event {
+		    CELERITY_DEBUG("[executor] I{}: export M0.A{} ({})+{}, {}x{} bytes", einstr.get_id(), einstr.get_host_allocation_id(),
+		        einstr.get_allocation_range(), einstr.get_offset_in_allocation(), einstr.get_copy_range(), einstr.get_element_size());
+
+		    const auto dest_ptr = einstr.get_out_pointer(); // TODO very naughty
+		    const auto source_base_ptr = m_allocations.at(einstr.get_host_allocation_id()).pointer;
+
+		    // TODO copy-pasted,but export_instruction will be removed anyway
+		    const auto dispatch_copy = [&](const auto dims) {
+			    memcpy_strided_host(source_base_ptr, dest_ptr, einstr.get_element_size(), range_cast<dims.value>(einstr.get_allocation_range()),
+			        id_cast<dims.value>(einstr.get_offset_in_allocation()), range_cast<dims.value>(einstr.get_copy_range()), id<dims.value>(),
+			        range_cast<dims.value>(einstr.get_copy_range()));
+		    };
+		    switch(einstr.get_dimensions()) {
+		    case 0: dispatch_copy(std::integral_constant<int, 0>()); break;
+		    case 1: dispatch_copy(std::integral_constant<int, 1>()); break;
+		    case 2: dispatch_copy(std::integral_constant<int, 2>()); break;
+		    case 3: dispatch_copy(std::integral_constant<int, 3>()); break;
+		    default: abort();
+		    }
 		    return completed_synchronous();
 	    },
 	    [&](const copy_instruction& cinstr) -> event {
@@ -224,6 +246,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto allocation_base = m_allocations.at(rinstr.get_dest_allocation_id()).pointer;
 		    return m_recv_arbiter.begin_aggregated_recv(rinstr.get_transfer_id(), rinstr.get_buffer_id(), allocation_base, rinstr.get_allocation_range(),
 		        rinstr.get_offset_in_buffer(), rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size());
+	    },
+	    [&](const fence_instruction& finstr) -> event {
+		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
+		    finstr.get_promise()->fulfill();
+		    return completed_synchronous();
 	    },
 	    [&](const horizon_instruction& hinstr) -> event {
 		    CELERITY_DEBUG("[executor] I{}: horizon", hinstr.get_id());

@@ -175,6 +175,17 @@ struct init_buffer_instruction_record : instruction_record_base {
 	explicit init_buffer_instruction_record(const init_buffer_instruction& ibinstr);
 };
 
+struct export_instruction_record : instruction_record_base {
+	allocation_id host_allocation_id;
+	int dimensions;
+	range<3> allocation_range;
+	celerity::id<3> offset_in_allocation;
+	range<3> copy_range;
+	size_t element_size;
+
+	explicit export_instruction_record(const export_instruction& einstr);
+};
+
 struct copy_instruction_record : instruction_record_base {
 	enum class copy_origin {
 		linearize,
@@ -244,6 +255,23 @@ struct recv_instruction_record : instruction_record_base {
 	recv_instruction_record(const recv_instruction& rinstr);
 };
 
+struct fence_instruction_record : instruction_record_base {
+	struct buffer_variant {
+		buffer_id bid;
+		box<3> box;
+	};
+	struct host_object_variant {
+		host_object_id hoid;
+	};
+
+	task_id tid;
+	command_id cid;
+	std::variant<buffer_variant, host_object_variant> variant;
+
+	fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, buffer_id bid, const box<3>& box);
+	fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, host_object_id hoid);
+};
+
 struct horizon_instruction_record : instruction_record_base {
 	task_id horizon_task_id;
 	command_id horizon_command_id;
@@ -259,8 +287,9 @@ struct epoch_instruction_record : instruction_record_base {
 	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid);
 };
 
-using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, init_buffer_instruction_record, copy_instruction_record,
-    kernel_instruction_record, send_instruction_record, recv_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, init_buffer_instruction_record, export_instruction_record,
+    copy_instruction_record, kernel_instruction_record, send_instruction_record, recv_instruction_record, fence_instruction_record, horizon_instruction_record,
+    epoch_instruction_record>;
 
 struct pilot_message_record : pilot_message {
 	node_id receiver;

@@ -120,6 +120,10 @@ class instruction_graph_generator {
 			return it != allocations.end() ? &*it : nullptr;
 		}
 
+		buffer_memory_per_allocation_data* find_contiguous_allocation(const box<3>& box) {
+			return const_cast<buffer_memory_per_allocation_data*>(std::as_const(*this).find_contiguous_allocation(box));
+		}
+
 		bool is_allocated_contiguously(const box<3>& box) const { return find_contiguous_allocation(box) != nullptr; }
 
 		void apply_epoch(instruction* const epoch) {
@@ -186,7 +190,7 @@ class instruction_graph_generator {
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;
-	std::vector<const instruction*> m_current_batch;
+	std::vector<const instruction*> m_current_batch; // TODO this should NOT be a member but an output parameter to compile_*()
 	instruction_recorder* m_recorder;
 
 	static memory_id next_location(const data_location& location, memory_id first);
@@ -251,6 +255,8 @@ class instruction_graph_generator {
 	void compile_execution_command(const execution_command& ecmd);
 
 	void compile_push_command(const push_command& pcmd);
+
+	void compile_fence_command(const fence_command& fcmd);
 };
 
 } // namespace celerity::detail

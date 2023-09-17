@@ -15,20 +15,22 @@ class instruction;
 class alloc_instruction;
 class free_instruction;
 class init_buffer_instruction;
+class export_instruction;
 class copy_instruction;
 class kernel_instruction;
 class sycl_kernel_instruction;
 class host_kernel_instruction;
 class send_instruction;
 class recv_instruction;
+class fence_instruction;
 class horizon_instruction;
 class epoch_instruction;
 
 class instruction : public intrusive_graph_node<instruction> {
   public:
-	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const init_buffer_instruction&, const copy_instruction&,
-	    const sycl_kernel_instruction&, const host_kernel_instruction&, const send_instruction&, const recv_instruction&, const horizon_instruction&,
-	    const epoch_instruction&>;
+	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const init_buffer_instruction&, const export_instruction&,
+	    const copy_instruction&, const sycl_kernel_instruction&, const host_kernel_instruction&, const send_instruction&, const recv_instruction&,
+	    const fence_instruction&, const horizon_instruction&, const epoch_instruction&>;
 
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -77,6 +79,7 @@ class free_instruction final : public instruction {
 	allocation_id m_aid;
 };
 
+// TODO temporary until IGGEN supports user_memory_id and multi-hop copies (then this will become a copy_instruction)
 class init_buffer_instruction final : public instruction {
   public:
 	explicit init_buffer_instruction(const instruction_id iid, const buffer_id bid, const allocation_id host_aid, const size_t size_bytes)
@@ -92,6 +95,34 @@ class init_buffer_instruction final : public instruction {
 	buffer_id m_bid;
 	allocation_id m_host_aid;
 	size_t m_size_bytes;
+};
+
+// TODO temporary until IGGEN supports user_memory_id (then this will become a copy_instruction)
+class export_instruction final : public instruction {
+  public:
+	explicit export_instruction(const instruction_id iid, const allocation_id host_aid, const int dims, const range<3>& allocation_range,
+	    const id<3>& offset_in_allocation, const range<3>& copy_range, size_t elem_size, void* out_pointer)
+	    : instruction(iid), m_host_aid(host_aid), m_dims(dims), m_allocation_range(allocation_range), m_offset_in_allocation(offset_in_allocation),
+	      m_copy_range(copy_range), m_elem_size(elem_size), m_out_pointer(out_pointer) {}
+
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+
+	allocation_id get_host_allocation_id() const { return m_host_aid; }
+	int get_dimensions() const { return m_dims; }
+	range<3> get_allocation_range() const { return m_allocation_range; }
+	id<3> get_offset_in_allocation() const { return m_offset_in_allocation; }
+	range<3> get_copy_range() const { return m_copy_range; }
+	size_t get_element_size() const { return m_elem_size; }
+	void* get_out_pointer() const { return m_out_pointer; }
+
+  private:
+	allocation_id m_host_aid;
+	int m_dims; // TODO does this actually need to know dimensions or can we just copy by effective_dims?
+	range<3> m_allocation_range;
+	id<3> m_offset_in_allocation;
+	range<3> m_copy_range;
+	size_t m_elem_size;
+	void* m_out_pointer; // TODO very naughty
 };
 
 // copy_instruction: either copy or linearize
@@ -124,7 +155,7 @@ class copy_instruction final : public instruction {
 	allocation_id m_source_allocation;
 	memory_id m_dest_memory;
 	allocation_id m_dest_allocation;
-	int m_dims;
+	int m_dims; // TODO does this actually need to know dimensions or can we just copy by effective_dims?
 	range<3> m_source_range;
 	range<3> m_dest_range;
 	id<3> m_offset_in_source;
@@ -269,6 +300,18 @@ class recv_instruction final : public instruction {
 	id<3> m_offset_in_buffer;
 	range<3> m_recv_range;
 	size_t m_elem_size;
+};
+
+class fence_instruction final : public instruction {
+  public:
+	explicit fence_instruction(const instruction_id iid, fence_promise* promise) : instruction(iid), m_promise(promise) {}
+
+	fence_promise* get_promise() const { return m_promise; };
+
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+
+  private:
+	fence_promise* m_promise;
 };
 
 class horizon_instruction final : public instruction {

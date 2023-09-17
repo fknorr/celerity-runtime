@@ -200,6 +200,11 @@ free_instruction_record::free_instruction_record(const free_instruction& finstr,
 init_buffer_instruction_record::init_buffer_instruction_record(const init_buffer_instruction& ibinstr)
     : instruction_record_base(ibinstr), buffer_id(ibinstr.get_buffer_id()), host_allocation_id(ibinstr.get_host_allocation_id()), size(ibinstr.get_size()) {}
 
+export_instruction_record::export_instruction_record(const export_instruction& einstr)
+    : instruction_record_base(einstr), host_allocation_id(einstr.get_host_allocation_id()), dimensions(einstr.get_dimensions()),
+      allocation_range(einstr.get_allocation_range()), offset_in_allocation(einstr.get_offset_in_allocation()), copy_range(einstr.get_copy_range()),
+      element_size(einstr.get_element_size()) {}
+
 copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, const detail::box<3>& box)
     : instruction_record_base(cinstr), source_memory(cinstr.get_source_memory()), source_allocation(cinstr.get_source_allocation()),
       dest_memory(cinstr.get_dest_memory()), dest_allocation(cinstr.get_dest_allocation()), dimensions(cinstr.get_dimensions()),
@@ -228,6 +233,12 @@ recv_instruction_record::recv_instruction_record(const recv_instruction& rinstr)
       dest_allocation_id(rinstr.get_dest_allocation_id()), allocation_range(rinstr.get_allocation_range()),
       offset_in_allocation(rinstr.get_offset_in_allocation()), offset_in_buffer(rinstr.get_offset_in_buffer()), recv_range(rinstr.get_recv_range()),
       element_size(rinstr.get_element_size()) {}
+
+fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, buffer_id bid, const box<3>& box)
+    : instruction_record_base(finstr), tid(tid), cid(cid), variant(buffer_variant{bid, box}) {}
+
+fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, host_object_id hoid)
+    : instruction_record_base(finstr), tid(tid), cid(cid), variant(host_object_variant{hoid}) {}
 
 horizon_instruction_record::horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid)
     : instruction_record_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid) {}
