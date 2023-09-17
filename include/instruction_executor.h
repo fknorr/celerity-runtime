@@ -7,7 +7,6 @@
 #include "recv_arbiter.h"
 
 namespace celerity::detail {
-
 class instruction_executor final : private communicator::delegate {
   public:
 	class delegate {

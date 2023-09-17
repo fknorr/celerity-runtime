@@ -252,6 +252,17 @@ namespace detail {
 
 	host_object_manager& runtime::get_host_object_manager() const { return *m_host_object_mngr; }
 
+	host_object_id runtime::create_host_object() {
+		const auto hoid = m_host_object_mngr->create_host_object();
+		m_schdlr->notify_host_object_created(hoid);
+		return hoid;
+	}
+
+	void runtime::destroy_host_object(host_object_id hoid) {
+		m_schdlr->notify_host_object_destroyed(hoid);
+		m_host_object_mngr->destroy_host_object(hoid);
+	}
+
 	std::string runtime::gather_command_graph() const {
 		assert(m_command_recorder.get() != nullptr);
 		const auto graph_str = print_command_graph(m_local_nid, *m_command_recorder);
@@ -292,7 +303,7 @@ namespace detail {
 			m_exec->announce_buffer_user_pointer(bid, info.host_init_ptr);
 		}
 		m_task_mngr->add_buffer(bid, info.dimensions, info.range, info.is_host_initialized);
-		m_schdlr->notify_buffer_registered(bid, info.dimensions, info.range, info.element_size, info.element_align, info.is_host_initialized);
+		m_schdlr->notify_buffer_created(bid, info.dimensions, info.range, info.element_size, info.element_align, info.is_host_initialized);
 	}
 
 	void runtime::handle_buffer_unregistered(buffer_id bid) { maybe_destroy_runtime(); }

@@ -54,9 +54,21 @@ namespace detail {
 						    }
 					    }
 				    },
-				    [&](const event_buffer_registered& e) { //
+				    [&](const event_buffer_created& e) {
 					    m_dggen->add_buffer(e.bid, e.dims, e.range);
-					    m_iggen->register_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.host_initialized);
+					    m_iggen->create_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.host_initialized);
+				    },
+				    [&](const event_buffer_destroyed& e) {
+					    // TODO clear tracking structures in dggen
+					    m_iggen->destroy_buffer(e.bid);
+				    },
+				    [&](const event_host_object_created& e) {
+					    // TODO switch dggen to explicit host object creation
+					    m_iggen->create_host_object(e.hoid);
+				    },
+				    [&](const event_host_object_destroyed& e) {
+					    // TODO clear tracking structures in dggen
+					    m_iggen->destroy_host_object(e.hoid);
 				    },
 				    [&](const event_shutdown&) {
 					    assert(in_flight_events.empty());

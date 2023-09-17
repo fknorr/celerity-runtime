@@ -21,7 +21,7 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 	m_last_epoch = initial_epoch;
 }
 
-void instruction_graph_generator::register_buffer(
+void instruction_graph_generator::create_buffer(
     buffer_id bid, int dims, range<3> range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
 	const auto n_memories = m_devices.size() + 1; // + host_memory_id -- this is faulty just like device_to_memory_id()!
 	const auto [iter, inserted] = m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, n_memories));
@@ -59,18 +59,37 @@ void instruction_graph_generator::register_buffer(
 	}
 }
 
-void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, std::string name) {
+void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, const std::string& name) {
+	assert(m_buffers.count(bid) != 0);
 	if(m_recorder != nullptr) { m_recorder->record_buffer_debug_name(bid, name); }
 }
 
-void instruction_graph_generator::unregister_buffer(buffer_id bid) { m_buffers.erase(bid); }
+void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
+	auto& buffer = m_buffers.at(bid);
+	for(auto& memory : buffer.memories) {
+		for(auto& allocation : memory.allocations) {
+			const auto free_instr = &create<free_instruction>(allocation.aid);
+			for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) {
+				for(const auto access_instr : front.front) {
+					add_dependency(*free_instr, *access_instr, dependency_kind::true_dep);
+				}
+			}
+		}
+	}
 
-void instruction_graph_generator::register_host_object(host_object_id hoid) {
-	[[maybe_unused]] const auto [_, inserted] = m_host_objects.emplace(hoid, per_host_object_data());
-	assert(inserted);
+	m_buffers.erase(bid);
 }
 
-void instruction_graph_generator::unregister_host_object(host_object_id hoid) { m_host_objects.erase(hoid); }
+void instruction_graph_generator::create_host_object(const host_object_id hoid) {
+	assert(m_host_objects.count(hoid) == 0);
+	m_host_objects.emplace(hoid, per_host_object_data());
+}
+
+void instruction_graph_generator::destroy_host_object(const host_object_id hoid) {
+	assert(m_host_objects.count(hoid) != 0);
+	// TODO insert an instruction that destroys the host object (instance must be managed by the executor!)
+	m_host_objects.erase(hoid);
+}
 
 
 memory_id instruction_graph_generator::next_location(const data_location& location, memory_id first) {

@@ -27,15 +27,15 @@ class instruction_graph_generator {
 
 	explicit instruction_graph_generator(const task_manager& tm, std::map<device_id, device_info> devices, instruction_recorder* recorder);
 
-	void register_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align, bool host_initialized);
+	void create_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align, bool host_initialized);
 
-	void set_buffer_debug_name(buffer_id bid, std::string name);
+	void set_buffer_debug_name(buffer_id bid, const std::string& name);
 
-	void unregister_buffer(buffer_id bid);
+	void destroy_buffer(buffer_id bid);
 
-	void register_host_object(host_object_id hoid);
+	void create_host_object(host_object_id hoid);
 
-	void unregister_host_object(host_object_id hoid);
+	void destroy_host_object(host_object_id hoid);
 
 	// Resulting instructions are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
 	std::vector<const instruction*> compile(const abstract_command& cmd);

@@ -35,10 +35,16 @@ namespace detail {
 		 */
 		void notify_task_created(const task* const tsk) { notify(event_task_available{tsk}); }
 
-		void notify_buffer_registered(
+		void notify_buffer_created(
 		    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
-			notify(event_buffer_registered{bid, dims, range, elem_size, elem_align, host_initialized});
+			notify(event_buffer_created{bid, dims, range, elem_size, elem_align, host_initialized});
 		}
+
+		void notify_buffer_destroyed(const buffer_id bid) { notify(event_buffer_destroyed{bid}); }
+
+		void notify_host_object_created(const host_object_id hoid) { notify(event_host_object_created{hoid}); }
+
+		void notify_host_object_destroyed(const host_object_id hoid) { notify(event_host_object_destroyed{hoid}); }
 
 	  protected:
 		/**
@@ -54,7 +60,7 @@ namespace detail {
 		struct event_task_available {
 			const task* tsk;
 		};
-		struct event_buffer_registered {
+		struct event_buffer_created {
 			buffer_id bid;
 			int dims;
 			celerity::range<3> range;
@@ -62,7 +68,17 @@ namespace detail {
 			size_t elem_align;
 			bool host_initialized;
 		};
-		using event = std::variant<event_shutdown, event_task_available, event_buffer_registered>;
+		struct event_buffer_destroyed {
+			buffer_id bid;
+		};
+		struct event_host_object_created {
+			host_object_id hoid;
+		};
+		struct event_host_object_destroyed {
+			host_object_id hoid;
+		};
+		using event = std::variant<event_shutdown, event_task_available, event_buffer_created, event_buffer_destroyed, event_host_object_created,
+		    event_host_object_destroyed>;
 
 		bool m_is_dry_run;
 		std::unique_ptr<distributed_graph_generator> m_dggen;

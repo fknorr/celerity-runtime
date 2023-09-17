@@ -75,6 +75,10 @@ namespace detail {
 
 		host_object_manager& get_host_object_manager() const;
 
+		host_object_id create_host_object();
+
+		void destroy_host_object(host_object_id hoid);
+
 		// returns the combined command graph of all nodes on node 0, an empty string on other nodes
 		std::string gather_command_graph() const;
 
