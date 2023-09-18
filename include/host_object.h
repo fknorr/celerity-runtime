@@ -6,7 +6,6 @@
 #include <unordered_set>
 #include <utility>
 
-#include "lifetime_extending_state.h"
 #include "runtime.h"
 
 namespace celerity::experimental {
@@ -19,7 +18,7 @@ class host_object;
 namespace celerity::detail {
 
 /// Kept as a std::shared_ptr within host_objects, this notifies the runtime when the last reference to a host object goes out of scope.
-struct host_object_tracker : public lifetime_extending_state {
+struct host_object_tracker {
 	detail::host_object_id id{};
 
 	explicit host_object_tracker(detail::host_object_id id) : id(id) {}
@@ -60,8 +59,8 @@ host_object_id get_host_object_id(const experimental::host_object<T>& ho) {
 }
 
 template <typename T>
-typename experimental::host_object<T>::instance_type& get_host_object_instance(const experimental::host_object<T>& ho) {
-	return *ho.m_instance;
+typename experimental::host_object<T>::instance_type* get_host_object_instance(const experimental::host_object<T>& ho) {
+	return ho.m_instance;
 }
 
 
@@ -80,7 +79,7 @@ namespace celerity::experimental {
  * - `host_object<void>` does not carry internal state and can be used to track access to global variables or functions like `printf()`.
  */
 template <typename T>
-class host_object final : public detail::lifetime_extending_state_wrapper {
+class host_object {
 	static_assert(std::is_object_v<T>); // disallow host_object<T&&> and host_object<function-type>
 
   public:
@@ -96,9 +95,6 @@ class host_object final : public detail::lifetime_extending_state_wrapper {
 	template <typename... CtorParams>
 	explicit host_object(const std::in_place_t /* tag */, CtorParams&&... ctor_args) // requiring std::in_place avoids overriding copy and move constructors
 	    : host_object(std::make_unique<instance_wrapper>(std::in_place, std::forward<CtorParams>(ctor_args)...)) {}
-
-  protected:
-	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_tracker; }
 
   private:
 	struct instance_wrapper : public detail::host_object_instance {
@@ -119,14 +115,14 @@ class host_object final : public detail::lifetime_extending_state_wrapper {
 	friend detail::host_object_id detail::get_host_object_id(const experimental::host_object<U>& ho);
 
 	template <typename U>
-	friend typename experimental::host_object<U>::instance_type& detail::get_host_object_instance(const experimental::host_object<U>& ho);
+	friend typename experimental::host_object<U>::instance_type* detail::get_host_object_instance(const experimental::host_object<U>& ho);
 
 	std::shared_ptr<detail::host_object_tracker> m_tracker;
 	instance_type* m_instance; // owned by runtime::executor
 };
 
 template <typename T>
-class host_object<T&> final : public detail::lifetime_extending_state_wrapper {
+class host_object<T&> {
   public:
 	using instance_type = T;
 
@@ -139,22 +135,19 @@ class host_object<T&> final : public detail::lifetime_extending_state_wrapper {
 
 	explicit host_object(const std::reference_wrapper<instance_type> ref) : host_object(ref.get()) {}
 
-  protected:
-	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_tracker; }
-
   private:
 	template <typename U>
 	friend detail::host_object_id detail::get_host_object_id(const experimental::host_object<U>& ho);
 
 	template <typename U>
-	friend typename experimental::host_object<U>::instance_type& detail::get_host_object_instance(const experimental::host_object<U>& ho);
+	friend typename experimental::host_object<U>::instance_type* detail::get_host_object_instance(const experimental::host_object<U>& ho);
 
 	std::shared_ptr<detail::host_object_tracker> m_tracker;
 	instance_type* m_instance; // owned by application
 };
 
 template <>
-class host_object<void> final : public detail::lifetime_extending_state_wrapper {
+class host_object<void> {
   public:
 	using instance_type = void;
 
@@ -163,9 +156,6 @@ class host_object<void> final : public detail::lifetime_extending_state_wrapper 
 		const auto id = detail::runtime::get_instance().create_host_object();
 		m_tracker = std::make_shared<detail::host_object_tracker>(id);
 	}
-
-  protected:
-	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_tracker; }
 
   private:
 	template <typename U>

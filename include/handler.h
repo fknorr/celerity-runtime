@@ -66,7 +66,6 @@ namespace detail {
 	hydration_id add_requirement(handler& cgh, const buffer_id bid, std::unique_ptr<range_mapper_base> rm);
 	void add_requirement(handler& cgh, const host_object_id hoid, const experimental::side_effect_order order, const bool is_void);
 	void add_reduction(handler& cgh, const reduction_info& rinfo);
-	void extend_lifetime(handler& cgh, std::shared_ptr<detail::lifetime_extending_state> state);
 
 	void set_task_name(handler& cgh, const std::string& debug_name);
 
@@ -297,7 +296,6 @@ namespace detail {
 
 		const auto rid = detail::runtime::get_instance().get_reduction_manager().create_reduction<DataT, Dims>(bid, op, identity);
 		add_reduction(cgh, reduction_info{rid, bid, include_current_buffer_value});
-		extend_lifetime(cgh, std::move(get_lifetime_extending_state(vars)));
 
 		return detail::reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>{bid, op, identity, include_current_buffer_value};
 #endif
@@ -403,7 +401,6 @@ class handler {
 	friend void detail::add_reduction(handler& cgh, const detail::reduction_info& rinfo);
 	template <int Dims>
 	friend void experimental::constrain_split(handler& cgh, const range<Dims>& constraint);
-	friend void detail::extend_lifetime(handler& cgh, std::shared_ptr<detail::lifetime_extending_state> state);
 
 	friend void detail::set_task_name(handler& cgh, const std::string& debug_name);
 
@@ -415,7 +412,6 @@ class handler {
 	std::unique_ptr<detail::task> m_task = nullptr;
 	size_t m_num_collective_nodes;
 	detail::hydration_id m_next_accessor_hydration_id = 1;
-	std::vector<std::shared_ptr<detail::lifetime_extending_state>> m_attached_state;
 	std::optional<std::string> m_usr_def_task_name;
 	range<3> m_split_constraint = detail::ones;
 
@@ -467,8 +463,6 @@ class handler {
 		assert(m_task == nullptr);
 		m_reductions.push_back(rinfo);
 	}
-
-	void extend_lifetime(std::shared_ptr<detail::lifetime_extending_state> state) { m_attached_state.emplace_back(std::move(state)); }
 
 	template <int Dims>
 	void experimental_constrain_split(const range<Dims>& constraint) {
@@ -607,9 +601,6 @@ class handler {
 
 	std::unique_ptr<detail::task> into_task() && {
 		assert(m_task != nullptr);
-		for(auto state : m_attached_state) {
-			m_task->extend_lifetime(std::move(state));
-		}
 		return std::move(m_task);
 	}
 };
@@ -629,8 +620,6 @@ namespace detail {
 	}
 
 	inline void add_reduction(handler& cgh, const detail::reduction_info& rinfo) { return cgh.add_reduction(rinfo); }
-
-	inline void extend_lifetime(handler& cgh, std::shared_ptr<detail::lifetime_extending_state> state) { cgh.extend_lifetime(std::move(state)); }
 
 	inline void set_task_name(handler& cgh, const std::string& debug_name) { cgh.m_usr_def_task_name = {debug_name}; }
 

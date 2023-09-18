@@ -4,7 +4,6 @@
 
 #include <CL/sycl.hpp>
 
-#include "lifetime_extending_state.h"
 #include "range_mapper.h"
 #include "ranges.h"
 #include "runtime.h"
@@ -35,7 +34,7 @@ template <typename DataT, int Dims, access_mode Mode, target Target>
 class accessor;
 
 template <typename DataT, int Dims>
-class buffer final : public detail::lifetime_extending_state_wrapper {
+class buffer {
   public:
 	static_assert(Dims <= 3);
 
@@ -48,14 +47,6 @@ class buffer final : public detail::lifetime_extending_state_wrapper {
 
 	template <int D = Dims, typename = std::enable_if_t<D == 0>>
 	buffer(const DataT& value) : buffer(&value, {}) {}
-
-	buffer(const buffer&) = default;
-	buffer(buffer&&) = default;
-
-	buffer<DataT, Dims>& operator=(const buffer&) = default;
-	buffer<DataT, Dims>& operator=(buffer&&) = default;
-
-	~buffer() {}
 
 	template <access_mode Mode, typename Functor, int D = Dims, std::enable_if_t<(D > 0), int> = 0>
 	accessor<DataT, Dims, Mode, target::device> get_access(handler& cgh, Functor rmfn) {
@@ -90,11 +81,8 @@ class buffer final : public detail::lifetime_extending_state_wrapper {
 
 	const range<Dims>& get_range() const { return m_impl->range; }
 
-  protected:
-	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_impl; }
-
   private:
-	struct impl final : public detail::lifetime_extending_state {
+	struct impl {
 		impl(range<Dims> rng, const DataT* host_init_ptr) : range(rng) {
 			if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
 			id = detail::runtime::get_instance().create_buffer(Dims, detail::range_cast<3>(range), sizeof(DataT), alignof(DataT), host_init_ptr);
@@ -103,7 +91,7 @@ class buffer final : public detail::lifetime_extending_state_wrapper {
 		impl(impl&&) = delete;
 		impl& operator=(const impl&) = delete;
 		impl& operator=(impl&&) = delete;
-		~impl() override { detail::runtime::get_instance().destroy_buffer(id); }
+		~impl() { detail::runtime::get_instance().destroy_buffer(id); }
 
 		detail::buffer_id id;
 		celerity::range<Dims> range;

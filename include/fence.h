@@ -71,17 +71,16 @@ namespace celerity::detail {
 template <typename T>
 class host_object_fence_promise final : public detail::fence_promise {
   public:
-	// TODO should only receive a host_object_id, but we need lifetime_extending_state for now
-	explicit host_object_fence_promise(const experimental::host_object<T>& obj) : m_host_object(obj) {}
+	explicit host_object_fence_promise(const T *instance) : m_instance(instance) {}
 
 	std::future<T> get_future() { return m_promise.get_future(); }
 
-	void fulfill() override { m_promise.set_value(std::as_const(detail::get_host_object_instance(m_host_object))); }
+	void fulfill() override { m_promise.set_value(*m_instance); }
 
 	void* get_snapshot_pointer() override { utils::panic("host_object_fence_promise::get_snapshot_pointer"); }
 
   private:
-	experimental::host_object<T> m_host_object;
+	const T *m_instance;
 	std::promise<T> m_promise;
 };
 
@@ -118,7 +117,7 @@ template <typename T>
 
 	detail::side_effect_map side_effects;
 	side_effects.add_side_effect(detail::get_host_object_id(obj), experimental::side_effect_order::sequential);
-	auto promise = std::make_unique<detail::host_object_fence_promise<T>>(obj);
+	auto promise = std::make_unique<detail::host_object_fence_promise<T>>(detail::get_host_object_instance(obj));
 	auto future = promise->get_future();
 	detail::runtime::get_instance().get_task_manager().generate_fence_task({}, std::move(side_effects), std::move(promise));
 	return future;

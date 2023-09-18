@@ -12,7 +12,6 @@
 #include "host_queue.h"
 #include "intrusive_graph.h"
 #include "launcher.h"
-#include "lifetime_extending_state.h"
 #include "range_mapper.h"
 #include "types.h"
 #include "utils.h"
@@ -225,8 +224,6 @@ namespace detail {
 			return std::get<Launcher>(m_launcher);
 		}
 
-		void extend_lifetime(std::shared_ptr<lifetime_extending_state> state) { m_attached_state.emplace_back(std::move(state)); }
-
 		static std::unique_ptr<task> make_epoch(task_id tid, detail::epoch_action action) {
 			return std::unique_ptr<task>(new task(tid, task_type::epoch, collective_group_id{}, task_geometry{}, {}, {}, {}, {}, action, nullptr));
 		}
@@ -280,7 +277,6 @@ namespace detail {
 		// TODO I believe that `struct task` should not store command_group_launchers, fence_promise or other state that is related to execution instead of
 		// abstract DAG building. For user-initialized buffers we already notify the runtime -> executor of this state directly. Maybe also do that for these.
 		std::unique_ptr<fence_promise> m_fence_promise;
-		std::vector<std::shared_ptr<lifetime_extending_state>> m_attached_state;
 
 		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, command_group_launcher launcher,
 		    buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions, detail::epoch_action epoch_action,
