@@ -76,6 +76,11 @@ class distributed_graph_generator {
 		std::string debug_name;
 	};
 
+	struct host_object_state {
+		// Side effects on the same host object create true dependencies between task commands, so we track the last effect per host object.
+		command_id last_side_effect = 0;
+	};
+
   public:
 	distributed_graph_generator(
 	    const size_t num_nodes, const node_id local_nid, command_graph& cdag, const task_manager& tm, detail::command_recorder* recorder);
@@ -85,6 +90,10 @@ class distributed_graph_generator {
 	void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
 
 	void destroy_buffer(buffer_id bid);
+
+	void create_host_object(host_object_id hoid);
+
+	void destroy_host_object(host_object_id hoid);
 
 	std::unordered_set<abstract_command*> build_task(const task& tsk);
 
@@ -131,6 +140,7 @@ class distributed_graph_generator {
 	command_graph& m_cdag;
 	const task_manager& m_task_mngr;
 	std::unordered_map<buffer_id, buffer_state> m_buffer_states;
+	std::unordered_map<host_object_id, host_object_state> m_host_objects;
 	command_id m_epoch_for_new_commands = 0;
 	command_id m_epoch_last_pruned_before = 0;
 	command_id m_current_horizon = no_command;
@@ -146,9 +156,6 @@ class distributed_graph_generator {
 	// Collective host tasks have an implicit dependency on the previous task in the same collective group, which is required in order to guarantee
 	// they are executed in the same order on every node.
 	std::unordered_map<collective_group_id, command_id> m_last_collective_commands;
-
-	// Side effects on the same host object create true dependencies between task commands, so we track the last effect per host object.
-	side_effect_map m_host_object_last_effects;
 
 	// Generated commands will be recorded to this recorder if it is set
 	detail::command_recorder* m_recorder = nullptr;

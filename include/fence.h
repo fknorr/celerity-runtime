@@ -4,7 +4,6 @@
 #include <type_traits>
 
 #include "accessor.h"
-#include "buffer_manager.h"
 #include "host_object.h"
 #include "runtime.h"
 #include "task_manager.h"

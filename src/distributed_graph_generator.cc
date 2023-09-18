@@ -42,6 +42,16 @@ void distributed_graph_generator::destroy_buffer(const buffer_id bid) {
 	m_buffer_states.erase(bid);
 }
 
+void distributed_graph_generator::create_host_object(const host_object_id hoid) {
+	assert(m_host_objects.count(hoid) == 0);
+	m_host_objects.emplace(hoid, host_object_state{m_epoch_for_new_commands});
+}
+
+void distributed_graph_generator::destroy_host_object(const host_object_id hoid) {
+	assert(m_host_objects.count(hoid) != 0);
+	m_host_objects.erase(hoid);
+}
+
 // We simply split in the first dimension for now
 std::vector<chunk<3>> split_equal(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks, const int dims) {
 #ifndef NDEBUG
@@ -572,14 +582,14 @@ void distributed_graph_generator::process_task_side_effect_requirements(const ta
 	for(auto* const cmd : m_cdag.task_commands(tid)) {
 		for(const auto& side_effect : tsk.get_side_effect_map()) {
 			const auto [hoid, order] = side_effect;
-			if(const auto last_effect = m_host_object_last_effects.find(hoid); last_effect != m_host_object_last_effects.end()) {
-				// TODO once we have different side_effect_orders, their interaction will determine the dependency kind
-				m_cdag.add_dependency(cmd, m_cdag.get(last_effect->second), dependency_kind::true_dep, dependency_origin::dataflow);
-			}
+			auto& host_object = m_host_objects.at(hoid);
+
+			// TODO once we have different side_effect_orders, their interaction will determine the dependency kind
+			m_cdag.add_dependency(cmd, m_cdag.get(host_object.last_side_effect), dependency_kind::true_dep, dependency_origin::dataflow);
 
 			// Simplification: If there are multiple chunks per node, we generate true-dependencies between them in an arbitrary order, when all we really
 			// need is mutual exclusion (i.e. a bi-directional pseudo-dependency).
-			m_host_object_last_effects.insert_or_assign(hoid, cmd->get_cid());
+			host_object.last_side_effect = cmd->get_cid();
 		}
 	}
 }
@@ -598,8 +608,8 @@ void distributed_graph_generator::set_epoch_for_new_commands(const abstract_comm
 	for(auto& [cgid, cid] : m_last_collective_commands) {
 		cid = std::max(epoch_or_horizon->get_cid(), cid);
 	}
-	for(auto& [cgid, cid] : m_host_object_last_effects) {
-		cid = std::max(epoch_or_horizon->get_cid(), cid);
+	for(auto& [_, host_object] : m_host_objects) {
+		host_object.last_side_effect = std::max(epoch_or_horizon->get_cid(), host_object.last_side_effect);
 	}
 
 	m_epoch_for_new_commands = epoch_or_horizon->get_cid();

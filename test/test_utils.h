@@ -235,7 +235,6 @@ namespace test_utils {
 			const detail::host_object_id hoid = m_next_id++;
 			if(m_task_mngr != nullptr) { m_task_mngr->create_host_object(hoid); }
 			if(m_schdlr != nullptr) { m_schdlr->notify_host_object_created(hoid, owns_instance); }
-			// TODO distributed_graph_generator host object tracking
 			return mock_host_object(hoid);
 		}
 

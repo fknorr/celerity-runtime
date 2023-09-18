@@ -517,6 +517,9 @@ class dist_cdag_test_context {
 	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
 		const host_object_id hoid = m_next_host_object_id++;
 		m_tm.create_host_object(hoid);
+		for(auto& dggen : m_dggens) {
+			dggen->create_host_object(hoid);
+		}
 		return test_utils::mock_host_object(hoid);
 	}
 
@@ -676,6 +679,7 @@ class idag_test_context {
 	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
 		const host_object_id hoid = m_next_host_object_id++;
 		m_tm.create_host_object(hoid);
+		m_dggen.create_host_object(hoid);
 		m_iggen.create_host_object(hoid, owns_instance);
 		return test_utils::mock_host_object(hoid);
 	}
