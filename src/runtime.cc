@@ -141,22 +141,13 @@ namespace detail {
 		m_h_queue = std::make_unique<host_queue>();
 		m_d_queue = std::make_unique<device_queue>();
 
-		// Initialize worker classes (but don't start them up yet)
-		m_buffer_mngr = std::make_unique<buffer_manager>(*m_d_queue, [this](buffer_manager::buffer_lifecycle_event event, buffer_id bid) {
-			switch(event) {
-			case buffer_manager::buffer_lifecycle_event::registered: handle_buffer_registered(bid); break;
-			case buffer_manager::buffer_lifecycle_event::unregistered: handle_buffer_unregistered(bid); break;
-			default: assert(false && "Unexpected buffer lifecycle event");
-			}
-		});
-
 		m_reduction_mngr = std::make_unique<reduction_manager>();
-		if(m_cfg->is_recording()) m_task_recorder = std::make_unique<task_recorder>(m_buffer_mngr.get());
+		if(m_cfg->is_recording()) m_task_recorder = std::make_unique<task_recorder>();
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
 		m_cdag = std::make_unique<command_graph>();
-		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>(m_task_mngr.get(), m_buffer_mngr.get());
+		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>(m_task_mngr.get());
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
 
 		// TODO very simplistic device selection: Select all GPUs, and assume that each has their own distinct memory
@@ -199,12 +190,10 @@ namespace detail {
 		m_cdag.reset();
 		m_exec.reset();
 		m_task_mngr.reset();
-		// All host objects should have unregistered themselves by now.
+		// all buffers and host objects should have unregistered themselves by now.
+		assert(m_live_buffers.empty());
 		assert(m_live_host_objects.empty());
 		m_reduction_mngr.reset();
-		// All buffers should have unregistered themselves by now.
-		assert(!m_buffer_mngr->has_active_buffers());
-		m_buffer_mngr.reset();
 		m_d_queue.reset();
 		m_h_queue.reset();
 		m_command_recorder.reset();
@@ -269,21 +258,7 @@ namespace detail {
 
 	task_manager& runtime::get_task_manager() const { return *m_task_mngr; }
 
-	buffer_manager& runtime::get_buffer_manager() const { return *m_buffer_mngr; }
-
 	reduction_manager& runtime::get_reduction_manager() const { return *m_reduction_mngr; }
-
-	host_object_id runtime::create_host_object(std::unique_ptr<host_object_instance> instance) {
-		const auto hoid = m_next_host_object_id++;
-		m_schdlr->notify_host_object_created(hoid, /* owns_instance: */ instance != nullptr);
-		if(instance != nullptr) { m_exec->announce_host_object_instance(hoid, std::move(instance)); }
-		return hoid;
-	}
-
-	void runtime::destroy_host_object(host_object_id hoid) {
-		m_schdlr->notify_host_object_destroyed(hoid);
-		maybe_destroy_runtime();
-	}
 
 	std::string runtime::gather_command_graph() const {
 		assert(m_command_recorder.get() != nullptr);
@@ -318,18 +293,44 @@ namespace detail {
 
 	void runtime::epoch_reached(const task_id epoch_tid) { m_task_mngr->notify_epoch_reached(epoch_tid); }
 
-	void runtime::handle_buffer_registered(buffer_id bid) {
-		const auto& info = m_buffer_mngr->get_buffer_info(bid);
-		if(info.is_host_initialized) {
-			// before submitting to scheduler -> guarantees that executor is able to resolve the pointer
-			m_exec->announce_buffer_user_pointer(bid, info.host_init_ptr);
-		}
-		m_task_mngr->add_buffer(bid, info.dimensions, info.range, info.is_host_initialized);
-		m_schdlr->notify_buffer_created(bid, info.dimensions, info.range, info.element_size, info.element_align, info.is_host_initialized);
+	buffer_id runtime::create_buffer(const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const void* const host_init_ptr) {
+		const auto bid = m_next_buffer_id++;
+		m_live_buffers.emplace(bid);
+		const auto is_host_initialized = host_init_ptr != nullptr;
+		if(is_host_initialized) { m_exec->announce_buffer_user_pointer(bid, host_init_ptr); }
+		m_task_mngr->create_buffer(bid, dims, range, is_host_initialized);
+		m_schdlr->notify_buffer_created(bid, dims, range, elem_size, elem_align, is_host_initialized);
+		return bid;
 	}
 
-	void runtime::handle_buffer_unregistered(buffer_id bid) {
+	void runtime::set_buffer_debug_name(const buffer_id bid, const std::string& debug_name) {
+		assert(m_live_buffers.count(bid) != 0);
+		m_task_mngr->set_buffer_debug_name(bid, debug_name);
+		m_schdlr->set_buffer_debug_name(bid, debug_name);
+	}
+
+	void runtime::destroy_buffer(const buffer_id bid) {
+		assert(m_live_buffers.count(bid) != 0);
 		m_schdlr->notify_buffer_destroyed(bid);
+		m_task_mngr->destroy_buffer(bid);
+		m_live_buffers.erase(bid);
+		maybe_destroy_runtime();
+	}
+
+	host_object_id runtime::create_host_object(std::unique_ptr<host_object_instance> instance) {
+		const auto hoid = m_next_host_object_id++;
+		m_live_host_objects.emplace(hoid);
+		if(instance != nullptr) { m_exec->announce_host_object_instance(hoid, std::move(instance)); }
+		m_task_mngr->create_host_object(hoid);
+		m_schdlr->notify_host_object_created(hoid, /* owns_instance: */ instance != nullptr);
+		return hoid;
+	}
+
+	void runtime::destroy_host_object(const host_object_id hoid) {
+		assert(m_live_host_objects.count(hoid) != 0);
+		m_schdlr->notify_host_object_destroyed(hoid);
+		m_task_mngr->destroy_host_object(hoid);
+		m_live_host_objects.erase(hoid);
 		maybe_destroy_runtime();
 	}
 
@@ -337,7 +338,7 @@ namespace detail {
 		if(m_test_active) return;
 		if(m_is_active) return;
 		if(m_is_shutting_down) return;
-		if(m_buffer_mngr->has_active_buffers()) return;
+		if(!m_live_buffers.empty()) return;
 		if(!m_live_host_objects.empty()) return;
 		instance.reset();
 	}

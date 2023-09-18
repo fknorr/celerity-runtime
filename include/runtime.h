@@ -70,9 +70,15 @@ namespace detail {
 
 		device_queue& get_device_queue() const { return *m_d_queue; }
 
-		buffer_manager& get_buffer_manager() const;
+		buffer_manager& get_buffer_manager() const { utils::panic("buffer_manager is history!"); }
 
 		reduction_manager& get_reduction_manager() const;
+
+		buffer_id create_buffer(int dims, const range<3>& range, size_t elem_size, size_t elem_align, const void* host_init_ptr);
+
+		void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
+
+		void destroy_buffer(buffer_id bid);
 
 		host_object_id create_host_object(std::unique_ptr<host_object_instance> instance = nullptr);
 
@@ -104,14 +110,15 @@ namespace detail {
 		size_t m_num_nodes;
 		node_id m_local_nid;
 
+		std::unordered_set<buffer_id> m_live_buffers;
+		buffer_id m_next_buffer_id = 0;
 		std::unordered_set<host_object_id> m_live_host_objects;
 		host_object_id m_next_host_object_id = 0;
 
 		// These management classes are only constructed on the master node.
 		std::unique_ptr<command_graph> m_cdag;
 		std::unique_ptr<scheduler> m_schdlr;
-		
-		std::unique_ptr<buffer_manager> m_buffer_mngr;
+
 		std::unique_ptr<reduction_manager> m_reduction_mngr;
 		std::unique_ptr<task_manager> m_task_mngr;
 		std::unique_ptr<instruction_executor> m_exec;
@@ -126,9 +133,6 @@ namespace detail {
 
 		void horizon_reached(task_id horizon_tid) override;
 		void epoch_reached(task_id epoch_tid) override;
-
-		void handle_buffer_registered(buffer_id bid);
-		void handle_buffer_unregistered(buffer_id bid);
 
 		/**
 		 * @brief Destroys the runtime if it is no longer active and all buffers have been unregistered.

@@ -266,8 +266,7 @@ struct scheduler_benchmark_context {
 	explicit scheduler_benchmark_context(restartable_thread& thrd, size_t num_nodes)
 	    : num_nodes{num_nodes}, //
 	      schdlr{thrd, std::make_unique<distributed_graph_generator>(num_nodes, 0 /* local_nid */, cdag, tm, nullptr),
-	          std::make_unique<instruction_graph_generator>(
-	              tm, std::map<device_id, instruction_graph_generator::device_info>(/* TODO */), nullptr /* recorder */)}, //
+	          std::make_unique<instruction_graph_generator>(tm, std::vector<instruction_graph_generator::device_info>(/* TODO */), nullptr /* recorder */)}, //
 	      mbf{tm, schdlr} {
 		tm.register_task_callback([this](const task* tsk) { schdlr.notify_task_created(tsk); });
 		schdlr.startup();

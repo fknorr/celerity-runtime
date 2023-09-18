@@ -507,14 +507,18 @@ class dist_cdag_test_context {
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
-		m_tm.add_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
+		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		for(auto& dggen : m_dggens) {
 			dggen->add_buffer(bid, Dims, range_cast<3>(size));
 		}
 		return buf;
 	}
 
-	test_utils::mock_host_object create_host_object() { return test_utils::mock_host_object{m_next_host_object_id++}; }
+	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
+		const host_object_id hoid = m_next_host_object_id++;
+		m_tm.create_host_object(hoid);
+		return test_utils::mock_host_object(hoid);
+	}
 
 	// TODO: Do we want to duplicate all step functions here, or have some sort of .task() initial builder?
 
@@ -638,7 +642,7 @@ class idag_test_context {
 	static auto make_device_map(const size_t num_devices) {
 		std::vector<instruction_graph_generator::device_info> devices;
 		for(device_id did = 0; did < num_devices; ++did) {
-			devices.emplace_back(did, instruction_graph_generator::device_info{memory_id(did + 1)});
+			devices.push_back(instruction_graph_generator::device_info{memory_id(did + 1)});
 		}
 		return devices;
 	}
@@ -663,13 +667,18 @@ class idag_test_context {
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
-		m_tm.add_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
+		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		m_dggen.add_buffer(bid, Dims, range_cast<3>(size));
 		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), 1 /* size */, 1 /* align */, mark_as_host_initialized);
 		return buf;
 	}
 
-	test_utils::mock_host_object create_host_object() { return test_utils::mock_host_object{m_next_host_object_id++}; }
+	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
+		const host_object_id hoid = m_next_host_object_id++;
+		m_tm.create_host_object(hoid);
+		m_iggen.create_host_object(hoid, owns_instance);
+		return test_utils::mock_host_object(hoid);
+	}
 
 	// TODO: Do we want to duplicate all step functions here, or have some sort of .task() initial builder?
 

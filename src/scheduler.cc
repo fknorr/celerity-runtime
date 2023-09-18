@@ -58,6 +58,10 @@ namespace detail {
 					    m_dggen->add_buffer(e.bid, e.dims, e.range);
 					    m_iggen->create_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.host_initialized);
 				    },
+				    [&](const event_set_buffer_debug_name& e) {
+					    // TODO set buffer debug name in dggen
+					    m_iggen->set_buffer_debug_name(e.bid, e.debug_name);
+				    },
 				    [&](const event_buffer_destroyed& e) {
 					    // TODO clear tracking structures in dggen
 					    m_iggen->destroy_buffer(e.bid);

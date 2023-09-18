@@ -40,6 +40,8 @@ namespace detail {
 			notify(event_buffer_created{bid, dims, range, elem_size, elem_align, host_initialized});
 		}
 
+		void set_buffer_debug_name(const buffer_id bid, const std::string& name) { notify(event_set_buffer_debug_name{bid, name}); }
+
 		void notify_buffer_destroyed(const buffer_id bid) { notify(event_buffer_destroyed{bid}); }
 
 		void notify_host_object_created(const host_object_id hoid, const bool owns_instance) { notify(event_host_object_created{hoid, owns_instance}); }
@@ -68,6 +70,10 @@ namespace detail {
 			size_t elem_align;
 			bool host_initialized;
 		};
+		struct event_set_buffer_debug_name {
+			buffer_id bid;
+			std::string debug_name;
+		};
 		struct event_buffer_destroyed {
 			buffer_id bid;
 		};
@@ -78,8 +84,8 @@ namespace detail {
 		struct event_host_object_destroyed {
 			host_object_id hoid;
 		};
-		using event = std::variant<event_shutdown, event_task_available, event_buffer_created, event_buffer_destroyed, event_host_object_created,
-		    event_host_object_destroyed>;
+		using event = std::variant<event_shutdown, event_task_available, event_buffer_created, event_set_buffer_debug_name, event_buffer_destroyed,
+		    event_host_object_created, event_host_object_destroyed>;
 
 		bool m_is_dry_run;
 		std::unique_ptr<distributed_graph_generator> m_dggen;

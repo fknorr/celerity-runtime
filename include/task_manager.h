@@ -55,7 +55,6 @@ namespace detail {
 
 	class task_manager {
 		friend struct task_manager_testspy;
-		using buffer_writers_map = std::unordered_map<buffer_id, region_map<std::optional<task_id>>>;
 
 	  public:
 		constexpr inline static task_id initial_epoch_task = 0;
@@ -111,7 +110,15 @@ namespace detail {
 		 * @brief Adds a new buffer for dependency tracking
 		 * @param host_initialized Whether this buffer has been initialized using a host pointer (i.e., it contains useful data before any write-task)
 		 */
-		void add_buffer(buffer_id bid, const int dims, const range<3>& range, bool host_initialized);
+		void create_buffer(buffer_id bid, const int dims, const range<3>& range, bool host_initialized);
+
+		void set_buffer_debug_name(buffer_id bid, const std::string& name);
+
+		void destroy_buffer(buffer_id bid);
+
+		void create_host_object(host_object_id hoid);
+
+		void destroy_host_object(host_object_id hoid);
 
 		/**
 		 * Returns the specified task if it still exists, nullptr otherwise.
@@ -179,6 +186,21 @@ namespace detail {
 		size_t get_current_task_count() const { return m_task_buffer.get_current_task_count(); }
 
 	  private:
+		struct per_buffer_data {
+			std::string debug_name;
+			// We store a map of which task last wrote to a certain region of a buffer.
+			// NOTE: This represents the state after the latest task created.
+			// TODO turn into non-null task pointer - the last writer should start out with the last epoch
+			region_map<std::optional<task_id>> last_writers;
+
+			per_buffer_data(const int dims, const range<3>& range) : last_writers(range, dims) {}
+		};
+
+		struct per_host_object_data {
+			// TODO turn into non-null task pointer - the last effect should start out with the last epoch
+			std::optional<task_id> last_effect;
+		};
+
 		const size_t m_num_collective_nodes;
 		host_queue* m_queue;
 
@@ -189,14 +211,12 @@ namespace detail {
 		// To ensure correct ordering, all tasks that have no other true-dependencies depend on this task.
 		task_id m_epoch_for_new_tasks{initial_epoch_task};
 
-		// We store a map of which task last wrote to a certain region of a buffer.
-		// NOTE: This represents the state after the latest task created.
-		buffer_writers_map m_buffers_last_writers;
+		std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 
 		std::unordered_map<collective_group_id, task_id> m_last_collective_tasks;
 
 		// Stores which host object was last affected by which task.
-		std::unordered_map<host_object_id, task_id> m_host_object_last_effects;
+		std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 
 		std::vector<task_callback> m_task_callbacks;
 
