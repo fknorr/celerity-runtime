@@ -42,7 +42,7 @@ namespace detail {
 
 		void notify_buffer_destroyed(const buffer_id bid) { notify(event_buffer_destroyed{bid}); }
 
-		void notify_host_object_created(const host_object_id hoid) { notify(event_host_object_created{hoid}); }
+		void notify_host_object_created(const host_object_id hoid, const bool owns_instance) { notify(event_host_object_created{hoid, owns_instance}); }
 
 		void notify_host_object_destroyed(const host_object_id hoid) { notify(event_host_object_destroyed{hoid}); }
 
@@ -73,6 +73,7 @@ namespace detail {
 		};
 		struct event_host_object_created {
 			host_object_id hoid;
+			bool owns_instance;
 		};
 		struct event_host_object_destroyed {
 			host_object_id hoid;

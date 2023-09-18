@@ -65,7 +65,10 @@ void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, con
 }
 
 void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
-	auto& buffer = m_buffers.at(bid);
+	const auto iter = m_buffers.find(bid);
+	assert(iter != m_buffers.end());
+
+	auto& buffer = iter->second;
 	for(auto& memory : buffer.memories) {
 		for(auto& allocation : memory.allocations) {
 			const auto free_instr = &create<free_instruction>(allocation.aid);
@@ -77,20 +80,26 @@ void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
 		}
 	}
 
-	m_buffers.erase(bid);
+	m_buffers.erase(iter);
 }
 
-void instruction_graph_generator::create_host_object(const host_object_id hoid) {
+void instruction_graph_generator::create_host_object(const host_object_id hoid, const bool owns_instance) {
 	assert(m_host_objects.count(hoid) == 0);
-	m_host_objects.emplace(hoid, per_host_object_data());
+	m_host_objects.emplace(hoid, per_host_object_data(owns_instance, m_last_epoch));
 }
 
 void instruction_graph_generator::destroy_host_object(const host_object_id hoid) {
-	assert(m_host_objects.count(hoid) != 0);
-	// TODO insert an instruction that destroys the host object (instance must be managed by the executor!)
-	m_host_objects.erase(hoid);
-}
+	const auto iter = m_host_objects.find(hoid);
+	assert(iter != m_host_objects.end());
 
+	auto& obj = iter->second;
+	if(obj.owns_instance) {
+		const auto destroy_instr = &create<destroy_host_object_instruction>(hoid);
+		add_dependency(*destroy_instr, *obj.last_side_effect, dependency_kind::true_dep);
+	}
+
+	m_host_objects.erase(iter);
+}
 
 memory_id instruction_graph_generator::next_location(const data_location& location, memory_id first) {
 	for(size_t i = 0; i < max_memories; ++i) {

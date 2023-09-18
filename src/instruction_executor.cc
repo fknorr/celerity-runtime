@@ -2,6 +2,8 @@
 #include "buffer_storage.h" // for memcpy_strided_host
 #include "closure_hydrator.h"
 #include "communicator.h"
+#include "host_object.h"
+#include "instruction_graph.h"
 #include "recv_arbiter.h"
 
 #include <atomic>
@@ -18,6 +20,12 @@ instruction_executor::~instruction_executor() { m_thread.join(); }
 void instruction_executor::submit(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
 void instruction_executor::announce_buffer_user_pointer(const buffer_id bid, const void* const ptr) { m_submission_queue.push_back(std::pair(bid, ptr)); }
+
+void instruction_executor::announce_host_object_instance(const host_object_id hoid, std::unique_ptr<host_object_instance> instance) {
+	assert(m_host_object_instances.count(hoid) == 0);
+	assert(instance != nullptr);
+	m_host_object_instances.emplace(hoid, std::move(instance));
+}
 
 void instruction_executor::loop() {
 	set_thread_name(get_current_thread_handle(), "cy-executor");
@@ -262,6 +270,12 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const fence_instruction& finstr) -> event {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
 		    finstr.get_promise()->fulfill();
+		    return completed_synchronous();
+	    },
+	    [&](const destroy_host_object_instruction& dhoinstr) -> event {
+		    assert(m_host_object_instances.count(dhoinstr.get_host_object_id()) != 0);
+		    CELERITY_DEBUG("[executor] I{}: destroy H{}", dhoinstr.get_id(), dhoinstr.get_host_object_id());
+		    m_host_object_instances.erase(dhoinstr.get_host_object_id());
 		    return completed_synchronous();
 	    },
 	    [&](const horizon_instruction& hinstr) -> event {

@@ -240,6 +240,9 @@ fence_instruction_record::fence_instruction_record(const fence_instruction& fins
 fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, host_object_id hoid)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(host_object_variant{hoid}) {}
 
+destroy_host_object_instruction_record::destroy_host_object_instruction_record(const destroy_host_object_instruction& dhoinstr)
+    : instruction_record_base(dhoinstr), host_object_id(dhoinstr.get_host_object_id()) {}
+
 horizon_instruction_record::horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid)
     : instruction_record_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid) {}
 
@@ -262,8 +265,7 @@ void instruction_recorder::record_dependencies(const instruction& instr) {
 	assert(record != m_recorded_instructions.end());
 
 	const auto& graph_deps = instr.get_dependencies();
-	auto& record_deps = utils::match(
-	    *record, [](auto& r) -> auto& { return r.dependencies; });
+	auto& record_deps = utils::match(*record, [](auto& r) -> auto& { return r.dependencies; });
 	record_deps.reserve(graph_deps.size());
 	for(auto& d : graph_deps) {
 		record_deps.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});

@@ -272,6 +272,12 @@ struct fence_instruction_record : instruction_record_base {
 	fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, host_object_id hoid);
 };
 
+struct destroy_host_object_instruction_record : instruction_record_base {
+	detail::host_object_id host_object_id;
+
+	explicit destroy_host_object_instruction_record(const destroy_host_object_instruction& dhoinstr);
+};
+
 struct horizon_instruction_record : instruction_record_base {
 	task_id horizon_task_id;
 	command_id horizon_command_id;
@@ -288,8 +294,8 @@ struct epoch_instruction_record : instruction_record_base {
 };
 
 using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, init_buffer_instruction_record, export_instruction_record,
-    copy_instruction_record, kernel_instruction_record, send_instruction_record, recv_instruction_record, fence_instruction_record, horizon_instruction_record,
-    epoch_instruction_record>;
+    copy_instruction_record, kernel_instruction_record, send_instruction_record, recv_instruction_record, fence_instruction_record,
+    destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
 struct pilot_message_record : pilot_message {
 	node_id receiver;

@@ -34,7 +34,7 @@ class instruction_graph_generator {
 
 	void destroy_buffer(buffer_id bid);
 
-	void create_host_object(host_object_id hoid);
+	void create_host_object(host_object_id hoid, bool owns_instance);
 
 	void destroy_host_object(host_object_id hoid);
 
@@ -163,10 +163,13 @@ class instruction_graph_generator {
 	};
 
 	struct per_host_object_data {
+		bool owns_instance;
 		instruction* last_side_effect = nullptr;
 
+		explicit per_host_object_data(const bool owns_instance, instruction* const last_epoch) : owns_instance(owns_instance), last_side_effect(last_epoch) {}
+
 		void apply_epoch(instruction* const epoch) {
-			if(last_side_effect && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
+			if(last_side_effect != nullptr && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
 		}
 	};
 

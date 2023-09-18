@@ -64,7 +64,7 @@ namespace detail {
 				    },
 				    [&](const event_host_object_created& e) {
 					    // TODO switch dggen to explicit host object creation
-					    m_iggen->create_host_object(e.hoid);
+					    m_iggen->create_host_object(e.hoid, e.owns_instance);
 				    },
 				    [&](const event_host_object_destroyed& e) {
 					    // TODO clear tracking structures in dggen

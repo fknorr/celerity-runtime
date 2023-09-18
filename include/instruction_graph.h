@@ -23,6 +23,7 @@ class host_kernel_instruction;
 class send_instruction;
 class recv_instruction;
 class fence_instruction;
+class destroy_host_object_instruction;
 class horizon_instruction;
 class epoch_instruction;
 
@@ -30,7 +31,7 @@ class instruction : public intrusive_graph_node<instruction> {
   public:
 	using const_visitor = utils::visitor<const alloc_instruction&, const free_instruction&, const init_buffer_instruction&, const export_instruction&,
 	    const copy_instruction&, const sycl_kernel_instruction&, const host_kernel_instruction&, const send_instruction&, const recv_instruction&,
-	    const fence_instruction&, const horizon_instruction&, const epoch_instruction&>;
+	    const fence_instruction&, const destroy_host_object_instruction&, const horizon_instruction&, const epoch_instruction&>;
 
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -312,6 +313,18 @@ class fence_instruction final : public instruction {
 
   private:
 	fence_promise* m_promise;
+};
+
+class destroy_host_object_instruction final : public instruction {
+  public:
+	explicit destroy_host_object_instruction(const instruction_id iid, const host_object_id hoid) : instruction(iid), m_hoid(hoid) {}
+
+	host_object_id get_host_object_id() const { return m_hoid; }
+
+	void accept(const_visitor& visitor) const override { visitor.visit(*this); }
+
+  private:
+	host_object_id m_hoid;
 };
 
 class horizon_instruction final : public instruction {

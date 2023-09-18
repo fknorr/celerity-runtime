@@ -48,10 +48,7 @@ class host_object_manager {
 struct host_object_tracker : public lifetime_extending_state {
 	detail::host_object_id id{};
 
-	host_object_tracker() {
-		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
-		id = detail::runtime::get_instance().create_host_object();
-	}
+	explicit host_object_tracker(detail::host_object_id id) : id(id) {}
 
 	host_object_tracker(const host_object_tracker&) = delete;
 	host_object_tracker(host_object_tracker&&) = delete;
@@ -59,6 +56,17 @@ struct host_object_tracker : public lifetime_extending_state {
 	host_object_tracker& operator=(const host_object_tracker&) = delete;
 
 	~host_object_tracker() { detail::runtime::get_instance().destroy_host_object(id); }
+};
+
+/// Host objects that own their instance (i.e. not host_object<T&> nor host_object<void>) wrap it in a type deriving from this struct in order to pass it to
+/// the executor for (virtual) destruction from within the instruction graph.
+struct host_object_instance {
+	host_object_instance() = default;
+	host_object_instance(const host_object_instance&) = delete;
+	host_object_instance(host_object_instance&&) = delete;
+	host_object_instance& operator=(host_object_instance&&) = delete;
+	host_object_instance& operator=(const host_object_instance&) = delete;
+	virtual ~host_object_instance() = default;
 };
 
 // see host_object deduction guides
@@ -74,12 +82,12 @@ using assert_host_object_ctor_param_is_rvalue_t = typename assert_host_object_ct
 
 template <typename T>
 host_object_id get_host_object_id(const experimental::host_object<T>& ho) {
-	return ho.get_id();
+	return ho.m_tracker->id;
 }
 
 template <typename T>
 typename experimental::host_object<T>::instance_type& get_host_object_instance(const experimental::host_object<T>& ho) {
-	return ho.get_instance();
+	return *ho.m_instance;
 }
 
 
@@ -104,38 +112,43 @@ class host_object final : public detail::lifetime_extending_state_wrapper {
   public:
 	using instance_type = T;
 
-	host_object() : m_shared_state(std::make_shared<state>(std::in_place)) {}
+	host_object() : host_object(std::make_unique<instance_wrapper>(std::in_place)) {}
 
-	explicit host_object(const T& obj) : m_shared_state(std::make_shared<state>(std::in_place, obj)) {}
+	explicit host_object(const instance_type& obj) : host_object(std::make_unique<instance_wrapper>(std::in_place, obj)) {}
 
-	explicit host_object(T&& obj) : m_shared_state(std::make_shared<state>(std::in_place, std::move(obj))) {}
+	explicit host_object(instance_type&& obj) : host_object(std::make_unique<instance_wrapper>(std::in_place, std::move(obj))) {}
 
 	/// Constructs the object in-place with the given constructor arguments.
 	template <typename... CtorParams>
 	explicit host_object(const std::in_place_t /* tag */, CtorParams&&... ctor_args) // requiring std::in_place avoids overriding copy and move constructors
-	    : m_shared_state(std::make_shared<state>(std::in_place, std::forward<CtorParams>(ctor_args)...)) {}
+	    : host_object(std::make_unique<instance_wrapper>(std::in_place, std::forward<CtorParams>(ctor_args)...)) {}
 
   protected:
-	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_shared_state; }
+	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_tracker; }
 
   private:
+	struct instance_wrapper : public detail::host_object_instance {
+		instance_type value;
+
+		template <typename... CtorParams>
+		explicit instance_wrapper(const std::in_place_t /* tag */, CtorParams&&... ctor_args) : value(std::forward<CtorParams>(ctor_args)...) {}
+	};
+
+	explicit host_object(std::unique_ptr<instance_wrapper> instance) {
+		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
+		m_instance = &instance->value;
+		const auto id = detail::runtime::get_instance().create_host_object(std::move(instance));
+		m_tracker = std::make_shared<detail::host_object_tracker>(id);
+	}
+
 	template <typename U>
 	friend detail::host_object_id detail::get_host_object_id(const experimental::host_object<U>& ho);
 
 	template <typename U>
 	friend typename experimental::host_object<U>::instance_type& detail::get_host_object_instance(const experimental::host_object<U>& ho);
 
-	struct state : detail::host_object_tracker {
-		T instance;
-
-		template <typename... CtorParams>
-		explicit state(const std::in_place_t /* tag */, CtorParams&&... ctor_args) : instance(std::forward<CtorParams>(ctor_args)...) {}
-	};
-
-	detail::host_object_id get_id() const { return m_shared_state->id; }
-	T& get_instance() const { return m_shared_state->instance; }
-
-	std::shared_ptr<state> m_shared_state;
+	std::shared_ptr<detail::host_object_tracker> m_tracker;
+	instance_type* m_instance; // owned by runtime::executor
 };
 
 template <typename T>
@@ -143,12 +156,17 @@ class host_object<T&> final : public detail::lifetime_extending_state_wrapper {
   public:
 	using instance_type = T;
 
-	explicit host_object(T& obj) : m_shared_state(std::make_shared<state>(obj)) {}
+	explicit host_object(instance_type& obj) {
+		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
+		m_instance = &obj;
+		const auto id = detail::runtime::get_instance().create_host_object();
+		m_tracker = std::make_shared<detail::host_object_tracker>(id);
+	}
 
-	explicit host_object(const std::reference_wrapper<T> ref) : m_shared_state(std::make_shared<state>(ref.get())) {}
+	explicit host_object(const std::reference_wrapper<instance_type> ref) : host_object(ref.get()) {}
 
   protected:
-	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_shared_state; }
+	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_tracker; }
 
   private:
 	template <typename U>
@@ -157,16 +175,8 @@ class host_object<T&> final : public detail::lifetime_extending_state_wrapper {
 	template <typename U>
 	friend typename experimental::host_object<U>::instance_type& detail::get_host_object_instance(const experimental::host_object<U>& ho);
 
-	struct state final : detail::host_object_tracker {
-		T& instance;
-
-		explicit state(T& instance) : instance{instance} {}
-	};
-
-	detail::host_object_id get_id() const { return m_shared_state->id; }
-	T& get_instance() const { return m_shared_state->instance; }
-
-	std::shared_ptr<state> m_shared_state;
+	std::shared_ptr<detail::host_object_tracker> m_tracker;
+	instance_type* m_instance; // owned by application
 };
 
 template <>
@@ -174,20 +184,20 @@ class host_object<void> final : public detail::lifetime_extending_state_wrapper 
   public:
 	using instance_type = void;
 
-	explicit host_object() : m_shared_state(std::make_shared<state>()) {}
+	explicit host_object() {
+		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
+		const auto id = detail::runtime::get_instance().create_host_object();
+		m_tracker = std::make_shared<detail::host_object_tracker>(id);
+	}
 
   protected:
-	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_shared_state; }
+	std::shared_ptr<detail::lifetime_extending_state> get_lifetime_extending_state() const override { return m_tracker; }
 
   private:
 	template <typename U>
 	friend detail::host_object_id detail::get_host_object_id(const experimental::host_object<U>& ho);
 
-	struct state final : detail::host_object_tracker {};
-
-	detail::host_object_id get_id() const { return m_shared_state->id; }
-
-	std::shared_ptr<state> m_shared_state;
+	std::shared_ptr<detail::host_object_tracker> m_tracker;
 };
 
 // The universal reference parameter T&& matches U& as well as U&& for object types U, but we don't want to implicitly invoke a copy constructor: the user
@@ -198,6 +208,6 @@ explicit host_object(T&&) -> host_object<detail::assert_host_object_ctor_param_i
 template <typename T>
 explicit host_object(std::reference_wrapper<T>) -> host_object<T&>;
 
-explicit host_object()->host_object<void>;
+explicit host_object() -> host_object<void>;
 
 } // namespace celerity::experimental

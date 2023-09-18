@@ -28,6 +28,7 @@ namespace detail {
 	class scheduler;
 	class task_manager;
 	class host_object_manager;
+	struct host_object_instance;
 
 	class runtime_already_started_error : public std::runtime_error {
 	  public:
@@ -75,7 +76,7 @@ namespace detail {
 
 		host_object_manager& get_host_object_manager() const;
 
-		host_object_id create_host_object();
+		host_object_id create_host_object(std::unique_ptr<host_object_instance> instance = nullptr);
 
 		void destroy_host_object(host_object_id hoid);
 

@@ -6,7 +6,12 @@
 #include "instruction_graph.h"
 #include "recv_arbiter.h"
 
+#include <unordered_map>
+
 namespace celerity::detail {
+
+struct host_object_instance;
+
 class instruction_executor final : private communicator::delegate {
   public:
 	class delegate {
@@ -32,7 +37,8 @@ class instruction_executor final : private communicator::delegate {
 
 	void submit(const instruction& instr);
 
-	void announce_buffer_user_pointer(const buffer_id bid, const void* ptr);
+	void announce_buffer_user_pointer(buffer_id bid, const void* ptr);
+	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);
 
   private:
 	struct completed_synchronous {};
@@ -59,6 +65,7 @@ class instruction_executor final : private communicator::delegate {
 	std::unique_ptr<backend::queue> m_backend_queue;
 	std::unordered_map<buffer_id, const void*> m_buffer_user_pointers;
 	std::unordered_map<allocation_id, allocation> m_allocations;
+	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> m_host_object_instances;
 	std::unique_ptr<communicator> m_communicator;
 	recv_arbiter m_recv_arbiter;
 	host_queue m_host_queue;

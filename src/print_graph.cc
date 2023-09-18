@@ -6,6 +6,8 @@
 #include "command.h"
 #include "command_graph.h"
 #include "grid.h"
+#include "instruction_graph.h"
+#include "recorders.h"
 #include "task.h"
 #include "task_manager.h"
 
@@ -387,6 +389,11 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			        finstr.variant, //
 			        [&](const fence_instruction_record::buffer_variant& buffer) { print_buffer_range(buffer.bid, buffer.box); },
 			        [&](const fence_instruction_record::host_object_variant& obj) { fmt::format_to(back, "<br/>H{}", obj.hoid); });
+			    end_node();
+		    },
+		    [&](const destroy_host_object_instruction_record& dhoinstr) {
+			    begin_node(dhoinstr, "ellipse", "black");
+			    fmt::format_to(back, "I{}<br/><b>destroy</b> H{}", dhoinstr.id, dhoinstr.host_object_id);
 			    end_node();
 		    },
 		    [&](const horizon_instruction_record& hinstr) {

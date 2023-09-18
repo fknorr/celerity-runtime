@@ -275,15 +275,17 @@ namespace detail {
 
 	host_object_manager& runtime::get_host_object_manager() const { return *m_host_object_mngr; }
 
-	host_object_id runtime::create_host_object() {
+	host_object_id runtime::create_host_object(std::unique_ptr<host_object_instance> instance) {
 		const auto hoid = m_host_object_mngr->create_host_object();
-		m_schdlr->notify_host_object_created(hoid);
+		m_schdlr->notify_host_object_created(hoid, /* owns_instance: */ instance != nullptr);
+		if(instance != nullptr) { m_exec->announce_host_object_instance(hoid, std::move(instance)); }
 		return hoid;
 	}
 
 	void runtime::destroy_host_object(host_object_id hoid) {
 		m_schdlr->notify_host_object_destroyed(hoid);
 		m_host_object_mngr->destroy_host_object(hoid);
+		maybe_destroy_runtime();
 	}
 
 	std::string runtime::gather_command_graph() const {
@@ -329,7 +331,10 @@ namespace detail {
 		m_schdlr->notify_buffer_created(bid, info.dimensions, info.range, info.element_size, info.element_align, info.is_host_initialized);
 	}
 
-	void runtime::handle_buffer_unregistered(buffer_id bid) { maybe_destroy_runtime(); }
+	void runtime::handle_buffer_unregistered(buffer_id bid) {
+		m_schdlr->notify_buffer_destroyed(bid);
+		maybe_destroy_runtime();
+	}
 
 	void runtime::maybe_destroy_runtime() const {
 		if(m_test_active) return;
