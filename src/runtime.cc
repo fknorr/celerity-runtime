@@ -147,7 +147,7 @@ namespace detail {
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
 		m_cdag = std::make_unique<command_graph>();
-		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>(m_task_mngr.get());
+		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
 
 		// TODO very simplistic device selection: Select all GPUs, and assume that each has their own distinct memory
@@ -240,6 +240,10 @@ namespace detail {
 			if(m_local_nid == 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Avoid racing on stdout with other nodes (funneled through mpirun)
 				CELERITY_TRACE("Command graph:\n\n{}\n", cmd_graph);
+
+				// IDAGs become unreadable when all nodes print them at the same time - TODO attempt gathering them as well?
+				CELERITY_TRACE(
+				    "Instruction graph on node 0:\n\n{}\n", detail::print_instruction_graph(*m_instruction_recorder, *m_command_recorder, *m_task_recorder));
 			}
 		}
 

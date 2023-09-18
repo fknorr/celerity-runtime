@@ -491,7 +491,7 @@ class dist_cdag_test_context {
 	dist_cdag_test_context(size_t num_nodes) : m_num_nodes(num_nodes), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder) {
 		for(node_id nid = 0; nid < num_nodes; ++nid) {
 			m_cdags.emplace_back(std::make_unique<command_graph>());
-			m_cmd_recorders.emplace_back(std::make_unique<command_recorder>(&m_tm, nullptr));
+			m_cmd_recorders.emplace_back(std::make_unique<command_recorder>());
 			m_dggens.emplace_back(std::make_unique<distributed_graph_generator>(num_nodes, nid, *m_cdags[nid], m_tm, m_cmd_recorders[nid].get()));
 		}
 	}
@@ -509,7 +509,7 @@ class dist_cdag_test_context {
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		for(auto& dggen : m_dggens) {
-			dggen->add_buffer(bid, Dims, range_cast<3>(size));
+			dggen->create_buffer(bid, Dims, range_cast<3>(size));
 		}
 		return buf;
 	}
@@ -649,8 +649,8 @@ class idag_test_context {
 
   public:
 	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node)
-	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_rm(), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(&m_tm, nullptr),
-	      m_cdag(), m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
+	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_rm(), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
+	      m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
 	      m_iggen(m_tm, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
 	~idag_test_context() {
@@ -668,7 +668,7 @@ class idag_test_context {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
-		m_dggen.add_buffer(bid, Dims, range_cast<3>(size));
+		m_dggen.create_buffer(bid, Dims, range_cast<3>(size));
 		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), 1 /* size */, 1 /* align */, mark_as_host_initialized);
 		return buf;
 	}

@@ -72,13 +72,19 @@ class distributed_graph_generator {
 		// but mark it as having a pending reduction. The final reduction will then be generated when the buffer
 		// is used in a subsequent read requirement. This avoids generating unnecessary reduction commands.
 		std::optional<reduction_info> pending_reduction;
+
+		std::string debug_name;
 	};
 
   public:
 	distributed_graph_generator(
 	    const size_t num_nodes, const node_id local_nid, command_graph& cdag, const task_manager& tm, detail::command_recorder* recorder);
 
-	void add_buffer(const buffer_id bid, const int dims, const range<3>& range);
+	void create_buffer(buffer_id bid, int dims, const range<3>& range);
+
+	void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
+
+	void destroy_buffer(buffer_id bid);
 
 	std::unordered_set<abstract_command*> build_task(const task& tsk);
 

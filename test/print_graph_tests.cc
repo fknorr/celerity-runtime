@@ -114,7 +114,7 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer debug names show up in the
 	CHECK(celerity::debug::get_buffer_name(buff_a) == buff_name);
 
 	q.submit([&](handler& cgh) {
-		celerity::accessor acc_a{buff_a, cgh, acc::all{}, celerity::write_only};
+		celerity::accessor acc_a{buff_a, cgh, acc::one_to_one{}, celerity::write_only, celerity::no_init};
 		cgh.parallel_for<class UKN(print_graph_buffer_name)>(range, [=](item<1> item) { (void)acc_a; });
 	});
 

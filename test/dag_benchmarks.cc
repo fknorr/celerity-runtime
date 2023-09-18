@@ -163,7 +163,7 @@ struct graph_generator_benchmark_context {
 	test_utils::mock_buffer_factory mbf;
 
 	explicit graph_generator_benchmark_context(size_t num_nodes)
-	    : num_nodes{num_nodes}, crec(&tm), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
+	    : num_nodes{num_nodes}, crec(), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
 		tm.register_task_callback([this](const task* tsk) {
 			const auto cmds = dggen.build_task(*tsk);
 			gser.flush(cmds);
