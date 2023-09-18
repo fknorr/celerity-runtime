@@ -791,7 +791,7 @@ void instruction_graph_generator::compile_fence_command(const fence_command& fcm
 	assert(bam.get_num_accesses() + sem.size() == 1);
 
 	for(const auto bid : bam.get_accessed_buffers()) {
-		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zero); // fence uses a fixed range mapper
+		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros); // fence uses a fixed range mapper
 		assert(region.get_boxes().size() == 1);
 		const auto box = region.get_boxes().front();
 		// TODO explicitly verify support for empty-range buffer fences

@@ -18,33 +18,7 @@ class host_object;
 
 namespace celerity::detail {
 
-class host_object_manager {
-  public:
-	host_object_id create_host_object() {
-		const std::lock_guard lock{m_mutex};
-		const auto id = m_next_id++;
-		m_objects.emplace(id);
-		return id;
-	}
-
-	void destroy_host_object(const host_object_id id) {
-		const std::lock_guard lock{m_mutex};
-		m_objects.erase(id);
-	}
-
-	// true-result only reliable if no calls to create_host_object() are pending
-	bool has_active_objects() const {
-		const std::lock_guard lock{m_mutex};
-		return !m_objects.empty();
-	}
-
-  private:
-	mutable std::mutex m_mutex;
-	host_object_id m_next_id = 0;
-	std::unordered_set<host_object_id> m_objects;
-};
-
-// Base for `state` structs in all host_object specializations: registers and unregisters host_objects with the host_object_manager.
+/// Kept as a std::shared_ptr within host_objects, this notifies the runtime when the last reference to a host object goes out of scope.
 struct host_object_tracker : public lifetime_extending_state {
 	detail::host_object_id id{};
 

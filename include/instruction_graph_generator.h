@@ -26,6 +26,7 @@ class instruction_graph_generator {
 		// - which backends / features are supported?
 	};
 
+	// TODO should take unordered_map<device_id, device_info> (runtime is responsible for device id allocation, not IGGEN)
 	explicit instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices, instruction_recorder* recorder);
 
 	void create_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align, bool host_initialized);

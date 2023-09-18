@@ -151,7 +151,6 @@ namespace detail {
 		});
 
 		m_reduction_mngr = std::make_unique<reduction_manager>();
-		m_host_object_mngr = std::make_unique<host_object_manager>();
 		if(m_cfg->is_recording()) m_task_recorder = std::make_unique<task_recorder>(m_buffer_mngr.get());
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
@@ -200,8 +199,9 @@ namespace detail {
 		m_cdag.reset();
 		m_exec.reset();
 		m_task_mngr.reset();
+		// All host objects should have unregistered themselves by now.
+		assert(m_live_host_objects.empty());
 		m_reduction_mngr.reset();
-		m_host_object_mngr.reset();
 		// All buffers should have unregistered themselves by now.
 		assert(!m_buffer_mngr->has_active_buffers());
 		m_buffer_mngr.reset();
@@ -273,10 +273,8 @@ namespace detail {
 
 	reduction_manager& runtime::get_reduction_manager() const { return *m_reduction_mngr; }
 
-	host_object_manager& runtime::get_host_object_manager() const { return *m_host_object_mngr; }
-
 	host_object_id runtime::create_host_object(std::unique_ptr<host_object_instance> instance) {
-		const auto hoid = m_host_object_mngr->create_host_object();
+		const auto hoid = m_next_host_object_id++;
 		m_schdlr->notify_host_object_created(hoid, /* owns_instance: */ instance != nullptr);
 		if(instance != nullptr) { m_exec->announce_host_object_instance(hoid, std::move(instance)); }
 		return hoid;
@@ -284,7 +282,6 @@ namespace detail {
 
 	void runtime::destroy_host_object(host_object_id hoid) {
 		m_schdlr->notify_host_object_destroyed(hoid);
-		m_host_object_mngr->destroy_host_object(hoid);
 		maybe_destroy_runtime();
 	}
 
@@ -341,7 +338,7 @@ namespace detail {
 		if(m_is_active) return;
 		if(m_is_shutting_down) return;
 		if(m_buffer_mngr->has_active_buffers()) return;
-		if(m_host_object_mngr->has_active_objects()) return;
+		if(!m_live_host_objects.empty()) return;
 		instance.reset();
 	}
 

@@ -3,6 +3,7 @@
 #include <deque>
 #include <limits>
 #include <memory>
+#include <unordered_set>
 
 #include "command.h"
 #include "config.h"
@@ -27,7 +28,6 @@ namespace detail {
 	class command_graph;
 	class scheduler;
 	class task_manager;
-	class host_object_manager;
 	struct host_object_instance;
 
 	class runtime_already_started_error : public std::runtime_error {
@@ -74,8 +74,6 @@ namespace detail {
 
 		reduction_manager& get_reduction_manager() const;
 
-		host_object_manager& get_host_object_manager() const;
-
 		host_object_id create_host_object(std::unique_ptr<host_object_instance> instance = nullptr);
 
 		void destroy_host_object(host_object_id hoid);
@@ -106,13 +104,15 @@ namespace detail {
 		size_t m_num_nodes;
 		node_id m_local_nid;
 
+		std::unordered_set<host_object_id> m_live_host_objects;
+		host_object_id m_next_host_object_id = 0;
+
 		// These management classes are only constructed on the master node.
 		std::unique_ptr<command_graph> m_cdag;
 		std::unique_ptr<scheduler> m_schdlr;
-
+		
 		std::unique_ptr<buffer_manager> m_buffer_mngr;
 		std::unique_ptr<reduction_manager> m_reduction_mngr;
-		std::unique_ptr<host_object_manager> m_host_object_mngr;
 		std::unique_ptr<task_manager> m_task_mngr;
 		std::unique_ptr<instruction_executor> m_exec;
 
