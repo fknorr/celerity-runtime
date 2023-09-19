@@ -176,9 +176,8 @@ struct reads_writes {
 
 struct access_allocation {
 	allocation_id aid;
-	range<3> allocation_range = detail::zeros;
-	id<3> offset_in_allocation = detail::zeros;
-	subrange<3> buffer_subrange;
+	box<3> allocated_box_in_buffer;
+	box<3> accessed_box_in_buffer;
 };
 
 using access_allocation_map = std::vector<access_allocation>;

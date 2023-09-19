@@ -359,7 +359,9 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				    assert(amap.size() == kinstr.allocation_buffer_map.size()); // TODO why separate structs?
 				    print_buffer_allocation(kinstr.allocation_buffer_map[i]);
 				    dot += " via ";
-				    fmt::format_to(back, "A{} ({}) +{}", amap[i].aid, amap[i].allocation_range, amap[i].offset_in_allocation);
+				    const auto accessed_box_in_allocation = box(amap[i].accessed_box_in_buffer.get_min() - amap[i].allocated_box_in_buffer.get_min(),
+				        amap[i].accessed_box_in_buffer.get_max() - amap[i].allocated_box_in_buffer.get_max());
+				    fmt::format_to(back, "A{} {}", amap[i].aid, accessed_box_in_allocation);
 			    }
 			    end_node();
 		    },

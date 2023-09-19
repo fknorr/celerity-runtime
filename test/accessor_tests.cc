@@ -558,7 +558,7 @@ namespace detail {
 		SECTION("host accessor") {
 			auto access_info = bm.access_host_buffer<size_t, 1>(bid, access_mode::discard_write, {{}, {100}});
 			std::vector<closure_hydrator::accessor_info> infos;
-			infos.push_back({access_info.ptr, access_info.backing_buffer_range, access_info.backing_buffer_offset, subrange<3>{{}, {100, 1, 1}}});
+			infos.push_back({access_info.ptr, subrange(access_info.backing_buffer_offset, access_info.backing_buffer_range), subrange<3>{{}, {100, 1, 1}}});
 			auto acc = accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(subrange<1>({}, {100}), hydration_id(1),
 			    detail::id_cast<1>(access_info.backing_buffer_offset), detail::range_cast<1>(access_info.backing_buffer_range),
 			    detail::range_cast<1>(bm.get_buffer_info(bid).range));
@@ -572,7 +572,7 @@ namespace detail {
 		SECTION("device accessor") {
 			auto access_info = bm.access_device_buffer<size_t, 1>(bid, access_mode::discard_write, {{}, {100}});
 			std::vector<closure_hydrator::accessor_info> infos;
-			infos.push_back({access_info.ptr, access_info.backing_buffer_range, access_info.backing_buffer_offset, subrange<3>{{}, {100, 1, 1}}});
+			infos.push_back({access_info.ptr, subrange(access_info.backing_buffer_offset, access_info.backing_buffer_range), subrange<3>{{}, {100, 1, 1}}});
 			auto acc = accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(
 			    hydration_id(1), id_cast<1>(access_info.backing_buffer_offset), detail::range_cast<1>(access_info.backing_buffer_range));
 			CHECK(accessor_testspy::get_pointer(acc) != access_info.ptr);
@@ -594,7 +594,7 @@ namespace detail {
 		hydration_id next_hid = 1;
 		auto create_accessor = [&](const buffer_id bid) {
 			auto access_info = bm.access_host_buffer<size_t, 1>(bid, access_mode::discard_write, {{}, {10}});
-			infos.push_back({access_info.ptr, access_info.backing_buffer_range, access_info.backing_buffer_offset, subrange<3>{{}, {10, 1, 1}}});
+			infos.push_back({access_info.ptr, subrange(access_info.backing_buffer_offset, access_info.backing_buffer_range), subrange<3>{{}, {10, 1, 1}}});
 			auto acc = accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(subrange<1>({}, {10}), next_hid++,
 			    id_cast<1>(access_info.backing_buffer_offset), detail::range_cast<1>(access_info.backing_buffer_range),
 			    detail::range_cast<1>(bm.get_buffer_info(bid).range));

@@ -632,9 +632,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
 			assert(allocation_it != allocations.end());
 			const auto& alloc = *allocation_it;
-			const auto [access_offset, access_range] = accessed_box.get_subrange();
-			const auto [alloc_offset, alloc_range] = alloc.box.get_subrange();
-			allocation_map[i] = access_allocation{alloc.aid, alloc_range, access_offset - alloc_offset, {access_offset, access_range}};
+			allocation_map[i] = access_allocation{alloc.aid, alloc.box, accessed_box};
 			if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, alloc.box}; }
 		}
 

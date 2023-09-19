@@ -122,8 +122,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		std::string acc_log;
 		for(size_t i = 0; i < map.size(); ++i) {
 			auto& aa = map[i];
-			fmt::format_to(std::back_inserter(acc_log), "{} A{} {}", i == 0 ? ", accessing" : ",", aa.aid,
-			    box(subrange(aa.offset_in_allocation, aa.buffer_subrange.range)));
+			const auto accessed_box_in_allocation = box(aa.accessed_box_in_buffer.get_min() - aa.allocated_box_in_buffer.get_min(),
+			    aa.accessed_box_in_buffer.get_max() - aa.allocated_box_in_buffer.get_max());
+			fmt::format_to(std::back_inserter(acc_log), "{} A{} {}", i == 0 ? ", accessing" : ",", aa.aid, accessed_box_in_allocation);
 		}
 		return acc_log;
 	};
@@ -216,10 +217,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    for(const auto& aa : skinstr.get_allocation_map()) {
 			    const auto ptr = m_allocations.at(aa.aid).pointer;
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
-			    accessor_infos.push_back(
-			        closure_hydrator::accessor_info{ptr, aa.allocation_range, aa.offset_in_allocation, aa.buffer_subrange, nullptr /* TODO */});
+			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer, nullptr /* TODO */});
 #else
-			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocation_range, aa.offset_in_allocation, aa.buffer_subrange});
+			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer, aa.buffer_subrange});
 #endif
 		    }
 
@@ -239,7 +239,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    accessor_infos.reserve(hkinstr.get_allocation_map().size());
 		    for(const auto& aa : hkinstr.get_allocation_map()) {
 			    const auto ptr = m_allocations.at(aa.aid).pointer;
-			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocation_range, aa.offset_in_allocation, aa.buffer_subrange});
+			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer});
 		    }
 
 		    closure_hydrator::get_instance().arm(target::host_task, std::move(accessor_infos));

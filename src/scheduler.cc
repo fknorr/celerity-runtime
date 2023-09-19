@@ -40,17 +40,16 @@ namespace detail {
 					    for(const auto cmd : commands) {
 						    const auto instructions = m_iggen->compile(*cmd);
 
-						    if(e.tsk->get_type() == task_type::epoch && e.tsk->get_epoch_action() == epoch_action::shutdown) {
-							    assert(in_flight_events.empty());
-							    // m_delegate must be considered dangling as soon as the instructions for the shutdown epoch have been emitted
-							    assert(commands.size() == 1 && instructions.size() == 1);
-							    shutdown = true;
-						    }
-
 						    if(m_delegate != nullptr) {
 							    for(const auto instr : instructions) {
 								    m_delegate->submit_instruction(*instr);
 							    }
+						    }
+
+						    if(e.tsk->get_type() == task_type::epoch && e.tsk->get_epoch_action() == epoch_action::shutdown) {
+							    assert(in_flight_events.empty());
+							    shutdown = true;
+							    // m_delegate must be considered dangling as soon as the instructions for the shutdown epoch have been emitted
 						    }
 					    }
 				    },
