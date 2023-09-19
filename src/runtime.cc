@@ -42,30 +42,31 @@
 namespace celerity {
 namespace detail {
 
-	std::unique_ptr<runtime> runtime::instance = nullptr;
+	std::unique_ptr<runtime> runtime::s_instance = nullptr;
 
 	void runtime::mpi_initialize_once(int* argc, char*** argv) {
-		assert(!m_mpi_initialized);
+		assert(!s_mpi_initialized);
 		int provided;
 		MPI_Init_thread(argc, argv, MPI_THREAD_MULTIPLE, &provided);
 		assert(provided == MPI_THREAD_MULTIPLE);
-		m_mpi_initialized = true;
+		s_mpi_initialized = true;
 	}
 
 	void runtime::mpi_finalize_once() {
-		assert(m_mpi_initialized && !m_mpi_finalized && (!m_test_mode || !instance));
+		assert(s_mpi_initialized && !s_mpi_finalized && (!s_test_mode || !s_instance));
 		MPI_Finalize();
-		m_mpi_finalized = true;
+		s_mpi_finalized = true;
 	}
 
-	void runtime::init(int* argc, char** argv[], device_or_selector user_device_or_selector) {
-		assert(!instance);
-		instance = std::unique_ptr<runtime>(new runtime(argc, argv, user_device_or_selector));
+	void runtime::init(int* argc, char** argv[], const device_or_selector& user_device_or_selector) {
+		assert(!s_instance);
+		// TODO if (!s_test_mode && s_initialized_before) { throw std::runtime_error("Cannot re-initialize the runtime"); }
+		s_instance = std::unique_ptr<runtime>(new runtime(argc, argv, user_device_or_selector));
 	}
 
 	runtime& runtime::get_instance() {
-		if(instance == nullptr) { throw std::runtime_error("Runtime has not been initialized"); }
-		return *instance;
+		if(s_instance == nullptr) { throw std::runtime_error("Runtime has not been initialized"); }
+		return *s_instance;
 	}
 
 	static auto get_pid() {
@@ -107,9 +108,10 @@ namespace detail {
 #endif
 	}
 
-	runtime::runtime(int* argc, char** argv[], device_or_selector user_device_or_selector) {
-		if(m_test_mode) {
-			assert(m_test_active && "initializing the runtime from a test without a runtime_fixture");
+	runtime::runtime(int* argc, char** argv[], const device_or_selector& user_device_or_selector) {
+		if(s_test_mode) {
+			assert(s_test_active && "initializing the runtime from a test without a runtime_fixture");
+			s_test_runtime_was_instantiated = true;
 		} else {
 			mpi_initialize_once(argc, argv);
 		}
@@ -139,7 +141,6 @@ namespace detail {
 		cgf_diagnostics::make_available();
 
 		m_h_queue = std::make_unique<host_queue>();
-		m_d_queue = std::make_unique<device_queue>();
 
 		m_reduction_mngr = std::make_unique<reduction_manager>();
 		if(m_cfg->is_recording()) m_task_recorder = std::make_unique<task_recorder>();
@@ -179,6 +180,7 @@ namespace detail {
 		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, std::move(device_infos), m_instruction_recorder.get());
 
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), *m_exec);
+		m_schdlr->startup(); // TODO move into scheduler ctor
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
 		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
@@ -186,48 +188,20 @@ namespace detail {
 	}
 
 	runtime::~runtime() {
-		m_schdlr.reset();
-		m_cdag.reset();
-		m_exec.reset();
-		m_task_mngr.reset();
-		// all buffers and host objects should have unregistered themselves by now.
-		assert(m_live_buffers.empty());
-		assert(m_live_host_objects.empty());
-		m_reduction_mngr.reset();
-		m_d_queue.reset();
-		m_h_queue.reset();
-		m_command_recorder.reset();
-		m_task_recorder.reset();
-
-		cgf_diagnostics::teardown();
-
-		m_user_bench.reset();
-
-		if(!m_test_mode) { mpi_finalize_once(); }
-	}
-
-	void runtime::startup() {
-		if(m_is_active) { throw runtime_already_started_error(); }
-		m_is_active = true;
-		m_schdlr->startup();
-		// m_exec->startup(); TODO ??
-	}
-
-	void runtime::shutdown() {
-		assert(m_is_active);
-		m_is_shutting_down = true;
-
+		// create a shutdown epoch and pass it to the scheduler via callback
 		const auto shutdown_epoch = m_task_mngr->generate_epoch_task(epoch_action::shutdown);
 
+		// Shut down the scheduler after enqueueing the shutdown epoch
 		m_schdlr->shutdown();
 
-		m_task_mngr->await_epoch(shutdown_epoch);
-
-		// m_exec->shutdown(); TODO ??
+		// executor destructor waits for its thread, which exits as soon as it has processed the shutdown-epoch instruction
 		m_exec.reset();
 
-		// m_d_queue->wait();
-		m_h_queue->wait();
+		// when the executor is gone, the host queue is guaranteed to not have any work left to do
+		m_h_queue.reset();
+
+		// TODO does this actually do anything? Once the executor has exited we are guaranteed to arrived at this epoch anyway
+		m_task_mngr->await_epoch(shutdown_epoch);
 
 		if(spdlog::should_log(log_level::trace) && m_cfg->is_recording()) {
 			if(m_local_nid == 0) { // It's the same across all nodes
@@ -247,16 +221,26 @@ namespace detail {
 			}
 		}
 
-		// Shutting down the task_manager will cause all buffers captured inside command group functions to unregister.
-		// Since we check whether the runtime is still active upon unregistering, we have to set this to false first.
-		m_is_active = false;
-		m_task_mngr->shutdown();
-		m_is_shutting_down = false;
-		maybe_destroy_runtime();
+		m_cdag.reset();
+		m_task_mngr.reset();
+
+		// all buffers and host objects should have unregistered themselves by now.
+		assert(m_live_buffers.empty());
+		assert(m_live_host_objects.empty());
+		m_reduction_mngr.reset();
+		m_h_queue.reset();
+		m_command_recorder.reset();
+		m_task_recorder.reset();
+
+		cgf_diagnostics::teardown();
+
+		m_user_bench.reset();
+
+		if(!s_test_mode) { mpi_finalize_once(); }
 	}
 
-	void runtime::sync() {
-		const auto epoch = m_task_mngr->generate_epoch_task(epoch_action::barrier);
+	void runtime::sync(epoch_action action) {
+		const auto epoch = m_task_mngr->generate_epoch_task(action);
 		m_task_mngr->await_epoch(epoch);
 	}
 
@@ -297,6 +281,17 @@ namespace detail {
 
 	void runtime::epoch_reached(const task_id epoch_tid) { m_task_mngr->notify_epoch_reached(epoch_tid); }
 
+	void runtime::create_queue() {
+		if(m_has_live_queue) { throw std::runtime_error("Only one celerity::distr_queue can be created per process (but it can be copied!)"); }
+		m_has_live_queue = true;
+	}
+
+	void runtime::destroy_queue() {
+		assert(m_has_live_queue);
+		m_has_live_queue = false;
+		destroy_instance_if_unreferenced();
+	}
+
 	buffer_id runtime::create_buffer(const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const void* const host_init_ptr) {
 		const auto bid = m_next_buffer_id++;
 		m_live_buffers.emplace(bid);
@@ -318,15 +313,16 @@ namespace detail {
 		m_schdlr->notify_buffer_destroyed(bid);
 		m_task_mngr->destroy_buffer(bid);
 		m_live_buffers.erase(bid);
-		maybe_destroy_runtime();
+		destroy_instance_if_unreferenced();
 	}
 
 	host_object_id runtime::create_host_object(std::unique_ptr<host_object_instance> instance) {
 		const auto hoid = m_next_host_object_id++;
 		m_live_host_objects.emplace(hoid);
-		if(instance != nullptr) { m_exec->announce_host_object_instance(hoid, std::move(instance)); }
+		const bool owns_instance = instance != nullptr;
+		if(owns_instance) { m_exec->announce_host_object_instance(hoid, std::move(instance)); }
 		m_task_mngr->create_host_object(hoid);
-		m_schdlr->notify_host_object_created(hoid, /* owns_instance: */ instance != nullptr);
+		m_schdlr->notify_host_object_created(hoid, owns_instance);
 		return hoid;
 	}
 
@@ -335,25 +331,13 @@ namespace detail {
 		m_schdlr->notify_host_object_destroyed(hoid);
 		m_task_mngr->destroy_host_object(hoid);
 		m_live_host_objects.erase(hoid);
-		maybe_destroy_runtime();
+		destroy_instance_if_unreferenced();
 	}
 
-	void runtime::maybe_destroy_runtime() const {
-		if(m_test_active) return;
-		if(m_is_active) return;
-		if(m_is_shutting_down) return;
-		if(!m_live_buffers.empty()) return;
-		if(!m_live_host_objects.empty()) return;
-		instance.reset();
-	}
-
-	void runtime::test_case_exit() {
-		assert(m_test_mode && m_test_active);
-		// We need to delete all tasks manually first, b/c objects that have their lifetime
-		// extended by tasks (buffers, host objects) will attempt to shut down the runtime.
-		if(instance != nullptr) { instance->m_task_mngr.reset(); }
-		instance.reset();
-		m_test_active = false;
+	void runtime::destroy_instance_if_unreferenced() const {
+		if(!m_has_live_queue && m_live_buffers.empty() && m_live_host_objects.empty()) { //
+			s_instance.reset();
+		}
 	}
 
 } // namespace detail

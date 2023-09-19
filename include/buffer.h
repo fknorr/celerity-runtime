@@ -84,7 +84,7 @@ class buffer {
   private:
 	struct impl {
 		impl(range<Dims> rng, const DataT* host_init_ptr) : range(rng) {
-			if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
+			if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
 			id = detail::runtime::get_instance().create_buffer(Dims, detail::range_cast<3>(range), sizeof(DataT), alignof(DataT), host_init_ptr);
 		}
 		impl(const impl&) = delete;

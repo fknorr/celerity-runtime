@@ -5,17 +5,10 @@
 
 #include "device_queue.h"
 #include "runtime.h"
+#include "task.h"
 #include "task_manager.h"
 
 namespace celerity {
-namespace detail {
-
-	class distr_queue_tracker {
-	  public:
-		~distr_queue_tracker() { runtime::get_instance().shutdown(); }
-	};
-
-} // namespace detail
 
 struct [[deprecated("This tag type is no longer required to capture by reference")]] allow_by_ref_t{};
 
@@ -29,23 +22,17 @@ class distr_queue {
 	distr_queue() { init(detail::auto_select_device{}); }
 
 	[[deprecated("Use the overload with device selector instead, this will be removed in future release")]] distr_queue(cl::sycl::device& device) {
-		if(detail::runtime::is_initialized()) { throw std::runtime_error("Passing explicit device not possible, runtime has already been initialized."); }
+		if(detail::runtime::has_instance()) { throw std::runtime_error("Passing explicit device not possible, runtime has already been initialized."); }
 		init(device);
 	}
 
 	template <typename DeviceSelector>
 	distr_queue(const DeviceSelector& device_selector) {
-		if(detail::runtime::is_initialized()) {
+		if(detail::runtime::has_instance()) {
 			throw std::runtime_error("Passing explicit device selector not possible, runtime has already been initialized.");
 		}
 		init(device_selector);
 	}
-
-	distr_queue(const distr_queue&) = default;
-	distr_queue(distr_queue&&) = default;
-
-	distr_queue& operator=(const distr_queue&) = delete;
-	distr_queue& operator=(distr_queue&&) = delete;
 
 	/**
 	 * Submits a command group to the queue.
@@ -71,21 +58,37 @@ class distr_queue {
 	 *
 	 * This function is intended for incremental development and debugging.
 	 * In production, it should only be used at very coarse granularity (second scale).
-	 * @warning { This is very slow, as it drains all queues and synchronizes accross the entire cluster. }
+	 * @warning { This is very slow, as it drains all queues and synchronizes across the entire cluster. }
 	 */
-	void slow_full_sync() { detail::runtime::get_instance().sync(); } // NOLINT(readability-convert-member-functions-to-static)
+	void slow_full_sync() { detail::runtime::get_instance().sync(detail::epoch_action::barrier); } // NOLINT(readability-convert-member-functions-to-static)
 
   private:
-	std::shared_ptr<detail::distr_queue_tracker> m_tracker;
+	struct tracker {
+		tracker() { detail::runtime::get_instance().create_queue(); }
 
-	void init(detail::device_or_selector device_or_selector) {
-		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr, device_or_selector); }
-		try {
-			detail::runtime::get_instance().startup();
-		} catch(detail::runtime_already_started_error&) {
-			throw std::runtime_error("Only one celerity::distr_queue can be created per process (but it can be copied!)");
+		tracker(const tracker&) = delete;
+		tracker(tracker&&) = delete;
+		tracker& operator=(const tracker&) = delete;
+		tracker& operator=(tracker&&) = delete;
+
+		~tracker() {
+			// The destructor of the last queue handle must wait for all submitted work to finish to guarantee implicit synchronization e.g. around host_task
+			// ref-captures. Notifying the runtime of queue destruction might destroy the runtime instance itself, which will issue and wait on the shutdown
+			// epoch, guaranteeing that all previously submitted work has completed.
+			detail::runtime::get_instance().destroy_queue();
+
+			// If any buffers or host objects outlive the queue, the runtime will delay its destruction (and thus the shutdown epoch) to still be able to
+			// issue the appropriate instructions for buffer and host object deallocation. In that case, we insert and wait on another local epoch to guarantee
+			// synchronization. Any later cleanup instructions will be inserted by the scheduler between this and the shutdown epoch.
+			if(detail::runtime::has_instance()) { detail::runtime::get_instance().sync(detail::epoch_action::none); }
 		}
-		m_tracker = std::make_shared<detail::distr_queue_tracker>();
+	};
+
+	std::shared_ptr<tracker> m_tracker;
+
+	void init(const detail::device_or_selector& device_or_selector) {
+		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr, device_or_selector); }
+		m_tracker = std::make_shared<tracker>();
 	}
 };
 

@@ -25,6 +25,7 @@ namespace detail {
 
 	abstract_scheduler::~abstract_scheduler() = default;
 
+	// TODO this event is not really necessary - scheduler loop can exit after processing shutdown epoch
 	void abstract_scheduler::shutdown() { notify(event_shutdown{}); }
 
 	void abstract_scheduler::schedule() {

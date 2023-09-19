@@ -71,7 +71,7 @@ namespace celerity::detail {
 template <typename T>
 class host_object_fence_promise final : public detail::fence_promise {
   public:
-	explicit host_object_fence_promise(const T *instance) : m_instance(instance) {}
+	explicit host_object_fence_promise(const T* instance) : m_instance(instance) {}
 
 	std::future<T> get_future() { return m_promise.get_future(); }
 
@@ -80,7 +80,7 @@ class host_object_fence_promise final : public detail::fence_promise {
 	void* get_snapshot_pointer() override { utils::panic("host_object_fence_promise::get_snapshot_pointer"); }
 
   private:
-	const T *m_instance;
+	const T* m_instance;
 	std::promise<T> m_promise;
 };
 

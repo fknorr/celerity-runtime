@@ -12,6 +12,7 @@
 #include "host_queue.h"
 #include "instruction_executor.h"
 #include "recorders.h"
+#include "task.h"
 #include "types.h"
 
 namespace celerity {
@@ -30,11 +31,6 @@ namespace detail {
 	class task_manager;
 	struct host_object_instance;
 
-	class runtime_already_started_error : public std::runtime_error {
-	  public:
-		runtime_already_started_error() : std::runtime_error("The Celerity runtime has already been started") {}
-	};
-
 	class runtime final : private instruction_executor::delegate {
 		friend struct runtime_testspy;
 
@@ -42,21 +38,15 @@ namespace detail {
 		/**
 		 * @param user_device_or_selector This optional device (overriding any other device selection strategy) or device selector can be provided by the user.
 		 */
-		static void init(int* argc, char** argv[], device_or_selector user_device_or_selector = auto_select_device{});
+		static void init(int* argc, char** argv[], const device_or_selector& user_device_or_selector = auto_select_device{});
 
-		static bool is_initialized() { return instance != nullptr; }
+		static bool has_instance() { return s_instance != nullptr; }
+
 		static runtime& get_instance();
 
 		~runtime();
 
-		/**
-		 * @brief Starts the runtime and all its internal components and worker threads.
-		 */
-		void startup();
-
-		void shutdown();
-
-		void sync();
+		void sync(detail::epoch_action action);
 
 		node_id get_local_nid() const { return m_local_nid; }
 
@@ -74,6 +64,10 @@ namespace detail {
 
 		reduction_manager& get_reduction_manager() const;
 
+		void create_queue();
+
+		void destroy_queue();
+
 		buffer_id create_buffer(int dims, const range<3>& range, size_t elem_size, size_t elem_align, const void* host_init_ptr);
 
 		void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
@@ -90,18 +84,13 @@ namespace detail {
 		bool is_dry_run() const { return m_cfg->is_dry_run(); }
 
 	  private:
-		inline static bool m_mpi_initialized = false;
-		inline static bool m_mpi_finalized = false;
+		inline static bool s_mpi_initialized = false;
+		inline static bool s_mpi_finalized = false;
 
 		static void mpi_initialize_once(int* argc, char*** argv);
 		static void mpi_finalize_once();
 
-		static std::unique_ptr<runtime> instance;
-
-		// Whether the runtime is active, i.e. between startup() and shutdown().
-		bool m_is_active = false;
-
-		bool m_is_shutting_down = false;
+		static std::unique_ptr<runtime> s_instance;
 
 		std::unique_ptr<config> m_cfg;
 		std::unique_ptr<experimental::bench::detail::user_benchmarker> m_user_bench;
@@ -110,9 +99,12 @@ namespace detail {
 		size_t m_num_nodes;
 		node_id m_local_nid;
 
+		// track all instances of celerity::distr_queue, celerity::buffer and celerity::host_object to know when to destroy s_instance
+		bool m_has_live_queue = false;
 		std::unordered_set<buffer_id> m_live_buffers;
-		buffer_id m_next_buffer_id = 0;
 		std::unordered_set<host_object_id> m_live_host_objects;
+
+		buffer_id m_next_buffer_id = 0;
 		host_object_id m_next_host_object_id = 0;
 
 		// These management classes are only constructed on the master node.
@@ -127,7 +119,7 @@ namespace detail {
 		std::unique_ptr<detail::command_recorder> m_command_recorder;
 		std::unique_ptr<detail::instruction_recorder> m_instruction_recorder;
 
-		runtime(int* argc, char** argv[], device_or_selector user_device_or_selector);
+		runtime(int* argc, char** argv[], const device_or_selector& user_device_or_selector);
 		runtime(const runtime&) = delete;
 		runtime(runtime&&) = delete;
 
@@ -135,9 +127,9 @@ namespace detail {
 		void epoch_reached(task_id epoch_tid) override;
 
 		/**
-		 * @brief Destroys the runtime if it is no longer active and all buffers have been unregistered.
+		 * @brief Destroys the runtime if it is no longer active and all buffers and host objects have been unregistered.
 		 */
-		void maybe_destroy_runtime() const;
+		void destroy_instance_if_unreferenced() const;
 
 		// ------------------------------------------ TESTING UTILS ------------------------------------------
 		// We have to jump through some hoops to be able to re-initialize the runtime for unit testing.
@@ -148,39 +140,44 @@ namespace detail {
 	  public:
 		// Switches to test mode, where MPI will be initialized through test_case_enter() instead of runtime::runtime(). Called on Catch2 startup.
 		static void test_mode_enter() {
-			assert(!m_mpi_initialized);
-			m_test_mode = true;
+			assert(!s_mpi_initialized);
+			s_test_mode = true;
 		}
 
 		// Finalizes MPI if it was ever initialized in test mode. Called on Catch2 shutdown.
 		static void test_mode_exit() {
-			assert(m_test_mode && !m_test_active && !m_mpi_finalized);
-			if(m_mpi_initialized) mpi_finalize_once();
+			assert(s_test_mode && !s_test_active && !s_mpi_finalized);
+			if(s_mpi_initialized) mpi_finalize_once();
 		}
 
 		// Initializes MPI for tests, if it was not initialized before
 		static void test_require_mpi() {
-			assert(m_test_mode && !m_test_active);
-			if(!m_mpi_initialized) mpi_initialize_once(nullptr, nullptr);
+			assert(s_test_mode && !s_test_active);
+			if(!s_mpi_initialized) mpi_initialize_once(nullptr, nullptr);
 		}
 
 		// Allows the runtime to be transitively instantiated in tests. Called from runtime_fixture.
 		static void test_case_enter() {
-			assert(m_test_mode && !m_test_active && m_mpi_initialized);
-			m_test_active = true;
+			assert(s_test_mode && !s_test_active && s_mpi_initialized && s_instance == nullptr);
+			s_test_active = true;
+			s_test_runtime_was_instantiated = false;
 		}
 
 		static bool test_runtime_was_instantiated() {
-			assert(m_test_mode && m_test_active);
-			return instance != nullptr;
+			assert(s_test_mode);
+			return s_test_runtime_was_instantiated;
 		}
 
 		// Deletes the runtime instance, which happens only in tests. Called from runtime_fixture.
-		static void test_case_exit();
+		static void test_case_exit() {
+			assert(s_test_mode && s_test_active);
+			s_test_active = false;
+		}
 
 	  private:
-		inline static bool m_test_mode = false;
-		inline static bool m_test_active = false;
+		inline static bool s_test_mode = false;
+		inline static bool s_test_active = false;
+		inline static bool s_test_runtime_was_instantiated = false;
 	};
 
 } // namespace detail

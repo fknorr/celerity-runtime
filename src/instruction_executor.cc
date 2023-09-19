@@ -286,7 +286,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const epoch_instruction& einstr) -> event {
 		    switch(einstr.get_epoch_action()) {
-		    case epoch_action::none: CELERITY_DEBUG("[executor] I{}: epoch (init)", einstr.get_id()); break;
+		    case epoch_action::none: CELERITY_DEBUG("[executor] I{}: epoch", einstr.get_id()); break;
 		    case epoch_action::barrier:
 			    CELERITY_DEBUG("[executor] I{}: epoch (barrier)", einstr.get_id());
 			    MPI_Barrier(MPI_COMM_WORLD); // TODO this should not be in executor

@@ -51,9 +51,9 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "distr_queue implicitly initializes the runtime", "[distr_queue][lifetime]") {
-		REQUIRE_FALSE(runtime::is_initialized());
+		REQUIRE_FALSE(runtime::has_instance());
 		distr_queue queue;
-		REQUIRE(runtime::is_initialized());
+		REQUIRE(runtime::has_instance());
 	}
 
 #pragma GCC diagnostic push
@@ -63,12 +63,12 @@ namespace detail {
 		cl::sycl::device device{selector};
 
 		SECTION("before the runtime is initialized") {
-			REQUIRE_FALSE(runtime::is_initialized());
+			REQUIRE_FALSE(runtime::has_instance());
 			REQUIRE_NOTHROW(distr_queue{device});
 		}
 
 		SECTION("but not once the runtime has been initialized") {
-			REQUIRE_FALSE(runtime::is_initialized());
+			REQUIRE_FALSE(runtime::has_instance());
 			runtime::init(nullptr, nullptr);
 			REQUIRE_THROWS_WITH(distr_queue{device}, "Passing explicit device not possible, runtime has already been initialized.");
 		}
@@ -76,9 +76,9 @@ namespace detail {
 #pragma GCC diagnostic pop
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer implicitly initializes the runtime", "[distr_queue][lifetime]") {
-		REQUIRE_FALSE(runtime::is_initialized());
+		REQUIRE_FALSE(runtime::has_instance());
 		buffer<float, 1> buf(range<1>{1});
-		REQUIRE(runtime::is_initialized());
+		REQUIRE(runtime::has_instance());
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer can be copied", "[distr_queue][lifetime]") {

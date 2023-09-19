@@ -105,7 +105,7 @@ class host_object {
 	};
 
 	explicit host_object(std::unique_ptr<instance_wrapper> instance) {
-		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
+		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
 		m_instance = &instance->value;
 		const auto id = detail::runtime::get_instance().create_host_object(std::move(instance));
 		m_tracker = std::make_shared<detail::host_object_tracker>(id);
@@ -127,7 +127,7 @@ class host_object<T&> {
 	using instance_type = T;
 
 	explicit host_object(instance_type& obj) {
-		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
+		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
 		m_instance = &obj;
 		const auto id = detail::runtime::get_instance().create_host_object();
 		m_tracker = std::make_shared<detail::host_object_tracker>(id);
@@ -152,7 +152,7 @@ class host_object<void> {
 	using instance_type = void;
 
 	explicit host_object() {
-		if(!detail::runtime::is_initialized()) { detail::runtime::init(nullptr, nullptr); }
+		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
 		const auto id = detail::runtime::get_instance().create_host_object();
 		m_tracker = std::make_shared<detail::host_object_tracker>(id);
 	}

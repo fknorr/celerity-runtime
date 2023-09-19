@@ -54,9 +54,7 @@ class side_effect<void, Order> {
 	using instance_type = typename host_object<void>::instance_type;
 	constexpr static inline side_effect_order order = Order;
 
-	explicit side_effect(const host_object<void>& object, handler& cgh) {
-		detail::add_requirement(cgh, detail::get_host_object_id(object), order, true);
-	}
+	explicit side_effect(const host_object<void>& object, handler& cgh) { detail::add_requirement(cgh, detail::get_host_object_id(object), order, true); }
 
 	// Note: We don't register the side effect with CGF diagnostics b/c it makes little sense to capture void side effects.
 };
