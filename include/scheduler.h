@@ -13,7 +13,6 @@ namespace celerity {
 namespace detail {
 
 	class distributed_graph_generator;
-	class executor;
 	class instruction;
 	class instruction_executor;
 	class instruction_graph_generator;

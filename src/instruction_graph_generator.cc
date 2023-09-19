@@ -305,10 +305,10 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 				// How to realize this in the presence of CUDA-aware MPI? We want to have RDMA MPI_Recv to device buffers as the happy path, and a copy from
 				// receive buffer as fallback - but only in the absence of a broadcast condition.
 				// 	 - annotate recv_instructions with the desired allocation to RDMA to (if any)
-				//   - have a conditional copy_instruction following it, in case the RDMA fails (or should the buffer_transfer_manager dispatch that copy?)
+				//   - have a conditional copy_instruction following it, in case the RDMA fails (or should the recv_arbiter dispatch that copy?)
 				//   - in case of a RDMA failure, or when we want to broadcast, we need a release_transfer_instruction to hand the transfer_allocation_id
 				//   back
-				// 	   to the buffer_transfer_manager (again kinda conditional on whether we did an RDMA receive or not)
+				// 	   to the recv_arbiter (again kinda conditional on whether we did an RDMA receive or not)
 				buffer.newest_data_location.update_region(accepted_transfer_region, data_location().set(mid));
 				buffer.pending_await_pushes.update_region(accepted_transfer_region, transfer_id());
 

@@ -183,11 +183,9 @@ endif()
 set(SOURCES
   src/buffer_manager.cc
   src/buffer_storage.cc
-  src/buffer_transfer_manager.cc
   src/command_graph.cc
   src/config.cc
   src/device_queue.cc
-  src/executor.cc
   src/distributed_graph_generator.cc
   src/graph_serializer.cc
   src/grid.cc
@@ -203,7 +201,6 @@ set(SOURCES
   src/task_manager.cc
   src/user_bench.cc
   src/utils.cc
-  src/worker_job.cc
   "${CMAKE_CURRENT_BINARY_DIR}/src/version.cc"
 )
 

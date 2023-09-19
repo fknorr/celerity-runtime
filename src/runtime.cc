@@ -24,7 +24,6 @@
 #include "command_graph.h"
 #include "device_queue.h"
 #include "distributed_graph_generator.h"
-#include "executor.h"
 #include "host_object.h"
 #include "instruction_executor.h"
 #include "instruction_graph_generator.h"

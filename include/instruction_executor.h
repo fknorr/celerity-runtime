@@ -42,6 +42,8 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);
 
   private:
+	friend struct executor_testspy;
+
 	struct completed_synchronous {};
 	using event = std::variant<std::unique_ptr<backend::event>, std::unique_ptr<communicator::event>, recv_arbiter::event,
 	    std::future<host_queue::execution_info>, completed_synchronous>;

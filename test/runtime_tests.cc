@@ -20,7 +20,7 @@
 #include <celerity.h>
 
 #include "affinity.h"
-#include "executor.h"
+#include "instruction_executor.h"
 #include "named_threads.h"
 #include "ranges.h"
 
@@ -37,11 +37,11 @@ namespace detail {
 	using celerity::experimental::access::even_split;
 
 	struct scheduler_testspy {
-		static std::thread& get_worker_thread(scheduler& schdlr) { return schdlr.m_thread; }
+		static std::thread& get_thread(scheduler& schdlr) { return schdlr.m_thread; }
 	};
 
 	struct executor_testspy {
-		static std::thread& get_exec_thrd(executor& exec) { return exec.m_exec_thrd; }
+		static std::thread& get_thread(instruction_executor& exec) { return exec.m_thread; }
 	};
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "only a single distr_queue can be created", "[distr_queue][lifetime][dx]") {
@@ -1122,12 +1122,11 @@ namespace detail {
 		auto& schdlr = runtime_testspy::get_schdlr(rt);
 		auto& exec = runtime_testspy::get_exec(rt);
 
-		const auto scheduler_thread_name = get_thread_name(scheduler_testspy::get_worker_thread(schdlr).native_handle());
+		const auto scheduler_thread_name = get_thread_name(scheduler_testspy::get_thread(schdlr).native_handle());
 		CHECK(scheduler_thread_name == "cy-scheduler");
 
-		// TODO NOMERGE
-		// const auto executor_thread_name = get_thread_name(executor_testspy::get_exec_thrd(exec).native_handle());
-		// CHECK(executor_thread_name == "cy-executor");
+		const auto executor_thread_name = get_thread_name(executor_testspy::get_thread(exec).native_handle());
+		CHECK(executor_thread_name == "cy-executor");
 
 		q.submit([](handler& cgh) {
 			cgh.host_task(experimental::collective, [&](experimental::collective_partition) {
