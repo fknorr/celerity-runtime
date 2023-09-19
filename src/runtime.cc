@@ -179,8 +179,8 @@ namespace detail {
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
 		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, std::move(device_infos), m_instruction_recorder.get());
 
-		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), *m_exec);
-		m_schdlr->startup(); // TODO move into scheduler ctor
+		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), m_exec.get());
+
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
 		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
@@ -191,14 +191,15 @@ namespace detail {
 		// create a shutdown epoch and pass it to the scheduler via callback
 		const auto shutdown_epoch = m_task_mngr->generate_epoch_task(epoch_action::shutdown);
 
-		// Shut down the scheduler after enqueueing the shutdown epoch
-		m_schdlr->shutdown();
-
-		// executor destructor waits for its thread, which exits as soon as it has processed the shutdown-epoch instruction
+		// Destroy the executor as soon as it has processed the shutdown-epoch instruction.
+		// The scheduler thread is guaranteed to exit at this point as well, so it will not touch its delegate (which *is* the now-dangling executor) anymore.
 		m_exec.reset();
 
 		// when the executor is gone, the host queue is guaranteed to not have any work left to do
 		m_h_queue.reset();
+
+		// The scheduler will have exited by now as well after processing the shutdown epoch. Destroy it *after* the executor because it owns the CDAG and IDAG.
+		m_schdlr.reset();
 
 		// TODO does this actually do anything? Once the executor has exited we are guaranteed to arrived at this epoch anyway
 		m_task_mngr->await_epoch(shutdown_epoch);

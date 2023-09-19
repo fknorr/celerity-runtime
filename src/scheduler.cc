@@ -1,32 +1,22 @@
 #include "scheduler.h"
 
 #include "distributed_graph_generator.h"
-#include "instruction_executor.h"
 #include "instruction_graph_generator.h"
 #include "named_threads.h"
+#include "task.h"
 #include "utils.h"
 
 namespace celerity {
 namespace detail {
 
 	abstract_scheduler::abstract_scheduler(
-	    bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen, instruction_executor& exec)
-	    : m_is_dry_run(is_dry_run), m_dggen(std::move(dggen)), m_iggen(std::move(iggen)), m_exec(&exec) {
-		assert(m_dggen != nullptr);
-		assert(m_iggen != nullptr);
-	}
-
-	abstract_scheduler::abstract_scheduler(
-	    const bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen)
-	    : m_is_dry_run(is_dry_run), m_dggen(std::move(dggen)), m_iggen(std::move(iggen)), m_exec(nullptr) {
+	    bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen, delegate* const delegate)
+	    : m_is_dry_run(is_dry_run), m_dggen(std::move(dggen)), m_iggen(std::move(iggen)), m_delegate(delegate) {
 		assert(m_dggen != nullptr);
 		assert(m_iggen != nullptr);
 	}
 
 	abstract_scheduler::~abstract_scheduler() = default;
-
-	// TODO this event is not really necessary - scheduler loop can exit after processing shutdown epoch
-	void abstract_scheduler::shutdown() { notify(event_shutdown{}); }
 
 	void abstract_scheduler::schedule() {
 		std::queue<event> in_flight_events;
@@ -46,11 +36,20 @@ namespace detail {
 				    event,
 				    [&](const event_task_available& e) {
 					    assert(e.tsk != nullptr);
-					    for(const auto cmd : m_dggen->build_task(*e.tsk)) {
-						    const auto instr_batch = m_iggen->compile(*cmd);
-						    if(m_exec != nullptr) {
-							    for(const auto instr : instr_batch) {
-								    m_exec->submit(*instr);
+					    const auto commands = m_dggen->build_task(*e.tsk);
+					    for(const auto cmd : commands) {
+						    const auto instructions = m_iggen->compile(*cmd);
+
+						    if(e.tsk->get_type() == task_type::epoch && e.tsk->get_epoch_action() == epoch_action::shutdown) {
+							    assert(in_flight_events.empty());
+							    // m_delegate must be considered dangling as soon as the instructions for the shutdown epoch have been emitted
+							    assert(commands.size() == 1 && instructions.size() == 1);
+							    shutdown = true;
+						    }
+
+						    if(m_delegate != nullptr) {
+							    for(const auto instr : instructions) {
+								    m_delegate->submit_instruction(*instr);
 							    }
 						    }
 					    }
@@ -74,10 +73,6 @@ namespace detail {
 				    [&](const event_host_object_destroyed& e) {
 					    m_dggen->destroy_host_object(e.hoid);
 					    m_iggen->destroy_host_object(e.hoid);
-				    },
-				    [&](const event_shutdown&) {
-					    assert(in_flight_events.empty());
-					    shutdown = true;
 				    });
 			}
 		}
@@ -91,14 +86,15 @@ namespace detail {
 		m_events_cv.notify_one();
 	}
 
-	void scheduler::startup() {
-		m_worker_thread = std::thread(&scheduler::schedule, this);
-		set_thread_name(m_worker_thread.native_handle(), "cy-scheduler");
+	scheduler::scheduler(
+	    const bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen, delegate* const delegate)
+	    : abstract_scheduler(is_dry_run, std::move(dggen), std::move(iggen), delegate), m_thread(&scheduler::schedule, this) {
+		set_thread_name(m_thread.native_handle(), "cy-scheduler");
 	}
 
-	void scheduler::shutdown() {
-		abstract_scheduler::shutdown();
-		if(m_worker_thread.joinable()) { m_worker_thread.join(); }
+	scheduler::~scheduler() {
+		// schedule() will exit as soon as it has processed the shutdown epoch
+		m_thread.join();
 	}
 
 } // namespace detail

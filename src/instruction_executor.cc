@@ -13,11 +13,13 @@ namespace celerity::detail {
 
 instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, const communicator_factory& comm_factory, delegate* dlg)
     : m_delegate(dlg), m_backend_queue(std::move(backend_queue)), m_communicator(comm_factory.make_communicator(this)), m_recv_arbiter(*m_communicator),
-      m_thread(&instruction_executor::loop, this) {}
+      m_thread(&instruction_executor::loop, this) {
+	set_thread_name(m_thread.native_handle(), "cy-executor");
+}
 
 instruction_executor::~instruction_executor() { m_thread.join(); }
 
-void instruction_executor::submit(const instruction& instr) { m_submission_queue.push_back(&instr); }
+void instruction_executor::submit_instruction(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
 void instruction_executor::announce_buffer_user_pointer(const buffer_id bid, const void* const ptr) { m_submission_queue.push_back(std::pair(bid, ptr)); }
 
@@ -28,7 +30,6 @@ void instruction_executor::announce_host_object_instance(const host_object_id ho
 }
 
 void instruction_executor::loop() {
-	set_thread_name(get_current_thread_handle(), "cy-executor");
 	closure_hydrator::make_available();
 
 	struct pending_instruction_info {

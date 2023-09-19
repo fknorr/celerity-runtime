@@ -37,7 +37,7 @@ namespace detail {
 	using celerity::experimental::access::even_split;
 
 	struct scheduler_testspy {
-		static std::thread& get_worker_thread(scheduler& schdlr) { return schdlr.m_worker_thread; }
+		static std::thread& get_worker_thread(scheduler& schdlr) { return schdlr.m_thread; }
 	};
 
 	struct executor_testspy {

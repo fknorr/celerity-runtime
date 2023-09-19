@@ -14,6 +14,7 @@ namespace detail {
 
 	class distributed_graph_generator;
 	class executor;
+	class instruction;
 	class instruction_executor;
 	class instruction_graph_generator;
 	class task;
@@ -21,14 +22,28 @@ namespace detail {
 	// Abstract base class to allow different threading implementation in tests
 	class abstract_scheduler {
 	  public:
-		abstract_scheduler(const bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen,
-		    instruction_executor& exec);
+		class delegate {
+		  protected:
+			delegate() = default;
+			delegate(const delegate&) = default;
+			delegate(delegate&&) = default;
+			delegate& operator=(const delegate&) = default;
+			delegate& operator=(delegate&&) = default;
+			~delegate() = default; // do not allow destruction through base pointer
+
+		  public:
+			virtual void submit_instruction(const instruction& instr) = 0;
+		};
+
+		abstract_scheduler(bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen,
+		    delegate* delegate = nullptr);
+
+		abstract_scheduler(const abstract_scheduler&) = delete;
+		abstract_scheduler(abstract_scheduler&&) = delete;
+		abstract_scheduler& operator=(const abstract_scheduler&) = delete;
+		abstract_scheduler& operator=(abstract_scheduler&&) = delete;
 
 		virtual ~abstract_scheduler();
-
-		virtual void startup() = 0;
-
-		virtual void shutdown();
 
 		/**
 		 * @brief Notifies the scheduler that a new task has been created and is ready for scheduling.
@@ -54,11 +69,7 @@ namespace detail {
 		 */
 		void schedule();
 
-		// Constructor for tests that does not require an executor
-		abstract_scheduler(const bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen);
-
 	  private:
-		struct event_shutdown {};
 		struct event_task_available {
 			const task* tsk;
 		};
@@ -84,13 +95,14 @@ namespace detail {
 		struct event_host_object_destroyed {
 			host_object_id hoid;
 		};
-		using event = std::variant<event_shutdown, event_task_available, event_buffer_created, event_set_buffer_debug_name, event_buffer_destroyed,
-		    event_host_object_created, event_host_object_destroyed>;
+		using event = std::variant<event_task_available, event_buffer_created, event_set_buffer_debug_name, event_buffer_destroyed, event_host_object_created,
+		    event_host_object_destroyed>;
 
 		bool m_is_dry_run;
 		std::unique_ptr<distributed_graph_generator> m_dggen;
 		std::unique_ptr<instruction_graph_generator> m_iggen;
-		instruction_executor* m_exec; // Pointer instead of reference so we can omit for tests / benchmarks
+
+		delegate* m_delegate; // Pointer instead of reference so we can omit for tests / benchmarks
 
 		std::queue<event> m_available_events;
 		std::queue<event> m_in_flight_events;
@@ -105,14 +117,18 @@ namespace detail {
 		friend struct scheduler_testspy;
 
 	  public:
-		using abstract_scheduler::abstract_scheduler;
+		scheduler(bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen,
+		    delegate* delegate = nullptr);
 
-		void startup() override;
+		scheduler(const scheduler&) = delete;
+		scheduler(scheduler&&) = delete;
+		scheduler& operator=(const scheduler&) = delete;
+		scheduler& operator=(scheduler&&) = delete;
 
-		void shutdown() override;
+		~scheduler() override;
 
 	  private:
-		std::thread m_worker_thread;
+		std::thread m_thread;
 	};
 
 } // namespace detail

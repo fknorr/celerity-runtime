@@ -5,6 +5,7 @@
 #include "double_buffered_queue.h"
 #include "instruction_graph.h"
 #include "recv_arbiter.h"
+#include "scheduler.h"
 
 #include <unordered_map>
 
@@ -12,7 +13,7 @@ namespace celerity::detail {
 
 struct host_object_instance;
 
-class instruction_executor final : private communicator::delegate {
+class instruction_executor final : public abstract_scheduler::delegate, private communicator::delegate {
   public:
 	class delegate {
 	  protected:
@@ -35,7 +36,7 @@ class instruction_executor final : private communicator::delegate {
 	instruction_executor& operator=(instruction_executor&&) = delete;
 	~instruction_executor();
 
-	void submit(const instruction& instr);
+	void submit_instruction(const instruction& instr) override;
 
 	void announce_buffer_user_pointer(buffer_id bid, const void* ptr);
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);
