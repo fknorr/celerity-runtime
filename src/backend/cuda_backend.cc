@@ -115,19 +115,19 @@ struct cuda_set_device_guard {
 };
 
 struct cuda_stream_deleter {
-	void operator()(const cudaStream_t stream) { CELERITY_CUDA_CHECK(cudaStreamDestroy, stream); }
+	void operator()(const cudaStream_t stream) const { CELERITY_CUDA_CHECK(cudaStreamDestroy, stream); }
 };
 
 using unique_cuda_stream = std::unique_ptr<std::remove_pointer_t<cudaStream_t>, cuda_stream_deleter>;
 
-unique_cuda_stream make_cuda_stream(cuda_device_id id) {
+unique_cuda_stream make_cuda_stream(const cuda_device_id id) {
 	cudaStream_t stream;
 	CELERITY_CUDA_CHECK(cudaStreamCreateWithFlags, &stream, cudaStreamNonBlocking);
 	return unique_cuda_stream(stream);
 }
 
 struct cuda_event_deleter {
-	void operator()(const cudaEvent_t evt) { CELERITY_CUDA_CHECK(cudaEventDestroy, evt); }
+	void operator()(const cudaEvent_t evt) const { CELERITY_CUDA_CHECK(cudaEventDestroy, evt); }
 };
 
 using unique_cuda_event = std::unique_ptr<std::remove_pointer_t<cudaEvent_t>, cuda_event_deleter>;
@@ -177,10 +177,9 @@ struct cuda_queue::impl {
 	};
 	struct memory {
 		cuda_device_id cuda_id;
-		backend_detail::unique_cuda_stream alloc_stream;
 		backend_detail::unique_cuda_stream copy_from_host_stream;
 		backend_detail::unique_cuda_stream copy_to_host_stream;
-		std::unordered_map<memory_id, backend_detail::unique_cuda_stream> copy_to_peer_stream;
+		std::unordered_map<memory_id, backend_detail::unique_cuda_stream> copy_from_peer_stream;
 	};
 
 	std::unordered_map<device_id, device> devices;
@@ -200,12 +199,11 @@ cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::
 
 		impl::memory mem;
 		mem.cuda_id = cuda_id;
-		mem.alloc_stream = backend_detail::make_cuda_stream(dev.cuda_id);
-		mem.copy_from_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
-		mem.copy_to_host_stream = backend_detail::make_cuda_stream(dev.cuda_id);
+		mem.copy_from_host_stream = backend_detail::make_cuda_stream(cuda_id);
+		mem.copy_to_host_stream = backend_detail::make_cuda_stream(cuda_id);
 		for(const auto& other_config : devices) {
 			// device can be its own "peer" - buffer resizes need to copy within the device's memory
-			mem.copy_to_peer_stream.emplace(other_config.native_memory, backend_detail::make_cuda_stream(dev.cuda_id));
+			mem.copy_from_peer_stream.emplace(other_config.native_memory, backend_detail::make_cuda_stream(cuda_id));
 		}
 		m_impl->memories.emplace(config.native_memory, std::move(mem));
 	}
@@ -215,43 +213,51 @@ cuda_queue::~cuda_queue() = default;
 
 std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
 	void* ptr;
-	std::unique_ptr<event> evt;
 	if(where == host_memory_id) {
 		CELERITY_CUDA_CHECK(cudaMallocHost, &ptr, size, cudaHostAllocDefault);
-		evt = std::make_unique<cuda_host_event>();
 	} else {
 		const auto& mem = m_impl->memories.at(where);
 		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
-		CELERITY_CUDA_CHECK(cudaMallocAsync, &ptr, size, mem.alloc_stream.get());
-		evt = cuda_event::record(mem.alloc_stream.get());
+		// We _want_ to use cudaMallocAsync / cudaMallocFromPoolAsync for asynchronicity and stream ordering here, but according to
+		// https://developer.nvidia.com/blog/using-cuda-stream-ordered-memory-allocator-part-2 memory allocated through that API cannot be used with GPUDirect
+		// RDMA (although NVIDIA plans to support at an unspecified time in the future).
+		// When we eventually switch to cudaMallocAsync, remember to call cudaMemPoolSetAccess to allow d2d copies (see the same article).
+		CELERITY_CUDA_CHECK(cudaMalloc, &ptr, size);
 	}
 	assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
-	return {ptr, std::move(evt)};
+	return {ptr, std::make_unique<cuda_host_event>()};
 }
 
 std::unique_ptr<event> cuda_queue::free(const memory_id where, void* const allocation) {
 	if(where == host_memory_id) {
 		CELERITY_CUDA_CHECK(cudaFreeHost, allocation);
-		return std::make_unique<cuda_host_event>();
 	} else {
 		const auto& mem = m_impl->memories.at(where);
 		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
-		CELERITY_CUDA_CHECK(cudaFreeAsync, allocation, mem.alloc_stream.get());
-		return cuda_event::record(mem.alloc_stream.get());
+		CELERITY_CUDA_CHECK(cudaFree, allocation);
 	}
+	return std::make_unique<cuda_host_event>();
 }
 
 std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,
     void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
     const id<3>& target_offset, const range<3>& copy_range) {
-	assert(source != host_memory_id || dest != host_memory_id);
+	const impl::memory* memory = nullptr;
+	cudaStream_t stream = nullptr;
+	if(source == host_memory_id) {
+		assert(dest != host_memory_id);
+		memory = &m_impl->memories.at(dest);
+		stream = memory->copy_from_host_stream.get();
+	} else if(dest == host_memory_id) {
+		assert(source != host_memory_id);
+		memory = &m_impl->memories.at(source);
+		stream = memory->copy_from_host_stream.get();
+	} else {
+		memory = &m_impl->memories.at(dest);
+		stream = memory->copy_from_peer_stream.at(source).get();
+	}
 
-	const auto& memory = source == host_memory_id ? m_impl->memories.at(dest) : m_impl->memories.at(source);
-	const auto stream = source == host_memory_id ? memory.copy_from_host_stream.get()
-	                    : dest == host_memory_id ? memory.copy_to_host_stream.get()
-	                                             : memory.copy_to_peer_stream.at(dest).get();
-
-	backend_detail::cuda_set_device_guard set_device(memory.cuda_id);
+	backend_detail::cuda_set_device_guard set_device(memory->cuda_id);
 
 	const auto dispatch_memcpy = [&](const auto dims) {
 		backend_detail::memcpy_strided_device_cuda(stream, source_base_ptr, target_base_ptr, elem_size, range_cast<dims.value>(source_range),

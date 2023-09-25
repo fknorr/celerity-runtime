@@ -124,8 +124,8 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		std::string acc_log;
 		for(size_t i = 0; i < map.size(); ++i) {
 			auto& aa = map[i];
-			const auto accessed_box_in_allocation = box(aa.accessed_box_in_buffer.get_min() - aa.allocated_box_in_buffer.get_min(),
-			    aa.accessed_box_in_buffer.get_max() - aa.allocated_box_in_buffer.get_max());
+			const auto accessed_box_in_allocation = box(aa.accessed_box_in_buffer.get_min() - aa.allocated_box_in_buffer.get_offset(),
+			    aa.accessed_box_in_buffer.get_max() - aa.allocated_box_in_buffer.get_offset());
 			fmt::format_to(std::back_inserter(acc_log), "{} A{} {}", i == 0 ? ", accessing" : ",", aa.aid, accessed_box_in_allocation);
 		}
 		return acc_log;
