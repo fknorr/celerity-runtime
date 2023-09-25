@@ -33,7 +33,7 @@ recv_arbiter::event recv_arbiter::begin_aggregated_recv(const transfer_id trid, 
 void recv_arbiter::push_pilot_message(const node_id source, const pilot_message& pilot) {
 	const auto key = std::pair(pilot.transfer, pilot.buffer);
 	if(const auto it = m_active.find(key); it != m_active.end()) {
-		utils::match(
+		matchbox::match(
 		    it->second, //
 		    [&](waiting_for_begin& state) { state.pilots.emplace_back(source, pilot); },
 		    [&](waiting_for_communication& state) { begin_individual_recv(state, source, pilot); });

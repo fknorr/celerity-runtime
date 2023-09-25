@@ -10,39 +10,29 @@
 #include "types.h"
 #include "utils.h"
 
+#include <matchbox.hh>
+
 namespace celerity {
 namespace detail {
 
 	enum class command_type { epoch, horizon, execution, push, await_push, reduction, fence };
 
-	class epoch_command;
-	class horizon_command;
-	class execution_command;
-	class push_command;
-	class await_push_command;
-	class reduction_command;
-	class fence_command;
 
 	// ----------------------------------------------------------------------------------------------------------------
 	// ------------------------------------------------ COMMAND GRAPH -------------------------------------------------
 	// ----------------------------------------------------------------------------------------------------------------
 
 	// TODO: Consider adding a mechanism (during debug builds?) to assert that dependencies can only exist between commands on the same node
-	class abstract_command : public intrusive_graph_node<abstract_command> {
+	class abstract_command : public intrusive_graph_node<abstract_command>,
+	                         public matchbox::acceptor<class epoch_command, class horizon_command, class execution_command, class push_command,
+	                             class await_push_command, class reduction_command, class fence_command> {
 		friend class command_graph;
 
 	  protected:
 		abstract_command(command_id cid) : m_cid(cid) {}
 
 	  public:
-		using const_visitor = utils::visitor<const epoch_command&, const horizon_command&, const execution_command&, const push_command&,
-		    const await_push_command&, const reduction_command&, const fence_command&>;
-
-		virtual ~abstract_command() = 0;
-
 		virtual command_type get_type() const = 0;
-
-		virtual void accept(const_visitor& visitor) const = 0;
 
 		command_id get_cid() const { return m_cid; }
 
@@ -64,16 +54,13 @@ namespace detail {
 		command_id m_cid;
 		bool m_flushed = false;
 	};
-	inline abstract_command::~abstract_command() {}
 
-	class push_command final : public abstract_command {
+	class push_command final : public matchbox::implement_acceptor<abstract_command, push_command> {
 		friend class command_graph;
 		push_command(command_id cid, buffer_id bid, reduction_id rid, node_id target, transfer_id trid, subrange<3> push_range)
-		    : abstract_command(cid), m_bid(bid), m_rid(rid), m_target(target), m_trid(trid), m_push_range(push_range) {}
+		    : acceptor_base(cid), m_bid(bid), m_rid(rid), m_target(target), m_trid(trid), m_push_range(push_range) {}
 
 		command_type get_type() const override { return command_type::push; }
-
-		void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
@@ -90,14 +77,12 @@ namespace detail {
 		subrange<3> m_push_range;
 	};
 
-	class await_push_command final : public abstract_command {
+	class await_push_command final : public matchbox::implement_acceptor<abstract_command, await_push_command> {
 		friend class command_graph;
 		await_push_command(command_id cid, buffer_id bid, reduction_id rid, transfer_id trid, region<3> region)
-		    : abstract_command(cid), m_bid(bid), m_rid(rid), m_trid(trid), m_region(std::move(region)) {}
+		    : acceptor_base(cid), m_bid(bid), m_rid(rid), m_trid(trid), m_region(std::move(region)) {}
 
 		command_type get_type() const override { return command_type::await_push; }
-
-		void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	  public:
 		buffer_id get_bid() const { return m_bid; }
@@ -114,13 +99,11 @@ namespace detail {
 		region<3> m_region;
 	};
 
-	class reduction_command final : public abstract_command {
+	class reduction_command final : public matchbox::implement_acceptor<abstract_command, reduction_command> {
 		friend class command_graph;
-		reduction_command(command_id cid, const reduction_info& info) : abstract_command(cid), m_info(info) {}
+		reduction_command(command_id cid, const reduction_info& info) : acceptor_base(cid), m_info(info) {}
 
 		command_type get_type() const override { return command_type::reduction; }
-
-		void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	  public:
 		const reduction_info& get_reduction_info() const { return m_info; }
@@ -140,13 +123,11 @@ namespace detail {
 		task_id m_tid;
 	};
 
-	class epoch_command final : public task_command {
+	class epoch_command final : public matchbox::implement_acceptor<task_command, epoch_command> {
 		friend class command_graph;
-		epoch_command(const command_id& cid, const task_id& tid, epoch_action action) : task_command(cid, tid), m_action(action) {}
+		epoch_command(const command_id& cid, const task_id& tid, epoch_action action) : acceptor_base(cid, tid), m_action(action) {}
 
 		command_type get_type() const override { return command_type::epoch; }
-
-		void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 	  public:
 		epoch_action get_epoch_action() const { return m_action; }
@@ -155,25 +136,21 @@ namespace detail {
 		epoch_action m_action;
 	};
 
-	class horizon_command final : public task_command {
+	class horizon_command final : public matchbox::implement_acceptor<task_command, horizon_command> {
 		friend class command_graph;
-		using task_command::task_command;
+		using acceptor_base::acceptor_base;
 
 		command_type get_type() const override { return command_type::horizon; }
-
-		void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	};
 
-	class execution_command final : public task_command {
+	class execution_command final : public matchbox::implement_acceptor<task_command, execution_command> {
 		friend class command_graph;
 
 	  protected:
-		execution_command(command_id cid, task_id tid, subrange<3> execution_range) : task_command(cid, tid), m_execution_range(execution_range) {}
+		execution_command(command_id cid, task_id tid, subrange<3> execution_range) : acceptor_base(cid, tid), m_execution_range(execution_range) {}
 
 	  public:
 		command_type get_type() const override { return command_type::execution; }
-
-		void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 
 		const subrange<3>& get_execution_range() const { return m_execution_range; }
 
@@ -186,13 +163,11 @@ namespace detail {
 		bool m_initialize_reductions = false;
 	};
 
-	class fence_command final : public task_command {
+	class fence_command final : public matchbox::implement_acceptor<task_command, fence_command> {
 		friend class command_graph;
-		using task_command::task_command;
+		using acceptor_base::acceptor_base;
 
 		command_type get_type() const override { return command_type::fence; }
-
-		void accept(const_visitor& visitor) const override { visitor.visit(*this); }
 	};
 
 	// ----------------------------------------------------------------------------------------------------------------
@@ -249,33 +224,30 @@ namespace detail {
 		std::vector<command_id> dependencies;
 
 		std::optional<task_id> get_tid() const {
-			// clang-format off
-			return utils::match(data,
-				[](const horizon_data& d) { return std::optional{d.tid}; },
-				[](const epoch_data& d) { return std::optional{d.tid}; },
-				[](const execution_data& d) { return std::optional{d.tid}; },
-				[](const fence_data& d) { return std::optional{d.tid}; },
-				[](const auto&) { return std::optional<task_id>{}; }
+			return matchbox::match<std::optional<task_id>>(
+			    data,                                          //
+			    [](const horizon_data& d) { return d.tid; },   //
+			    [](const epoch_data& d) { return d.tid; },     //
+			    [](const execution_data& d) { return d.tid; }, //
+			    [](const fence_data& d) { return d.tid; },     //
+			    [](const auto&) { return std::nullopt; }       //
 			);
-			// clang-format on
 		}
 
 		command_type get_command_type() const {
-			// clang-format off
-			return utils::match(data,
-				[](const std::monostate&) -> command_type {
-					assert(!"calling get_command_type() on an empty command_pkg");
-					std::terminate();
-				},
-				[](const horizon_data&) { return command_type::horizon; },
-				[](const epoch_data&) { return command_type::epoch; },
-				[](const execution_data&) { return command_type::execution; },
-				[](const push_data&) { return command_type::push; },
-				[](const await_push_data&) { return command_type::await_push; },
-				[](const reduction_data&) { return command_type::reduction; },
-				[](const fence_data&) { return command_type::fence; }
-			);
-			// clang-format on
+			return matchbox::match(
+			    data,
+			    [](const std::monostate&) -> command_type {
+				    assert(!"calling get_command_type() on an empty command_pkg");
+				    std::terminate();
+			    },
+			    [](const horizon_data&) { return command_type::horizon; },       //
+			    [](const epoch_data&) { return command_type::epoch; },           //
+			    [](const execution_data&) { return command_type::execution; },   //
+			    [](const push_data&) { return command_type::push; },             //
+			    [](const await_push_data&) { return command_type::await_push; }, //
+			    [](const reduction_data&) { return command_type::reduction; },   //
+			    [](const fence_data&) { return command_type::fence; });
 		}
 	};
 

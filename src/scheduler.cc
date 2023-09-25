@@ -32,7 +32,7 @@ namespace detail {
 				const auto event = std::move(in_flight_events.front()); // NOLINT(performance-move-const-arg)
 				in_flight_events.pop();
 
-				utils::match(
+				matchbox::match(
 				    event,
 				    [&](const event_task_available& e) {
 					    assert(e.tsk != nullptr);

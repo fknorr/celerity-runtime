@@ -842,7 +842,7 @@ bool is_topologically_sorted(Iterator begin, Iterator end) {
 }
 
 std::vector<const instruction*> instruction_graph_generator::compile(const abstract_command& cmd) {
-	utils::match(
+	matchbox::match(
 	    cmd,                                                                     //
 	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); }, //
 	    [&](const push_command& pcmd) { compile_push_command(pcmd); },

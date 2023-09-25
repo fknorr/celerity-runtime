@@ -285,7 +285,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	std::unordered_map<int, instruction_id> send_instructions_by_tag; // for connecting pilot messages to send instructions
 	for(const auto& instr : irec.get_instructions()) {
-		utils::match(
+		matchbox::match(
 		    instr,
 		    [&](const alloc_instruction_record& ainstr) {
 			    begin_node(ainstr, "ellipse", "cyan3");
@@ -387,7 +387,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const fence_instruction_record& finstr) {
 			    begin_node(finstr, "box,margin=0.1", "darkorange");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>fence</b><br/>", finstr.id, finstr.tid, finstr.cid);
-			    utils::match(
+			    matchbox::match(
 			        finstr.variant, //
 			        [&](const fence_instruction_record::buffer_variant& buffer) { print_buffer_range(buffer.bid, buffer.box); },
 			        [&](const fence_instruction_record::host_object_variant& obj) { fmt::format_to(back, "<br/>H{}", obj.hoid); });
@@ -412,7 +412,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	for(const auto& instr : irec.get_instructions()) {
 		// since all instruction_records inherit from instruction_record_base, this *should* just compile to a pointer adjustment
-		const auto& instr_base = utils::match(instr, [](const auto& i) -> const instruction_record_base& { return i; });
+		const auto& instr_base = matchbox::match(instr, [](const auto& i) -> const instruction_record_base& { return i; });
 
 		for(const auto& dep : instr_base.dependencies) {
 			fmt::format_to(back, "I{}->I{}[{}];", dep.node, instr_base.id, dependency_style(dep));

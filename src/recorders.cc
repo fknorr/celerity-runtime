@@ -234,12 +234,11 @@ const std::string& instruction_recorder::get_buffer_debug_name(const buffer_id b
 
 void instruction_recorder::record_dependencies(const instruction& instr) {
 	const auto record = std::find_if(m_recorded_instructions.begin(), m_recorded_instructions.end(),
-	    [&](const instruction_record& r) { return utils::match(r, [](const auto& r) { return r.id; }) == instr.get_id(); });
+	    [&](const instruction_record& r) { return matchbox::match(r, [](const auto& r) { return r.id; }) == instr.get_id(); });
 	assert(record != m_recorded_instructions.end());
 
 	const auto& graph_deps = instr.get_dependencies();
-	auto& record_deps = utils::match(
-	    *record, [](auto& r) -> auto& { return r.dependencies; });
+	auto& record_deps = matchbox::match(*record, [](auto& r) -> auto& { return r.dependencies; });
 	record_deps.reserve(graph_deps.size());
 	for(auto& d : graph_deps) {
 		record_deps.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});

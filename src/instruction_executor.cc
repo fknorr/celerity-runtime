@@ -9,6 +9,8 @@
 #include <atomic>
 #include <mutex>
 
+#include <matchbox.hh>
+
 namespace celerity::detail {
 
 instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, const communicator_factory& comm_factory, delegate* dlg)
@@ -39,7 +41,7 @@ void instruction_executor::loop() {
 		event completion_event;
 
 		bool is_complete() const {
-			return utils::match(
+			return matchbox::match(
 			    completion_event, //
 			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
 			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); },
@@ -78,7 +80,7 @@ void instruction_executor::loop() {
 
 		if(m_submission_queue.swap_if_nonempty(loop_submission_queue)) {
 			for(const auto& submission : loop_submission_queue) {
-				utils::match(
+				matchbox::match(
 				    submission,
 				    [&](const instruction* incoming_instr) {
 					    const auto n_unmet_dependencies = static_cast<size_t>(std::count_if(
@@ -130,9 +132,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	};
 
 	// TODO submit synchronous operations to thread pool
-	return utils::match(
+	return matchbox::match<event>(
 	    instr,
-	    [&](const alloc_instruction& ainstr) -> event {
+	    [&](const alloc_instruction& ainstr) {
 		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{} with {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
 		        ainstr.get_size(), ainstr.get_alignment());
 
@@ -140,7 +142,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    m_allocations.emplace(ainstr.get_allocation_id(), allocation{ainstr.get_memory_id(), ptr});
 		    return std::move(event);
 	    },
-	    [&](const free_instruction& finstr) -> event {
+	    [&](const free_instruction& finstr) {
 		    const auto it = m_allocations.find(finstr.get_allocation_id());
 		    assert(it != m_allocations.end());
 		    const auto [memory, ptr] = it->second;
@@ -150,7 +152,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    m_allocations.erase(it);
 		    return m_backend_queue->free(memory, ptr);
 	    },
-	    [&](const init_buffer_instruction& ibinstr) -> event {
+	    [&](const init_buffer_instruction& ibinstr) {
 		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
 		        ibinstr.get_size());
 
@@ -159,7 +161,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    memcpy(host_ptr, user_ptr, ibinstr.get_size());
 		    return completed_synchronous();
 	    },
-	    [&](const export_instruction& einstr) -> event {
+	    [&](const export_instruction& einstr) {
 		    CELERITY_DEBUG("[executor] I{}: export M0.A{} ({})+{}, {}x{} bytes", einstr.get_id(), einstr.get_host_allocation_id(),
 		        einstr.get_allocation_range(), einstr.get_offset_in_allocation(), einstr.get_copy_range(), einstr.get_element_size());
 
@@ -208,7 +210,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 			        cinstr.get_offset_in_dest(), cinstr.get_copy_range());
 		    }
 	    },
-	    [&](const sycl_kernel_instruction& skinstr) -> event {
+	    [&](const sycl_kernel_instruction& skinstr) {
 		    CELERITY_DEBUG("[executor] I{}: launch SYCL kernel on D{}, {}{}", skinstr.get_id(), skinstr.get_device_id(), skinstr.get_execution_range(),
 		        log_accesses(skinstr.get_allocation_map()));
 
@@ -231,7 +233,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return m_backend_queue->launch_kernel(
 		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, is_reduction_initializer);
 	    },
-	    [&](const host_kernel_instruction& hkinstr) -> event {
+	    [&](const host_kernel_instruction& hkinstr) {
 		    CELERITY_DEBUG(
 		        "[executor] I{}: launch host task, {}{}", hkinstr.get_id(), hkinstr.get_execution_range(), log_accesses(hkinstr.get_allocation_map()));
 
@@ -247,7 +249,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto& launch = hkinstr.get_launcher();
 		    return launch(m_host_queue, hkinstr.get_execution_range());
 	    },
-	    [&](const send_instruction& sinstr) -> event {
+	    [&](const send_instruction& sinstr) {
 		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), sinstr.get_source_allocation_id(),
 		        sinstr.get_offset_in_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(), sinstr.get_tag());
 
@@ -259,7 +261,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    };
 		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
 	    },
-	    [&](const recv_instruction& rinstr) -> event {
+	    [&](const recv_instruction& rinstr) {
 		    CELERITY_DEBUG("[executor] I{}: recv M{}.A{}+{}, {}x{} bytes (transfer id {})", rinstr.get_id(), rinstr.get_dest_memory_id(),
 		        rinstr.get_dest_allocation_id(), rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size(),
 		        rinstr.get_transfer_id());
@@ -268,24 +270,24 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return m_recv_arbiter.begin_aggregated_recv(rinstr.get_transfer_id(), rinstr.get_buffer_id(), allocation_base, rinstr.get_allocation_range(),
 		        rinstr.get_offset_in_buffer(), rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size());
 	    },
-	    [&](const fence_instruction& finstr) -> event {
+	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
 		    finstr.get_promise()->fulfill();
 		    return completed_synchronous();
 	    },
-	    [&](const destroy_host_object_instruction& dhoinstr) -> event {
+	    [&](const destroy_host_object_instruction& dhoinstr) {
 		    assert(m_host_object_instances.count(dhoinstr.get_host_object_id()) != 0);
 		    CELERITY_DEBUG("[executor] I{}: destroy H{}", dhoinstr.get_id(), dhoinstr.get_host_object_id());
 		    m_host_object_instances.erase(dhoinstr.get_host_object_id());
 		    return completed_synchronous();
 	    },
-	    [&](const horizon_instruction& hinstr) -> event {
+	    [&](const horizon_instruction& hinstr) {
 		    CELERITY_DEBUG("[executor] I{}: horizon", hinstr.get_id());
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
 		    return completed_synchronous();
 	    },
-	    [&](const epoch_instruction& einstr) -> event {
+	    [&](const epoch_instruction& einstr) {
 		    switch(einstr.get_epoch_action()) {
 		    case epoch_action::none: CELERITY_DEBUG("[executor] I{}: epoch", einstr.get_id()); break;
 		    case epoch_action::barrier:
