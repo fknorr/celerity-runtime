@@ -187,7 +187,6 @@ set(SOURCES
   src/config.cc
   src/device_queue.cc
   src/distributed_graph_generator.cc
-  src/graph_serializer.cc
   src/grid.cc
   src/instruction_executor.cc
   src/instruction_graph_generator.cc

@@ -21,7 +21,6 @@ distributed_graph_generator::distributed_graph_generator(
 	// set_epoch_for_new_commands).
 	const auto epoch_tsk = tm.get_task(task_manager::initial_epoch_task);
 	auto* const epoch_cmd = cdag.create<epoch_command>(epoch_tsk->get_id(), epoch_action::none);
-	epoch_cmd->mark_as_flushed(); // there is no point in flushing the initial epoch command
 	if(m_recorder != nullptr) { *m_recorder << command_record(*epoch_cmd, *epoch_tsk, {}); }
 	m_epoch_for_new_commands = epoch_cmd->get_cid();
 }

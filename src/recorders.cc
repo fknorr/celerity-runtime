@@ -123,7 +123,9 @@ bool get_is_reduction_initializer(const abstract_command& cmd) {
 }
 
 access_list build_cmd_access_list(const abstract_command& cmd, const task& tsk, const buffer_name_map& accessed_buffer_names) {
-	const auto execution_range = get_execution_range(cmd).value_or(subrange<3>{tsk.get_global_offset(), tsk.get_global_size()});
+	const auto execution_range_a = get_execution_range(cmd);
+	const auto execution_range_b = subrange<3>{tsk.get_global_offset(), tsk.get_global_size()};
+	const auto execution_range = execution_range_a.value_or(execution_range_b);
 	return build_access_list(tsk, accessed_buffer_names, execution_range);
 }
 

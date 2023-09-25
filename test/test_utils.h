@@ -21,7 +21,6 @@
 #include "command_graph.h"
 #include "device_queue.h"
 #include "distributed_graph_generator.h"
-#include "graph_serializer.h"
 #include "print_graph.h"
 #include "range_mapper.h"
 #include "region_map.h"

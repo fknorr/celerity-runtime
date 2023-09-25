@@ -155,7 +155,6 @@ struct task_manager_benchmark_context {
 struct graph_generator_benchmark_context {
 	const size_t num_nodes;
 	command_graph cdag;
-	graph_serializer gser{[](command_pkg&&) {}};
 	task_recorder trec;
 	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr};
 	command_recorder crec;
@@ -165,8 +164,7 @@ struct graph_generator_benchmark_context {
 	explicit graph_generator_benchmark_context(size_t num_nodes)
 	    : num_nodes{num_nodes}, crec(), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
 		tm.register_task_callback([this](const task* tsk) {
-			const auto cmds = dggen.build_task(*tsk);
-			gser.flush(cmds);
+			dggen.build_task(*tsk);
 		});
 	}
 

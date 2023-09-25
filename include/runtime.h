@@ -25,7 +25,6 @@ namespace detail {
 
 	class buffer_manager;
 	class reduction_manager;
-	class graph_serializer;
 	class command_graph;
 	class scheduler;
 	class task_manager;
