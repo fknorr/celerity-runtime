@@ -194,7 +194,7 @@ cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::
 		const cuda_device_id cuda_id = config.sycl_device.hipSYCL_device_id().get_id();
 		backend_detail::cuda_set_device_guard set_device(cuda_id);
 
-		impl::device dev{cuda_id, sycl::queue(config.sycl_device)};
+		impl::device dev{cuda_id, sycl::queue(config.sycl_device, backend::handle_sycl_errors)};
 		m_impl->devices.emplace(config.device_id, std::move(dev));
 
 		impl::memory mem;
@@ -220,7 +220,7 @@ std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id wher
 		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
 		// We _want_ to use cudaMallocAsync / cudaMallocFromPoolAsync for asynchronicity and stream ordering here, but according to
 		// https://developer.nvidia.com/blog/using-cuda-stream-ordered-memory-allocator-part-2 memory allocated through that API cannot be used with GPUDirect
-		// RDMA (although NVIDIA plans to support at an unspecified time in the future).
+		// RDMA (although NVIDIA plans to support this at an unspecified time in the future).
 		// When we eventually switch to cudaMallocAsync, remember to call cudaMemPoolSetAccess to allow d2d copies (see the same article).
 		CELERITY_CUDA_CHECK(cudaMalloc, &ptr, size);
 	}

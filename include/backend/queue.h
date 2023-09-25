@@ -60,4 +60,6 @@ class queue {
 std::unique_ptr<event> launch_sycl_kernel(sycl::queue& queue, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range,
     const std::vector<void*>& reduction_ptrs, bool is_reduction_initializer);
 
+void handle_sycl_errors(const sycl::exception_list &errors);
+
 } // namespace celerity::detail::backend

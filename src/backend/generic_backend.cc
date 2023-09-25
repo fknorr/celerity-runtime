@@ -76,7 +76,7 @@ generic_queue::generic_queue(const std::vector<device_config>& devices) {
 		assert(m_device_queues.count(config.device_id) == 0);
 		assert(m_memory_queues.count(config.native_memory) == 0); // TODO handle devices that share memory
 
-		sycl::queue queue(config.sycl_device);
+		sycl::queue queue(config.sycl_device, backend::handle_sycl_errors);
 		m_device_queues.emplace(config.device_id, queue);
 		m_memory_queues.emplace(config.native_memory, queue);
 	}

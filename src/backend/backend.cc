@@ -23,6 +23,17 @@ std::unique_ptr<event> launch_sycl_kernel(sycl::queue& queue, const sycl_kernel_
 	return std::make_unique<sycl_event>(std::vector{std::move(event)});
 }
 
+void handle_sycl_errors(const sycl::exception_list& errors) {
+	for(const auto& e : errors) {
+		try {
+			std::rethrow_exception(e);
+		} catch(const sycl::exception& e) { //
+			CELERITY_CRITICAL("SYCL error: {}", e.what());
+		}
+	}
+	if(!errors.empty()) { abort(); }
+}
+
 type get_type(const sycl::device& device) {
 #if defined(__HIPSYCL__) && defined(SYCL_EXT_HIPSYCL_BACKEND_CUDA)
 	if(device.get_backend() == sycl::backend::cuda) { return type::cuda; }
