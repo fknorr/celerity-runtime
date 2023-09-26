@@ -43,7 +43,7 @@ class mpi_communicator final : public communicator {
 	std::unique_ptr<communicator::event> receive_payload(node_id from, int tag, void* base, const stride& stride) override;
 
   private:
-	inline constexpr static int pilot_tag = -1;
+	inline constexpr static int pilot_tag = 0; // TODO have a celerity pilot_id and translate it to an MPI tag on this level
 
 	struct datatype_deleter {
 		void operator()(MPI_Datatype dtype) const;

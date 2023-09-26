@@ -259,6 +259,8 @@ std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const m
 
 	backend_detail::cuda_set_device_guard set_device(memory->cuda_id);
 
+	// TODO figure out CUDA memcpy dimensionality from effective_dimensionality + whether a 2D/3D copy can actually be done in 1D/2D because it affects the
+	// entire allocation "width"
 	const auto dispatch_memcpy = [&](const auto dims) {
 		backend_detail::memcpy_strided_device_cuda(stream, source_base_ptr, target_base_ptr, elem_size, range_cast<dims.value>(source_range),
 		    id_cast<dims.value>(source_offset), range_cast<dims.value>(target_range), id_cast<dims.value>(target_offset), range_cast<dims.value>(copy_range));

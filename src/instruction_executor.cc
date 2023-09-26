@@ -5,6 +5,7 @@
 #include "host_object.h"
 #include "instruction_graph.h"
 #include "recv_arbiter.h"
+#include "types.h"
 
 #include <atomic>
 #include <mutex>
@@ -250,8 +251,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return launch(m_host_queue, hkinstr.get_execution_range());
 	    },
 	    [&](const send_instruction& sinstr) {
-		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), sinstr.get_source_allocation_id(),
-		        sinstr.get_offset_in_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(), sinstr.get_tag());
+		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), host_memory_id /* TODO RDMA */,
+		        sinstr.get_source_allocation_id(), sinstr.get_offset_in_allocation(), sinstr.get_send_range(), sinstr.get_element_size(),
+		        sinstr.get_dest_node_id(), sinstr.get_tag());
 
 		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id()).pointer;
 		    const communicator::stride stride{

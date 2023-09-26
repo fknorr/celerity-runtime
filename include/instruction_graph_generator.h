@@ -186,7 +186,7 @@ class instruction_graph_generator {
 	std::vector<pilot_message> m_pilots;
 	instruction_id m_next_iid = 0;
 	allocation_id m_next_aid = 0;
-	int m_next_p2p_tag = 10;
+	int m_next_p2p_tag = 10; // TODO
 	const task_manager& m_tm;
 	std::vector<device_info> m_devices;
 	instruction* m_last_horizon = nullptr;

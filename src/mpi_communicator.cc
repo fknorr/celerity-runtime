@@ -45,6 +45,8 @@ node_id mpi_communicator::get_local_node_id() const {
 }
 
 void mpi_communicator::send_pilot_message(const node_id to, const pilot_message& pilot) {
+	CELERITY_DEBUG("[mpi] pilot -> N{} (tag {}, B{}, transfer {}, {})", to, pilot.tag, pilot.buffer, pilot.transfer, pilot.box);
+
 	// initiate Isend as early as possible
 	auto stable_pilot = std::make_unique<pilot_message>(pilot);
 	MPI_Request req = MPI_REQUEST_NULL;
@@ -66,6 +68,8 @@ void mpi_communicator::send_pilot_message(const node_id to, const pilot_message&
 }
 
 std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_id to, const int tag, const void* const base, const stride& stride) {
+	CELERITY_DEBUG("[mpi] payload -> N{} (tag {}, from {}, {}x{})", to, tag, stride.allocation, stride.subrange, stride.element_size);
+
 	MPI_Request req;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
 	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_comm, &req);
@@ -73,6 +77,8 @@ std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_i
 }
 
 std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const node_id from, const int tag, void* const base, const stride& stride) {
+	CELERITY_DEBUG("[mpi] payload <- N{} (tag {}, into {}, {}x{})", from, tag, stride.allocation, stride.subrange, stride.element_size);
+
 	MPI_Request req;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
 	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), tag, m_comm, &req);
@@ -128,8 +134,11 @@ void mpi_communicator::listen() {
 		if(flag != 0) {
 			const auto from = static_cast<node_id>(status.MPI_SOURCE);
 			const auto pilot = in_pilot;
+
 			// immediately re-start MPI_Irecv to overlap with call to delegate
 			MPI_Irecv(&in_pilot, sizeof in_pilot, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_comm, &req);
+
+			CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, B{}, transfer {}, {})", from, pilot.tag, pilot.buffer, pilot.transfer, pilot.box);
 			if(m_delegate != nullptr) { m_delegate->pilot_message_received(from, pilot); }
 			// TODO this could create and cache an MPI_Datatype for the subsequent receive
 		}

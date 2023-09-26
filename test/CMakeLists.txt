@@ -77,6 +77,11 @@ add_executable(all_tests ${TEST_OBJ_LIST})
 target_link_libraries(all_tests PRIVATE test_main)
 set_test_target_parameters(all_tests "")
 
+# MPI test executable
+add_executable(mpi_tests mpi_tests.cc)
+target_link_libraries(mpi_tests PRIVATE test_main)
+set_test_target_parameters(mpi_tests mpi_tests.cc)
+
 # Unit benchmark executable
 add_executable(benchmarks dag_benchmarks.cc grid_benchmarks.cc system_benchmarks.cc benchmark_reporters.cc)
 target_link_libraries(benchmarks PRIVATE test_main)

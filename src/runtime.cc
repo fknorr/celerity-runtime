@@ -166,8 +166,8 @@ namespace detail {
 			backend_devices[i].sycl_device = devices[i];
 			iggen_devices[i].native_memory = native_memory;
 
-			CELERITY_DEBUG("Device D{} with native memory M{} is {} {}", backend_devices[i].device_id, backend_devices[i].native_memory,
-			    devices[i].get_info<sycl::info::device::vendor>(), backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
+			CELERITY_DEBUG("Device D{} with native memory M{} is {}", backend_devices[i].device_id, backend_devices[i].native_memory,
+			    backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
 		}
 
 		m_exec = std::make_unique<instruction_executor>(
