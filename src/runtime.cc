@@ -23,6 +23,7 @@
 #include "cgf_diagnostics.h"
 #include "command_graph.h"
 #include "device_queue.h"
+#include "device_selection.h"
 #include "distributed_graph_generator.h"
 #include "host_object.h"
 #include "instruction_executor.h"
@@ -107,7 +108,7 @@ namespace detail {
 #endif
 	}
 
-	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_device_or_selector) {
+	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
 		if(s_test_mode) {
 			assert(s_test_active && "initializing the runtime from a test without a runtime_fixture");
 			s_test_runtime_was_instantiated = true;
@@ -150,33 +151,30 @@ namespace detail {
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
 
-		// TODO very simplistic device selection: Select all GPUs, and assume that each has their own distinct memory
-		auto gpus = sycl::device::get_devices(sycl::info::device_type::gpu);
-		if(gpus.empty()) utils::panic("No GPUs found!");
+		const auto devices =
+		    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });
+		assert(!devices.empty());
+		const auto backend_type = backend::get_type(devices.front());
+		assert(std::all_of(std::next(devices.begin()), devices.end(), [=](const sycl::device& d) { return backend::get_type(d) == backend_type; }));
 
-		const auto backend_type = backend::get_type(gpus[0]);
-		if(!std::all_of(gpus.begin(), gpus.end(), [&](const sycl::device& d) { return backend::get_type(d) == backend_type; })) {
-			utils::panic("Found multiple GPUs with different backends!");
-		}
-
-		std::vector<backend::device_config> backend_devices(gpus.size());
-		for(size_t i = 0; i < gpus.size(); ++i) {
+		std::vector<backend::device_config> backend_devices(devices.size());
+		std::vector<instruction_graph_generator::device_info> iggen_devices(devices.size());
+		for(size_t i = 0; i < devices.size(); ++i) {
+			const auto native_memory = memory_id(1 + i); // TODO don't assume distinct native memories for each GPU
 			backend_devices[i].device_id = i;
-			backend_devices[i].native_memory = 1 + i;
-			backend_devices[i].sycl_device = gpus[i];
+			backend_devices[i].native_memory = native_memory;
+			backend_devices[i].sycl_device = devices[i];
+			iggen_devices[i].native_memory = native_memory;
 
-			CELERITY_INFO("Using device D{}, memory M{}: {} {}", backend_devices[i].device_id, backend_devices[i].native_memory,
-			    gpus[i].get_info<sycl::info::device::vendor>(), backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
+			CELERITY_DEBUG("Device D{} with native memory M{} is {} {}", backend_devices[i].device_id, backend_devices[i].native_memory,
+			    devices[i].get_info<sycl::info::device::vendor>(), backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
 		}
+
 		m_exec = std::make_unique<instruction_executor>(
 		    backend::make_queue(backend_type, backend_devices), mpi_communicator_factory(MPI_COMM_WORLD), static_cast<instruction_executor::delegate*>(this));
 
-		std::vector<instruction_graph_generator::device_info> device_infos(gpus.size());
-		for(size_t i = 0; i < gpus.size(); ++i) {
-			device_infos[i].native_memory = memory_id(1 + i);
-		}
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
-		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, std::move(device_infos), m_instruction_recorder.get());
+		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, std::move(iggen_devices), m_instruction_recorder.get());
 
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), m_exec.get());
 
