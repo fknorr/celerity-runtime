@@ -419,12 +419,12 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		}
 	}
 
-	for(const auto& pilot : irec.get_pilot_messages()) {
+	for(const auto& pilot : irec.get_outbound_pilots()) {
 		fmt::format_to(back,
 		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} tag {}<br/>transfer {}<br/>for B{} {}</font>>];",
-		    pilot.tag, pilot.receiver, pilot.tag, pilot.transfer, pilot.buffer, pilot.box);
-		if(auto it = send_instructions_by_tag.find(pilot.tag); it != send_instructions_by_tag.end()) {
-			fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.tag, it->second);
+		    pilot.message.tag, pilot.to, pilot.message.tag, pilot.message.transfer, pilot.message.buffer, pilot.message.box);
+		if(auto it = send_instructions_by_tag.find(pilot.message.tag); it != send_instructions_by_tag.end()) {
+			fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.message.tag, it->second);
 		}
 	}
 

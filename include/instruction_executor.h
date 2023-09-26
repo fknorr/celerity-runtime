@@ -37,6 +37,7 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 	~instruction_executor();
 
 	void submit_instruction(const instruction& instr) override;
+	void submit_pilot(const outbound_pilot& pilot) override;
 
 	void announce_buffer_user_pointer(buffer_id bid, const void* ptr);
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);
@@ -53,7 +54,15 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 		void* pointer;
 	};
 
-	using submission = std::variant<const instruction*, std::pair<buffer_id, const void*>>;
+	struct buffer_user_pointer_announcement {
+		buffer_id bid;
+		const void* ptr;
+	};
+	struct host_object_instance_announcement {
+		host_object_id hoid;
+		std::unique_ptr<host_object_instance> instance;
+	};
+	using submission = std::variant<const instruction*, outbound_pilot, buffer_user_pointer_announcement, host_object_instance_announcement>;
 
 	delegate* m_delegate;
 
@@ -61,7 +70,7 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 	double_buffered_queue<submission> m_submission_queue;
 
 	// accessed by by main and communicator threads
-	double_buffered_queue<std::pair<node_id, pilot_message>> m_pilot_queue;
+	double_buffered_queue<inbound_pilot> m_inbound_pilot_queue;
 
 	// accessed by executor thread only (unsynchronized)
 	bool m_expecting_more_submissions = true;
@@ -79,7 +88,7 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 
 	[[nodiscard]] event begin_executing(const instruction& instr);
 
-	void pilot_message_received(node_id from, const pilot_message& pilot) override;
+	void inbound_pilot_received(const inbound_pilot& pilot) override;
 };
 
 } // namespace celerity::detail

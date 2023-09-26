@@ -156,7 +156,7 @@ namespace test_utils {
 	class mock_buffer_factory;
 	class mock_host_object_factory;
 	class dist_cdag_test_context;
-class idag_test_context;
+	class idag_test_context;
 
 	template <int Dims>
 	class mock_buffer {
@@ -173,7 +173,7 @@ class idag_test_context;
 	  private:
 		friend class mock_buffer_factory;
 		friend class dist_cdag_test_context;
-friend class idag_test_context;
+		friend class idag_test_context;
 
 		detail::buffer_id m_id;
 		range<Dims> m_size;
@@ -190,7 +190,7 @@ friend class idag_test_context;
 	  private:
 		friend class mock_host_object_factory;
 		friend class dist_cdag_test_context;
-friend class idag_test_context;
+		friend class idag_test_context;
 
 		detail::host_object_id m_id;
 
@@ -236,7 +236,7 @@ friend class idag_test_context;
 		}
 
 	  private:
-detail::task_manager* m_task_mngr = nullptr;
+		detail::task_manager* m_task_mngr = nullptr;
 		detail::abstract_scheduler* m_schdlr = nullptr;
 		detail::host_object_id m_next_id = 0;
 	};
@@ -334,9 +334,7 @@ detail::task_manager* m_task_mngr = nullptr;
 
 	class device_queue_fixture : public mpi_fixture { // mpi_fixture for config
 	  public:
-		detail::device_queue& get_device_queue() {
-			detail::utils::panic("to be removed");
-		}
+		detail::device_queue& get_device_queue() { detail::utils::panic("to be removed"); }
 	};
 
 	// Printing of graphs can be enabled using the "--print-graphs" command line flag
@@ -393,7 +391,7 @@ detail::task_manager* m_task_mngr = nullptr;
 		}
 		return i;
 	}
-		
+
 	template <int Dims>
 	subrange<Dims> truncate_subrange(const subrange<3>& sr3) {
 		return subrange<Dims>(truncate_id<Dims>(sr3.offset), truncate_range<Dims>(sr3.range));
@@ -430,7 +428,7 @@ struct StringMaker<std::optional<T>> {
 #define CELERITY_TEST_UTILS_IMPLEMENT_CATCH_STRING_MAKER_FOR_DIMS(Type)                                                                                        \
 	template <int Dims>                                                                                                                                        \
 	struct StringMaker<Type<Dims>> {                                                                                                                           \
-	static std::string convert(const Type<Dims>& v) { return fmt::format("{}", v); }                                                                       \
+		static std::string convert(const Type<Dims>& v) { return fmt::format("{}", v); }                                                                       \
 	};
 
 CELERITY_TEST_UTILS_IMPLEMENT_CATCH_STRING_MAKER_FOR_DIMS(celerity::id)

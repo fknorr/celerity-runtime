@@ -163,9 +163,7 @@ struct graph_generator_benchmark_context {
 
 	explicit graph_generator_benchmark_context(size_t num_nodes)
 	    : num_nodes{num_nodes}, crec(), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
-		tm.register_task_callback([this](const task* tsk) {
-			dggen.build_task(*tsk);
-		});
+		tm.register_task_callback([this](const task* tsk) { dggen.build_task(*tsk); });
 	}
 
 	~graph_generator_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
@@ -237,8 +235,7 @@ class restartable_thread {
 
 class benchmark_scheduler final : public abstract_scheduler {
   public:
-	benchmark_scheduler(
-	    restartable_thread& thread, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen)
+	benchmark_scheduler(restartable_thread& thread, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen)
 	    : abstract_scheduler(false, std::move(dggen), std::move(iggen)), m_thread(&thread) {
 		m_thread->start([this] { schedule(); });
 	}
@@ -265,7 +262,7 @@ struct scheduler_benchmark_context {
 	test_utils::mock_buffer_factory mbf;
 
 	explicit scheduler_benchmark_context(restartable_thread& thrd, size_t num_nodes)
-	    : num_nodes{num_nodes},                                                                                                                              //
+	    : num_nodes{num_nodes}, //
 	      schdlr{thrd, std::make_unique<distributed_graph_generator>(num_nodes, 0 /* local_nid */, cdag, tm, nullptr),
 	          std::make_unique<instruction_graph_generator>(tm, std::vector<instruction_graph_generator::device_info>(/* TODO */), nullptr /* recorder */)}, //
 	      mbf{tm, schdlr} {

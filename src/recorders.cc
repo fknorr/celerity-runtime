@@ -224,8 +224,6 @@ horizon_instruction_record::horizon_instruction_record(const horizon_instruction
 epoch_instruction_record::epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid)
     : instruction_record_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid), epoch_action(einstr.get_epoch_action()) {}
 
-pilot_message_record::pilot_message_record(const pilot_message& pilot, const node_id receiver) : pilot_message(pilot), receiver(receiver) {}
-
 command_id instruction_recorder::get_await_push_command_id(const transfer_id trid) const { return m_await_push_cids.at(trid); }
 
 const std::string& instruction_recorder::get_buffer_debug_name(const buffer_id bid) const {
@@ -240,7 +238,8 @@ void instruction_recorder::record_dependencies(const instruction& instr) {
 	assert(record != m_recorded_instructions.end());
 
 	const auto& graph_deps = instr.get_dependencies();
-	auto& record_deps = matchbox::match(*record, [](auto& r) -> auto& { return r.dependencies; });
+	auto& record_deps = matchbox::match(
+	    *record, [](auto& r) -> auto& { return r.dependencies; });
 	record_deps.reserve(graph_deps.size());
 	for(auto& d : graph_deps) {
 		record_deps.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});

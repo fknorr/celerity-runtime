@@ -38,11 +38,14 @@ namespace detail {
 					    assert(e.tsk != nullptr);
 					    const auto commands = m_dggen->build_task(*e.tsk);
 					    for(const auto cmd : commands) {
-						    const auto instructions = m_iggen->compile(*cmd);
+						    const auto [instructions, pilots] = m_iggen->compile(*cmd);
 
 						    if(m_delegate != nullptr) {
 							    for(const auto instr : instructions) {
 								    m_delegate->submit_instruction(*instr);
+							    }
+							    for(const auto& p : pilots) {
+								    m_delegate->submit_pilot(p);
 							    }
 						    }
 

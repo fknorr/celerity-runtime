@@ -24,12 +24,15 @@ instruction_executor::~instruction_executor() { m_thread.join(); }
 
 void instruction_executor::submit_instruction(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
-void instruction_executor::announce_buffer_user_pointer(const buffer_id bid, const void* const ptr) { m_submission_queue.push_back(std::pair(bid, ptr)); }
+void instruction_executor::submit_pilot(const outbound_pilot& pilot) { m_submission_queue.push_back(pilot); }
+
+void instruction_executor::announce_buffer_user_pointer(const buffer_id bid, const void* const ptr) {
+	m_submission_queue.push_back(buffer_user_pointer_announcement{bid, ptr});
+}
 
 void instruction_executor::announce_host_object_instance(const host_object_id hoid, std::unique_ptr<host_object_instance> instance) {
-	assert(m_host_object_instances.count(hoid) == 0);
 	assert(instance != nullptr);
-	m_host_object_instances.emplace(hoid, std::move(instance));
+	m_submission_queue.push_back(host_object_instance_announcement{hoid, std::move(instance)});
 }
 
 void instruction_executor::loop() {
@@ -53,7 +56,7 @@ void instruction_executor::loop() {
 	};
 
 	std::vector<submission> loop_submission_queue;
-	std::vector<std::pair<node_id, pilot_message>> loop_pilot_queue;
+	std::vector<inbound_pilot> loop_inbound_pilot_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::vector<const instruction*> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
@@ -80,7 +83,7 @@ void instruction_executor::loop() {
 		}
 
 		if(m_submission_queue.swap_if_nonempty(loop_submission_queue)) {
-			for(const auto& submission : loop_submission_queue) {
+			for(auto& submission : loop_submission_queue) {
 				matchbox::match(
 				    submission,
 				    [&](const instruction* incoming_instr) {
@@ -97,20 +100,24 @@ void instruction_executor::loop() {
 						    ready_instructions.push_back(incoming_instr);
 					    }
 				    },
-				    [&](const std::pair<buffer_id, const void*> buffer_host_ptr) {
-					    const auto [bid, ptr] = buffer_host_ptr;
-					    assert(m_buffer_user_pointers.count(bid) == 0);
-					    m_buffer_user_pointers.emplace(bid, ptr);
+				    [&](const outbound_pilot& pilot) { m_communicator->send_outbound_pilot(pilot); },
+				    [&](const buffer_user_pointer_announcement& ann) {
+					    assert(m_buffer_user_pointers.count(ann.bid) == 0);
+					    m_buffer_user_pointers.emplace(ann.bid, ann.ptr);
+				    },
+				    [&](host_object_instance_announcement& ann) {
+					    assert(m_host_object_instances.count(ann.hoid) == 0);
+					    m_host_object_instances.emplace(ann.hoid, std::move(ann.instance));
 				    });
 			}
 			loop_submission_queue.clear();
 		}
 
-		if(m_pilot_queue.swap_if_nonempty(loop_pilot_queue)) {
-			for(auto& [source, pilot] : loop_pilot_queue) {
-				m_recv_arbiter.push_pilot_message(source, pilot);
+		if(m_inbound_pilot_queue.swap_if_nonempty(loop_inbound_pilot_queue)) {
+			for(auto& pilot : loop_inbound_pilot_queue) {
+				m_recv_arbiter.push_inbound_pilot(pilot);
 			}
-			loop_pilot_queue.clear();
+			loop_inbound_pilot_queue.clear();
 		}
 
 		for(const auto ready_instr : ready_instructions) {
@@ -308,6 +315,6 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    });
 }
 
-void instruction_executor::pilot_message_received(const node_id from, const pilot_message& pilot) { m_pilot_queue.push_back(std::pair{from, pilot}); }
+void instruction_executor::inbound_pilot_received(const inbound_pilot& pilot) { m_inbound_pilot_queue.push_back(pilot); }
 
 } // namespace celerity::detail

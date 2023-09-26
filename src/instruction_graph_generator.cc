@@ -497,8 +497,8 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 
 int instruction_graph_generator::create_pilot_message(const node_id target, const buffer_id bid, const transfer_id trid, const box<3>& box) {
 	int tag = m_next_p2p_tag++;
-	m_pilots.push_back(pilot_message{tag, bid, trid, box});
-	if(m_recorder != nullptr) { *m_recorder << pilot_message_record(m_pilots.back(), target); }
+	m_pending_pilots.push_back(outbound_pilot{target, pilot_message{tag, bid, trid, box}});
+	if(m_recorder != nullptr) { *m_recorder << m_pending_pilots.back(); }
 	return tag;
 }
 
@@ -841,7 +841,7 @@ bool is_topologically_sorted(Iterator begin, Iterator end) {
 	return true;
 }
 
-std::vector<const instruction*> instruction_graph_generator::compile(const abstract_command& cmd) {
+std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruction_graph_generator::compile(const abstract_command& cmd) {
 	matchbox::match(
 	    cmd,                                                                     //
 	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); }, //
@@ -887,7 +887,10 @@ std::vector<const instruction*> instruction_graph_generator::compile(const abstr
 	}
 
 	assert(is_topologically_sorted(m_current_batch.begin(), m_current_batch.end()));
-	return std::move(m_current_batch);
+	auto result = std::pair{std::move(m_current_batch), std::move(m_pending_pilots)};
+	m_current_batch.clear();
+	m_pending_pilots.clear();
+	return result;
 }
 
 } // namespace celerity::detail

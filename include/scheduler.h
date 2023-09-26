@@ -6,6 +6,8 @@
 #include <thread>
 #include <variant>
 
+#include "instruction_graph.h"
+#include "instruction_graph_generator.h"
 #include "ranges.h"
 #include "types.h"
 
@@ -32,6 +34,7 @@ namespace detail {
 
 		  public:
 			virtual void submit_instruction(const instruction& instr) = 0;
+			virtual void submit_pilot(const outbound_pilot& pilot) = 0;
 		};
 
 		abstract_scheduler(bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen,

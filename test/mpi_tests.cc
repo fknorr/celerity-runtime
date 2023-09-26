@@ -20,13 +20,13 @@ using namespace celerity::detail;
 TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives pilot messages", "[mpi]") {
 	class test_delegate final : public communicator::delegate {
 	  public:
-		void pilot_message_received(node_id from, const pilot_message& pilot) override {
+		void inbound_pilot_received(const inbound_pilot& pilot) override {
 			std::lock_guard lock(mutex);
-			pilots_received.push_back({from, pilot});
+			pilots_received.push_back(pilot);
 		}
 
 		std::mutex mutex;
-		std::vector<std::pair<node_id, pilot_message>> pilots_received;
+		std::vector<inbound_pilot> pilots_received;
 	};
 
 	test_delegate test;
@@ -39,11 +39,11 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		const buffer_id bid = p2p_id * 11;
 		const transfer_id trid = p2p_id * 17;
 		const box<3> box = {id{p2p_id, p2p_id * 2, p2p_id * 3}, id{p2p_id * 4, p2p_id * 5, p2p_id * 6}};
-		return pilot_message{tag, bid, trid, box};
+		return outbound_pilot{receiver, pilot_message{tag, bid, trid, box}};
 	};
 
 	for(node_id to = 0; to < comm.get_num_nodes(); ++to) {
-		if(to != comm.get_local_node_id()) { comm.send_pilot_message(to, make_pilot_message(comm.get_local_node_id(), to)); }
+		if(to != comm.get_local_node_id()) { comm.send_outbound_pilot(make_pilot_message(comm.get_local_node_id(), to)); }
 	}
 
 	for(;;) {
@@ -55,12 +55,12 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 	}
 
 	std::lock_guard lock(test.mutex);
-	for(const auto& [from, pilot] : test.pilots_received) {
-		const auto expect = make_pilot_message(from, comm.get_local_node_id());
-		CHECK(pilot.tag == expect.tag);
-		CHECK(pilot.buffer == expect.buffer);
-		CHECK(pilot.transfer == expect.transfer);
-		CHECK(pilot.box == expect.box);
+	for(const auto& pilot : test.pilots_received) {
+		const auto expect = make_pilot_message(pilot.from, comm.get_local_node_id());
+		CHECK(pilot.message.tag == expect.message.tag);
+		CHECK(pilot.message.buffer == expect.message.buffer);
+		CHECK(pilot.message.transfer == expect.message.transfer);
+		CHECK(pilot.message.box == expect.message.box);
 	}
 }
 

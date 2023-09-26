@@ -30,6 +30,7 @@ class mpi_communicator final : public communicator {
 	};
 
 	mpi_communicator(MPI_Comm comm, delegate* delegate);
+
 	mpi_communicator(const mpi_communicator&) = delete;
 	mpi_communicator(mpi_communicator&&) = delete;
 	mpi_communicator& operator=(const mpi_communicator&) = delete;
@@ -38,9 +39,9 @@ class mpi_communicator final : public communicator {
 
 	size_t get_num_nodes() const override;
 	node_id get_local_node_id() const override;
-	void send_pilot_message(node_id to, const pilot_message& pilot) override;
-	std::unique_ptr<communicator::event> send_payload(node_id to, int tag, const void* base, const stride& stride) override;
-	std::unique_ptr<communicator::event> receive_payload(node_id from, int tag, void* base, const stride& stride) override;
+	void send_outbound_pilot(const outbound_pilot& pilot) override;
+	std::unique_ptr<communicator::event> send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) override;
+	std::unique_ptr<communicator::event> receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) override;
 
   private:
 	inline constexpr static int pilot_tag = 0; // TODO have a celerity pilot_id and translate it to an MPI tag on this level
@@ -55,7 +56,7 @@ class mpi_communicator final : public communicator {
 	delegate* m_delegate;
 
 	// accesed only by owning thread
-	std::vector<std::pair<std::unique_ptr<pilot_message>, MPI_Request>> m_outbound_pilots;
+	std::vector<std::pair<std::unique_ptr<pilot_message>, MPI_Request>> m_outbound_messages;
 	mutable std::unordered_map<size_t, unique_datatype> m_scalar_type_cache;
 	mutable std::unordered_map<stride, unique_datatype> m_array_type_cache;
 

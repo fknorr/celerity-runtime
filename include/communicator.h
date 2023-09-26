@@ -17,7 +17,7 @@ class communicator {
 		~delegate() = default; // do not allow destruction through base pointer
 
 	  public:
-		virtual void pilot_message_received(node_id from, const pilot_message& pilot) = 0;
+		virtual void inbound_pilot_received(const inbound_pilot& pilot) = 0;
 	};
 
 	class event {
@@ -46,16 +46,20 @@ class communicator {
 		friend bool operator!=(const stride& lhs, const stride& rhs) { return !(lhs == rhs); }
 	};
 
-	communicator() = default;
-	communicator(const communicator&) = delete;
-	communicator& operator=(const communicator&) = delete;
 	virtual ~communicator() = default;
 
 	virtual size_t get_num_nodes() const = 0;
 	virtual node_id get_local_node_id() const = 0;
-	virtual void send_pilot_message(node_id to, const pilot_message& pilot) = 0;
-	[[nodiscard]] virtual std::unique_ptr<event> send_payload(node_id to, int pilot_tag, const void* base, const stride& stride) = 0;
-	[[nodiscard]] virtual std::unique_ptr<event> receive_payload(node_id from, int pilot_tag, void* base, const stride& stride) = 0;
+	virtual void send_outbound_pilot(const outbound_pilot& pilot) = 0;
+	[[nodiscard]] virtual std::unique_ptr<event> send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) = 0;
+	[[nodiscard]] virtual std::unique_ptr<event> receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) = 0;
+
+  protected:
+	communicator() = default;
+	communicator(const communicator&) = default;
+	communicator(communicator&&) = default;
+	communicator& operator=(const communicator&) = default;
+	communicator& operator=(communicator&&) = default;
 };
 
 class communicator_factory {

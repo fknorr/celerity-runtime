@@ -27,7 +27,7 @@ mpi_communicator::mpi_communicator(const MPI_Comm comm, delegate* const delegate
 mpi_communicator::~mpi_communicator() {
 	m_shutdown.store(true, std::memory_order_relaxed);
 	m_listener_thread.join();
-	for(auto& [_, req] : m_outbound_pilots) {
+	for(auto& [_, req] : m_outbound_messages) {
 		MPI_Wait(&req, MPI_STATUS_IGNORE);
 	}
 }
@@ -44,25 +44,26 @@ node_id mpi_communicator::get_local_node_id() const {
 	return static_cast<node_id>(rank);
 }
 
-void mpi_communicator::send_pilot_message(const node_id to, const pilot_message& pilot) {
-	CELERITY_DEBUG("[mpi] pilot -> N{} (tag {}, B{}, transfer {}, {})", to, pilot.tag, pilot.buffer, pilot.transfer, pilot.box);
+void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
+	CELERITY_DEBUG(
+	    "[mpi] pilot -> N{} (tag {}, B{}, transfer {}, {})", pilot.to, pilot.message.tag, pilot.message.buffer, pilot.message.transfer, pilot.message.box);
 
 	// initiate Isend as early as possible
-	auto stable_pilot = std::make_unique<pilot_message>(pilot);
+	auto stable_message = std::make_unique<pilot_message>(pilot.message);
 	MPI_Request req = MPI_REQUEST_NULL;
-	MPI_Isend(stable_pilot.get(), sizeof *stable_pilot.get(), MPI_BYTE, static_cast<int>(to), pilot_tag, m_comm, &req);
-	for(auto& [_, req] : m_outbound_pilots) {
+	MPI_Isend(stable_message.get(), sizeof *stable_message.get(), MPI_BYTE, static_cast<int>(pilot.to), pilot_tag, m_comm, &req);
+	for(auto& [_, req] : m_outbound_messages) {
 		int flag = -1;
 		MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
 	}
 
 	// collect finished sends (TODO rate-limit this to avoid quadratic behavior)
 	const auto last_incomplete_outbound_pilot =
-	    std::remove_if(m_outbound_pilots.begin(), m_outbound_pilots.end(), [](const auto& pair) { return pair.second == MPI_REQUEST_NULL; });
-	m_outbound_pilots.erase(last_incomplete_outbound_pilot, m_outbound_pilots.end());
+	    std::remove_if(m_outbound_messages.begin(), m_outbound_messages.end(), [](const auto& pair) { return pair.second == MPI_REQUEST_NULL; });
+	m_outbound_messages.erase(last_incomplete_outbound_pilot, m_outbound_messages.end());
 
 	// keep allocation until Isend has completed
-	m_outbound_pilots.emplace_back(std::move(stable_pilot), req);
+	m_outbound_messages.emplace_back(std::move(stable_message), req);
 
 	// TODO this could create and cache an MPI_Datatype for the subsequent send
 }
@@ -124,22 +125,22 @@ MPI_Datatype mpi_communicator::get_array_type(const stride& stride) const {
 void mpi_communicator::datatype_deleter::operator()(MPI_Datatype dtype) const { MPI_Type_free(&dtype); }
 
 void mpi_communicator::listen() {
-	pilot_message in_pilot;
+	pilot_message message;
 	MPI_Request req = MPI_REQUEST_NULL;
-	MPI_Irecv(&in_pilot, sizeof in_pilot, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_comm, &req);
+	MPI_Irecv(&message, sizeof message, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_comm, &req);
 	while(!m_shutdown.load(std::memory_order_relaxed)) {
 		int flag = -1;
 		MPI_Status status;
 		MPI_Test(&req, &flag, &status);
 		if(flag != 0) {
-			const auto from = static_cast<node_id>(status.MPI_SOURCE);
-			const auto pilot = in_pilot;
+			const auto inbound = inbound_pilot{static_cast<node_id>(status.MPI_SOURCE), message};
 
 			// immediately re-start MPI_Irecv to overlap with call to delegate
-			MPI_Irecv(&in_pilot, sizeof in_pilot, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_comm, &req);
+			MPI_Irecv(&message, sizeof message, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_comm, &req);
 
-			CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, B{}, transfer {}, {})", from, pilot.tag, pilot.buffer, pilot.transfer, pilot.box);
-			if(m_delegate != nullptr) { m_delegate->pilot_message_received(from, pilot); }
+			CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, B{}, transfer {}, {})", inbound.from, inbound.message.tag, inbound.message.buffer,
+			    inbound.message.transfer, inbound.message.box);
+			if(m_delegate != nullptr) { m_delegate->inbound_pilot_received(inbound); }
 			// TODO this could create and cache an MPI_Datatype for the subsequent receive
 		}
 	}

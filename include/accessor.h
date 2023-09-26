@@ -238,8 +238,7 @@ class accessor<DataT, Dims, Mode, target::device> : public detail::accessor_base
 	}
 
 	friend bool operator==(const accessor& lhs, const accessor& rhs) {
-		return lhs.m_device_ptr == rhs.m_device_ptr && lhs.m_allocation_range == rhs.m_allocation_range
-		       && lhs.m_allocation_offset == rhs.m_allocation_offset;
+		return lhs.m_device_ptr == rhs.m_device_ptr && lhs.m_allocation_range == rhs.m_allocation_range && lhs.m_allocation_offset == rhs.m_allocation_offset;
 	}
 
 	friend bool operator!=(const accessor& lhs, const accessor& rhs) { return !(lhs == rhs); }

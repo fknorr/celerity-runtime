@@ -1193,7 +1193,7 @@ namespace detail {
 		REQUIRE(ret.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
 		CHECK_FALSE(*ret.get()); // extra check that the task was not actually executed
 
-		                         // TODO: check that a warning is generated once the issues with log_capture are resolved
+		// TODO: check that a warning is generated once the issues with log_capture are resolved
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "dry run processes horizons", "[dryrun]") {

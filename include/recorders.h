@@ -300,21 +300,15 @@ using instruction_record = std::variant<alloc_instruction_record, free_instructi
     copy_instruction_record, kernel_instruction_record, send_instruction_record, recv_instruction_record, fence_instruction_record,
     destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
-struct pilot_message_record : pilot_message {
-	node_id receiver;
-
-	pilot_message_record(const pilot_message& pilot, const node_id receiver);
-};
-
 class instruction_recorder {
   public:
 	using instruction_records = std::vector<instruction_record>;
-	using pilot_messages = std::vector<pilot_message_record>;
+	using outbound_pilots = std::vector<outbound_pilot>;
 
 	void record_await_push_command_id(const transfer_id trid, const command_id cid) { m_await_push_cids.emplace(trid, cid); }
 	void record_buffer_debug_name(const buffer_id bid, const std::string& debug_name) { m_buffer_debug_names.emplace(bid, debug_name); }
 	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
-	void record_pilot_message(const pilot_message_record& pilot) { m_recorded_pilots.push_back(pilot); }
+	void record_pilot_message(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
 	void record_dependencies(const instruction& instr);
 
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, instruction_record record) {
@@ -322,19 +316,19 @@ class instruction_recorder {
 		return recorder;
 	}
 
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, const pilot_message_record& pilot) {
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, const outbound_pilot& pilot) {
 		recorder.record_pilot_message(pilot);
 		return recorder;
 	}
 
 	const instruction_records& get_instructions() const { return m_recorded_instructions; }
-	const pilot_messages& get_pilot_messages() const { return m_recorded_pilots; }
+	const outbound_pilots& get_outbound_pilots() const { return m_recorded_pilots; }
 	command_id get_await_push_command_id(const transfer_id trid) const;
 	const std::string& get_buffer_debug_name(const buffer_id bid) const;
 
   private:
 	instruction_records m_recorded_instructions;
-	pilot_messages m_recorded_pilots;
+	outbound_pilots m_recorded_pilots;
 	std::unordered_map<transfer_id, command_id> m_await_push_cids;
 	std::unordered_map<buffer_id, std::string> m_buffer_debug_names;
 };

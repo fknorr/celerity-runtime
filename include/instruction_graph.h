@@ -210,6 +210,16 @@ struct pilot_message {
 	box<3> box;
 };
 
+struct outbound_pilot {
+	node_id to;
+	pilot_message message;
+};
+
+struct inbound_pilot {
+	node_id from;
+	pilot_message message;
+};
+
 class send_instruction final : public matchbox::implement_acceptor<instruction, send_instruction> {
   public:
 	explicit send_instruction(const instruction_id iid, const transfer_id trid, const node_id to_nid, const int tag, const allocation_id source_allocation,

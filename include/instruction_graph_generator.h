@@ -40,11 +40,9 @@ class instruction_graph_generator {
 	void destroy_host_object(host_object_id hoid);
 
 	// Resulting instructions are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
-	std::vector<const instruction*> compile(const abstract_command& cmd);
+	std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> compile(const abstract_command& cmd);
 
 	const instruction_graph& get_graph() const { return m_idag; }
-
-	const std::vector<pilot_message>& get_pilot_messages() const { return m_pilots; } // TODO these should be flushed to a callback instead of queried
 
   private:
 	static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
@@ -183,7 +181,7 @@ class instruction_graph_generator {
 	};
 
 	instruction_graph m_idag;
-	std::vector<pilot_message> m_pilots;
+	std::vector<outbound_pilot> m_pending_pilots;
 	instruction_id m_next_iid = 0;
 	allocation_id m_next_aid = 0;
 	int m_next_p2p_tag = 10; // TODO
