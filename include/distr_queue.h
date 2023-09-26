@@ -5,7 +5,6 @@
 
 #include "device_queue.h"
 #include "runtime.h"
-#include "task.h"
 #include "task_manager.h"
 
 namespace celerity {
@@ -19,13 +18,25 @@ inline constexpr allow_by_ref_t allow_by_ref{};
 
 class distr_queue {
   public:
-	distr_queue() { init(detail::auto_select_device{}); }
+	distr_queue() { init(detail::auto_select_devices{}); }
 
-	[[deprecated("Use the overload with device selector instead, this will be removed in future release")]] distr_queue(cl::sycl::device& device) {
-		if(detail::runtime::has_instance()) { throw std::runtime_error("Passing explicit device not possible, runtime has already been initialized."); }
-		init(device);
+	/**
+	 * @brief Creates a distr_queue and instructs it to use a particular set of devices.
+	 *
+	 * @param devices The devices to be used on the current node. This can vary between nodes.
+	 *                If there are multiple nodes running on the same host, the list of devices must be the same across nodes on the same host.
+	 */
+	distr_queue(const std::vector<sycl::device>& devices) {
+		if(detail::runtime::has_instance()) { throw std::runtime_error("Passing explicit device list not possible, runtime has already been initialized."); }
+		init(devices);
 	}
 
+	/**
+	 * @brief Creates a distr_queue and instructs it to use a particular set of devices.
+	 *
+	 * @param device_selector The device selector to be used on the current node. This can vary between nodes.
+	 *                        If there are multiple nodes running on the same host, the selector must be the same across nodes on the same host.
+	 */
 	template <typename DeviceSelector>
 	distr_queue(const DeviceSelector& device_selector) {
 		if(detail::runtime::has_instance()) {
@@ -86,8 +97,8 @@ class distr_queue {
 
 	std::shared_ptr<tracker> m_tracker;
 
-	void init(const detail::device_or_selector& device_or_selector) {
-		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr, device_or_selector); }
+	void init(const detail::devices_or_selector& devices_or_selector) {
+		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr, devices_or_selector); }
 		m_tracker = std::make_shared<tracker>();
 	}
 };

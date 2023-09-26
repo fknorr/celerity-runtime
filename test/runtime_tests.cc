@@ -64,13 +64,13 @@ namespace detail {
 
 		SECTION("before the runtime is initialized") {
 			REQUIRE_FALSE(runtime::has_instance());
-			REQUIRE_NOTHROW(distr_queue{device});
+			REQUIRE_NOTHROW(distr_queue{std::vector{device}});
 		}
 
 		SECTION("but not once the runtime has been initialized") {
 			REQUIRE_FALSE(runtime::has_instance());
 			runtime::init(nullptr, nullptr);
-			REQUIRE_THROWS_WITH(distr_queue{device}, "Passing explicit device not possible, runtime has already been initialized.");
+			REQUIRE_THROWS_WITH(distr_queue{std::vector{device}}, "Passing explicit device not possible, runtime has already been initialized.");
 		}
 	}
 #pragma GCC diagnostic pop
@@ -594,7 +594,7 @@ namespace detail {
 
 	TEMPLATE_TEST_CASE_METHOD_SIG(
 	    dimension_runtime_fixture, "item::get_id() includes global offset, item::get_linear_id() does not", "[item]", ((int Dims), Dims), 1, 2, 3) {
-		distr_queue q;
+		distr_queue q{std::vector{sycl::device{sycl::default_selector_v}}}; // Initialize runtime with a single device so we don't get multiple chunks
 
 		const int n = 3;
 		const auto global_offset = test_utils::truncate_id<Dims>({4, 5, 6});
@@ -1144,7 +1144,7 @@ namespace detail {
 	void dry_run_with_nodes(const size_t num_nodes) {
 		env::scoped_test_environment ste(std::unordered_map<std::string, std::string>{{dryrun_envvar_name, std::to_string(num_nodes)}});
 
-		distr_queue q;
+		distr_queue q{std::vector{sycl::device{sycl::default_selector_v}}}; // Initialize runtime with a single device so we don't get multiple chunks
 
 		auto& rt = runtime::get_instance();
 		auto& tm = rt.get_task_manager();
@@ -1193,7 +1193,7 @@ namespace detail {
 		REQUIRE(ret.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
 		CHECK_FALSE(*ret.get()); // extra check that the task was not actually executed
 
-		// TODO: check that a warning is generated once the issues with log_capture are resolved
+		                         // TODO: check that a warning is generated once the issues with log_capture are resolved
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "dry run processes horizons", "[dryrun]") {
@@ -1235,10 +1235,6 @@ namespace detail {
 		auto cfg = config(nullptr, nullptr);
 
 		CHECK(spdlog::get_level() == spdlog::level::debug);
-		const auto dev_cfg = config_testspy::get_device_config(cfg);
-		REQUIRE(dev_cfg != std::nullopt);
-		CHECK(dev_cfg->platform_id == 1);
-		CHECK(dev_cfg->device_id == 1);
 		const auto has_prof = cfg.get_enable_device_profiling();
 		REQUIRE(has_prof.has_value());
 		CHECK((*has_prof) == true);

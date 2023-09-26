@@ -37,7 +37,7 @@ namespace detail {
 		/**
 		 * @param user_device_or_selector This optional device (overriding any other device selection strategy) or device selector can be provided by the user.
 		 */
-		static void init(int* argc, char** argv[], const device_or_selector& user_device_or_selector = auto_select_device{});
+		static void init(int* argc, char** argv[], const devices_or_selector& user_device_or_selector = auto_select_devices{});
 
 		static bool has_instance() { return s_instance != nullptr; }
 
@@ -118,7 +118,7 @@ namespace detail {
 		std::unique_ptr<detail::command_recorder> m_command_recorder;
 		std::unique_ptr<detail::instruction_recorder> m_instruction_recorder;
 
-		runtime(int* argc, char** argv[], const device_or_selector& user_device_or_selector);
+		runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector);
 		runtime(const runtime&) = delete;
 		runtime(runtime&&) = delete;
 

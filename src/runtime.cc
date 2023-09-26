@@ -57,10 +57,10 @@ namespace detail {
 		s_mpi_finalized = true;
 	}
 
-	void runtime::init(int* argc, char** argv[], const device_or_selector& user_device_or_selector) {
+	void runtime::init(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
 		assert(!s_instance);
-		// TODO if (!s_test_mode && s_initialized_before) { throw std::runtime_error("Cannot re-initialize the runtime"); }
-		s_instance = std::unique_ptr<runtime>(new runtime(argc, argv, user_device_or_selector));
+		// if (!s_test_mode && s_initialized_before) { throw std::runtime_error("Cannot re-initialize the runtime"); }
+		s_instance = std::unique_ptr<runtime>(new runtime(argc, argv, user_devices_or_selector));
 	}
 
 	runtime& runtime::get_instance() {
@@ -107,7 +107,7 @@ namespace detail {
 #endif
 	}
 
-	runtime::runtime(int* argc, char** argv[], const device_or_selector& user_device_or_selector) {
+	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_device_or_selector) {
 		if(s_test_mode) {
 			assert(s_test_active && "initializing the runtime from a test without a runtime_fixture");
 			s_test_runtime_was_instantiated = true;

@@ -89,9 +89,7 @@ namespace detail {
 
 
 	struct config_testspy {
-		static void set_mock_device_cfg(config& cfg, const device_config& d_cfg) { cfg.m_device_cfg = d_cfg; }
 		static void set_mock_host_cfg(config& cfg, const host_config& h_cfg) { cfg.m_host_cfg = h_cfg; }
-		static std::optional<device_config> get_device_config(config& cfg) { return cfg.m_device_cfg; }
 	};
 
 
@@ -158,7 +156,7 @@ namespace test_utils {
 	class mock_buffer_factory;
 	class mock_host_object_factory;
 	class dist_cdag_test_context;
-	class idag_test_context;
+class idag_test_context;
 
 	template <int Dims>
 	class mock_buffer {
@@ -175,7 +173,7 @@ namespace test_utils {
 	  private:
 		friend class mock_buffer_factory;
 		friend class dist_cdag_test_context;
-		friend class idag_test_context;
+friend class idag_test_context;
 
 		detail::buffer_id m_id;
 		range<Dims> m_size;
@@ -192,7 +190,7 @@ namespace test_utils {
 	  private:
 		friend class mock_host_object_factory;
 		friend class dist_cdag_test_context;
-		friend class idag_test_context;
+friend class idag_test_context;
 
 		detail::host_object_id m_id;
 
@@ -238,7 +236,7 @@ namespace test_utils {
 		}
 
 	  private:
-		detail::task_manager* m_task_mngr = nullptr;
+detail::task_manager* m_task_mngr = nullptr;
 		detail::abstract_scheduler* m_schdlr = nullptr;
 		detail::host_object_id m_next_id = 0;
 	};
@@ -336,20 +334,9 @@ namespace test_utils {
 
 	class device_queue_fixture : public mpi_fixture { // mpi_fixture for config
 	  public:
-		~device_queue_fixture() { get_device_queue().get_sycl_queue().wait_and_throw(); }
-
 		detail::device_queue& get_device_queue() {
-			if(!m_dq) {
-				m_cfg = std::make_unique<detail::config>(nullptr, nullptr);
-				m_dq = std::make_unique<detail::device_queue>();
-				m_dq->init(*m_cfg, detail::auto_select_device{});
-			}
-			return *m_dq;
+			detail::utils::panic("to be removed");
 		}
-
-	  private:
-		std::unique_ptr<detail::config> m_cfg;
-		std::unique_ptr<detail::device_queue> m_dq;
 	};
 
 	// Printing of graphs can be enabled using the "--print-graphs" command line flag
@@ -406,7 +393,7 @@ namespace test_utils {
 		}
 		return i;
 	}
-
+		
 	template <int Dims>
 	subrange<Dims> truncate_subrange(const subrange<3>& sr3) {
 		return subrange<Dims>(truncate_id<Dims>(sr3.offset), truncate_range<Dims>(sr3.range));
@@ -443,7 +430,7 @@ struct StringMaker<std::optional<T>> {
 #define CELERITY_TEST_UTILS_IMPLEMENT_CATCH_STRING_MAKER_FOR_DIMS(Type)                                                                                        \
 	template <int Dims>                                                                                                                                        \
 	struct StringMaker<Type<Dims>> {                                                                                                                           \
-		static std::string convert(const Type<Dims>& v) { return fmt::format("{}", v); }                                                                       \
+	static std::string convert(const Type<Dims>& v) { return fmt::format("{}", v); }                                                                       \
 	};
 
 CELERITY_TEST_UTILS_IMPLEMENT_CATCH_STRING_MAKER_FOR_DIMS(celerity::id)
