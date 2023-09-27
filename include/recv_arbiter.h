@@ -26,14 +26,14 @@ class recv_arbiter {
 	explicit recv_arbiter(communicator& comm) : m_comm(&comm) {}
 	[[nodiscard]] event begin_aggregated_recv(transfer_id trid, buffer_id bid, void* allocation, const range<3>& allocation_range,
 	    const id<3>& allocation_offset_in_buffer, const id<3>& recv_offset_in_allocation, const range<3>& recv_range, size_t elem_size);
-	void push_inbound_pilot(const inbound_pilot& pilot);
+	void push_inbound_pilot(const inbound_pilot& pilot); // TODO should this class poll the communicator instead?
 
   private:
 	struct waiting_for_begin {
 		std::vector<inbound_pilot> pilots;
 	};
 	struct waiting_for_communication {
-		std::vector<std::unique_ptr<communicator::event>> active_individual_recvs;
+		std::vector<std::unique_ptr<communicator::event>> active_fragment_recvs;
 		void* allocation_base;
 		range<3> allocation_range;
 		id<3> allocation_offset_in_buffer;
@@ -46,7 +46,7 @@ class recv_arbiter {
 	communicator* m_comm;
 	std::unordered_map<std::pair<transfer_id, buffer_id>, active_recv, utils::pair_hash> m_active;
 
-	void begin_individual_recv(waiting_for_communication& state, const inbound_pilot& pilot);
+	void begin_receiving_fragment(waiting_for_communication& state, const inbound_pilot& pilot);
 	bool forget_if_complete(const transfer_id trid, const buffer_id bid);
 };
 
