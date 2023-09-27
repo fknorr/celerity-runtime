@@ -52,12 +52,12 @@ void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
 	auto stable_message = std::make_unique<pilot_message>(pilot.message);
 	MPI_Request req = MPI_REQUEST_NULL;
 	MPI_Isend(stable_message.get(), sizeof *stable_message.get(), MPI_BYTE, static_cast<int>(pilot.to), pilot_tag, m_comm, &req);
+
+	// collect finished sends (TODO rate-limit this to avoid quadratic behavior)
 	for(auto& [_, req] : m_outbound_messages) {
 		int flag = -1;
 		MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
 	}
-
-	// collect finished sends (TODO rate-limit this to avoid quadratic behavior)
 	const auto last_incomplete_outbound_pilot =
 	    std::remove_if(m_outbound_messages.begin(), m_outbound_messages.end(), [](const auto& pair) { return pair.second == MPI_REQUEST_NULL; });
 	m_outbound_messages.erase(last_incomplete_outbound_pilot, m_outbound_messages.end());

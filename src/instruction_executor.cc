@@ -100,7 +100,9 @@ void instruction_executor::loop() {
 						    ready_instructions.push_back(incoming_instr);
 					    }
 				    },
-				    [&](const outbound_pilot& pilot) { m_communicator->send_outbound_pilot(pilot); },
+				    [&](const outbound_pilot& pilot) { //
+					    m_communicator->send_outbound_pilot(pilot);
+				    },
 				    [&](const buffer_user_pointer_announcement& ann) {
 					    assert(m_buffer_user_pointers.count(ann.bid) == 0);
 					    m_buffer_user_pointers.emplace(ann.bid, ann.ptr);

@@ -154,8 +154,8 @@ namespace detail {
 		const auto devices =
 		    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });
 		assert(!devices.empty());
-		const auto backend_type = backend::get_type(devices.front());
-		assert(std::all_of(std::next(devices.begin()), devices.end(), [=](const sycl::device& d) { return backend::get_type(d) == backend_type; }));
+		const auto backend_type = backend::get_effective_type(devices.front());
+		assert(std::all_of(devices.begin(), devices.end(), [=](const sycl::device& d) { return backend::get_effective_type(d) == backend_type; }));
 
 		std::vector<backend::device_config> backend_devices(devices.size());
 		std::vector<instruction_graph_generator::device_info> iggen_devices(devices.size());

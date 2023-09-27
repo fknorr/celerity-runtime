@@ -43,7 +43,8 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 	};
 
 	for(node_id to = 0; to < comm.get_num_nodes(); ++to) {
-		if(to != comm.get_local_node_id()) { comm.send_outbound_pilot(make_pilot_message(comm.get_local_node_id(), to)); }
+		if(to == comm.get_local_node_id()) continue;
+		comm.send_outbound_pilot(make_pilot_message(comm.get_local_node_id(), to));
 	}
 
 	for(;;) {
