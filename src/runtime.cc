@@ -170,8 +170,8 @@ namespace detail {
 			    backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
 		}
 
-		m_exec = std::make_unique<instruction_executor>(
-		    backend::make_queue(backend_type, backend_devices), mpi_communicator_factory(MPI_COMM_WORLD), static_cast<instruction_executor::delegate*>(this));
+		m_exec = std::make_unique<instruction_executor>(backend::make_queue(backend_type, backend_devices), std::make_unique<mpi_communicator>(MPI_COMM_WORLD),
+		    static_cast<instruction_executor::delegate*>(this));
 
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
 		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, std::move(iggen_devices), m_instruction_recorder.get());

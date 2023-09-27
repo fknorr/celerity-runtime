@@ -18,19 +18,7 @@ using namespace celerity::detail;
 
 
 TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives pilot messages", "[mpi]") {
-	class test_delegate final : public communicator::delegate {
-	  public:
-		void inbound_pilot_received(const inbound_pilot& pilot) override {
-			std::lock_guard lock(mutex);
-			pilots_received.push_back(pilot);
-		}
-
-		std::mutex mutex;
-		std::vector<inbound_pilot> pilots_received;
-	};
-
-	test_delegate test;
-	mpi_communicator comm(MPI_COMM_WORLD, &test);
+	mpi_communicator comm(MPI_COMM_WORLD);
 	if(comm.get_num_nodes() <= 1) { SKIP("test must be run on at least 2 ranks"); }
 
 	const auto make_pilot_message = [&](const node_id sender, const node_id receiver) {
@@ -47,27 +35,24 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		comm.send_outbound_pilot(make_pilot_message(comm.get_local_node_id(), to));
 	}
 
-	for(;;) {
-		{
-			std::lock_guard lock(test.mutex);
-			if(test.pilots_received.size() == comm.get_num_nodes() - 1) break;
+	size_t num_pilots_received = 0;
+	while(num_pilots_received < comm.get_num_nodes() - 1) {
+		for(const auto& pilot : comm.poll_inbound_pilots()) {
+			CAPTURE(pilot.from, comm.get_local_node_id());
+			const auto expect = make_pilot_message(pilot.from, comm.get_local_node_id());
+			CHECK(pilot.message.tag == expect.message.tag);
+			CHECK(pilot.message.buffer == expect.message.buffer);
+			CHECK(pilot.message.transfer == expect.message.transfer);
+			CHECK(pilot.message.box == expect.message.box);
+			++num_pilots_received;
 		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(1)); // don't contend the mutex
 	}
-
-	std::lock_guard lock(test.mutex);
-	for(const auto& pilot : test.pilots_received) {
-		const auto expect = make_pilot_message(pilot.from, comm.get_local_node_id());
-		CHECK(pilot.message.tag == expect.message.tag);
-		CHECK(pilot.message.buffer == expect.message.buffer);
-		CHECK(pilot.message.transfer == expect.message.transfer);
-		CHECK(pilot.message.box == expect.message.box);
-	}
+	CHECK(num_pilots_received == comm.get_num_nodes() - 1);
 }
 
 
 TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives payloads", "[mpi]") {
-	mpi_communicator comm(MPI_COMM_WORLD, /* delegate= */ nullptr);
+	mpi_communicator comm(MPI_COMM_WORLD);
 	if(comm.get_num_nodes() <= 1) { SKIP("test must be run on at least 2 ranks"); }
 
 	const auto make_tag = [&](const node_id sender, const node_id receiver) { //

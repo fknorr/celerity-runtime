@@ -13,7 +13,7 @@ namespace celerity::detail {
 
 struct host_object_instance;
 
-class instruction_executor final : public abstract_scheduler::delegate, private communicator::delegate {
+class instruction_executor final : public abstract_scheduler::delegate {
   public:
 	class delegate {
 	  protected:
@@ -29,7 +29,7 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 		virtual void epoch_reached(task_id tid) = 0;
 	};
 
-	instruction_executor(std::unique_ptr<backend::queue> backend_queue, const communicator_factory& comm_factory, delegate* dlg);
+	instruction_executor(std::unique_ptr<backend::queue> backend_queue, std::unique_ptr<communicator> comm, delegate* dlg);
 	instruction_executor(const instruction_executor&) = delete;
 	instruction_executor(instruction_executor&&) = delete;
 	instruction_executor& operator=(const instruction_executor&) = delete;
@@ -64,13 +64,12 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 	};
 	using submission = std::variant<const instruction*, outbound_pilot, buffer_user_pointer_announcement, host_object_instance_announcement>;
 
+	// immutable
 	delegate* m_delegate;
+	std::unique_ptr<communicator> m_communicator;
 
 	// accessed by by main and executor threads
 	double_buffered_queue<submission> m_submission_queue;
-
-	// accessed by by main and communicator threads
-	double_buffered_queue<inbound_pilot> m_inbound_pilot_queue;
 
 	// accessed by executor thread only (unsynchronized)
 	bool m_expecting_more_submissions = true;
@@ -78,7 +77,6 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 	std::unordered_map<buffer_id, const void*> m_buffer_user_pointers;
 	std::unordered_map<allocation_id, allocation> m_allocations;
 	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> m_host_object_instances;
-	std::unique_ptr<communicator> m_communicator;
 	recv_arbiter m_recv_arbiter;
 	host_queue m_host_queue;
 
@@ -87,8 +85,6 @@ class instruction_executor final : public abstract_scheduler::delegate, private 
 	void loop();
 
 	[[nodiscard]] event begin_executing(const instruction& instr);
-
-	void inbound_pilot_received(const inbound_pilot& pilot) override;
 };
 
 } // namespace celerity::detail

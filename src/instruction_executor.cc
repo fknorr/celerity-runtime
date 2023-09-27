@@ -14,8 +14,8 @@
 
 namespace celerity::detail {
 
-instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, const communicator_factory& comm_factory, delegate* dlg)
-    : m_delegate(dlg), m_backend_queue(std::move(backend_queue)), m_communicator(comm_factory.make_communicator(this)), m_recv_arbiter(*m_communicator),
+instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, std::unique_ptr<communicator> comm, delegate* dlg)
+    : m_delegate(dlg), m_communicator(std::move(comm)), m_backend_queue(std::move(backend_queue)), m_recv_arbiter(*m_communicator),
       m_thread(&instruction_executor::loop, this) {
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
@@ -56,7 +56,6 @@ void instruction_executor::loop() {
 	};
 
 	std::vector<submission> loop_submission_queue;
-	std::vector<inbound_pilot> loop_inbound_pilot_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::vector<const instruction*> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
@@ -115,11 +114,8 @@ void instruction_executor::loop() {
 			loop_submission_queue.clear();
 		}
 
-		if(m_inbound_pilot_queue.swap_if_nonempty(loop_inbound_pilot_queue)) {
-			for(auto& pilot : loop_inbound_pilot_queue) {
-				m_recv_arbiter.push_inbound_pilot(pilot);
-			}
-			loop_inbound_pilot_queue.clear();
+		for(const auto& pilot : m_communicator->poll_inbound_pilots()) {
+			m_recv_arbiter.push_inbound_pilot(pilot);
 		}
 
 		for(const auto ready_instr : ready_instructions) {
@@ -316,7 +312,5 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return completed_synchronous();
 	    });
 }
-
-void instruction_executor::inbound_pilot_received(const inbound_pilot& pilot) { m_inbound_pilot_queue.push_back(pilot); }
 
 } // namespace celerity::detail

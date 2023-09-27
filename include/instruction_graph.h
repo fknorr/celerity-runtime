@@ -204,9 +204,9 @@ class host_kernel_instruction final : public matchbox::implement_acceptor<kernel
 };
 
 struct pilot_message {
-	int tag;
-	buffer_id buffer;
-	transfer_id transfer;
+	int tag = -1;
+	buffer_id buffer = -1;
+	transfer_id transfer = -1;
 	box<3> box;
 };
 

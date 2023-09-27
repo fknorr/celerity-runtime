@@ -7,19 +7,6 @@ namespace celerity::detail {
 
 class communicator {
   public:
-	class delegate {
-	  protected:
-		delegate() = default;
-		delegate(const delegate&) = default;
-		delegate(delegate&&) = default;
-		delegate& operator=(const delegate&) = default;
-		delegate& operator=(delegate&&) = default;
-		~delegate() = default; // do not allow destruction through base pointer
-
-	  public:
-		virtual void inbound_pilot_received(const inbound_pilot& pilot) = 0;
-	};
-
 	class event {
 	  public:
 		virtual ~event() = default;
@@ -48,9 +35,11 @@ class communicator {
 
 	virtual ~communicator() = default;
 
+	// TODO give this a poll() method
 	virtual size_t get_num_nodes() const = 0;
 	virtual node_id get_local_node_id() const = 0;
 	virtual void send_outbound_pilot(const outbound_pilot& pilot) = 0;
+	[[nodiscard]] virtual std::vector<inbound_pilot> poll_inbound_pilots() = 0;
 	[[nodiscard]] virtual std::unique_ptr<event> send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) = 0;
 	[[nodiscard]] virtual std::unique_ptr<event> receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) = 0;
 
@@ -60,21 +49,6 @@ class communicator {
 	communicator(communicator&&) = default;
 	communicator& operator=(const communicator&) = default;
 	communicator& operator=(communicator&&) = default;
-};
-
-class communicator_factory {
-  public:
-	virtual ~communicator_factory() = default;
-
-  protected:
-	communicator_factory() = default;
-	communicator_factory(const communicator_factory&) = delete;
-	communicator_factory(communicator_factory&&) = delete;
-	communicator_factory& operator=(const communicator_factory&) = delete;
-	communicator_factory& operator=(communicator_factory&&) = delete;
-
-  public:
-	virtual std::unique_ptr<communicator> make_communicator(communicator::delegate* delegate) const = 0;
 };
 
 } // namespace celerity::detail
