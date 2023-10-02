@@ -146,7 +146,9 @@ TEST_CASE("matmul pattern", "[instruction graph]") {
 	auto mat_c_buf = ictx.create_buffer(range);
 
 	const auto set_identity = [&](test_utils::mock_buffer<2> mat) {
-		ictx.device_compute<class set_identity>(mat.get_range()).discard_write(mat, celerity::access::one_to_one()).submit();
+		ictx.device_compute<class set_identity>(mat.get_range()) //
+		    .discard_write(mat, celerity::access::one_to_one())
+		    .submit();
 	};
 
 	set_identity(mat_a_buf);
@@ -165,7 +167,10 @@ TEST_CASE("matmul pattern", "[instruction graph]") {
 	multiply(mat_b_buf, mat_c_buf, mat_a_buf);
 
 	const auto verify = [&](test_utils::mock_buffer<2> mat_c, test_utils::mock_host_object passed_obj) {
-		ictx.host_task(mat_c.get_range()).read(mat_c, celerity::access::one_to_one()).submit();
+		ictx.host_task(mat_c.get_range()) //
+		    .read(mat_c, celerity::access::one_to_one())
+		    .affect(passed_obj)
+		    .submit();
 	};
 
 	auto passed_obj = ictx.create_host_object();

@@ -222,14 +222,15 @@ struct inbound_pilot {
 
 class send_instruction final : public matchbox::implement_acceptor<instruction, send_instruction> {
   public:
-	explicit send_instruction(const instruction_id iid, const transfer_id trid, const node_id to_nid, const int tag, const allocation_id source_allocation,
-	    const range<3>& alloc_range, const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
-	    : acceptor_base(iid), m_transfer_id(trid), m_to_nid(to_nid), m_tag(tag), m_source_allocation(source_allocation), m_alloc_range(alloc_range),
-	      m_offset_in_alloc(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
+	explicit send_instruction(const instruction_id iid, const transfer_id trid, const node_id to_nid, const int tag, const memory_id source_memory,
+	    const allocation_id source_allocation, const range<3>& alloc_range, const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
+	    : acceptor_base(iid), m_transfer_id(trid), m_to_nid(to_nid), m_tag(tag), m_source_memory(source_memory), m_source_allocation(source_allocation),
+	      m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
 
 	transfer_id get_transfer_id() const { return m_transfer_id; }
 	node_id get_dest_node_id() const { return m_to_nid; }
 	int get_tag() const { return m_tag; }
+	memory_id get_source_memory_id() const { return m_source_memory; }
 	allocation_id get_source_allocation_id() const { return m_source_allocation; }
 	const range<3>& get_allocation_range() const { return m_alloc_range; }
 	const id<3>& get_offset_in_allocation() const { return m_offset_in_alloc; }
@@ -240,6 +241,7 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 	transfer_id m_transfer_id;
 	node_id m_to_nid;
 	int m_tag;
+	memory_id m_source_memory;
 	allocation_id m_source_allocation;
 	range<3> m_alloc_range;
 	id<3> m_offset_in_alloc;

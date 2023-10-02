@@ -294,7 +294,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case alloc_instruction_record::alloc_origin::send: dot += "send "; break;
 			    case alloc_instruction_record::alloc_origin::buffer: dot += "buffer "; break;
 			    }
-			    fmt::format_to(back, "<b>alloc</b> A{} on M{}", ainstr.allocation_id, ainstr.memory_id);
+			    fmt::format_to(back, "<b>alloc</b> M{}.A{}", ainstr.memory_id, ainstr.allocation_id);
 			    if(ainstr.buffer_allocation.has_value()) {
 				    dot += "<br/>for ";
 				    print_buffer_allocation(*ainstr.buffer_allocation);
@@ -305,7 +305,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const free_instruction_record& finstr) {
 			    begin_node(finstr, "ellipse", "cyan3");
 			    fmt::format_to(back, "I{}<br/>", finstr.id);
-			    fmt::format_to(back, "<b>free</b> A{} on M{}", finstr.allocation_id, finstr.memory_id);
+			    fmt::format_to(back, "<b>free</b> M{}.A{}", finstr.memory_id, finstr.allocation_id);
 			    if(finstr.buffer_allocation.has_value()) {
 				    dot += "<br/>";
 				    print_buffer_allocation(*finstr.buffer_allocation);
@@ -371,8 +371,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
 			    fmt::format_to(back, "<br/><b>send</b> transfer {} to N{} tag {}<br/>", sinstr.transfer_id, sinstr.dest_node_id, sinstr.tag);
 			    print_buffer_range(sinstr.buffer, subrange(sinstr.offset_in_buffer, sinstr.send_range));
-			    fmt::format_to(back, "<br/>from A{} ({}) + {}, {}x{} bytes", sinstr.source_allocation_id, sinstr.allocation_range, sinstr.offset_in_allocation,
-			        sinstr.send_range, sinstr.element_size);
+			    fmt::format_to(back, "<br/>from M{}.A{} ({}) + {}, {}x{} bytes", sinstr.source_memory_id, sinstr.source_allocation_id, sinstr.allocation_range,
+			        sinstr.offset_in_allocation, sinstr.send_range, sinstr.element_size);
 			    send_instructions_by_tag.emplace(sinstr.tag, sinstr.id);
 			    end_node();
 		    },
@@ -381,8 +381,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, irec.get_await_push_command_id(rinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>recv</b> transfer {}<br/>", rinstr.transfer_id);
 			    print_buffer_range(rinstr.buffer_id, subrange(rinstr.offset_in_buffer, rinstr.recv_range));
-			    fmt::format_to(back, "<br/>to A{} ({}) +{}, {}x{} bytes", rinstr.dest_allocation_id, rinstr.allocation_range, rinstr.offset_in_allocation,
-			        rinstr.recv_range, rinstr.element_size);
+			    fmt::format_to(back, "<br/>to M{}.A{} ({}) +{}, {}x{} bytes", rinstr.dest_memory_id, rinstr.dest_allocation_id, rinstr.allocation_range,
+			        rinstr.offset_in_allocation, rinstr.recv_range, rinstr.element_size);
 			    end_node();
 		    },
 		    [&](const fence_instruction_record& finstr) {

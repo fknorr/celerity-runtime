@@ -232,6 +232,7 @@ struct send_instruction_record : instruction_record_base {
 	transfer_id transfer_id;
 	node_id dest_node_id;
 	int tag;
+	memory_id source_memory_id;
 	allocation_id source_allocation_id;
 	range<3> allocation_range;
 	celerity::id<3> offset_in_allocation;

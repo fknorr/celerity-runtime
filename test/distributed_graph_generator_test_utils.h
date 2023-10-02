@@ -659,6 +659,20 @@ class idag_test_context {
 	      m_iggen(m_tm, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
 	~idag_test_context() {
+		for(auto obj : m_managed_objects) {
+			matchbox::match(
+			    obj,
+			    [&](const buffer_id bid) {
+				    m_iggen.destroy_buffer(bid);
+				    m_dggen.destroy_buffer(bid);
+				    m_tm.destroy_buffer(bid);
+			    },
+			    [&](const host_object_id hoid) {
+				    m_iggen.destroy_host_object(hoid);
+				    m_dggen.destroy_host_object(hoid);
+				    m_tm.destroy_host_object(hoid);
+			    });
+		}
 		build_task(m_tm.generate_epoch_task(epoch_action::shutdown));
 		maybe_log_graphs();
 	}
@@ -675,6 +689,7 @@ class idag_test_context {
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		m_dggen.create_buffer(bid, Dims, range_cast<3>(size));
 		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), 1 /* size */, 1 /* align */, mark_as_host_initialized);
+		m_managed_objects.emplace_back(bid);
 		return buf;
 	}
 
@@ -683,6 +698,7 @@ class idag_test_context {
 		m_tm.create_host_object(hoid);
 		m_dggen.create_host_object(hoid);
 		m_iggen.create_host_object(hoid, owns_instance);
+		m_managed_objects.emplace_back(hoid);
 		return test_utils::mock_host_object(hoid);
 	}
 
@@ -762,6 +778,7 @@ class idag_test_context {
 	buffer_id m_next_buffer_id = 0;
 	host_object_id m_next_host_object_id = 0;
 	reduction_id m_next_reduction_id = 1; // Start from 1 as rid 0 designates "no reduction" in push commands
+	std::vector<std::variant<buffer_id, host_object_id>> m_managed_objects;
 	std::optional<task_id> m_most_recently_built_horizon;
 	reduction_manager m_rm;
 	task_recorder m_task_recorder;

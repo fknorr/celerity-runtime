@@ -69,13 +69,18 @@ void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
 	assert(iter != m_buffers.end());
 
 	auto& buffer = iter->second;
-	for(auto& memory : buffer.memories) {
+	for(memory_id mid = 0; mid < buffer.memories.size(); ++mid) {
+		auto& memory = buffer.memories[mid];
 		for(auto& allocation : memory.allocations) {
 			const auto free_instr = &create<free_instruction>(allocation.aid);
 			for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) {
 				for(const auto access_instr : front.front) {
 					add_dependency(*free_instr, *access_instr, dependency_kind::true_dep);
 				}
+			}
+			if(m_recorder != nullptr) {
+				*m_recorder << free_instruction_record(
+				    *free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align, buffer_allocation_record{bid, allocation.box});
 			}
 		}
 	}
@@ -96,6 +101,7 @@ void instruction_graph_generator::destroy_host_object(const host_object_id hoid)
 	if(obj.owns_instance) {
 		const auto destroy_instr = &create<destroy_host_object_instruction>(hoid);
 		add_dependency(*destroy_instr, *obj.last_side_effect, dependency_kind::true_dep);
+		if(m_recorder != nullptr) { *m_recorder << destroy_host_object_instruction_record(*destroy_instr); }
 	}
 
 	m_host_objects.erase(iter);
@@ -703,6 +709,12 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			buffer.original_writers.update_region(rw.writes, instr.instruction);
 
 			for(auto& alloc : buffer.memories[instr.mid].allocations) {
+				// TODO we're calling record_read / record_write for partially overlapping regions here. Is this really the right API or should this modify
+				// last_writers and access_front directly?
+				for(const auto& box : rw.reads.get_boxes()) {
+					const auto read_box = box_intersection(alloc.box, box);
+					if(!read_box.empty()) { alloc.record_read(read_box, instr.instruction); }
+				}
 				for(const auto& box : rw.writes.get_boxes()) {
 					const auto write_box = box_intersection(alloc.box, box);
 					if(!write_box.empty()) { alloc.record_write(write_box, instr.instruction); }
@@ -767,8 +779,8 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			assert(allocation != nullptr); // we allocate_contiguously above
 
 			const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
-			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, allocation->aid, allocation->box.get_range(),
-			    offset_in_allocation, box.get_range(), buffer.elem_size);
+			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, host_memory_id, allocation->aid,
+			    allocation->box.get_range(), offset_in_allocation, box.get_range(), buffer.elem_size);
 
 			for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
 				assert(dep_instr != nullptr);
