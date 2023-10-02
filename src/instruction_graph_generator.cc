@@ -260,7 +260,7 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 	// First, see if there are pending await-pushes for any of the unsatisfied read regions.
 	for(auto& [mid, disjoint_regions] : unsatisfied_reads) {
 		auto& buffer = m_buffers.at(bid);
-		auto& memory = buffer.memories[mid];
+		auto& memory = buffer.memories[host_memory_id];
 
 		for(auto& unsatisfied_region : disjoint_regions) {
 			// merge regions per transfer id to generate at most one instruction per host allocation and pending await-push command
@@ -289,7 +289,6 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 								add_dependency(*recv_instr, *dep_instr, dependency_kind::true_dep);
 							}
 						}
-						add_dependency(*recv_instr, *m_last_epoch, dependency_kind::true_dep);
 						alloc.record_write(recv_box, recv_instr);
 
 						buffer.original_writers.update_region(recv_box, recv_instr);
@@ -309,10 +308,11 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 				//   - in case of a RDMA failure, or when we want to broadcast, we need a release_transfer_instruction to hand the transfer_allocation_id
 				//   back
 				// 	   to the recv_arbiter (again kinda conditional on whether we did an RDMA receive or not)
-				buffer.newest_data_location.update_region(accepted_transfer_region, data_location().set(mid));
+				buffer.newest_data_location.update_region(accepted_transfer_region, data_location().set(host_memory_id));
 				buffer.pending_await_pushes.update_region(accepted_transfer_region, transfer_id());
 
-				unsatisfied_region = region_difference(unsatisfied_region, accepted_transfer_region);
+				// if the requirement is not on host memory, we still need to to a host-to-device coherence copy
+				if(mid == host_memory_id) { unsatisfied_region = region_difference(unsatisfied_region, accepted_transfer_region); }
 			}
 		}
 
@@ -759,7 +759,7 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 		satisfy_read_requirements(bid, {{host_memory_id, region}});
 	}
 
-	for(auto& [writer, region] : writer_regions) {
+	for(auto& [_, region] : writer_regions) {
 		for(const auto& box : region.get_boxes()) {
 			const int tag = create_pilot_message(pcmd.get_target(), bid, pcmd.get_transfer_id(), box);
 
@@ -769,7 +769,11 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
 			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, allocation->aid, allocation->box.get_range(),
 			    offset_in_allocation, box.get_range(), buffer.elem_size);
-			add_dependency(*send_instr, *writer, dependency_kind::true_dep);
+
+			for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
+				assert(dep_instr != nullptr);
+				add_dependency(*send_instr, *dep_instr, dependency_kind::true_dep);
+			}
 
 			if(m_recorder != nullptr) {
 				const auto offset_in_buffer = box.get_offset();
@@ -858,6 +862,10 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 			    assert(trid == transfer_id() && "received an await-push command into a previously await-pushed region without an intermediate read");
 		    }
 #endif
+		    // TODO this is in the wrong place. We want to insert a "begin receive" instr and allocate for that.
+		    // TODO the fact that apcmd contains a `region` instead of a `vector<boxes>` means we cannot infer the required contiguous boxes.
+		    allocate_contiguously(apcmd.get_bid(), host_memory_id, region.get_boxes());
+
 		    buffer.newest_data_location.update_region(region, data_location()); // not present anywhere locally
 		    buffer.pending_await_pushes.update_region(region, apcmd.get_transfer_id());
 		    if(m_recorder != nullptr) { m_recorder->record_await_push_command_id(apcmd.get_transfer_id(), apcmd.get_cid()); }

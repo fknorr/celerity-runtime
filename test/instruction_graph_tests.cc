@@ -138,7 +138,7 @@ TEST_CASE("matmul pattern", "[instruction graph]") {
 	const auto my_nid = GENERATE(values<node_id>({0, 1}));
 	CAPTURE(my_nid);
 
-	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 2 /* devices */);
+	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 1 /* devices */);
 
 	const auto range = celerity::range<2>(mat_size, mat_size);
 	auto mat_a_buf = ictx.create_buffer(range);
@@ -146,7 +146,7 @@ TEST_CASE("matmul pattern", "[instruction graph]") {
 	auto mat_c_buf = ictx.create_buffer(range);
 
 	const auto set_identity = [&](test_utils::mock_buffer<2> mat) {
-		ictx.device_compute(mat.get_range()).discard_write(mat, celerity::access::one_to_one()).submit();
+		ictx.device_compute<class set_identity>(mat.get_range()).discard_write(mat, celerity::access::one_to_one()).submit();
 	};
 
 	set_identity(mat_a_buf);
@@ -154,7 +154,7 @@ TEST_CASE("matmul pattern", "[instruction graph]") {
 
 	const auto multiply = [&](test_utils::mock_buffer<2> mat_a, test_utils::mock_buffer<2> mat_b, test_utils::mock_buffer<2> mat_c) {
 		const size_t group_size = 8;
-		ictx.device_compute(celerity::nd_range<2>{range, {group_size, group_size}})
+		ictx.device_compute<class multiply>(celerity::nd_range<2>{range, {group_size, group_size}})
 		    .read(mat_a, celerity::access::slice<2>(1))
 		    .read(mat_b, celerity::access::slice<2>(0))
 		    .discard_write(mat_c, celerity::access::one_to_one())
