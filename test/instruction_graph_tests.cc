@@ -132,5 +132,47 @@ TEST_CASE("hello world pattern (host initialization)", "[instruction-graph]") {
 	// ictx.fence(buf); TODO currently unimplemented
 }
 
+TEST_CASE("matmul pattern", "[instruction graph]") {
+	const size_t mat_size = 128;
+
+	const auto my_nid = GENERATE(values<node_id>({0, 1}));
+	CAPTURE(my_nid);
+
+	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 2 /* devices */);
+
+	const auto range = celerity::range<2>(mat_size, mat_size);
+	auto mat_a_buf = ictx.create_buffer(range);
+	auto mat_b_buf = ictx.create_buffer(range);
+	auto mat_c_buf = ictx.create_buffer(range);
+
+	const auto set_identity = [&](test_utils::mock_buffer<2> mat) {
+		ictx.device_compute(mat.get_range()).discard_write(mat, celerity::access::one_to_one()).submit();
+	};
+
+	set_identity(mat_a_buf);
+	set_identity(mat_b_buf);
+
+	const auto multiply = [&](test_utils::mock_buffer<2> mat_a, test_utils::mock_buffer<2> mat_b, test_utils::mock_buffer<2> mat_c) {
+		const size_t group_size = 8;
+		ictx.device_compute(celerity::nd_range<2>{range, {group_size, group_size}})
+		    .read(mat_a, celerity::access::slice<2>(1))
+		    .read(mat_b, celerity::access::slice<2>(0))
+		    .discard_write(mat_c, celerity::access::one_to_one())
+		    .submit();
+	};
+
+	multiply(mat_a_buf, mat_b_buf, mat_c_buf);
+	multiply(mat_b_buf, mat_c_buf, mat_a_buf);
+
+	const auto verify = [&](test_utils::mock_buffer<2> mat_c, test_utils::mock_host_object passed_obj) {
+		ictx.host_task(mat_c.get_range()).read(mat_c, celerity::access::one_to_one()).submit();
+	};
+
+	auto passed_obj = ictx.create_host_object();
+	verify(mat_a_buf, passed_obj);
+
+	ictx.fence(passed_obj);
+}
+
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects

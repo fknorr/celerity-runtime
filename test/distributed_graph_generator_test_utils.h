@@ -479,9 +479,11 @@ class command_query {
 	}
 };
 
-inline std::string make_test_graph_title(const std::string& default_title) {
+inline std::string make_test_graph_title(std::string title, std::optional<node_id> local_nid = std::nullopt) {
 	const auto test_name = Catch::getResultCapture().getCurrentTestName();
-	return test_name.empty() ? default_title : fmt::format("{} - {}", default_title, test_name);
+	if(!test_name.empty()) { fmt::format_to(std::back_inserter(title), " - {}", test_name); }
+	if(local_nid.has_value()) { fmt::format_to(std::back_inserter(title), " (on N{})", *local_nid); }
+	return title;
 }
 
 class dist_cdag_test_context {
@@ -744,10 +746,14 @@ class idag_test_context {
 
 	distributed_graph_generator& get_graph_generator() { return m_dggen; }
 
-	[[nodiscard]] std::string print_task_graph() { return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph")); }
-	[[nodiscard]] std::string print_command_graph() { return detail::print_command_graph(m_local_nid, m_cmd_recorder, make_test_graph_title("Command Graph")); }
+	[[nodiscard]] std::string print_task_graph() { //
+		return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph", m_local_nid));
+	}
+	[[nodiscard]] std::string print_command_graph() {
+		return detail::print_command_graph(m_local_nid, m_cmd_recorder, make_test_graph_title("Command Graph", m_local_nid));
+	}
 	[[nodiscard]] std::string print_instruction_graph() {
-		return detail::print_instruction_graph(m_instr_recorder, m_cmd_recorder, m_task_recorder, make_test_graph_title("Instruction Graph"));
+		return detail::print_instruction_graph(m_instr_recorder, m_cmd_recorder, m_task_recorder, make_test_graph_title("Instruction Graph", m_local_nid));
 	}
 
   private:
