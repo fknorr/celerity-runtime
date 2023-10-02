@@ -86,18 +86,18 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 }
 
 std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_id to, const int tag, const void* const base, const stride& stride) {
-	CELERITY_DEBUG("[mpi] payload -> N{} (tag {}, from {}, {}x{})", to, tag, stride.allocation, stride.subrange, stride.element_size);
+	CELERITY_DEBUG("[mpi] payload -> N{} (tag {}) from {} ({}) {}x{}", to, tag, base, stride.allocation, stride.subrange, stride.element_size);
 
-	MPI_Request req;
+	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
 	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_comm, &req);
 	return std::make_unique<event>(req);
 }
 
 std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const node_id from, const int tag, void* const base, const stride& stride) {
-	CELERITY_DEBUG("[mpi] payload <- N{} (tag {}, into {}, {}x{})", from, tag, stride.allocation, stride.subrange, stride.element_size);
+	CELERITY_DEBUG("[mpi] payload <- N{} (tag {}) into {} ({}) {}x{}", from, tag, base, stride.allocation, stride.subrange, stride.element_size);
 
-	MPI_Request req;
+	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
 	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), tag, m_comm, &req);
 	return std::make_unique<event>(req);

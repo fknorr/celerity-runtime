@@ -141,11 +141,13 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	return matchbox::match<event>(
 	    instr,
 	    [&](const alloc_instruction& ainstr) {
-		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{} with {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
+		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
 		        ainstr.get_size(), ainstr.get_alignment());
 
 		    auto [ptr, event] = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
 		    m_allocations.emplace(ainstr.get_allocation_id(), allocation{ainstr.get_memory_id(), ptr});
+
+			CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
 		    return std::move(event);
 	    },
 	    [&](const free_instruction& finstr) {
