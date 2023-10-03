@@ -245,18 +245,30 @@ struct send_instruction_record : instruction_record_base {
 	send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, const celerity::id<3>& offset_in_buffer);
 };
 
-struct recv_instruction_record : instruction_record_base {
-	buffer_id buffer_id;
+struct begin_receive_instruction_record : instruction_record_base {
 	transfer_id transfer_id;
+	buffer_id buffer_id;
 	memory_id dest_memory_id;
 	allocation_id dest_allocation_id;
-	range<3> allocation_range;
-	celerity::id<3> offset_in_allocation;
-	celerity::id<3> offset_in_buffer;
-	range<3> recv_range;
+	box<3> allocated_bounding_box;
 	size_t element_size;
 
-	recv_instruction_record(const recv_instruction& rinstr);
+	begin_receive_instruction_record(const begin_receive_instruction& brinstr);
+};
+
+struct await_receive_instruction_record : instruction_record_base {
+	transfer_id transfer_id;
+	buffer_id buffer_id;
+	region<3> received_region;
+
+	await_receive_instruction_record(const await_receive_instruction& arinstr);
+};
+
+struct end_receive_instruction_record : instruction_record_base {
+	transfer_id transfer_id;
+	buffer_id buffer_id;
+
+	end_receive_instruction_record(const end_receive_instruction& erinstr);
 };
 
 struct fence_instruction_record : instruction_record_base {
@@ -298,8 +310,8 @@ struct epoch_instruction_record : instruction_record_base {
 };
 
 using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, init_buffer_instruction_record, export_instruction_record,
-    copy_instruction_record, kernel_instruction_record, send_instruction_record, recv_instruction_record, fence_instruction_record,
-    destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+    copy_instruction_record, kernel_instruction_record, send_instruction_record, begin_receive_instruction_record, await_receive_instruction_record,
+    end_receive_instruction_record, fence_instruction_record, destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
 class instruction_recorder {
   public:

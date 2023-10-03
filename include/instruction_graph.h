@@ -15,8 +15,9 @@ namespace celerity::detail {
 
 class instruction : public intrusive_graph_node<instruction>,
                     public matchbox::acceptor<class alloc_instruction, class free_instruction, class init_buffer_instruction, class export_instruction,
-                        class copy_instruction, class sycl_kernel_instruction, class host_kernel_instruction, class send_instruction, class recv_instruction,
-                        class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+                        class copy_instruction, class sycl_kernel_instruction, class host_kernel_instruction, class send_instruction,
+                        class begin_receive_instruction, class await_receive_instruction, class end_receive_instruction, class fence_instruction,
+                        class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -249,34 +250,63 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 	size_t m_elem_size;
 };
 
-class recv_instruction final : public matchbox::implement_acceptor<instruction, recv_instruction> {
+/// Informs the receive arbiter about the bounding box allocation for a series of incoming transfers. The boxes of remote send_instructions do not necessarily
+/// coincide with await_receive_instructions - sends can fulfil subsets or supersets of receives, so the executor needs to be able to handle all send-patterns
+/// that cover the region of the original await_push command. To make this happen, the instruction_graph_generator allocates the bounding box of each
+/// 2/4/8-connected component of the await_push region and passes it on to the receive_arbiter through a begin_receive_instruction.
+class begin_receive_instruction final : public matchbox::implement_acceptor<instruction, begin_receive_instruction> {
   public:
-	explicit recv_instruction(const instruction_id iid, const buffer_id bid, const transfer_id trid, const memory_id dest_memory,
-	    const allocation_id dest_allocation, const range<3>& alloc_range, const id<3>& offset_in_alloc, const id<3>& offset_in_buffer,
-	    const range<3>& recv_range, const size_t elem_size)
-	    : acceptor_base(iid), m_buffer_id(bid), m_transfer_id(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_alloc_range(alloc_range),
-	      m_offset_in_alloc(offset_in_alloc), m_offset_in_buffer(offset_in_buffer), m_recv_range(recv_range), m_elem_size(elem_size) {}
+	explicit begin_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, const memory_id dest_memory,
+	    const allocation_id dest_allocation, const box<3>& allocated_bounding_box, const size_t elem_size)
+	    : acceptor_base(iid), m_trid(trid), m_bid(bid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_alloc_bbox(allocated_bounding_box),
+	      m_elem_size(elem_size) {}
 
-	buffer_id get_buffer_id() const { return m_buffer_id; }
-	transfer_id get_transfer_id() const { return m_transfer_id; }
-	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }
+	transfer_id get_transfer_id() const { return m_trid; }
+	buffer_id get_buffer_id() const { return m_bid; }
 	memory_id get_dest_memory_id() const { return m_dest_memory; }
-	const range<3>& get_allocation_range() const { return m_alloc_range; }
-	const id<3>& get_offset_in_allocation() const { return m_offset_in_alloc; }
-	const id<3>& get_offset_in_buffer() const { return m_offset_in_buffer; }
-	const range<3>& get_recv_range() const { return m_recv_range; }
+	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }
+	const box<3>& get_allocated_bounding_box() const { return m_alloc_bbox; }
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
-	buffer_id m_buffer_id;
-	transfer_id m_transfer_id;
+	transfer_id m_trid;
+	buffer_id m_bid;
 	memory_id m_dest_memory;
 	allocation_id m_dest_allocation;
-	range<3> m_alloc_range;
-	id<3> m_offset_in_alloc;
-	id<3> m_offset_in_buffer;
-	range<3> m_recv_range;
+	box<3> m_alloc_bbox;
 	size_t m_elem_size;
+};
+
+/// Waits on the receive arbiter to complete part of the receive.
+/// TODO for RDMA receives where different subranges of the await-push are required by different devices, this instruction could pass the device (staging)
+/// buffer allocation that receive_arbiter would use in the "happy path" where there is a 1-to-1 correspondence between sends and receives.
+class await_receive_instruction final : public matchbox::implement_acceptor<instruction, await_receive_instruction> {
+  public:
+	explicit await_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, region<3> recv_region)
+	    : acceptor_base(iid), m_trid(trid), m_bid(bid), m_recv_region(std::move(recv_region)) {}
+
+	transfer_id get_transfer_id() const { return m_trid; }
+	buffer_id get_buffer_id() const { return m_bid; }
+	const region<3>& get_received_region() const { return m_recv_region; }
+
+  private:
+	transfer_id m_trid;
+	buffer_id m_bid;
+	region<3> m_recv_region;
+};
+
+/// Removes a receive from its tracking in the receive arbiter. The end of a receive can not be inferred from the begin_receive_instruction range and the
+/// await_receive_instruction subranges alone, since the actually received data can have the shape of an arbitrary connected region.
+class end_receive_instruction final : public matchbox::implement_acceptor<instruction, end_receive_instruction> {
+  public:
+	explicit end_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid) : acceptor_base(iid), m_trid(trid), m_bid(bid) {}
+
+	transfer_id get_transfer_id() const { return m_trid; }
+	buffer_id get_buffer_id() const { return m_bid; }
+
+  private:
+	transfer_id m_trid;
+	buffer_id m_bid;
 };
 
 class fence_instruction final : public matchbox::implement_acceptor<instruction, fence_instruction> {

@@ -3,75 +3,93 @@
 #include "grid.h"
 #include "instruction_graph.h"
 #include "utils.h"
+
+#include <exception>
 #include <memory>
 
 namespace celerity::detail {
 
-bool recv_arbiter::event::is_complete() const {
-	// TODO dropping an event without calling is_complete() => true will keep stale entries around
-	return m_arbiter->forget_if_complete(m_trid, m_bid);
+recv_arbiter::recv_arbiter(communicator& comm) : m_comm(&comm) {}
+
+recv_arbiter::~recv_arbiter() { assert(std::uncaught_exceptions() > 0 || m_transfers.empty()); }
+
+bool recv_arbiter::event::is_complete() const { return region_intersection(m_region_transfer->complete_region, m_awaited_region) == m_awaited_region; }
+
+void recv_arbiter::begin_receive(const transfer_id trid, const buffer_id bid, void* const allocation, const box<3>& allocated_box, const size_t elem_size) {
+	auto& transfer = m_transfers[{trid, bid}]; // allow default-insert
+
+	assert(!transfer.elem_size.has_value() || *transfer.elem_size == elem_size);
+	transfer.elem_size = elem_size;
+
+	// There can be multiple begin_receives (i.e. disjoint allocations) for a single await_push, but allocations (currently) are not allowed to overlap.
+	assert(std::all_of(transfer.regions.begin(), transfer.regions.end(),
+	    [&](const std::unique_ptr<region_transfer>& t) { return box_intersection(t->allocated_bounding_box, allocated_box).empty(); }));
+
+	const auto region_tr = transfer.regions.emplace_back(std::make_unique<region_transfer>(allocation, allocated_box)).get();
+	const auto remaining_unassigned_pilots_end =
+	    std::remove_if(transfer.unassigned_pilots.begin(), transfer.unassigned_pilots.end(), [&](const inbound_pilot& pilot) {
+		    assert(allocated_box.covers(pilot.message.box) == !box_intersection(allocated_box, pilot.message.box).empty());
+		    const auto now_assigned = allocated_box.covers(pilot.message.box);
+		    if(now_assigned) { begin_receiving_fragment(region_tr, pilot, elem_size); }
+		    return now_assigned;
+	    });
+	transfer.unassigned_pilots.erase(remaining_unassigned_pilots_end, transfer.unassigned_pilots.end());
 }
 
-recv_arbiter::event recv_arbiter::begin_aggregated_recv(const transfer_id trid, const buffer_id bid, void* const allocation_base,
-    const range<3>& allocation_range, const id<3>& allocation_offset_in_buffer, const id<3>& recv_offset_in_allocation, const range<3>& recv_range,
-    size_t elem_size) {
-	const auto key = std::pair(trid, bid);
-	auto new_state = waiting_for_communication{{}, allocation_base, allocation_range, allocation_offset_in_buffer, recv_offset_in_allocation,
-	    subrange(recv_offset_in_allocation, recv_range), elem_size};
-	if(const auto it = m_active.find(key); it != m_active.end()) {
-		auto& [_, active_state] = *it;
-		for(auto pilot : std::get<waiting_for_begin>(active_state).pilots) {
-			begin_receiving_fragment(new_state, pilot);
+recv_arbiter::event recv_arbiter::await_receive(const transfer_id trid, const buffer_id bid, const region<3>& awaited_region) {
+	auto& transfer = m_transfers.at({trid, bid});
+	const auto region_it = std::find_if(transfer.regions.begin(), transfer.regions.end(),
+	    [&](const std::unique_ptr<region_transfer>& rt) { return rt->allocated_bounding_box.covers(bounding_box(awaited_region)); });
+	assert(region_it != transfer.regions.end());
+	return event(region_it->get(), awaited_region);
+}
+
+void recv_arbiter::end_receive(const transfer_id trid, const buffer_id bid) {
+#if CELERITY_DETAIL_ENABLE_DEBUG
+	auto& transfer = m_transfers.at(std::pair{trid, bid}); // must exist
+	assert(transfer.unassigned_pilots.empty());
+	assert(std::all_of(transfer.regions.begin(), transfer.regions.end(), //
+	    [](const std::unique_ptr<region_transfer>& rt) { return rt->incoming_fragments.empty(); }));
+#endif
+
+	m_transfers.erase(std::pair{trid, bid});
+}
+
+void recv_arbiter::poll_communicator() {
+	for(auto& [id, transfer] : m_transfers) {
+		for(auto& region_tr : transfer.regions) {
+			const auto incomplete_fragments_end =
+			    std::remove_if(region_tr->incoming_fragments.begin(), region_tr->incoming_fragments.end(), [&](const incoming_fragment& fragment) {
+				    const bool is_complete = fragment.done->is_complete();
+				    if(is_complete) { region_tr->complete_region = region_union(region_tr->complete_region, fragment.box); }
+				    return is_complete;
+			    });
+			region_tr->incoming_fragments.erase(incomplete_fragments_end, region_tr->incoming_fragments.end());
 		}
-		active_state = std::move(new_state);
-	} else {
-		m_active.emplace(key, std::move(new_state));
 	}
-	return event(*this, trid, bid);
-}
 
-void recv_arbiter::push_inbound_pilot(const inbound_pilot& pilot) {
-	const auto key = std::pair(pilot.message.transfer, pilot.message.buffer);
-	if(const auto it = m_active.find(key); it != m_active.end()) {
-		matchbox::match(
-		    it->second,                                                                       //
-		    [&](waiting_for_begin& state) { state.pilots.push_back(pilot); },                 //
-		    [&](waiting_for_communication& state) { begin_receiving_fragment(state, pilot); } //
-		);
-	} else {
-		m_active.emplace(key, waiting_for_begin{{pilot}});
+	for(const auto& pilot : m_comm->poll_inbound_pilots()) {
+		auto& transfer = m_transfers[{pilot.message.transfer, pilot.message.buffer}]; // allow default-insert
+		const auto region_it = std::find_if(transfer.regions.begin(), transfer.regions.end(),
+		    [&](const std::unique_ptr<region_transfer>& rt) { return rt->allocated_bounding_box.covers(pilot.message.box); });
+		if(region_it != transfer.regions.end()) {
+			assert(region_intersection((*region_it)->complete_region, pilot.message.box).empty()); // must not receive the same datum twice
+			begin_receiving_fragment(region_it->get(), pilot, transfer.elem_size.value());         // elem_size is set when transfer_region is inserted
+		} else {
+			transfer.unassigned_pilots.push_back(pilot);
+		}
 	}
 }
 
-void recv_arbiter::begin_receiving_fragment(waiting_for_communication& state, const inbound_pilot& pilot) {
-	const auto [offset_in_buffer, payload_range] = pilot.message.box.get_subrange();
-	assert(all_true(offset_in_buffer >= state.allocation_offset_in_buffer));
-	const auto offset_in_allocation = offset_in_buffer - state.allocation_offset_in_buffer;
-	assert(all_true(offset_in_allocation + payload_range <= state.allocation_range));
+void recv_arbiter::begin_receiving_fragment(region_transfer* const region_tr, const inbound_pilot& pilot, const size_t elem_size) {
+	assert(region_tr->allocated_bounding_box.covers(pilot.message.box));
+	const auto offset_in_allocation = pilot.message.box.get_offset() - region_tr->allocated_bounding_box.get_offset();
 	const communicator::stride stride{
-	    state.allocation_range,
-	    subrange<3>{offset_in_allocation, payload_range},
-	    state.elem_size,
+	    region_tr->allocated_bounding_box.get_range(),
+	    subrange<3>{offset_in_allocation, pilot.message.box.get_range()},
+	    elem_size,
 	};
-	state.active_fragment_recvs.push_back(m_comm->receive_payload(pilot.from, pilot.message.tag, state.allocation_base, stride));
-	state.pending_recv_region_in_allocation = region_difference(state.pending_recv_region_in_allocation, box(stride.subrange));
-}
-
-bool recv_arbiter::forget_if_complete(const transfer_id trid, const buffer_id bid) {
-	const auto key = std::pair(trid, bid);
-	const auto active = m_active.find(key); // TODO doing this lookup continuously during polling is not optimal
-	if(active == m_active.end()) return true;
-
-	auto& state = std::get<waiting_for_communication>(active->second);
-	if(!state.pending_recv_region_in_allocation.empty()) return false;
-
-	const auto incomplete_end = std::remove_if(state.active_fragment_recvs.begin(), state.active_fragment_recvs.end(),
-	    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); });
-	state.active_fragment_recvs.erase(incomplete_end, state.active_fragment_recvs.end());
-	if(!state.active_fragment_recvs.empty()) return false;
-
-	m_active.erase(active);
-	return true;
+	region_tr->incoming_fragments.push_back({pilot.message.box, m_comm->receive_payload(pilot.from, pilot.message.tag, region_tr->allocation, stride)});
 }
 
 } // namespace celerity::detail

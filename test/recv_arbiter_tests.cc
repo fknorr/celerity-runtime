@@ -20,7 +20,8 @@ class mock_recv_communicator : public communicator {
 	size_t get_num_nodes() const override { utils::panic("unimplemented"); }
 	node_id get_local_node_id() const override { utils::panic("unimplemented"); }
 	void send_outbound_pilot(const outbound_pilot& /* pilot */) override { utils::panic("unimplemented"); }
-	[[nodiscard]] std::vector<inbound_pilot> poll_inbound_pilots() override { utils::panic("unimplemented"); }
+
+	[[nodiscard]] std::vector<inbound_pilot> poll_inbound_pilots() override { return std::move(m_inbound_pilots); }
 
 	[[nodiscard]] std::unique_ptr<communicator::event> send_payload(
 	    const node_id /* to */, const int /* outbound_pilot_tag */, const void* const /* base */, const stride& /* stride */) override {
@@ -35,6 +36,8 @@ class mock_recv_communicator : public communicator {
 		m_pending_recvs.emplace(key, std::tuple(base, stride, flag));
 		return std::make_unique<event>(flag);
 	}
+
+	void push_inbound_pilot(const inbound_pilot& pilot) { m_inbound_pilots.push_back(pilot); }
 
 	void complete_receiving_payload(const node_id from, const int inbound_pilot_tag, const void* const src, const range<3>& src_range) {
 		const auto key = std::pair(from, inbound_pilot_tag);
@@ -57,6 +60,7 @@ class mock_recv_communicator : public communicator {
 		completion_flag m_flag;
 	};
 
+	std::vector<inbound_pilot> m_inbound_pilots;
 	std::unordered_map<std::pair<node_id, int>, std::tuple<void*, stride, completion_flag>, utils::pair_hash> m_pending_recvs;
 };
 
@@ -92,28 +96,34 @@ TEST_CASE("recv_arbiter correctly aggregates receives", "[recv_arbiter]") {
 	const size_t num_pilots_pushed_before_recv = GENERATE(values<size_t>({0, num_fragments / 2, num_fragments}));
 	CAPTURE(num_pilots_pushed_before_recv);
 	for(size_t i = 0; i < num_pilots_pushed_before_recv; ++i) {
-		ra.push_inbound_pilot(pilots[i]);
+		comm.push_inbound_pilot(pilots[i]);
 	}
+	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	const auto event = ra.begin_aggregated_recv(trid, bid, allocation.data(), alloc_box.get_range(), alloc_box.get_offset(),
-	    recv_box.get_offset() - alloc_box.get_offset(), recv_box.get_range(), elem_size);
+	ra.begin_receive(trid, bid, allocation.data(), alloc_box, elem_size);
+	const auto event = ra.await_receive(trid, bid, recv_box);
 
 	for(size_t i = 0; i < num_pilots_pushed_before_recv; ++i) {
 		const auto& [from, tag, box] = fragments_meta[i];
 		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
 	}
+	ra.poll_communicator();
 
 	for(size_t i = num_pilots_pushed_before_recv; i < num_fragments; ++i) {
-		ra.push_inbound_pilot(pilots[i]);
+		comm.push_inbound_pilot(pilots[i]);
 	}
+	ra.poll_communicator();
 
 	for(size_t i = num_pilots_pushed_before_recv; i < num_fragments; ++i) {
 		const auto& [from, tag, box] = fragments_meta[i];
 		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
 	}
+	ra.poll_communicator();
 
 	CHECK(event.is_complete());
+
+	ra.end_receive(trid, bid);
 
 	std::vector<int> expected_allocation(alloc_box.get_range().size());
 	for(const auto& [from, tag, box] : fragments_meta) {

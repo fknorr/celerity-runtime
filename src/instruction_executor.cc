@@ -114,10 +114,6 @@ void instruction_executor::loop() {
 			loop_submission_queue.clear();
 		}
 
-		for(const auto& pilot : m_communicator->poll_inbound_pilots()) {
-			m_recv_arbiter.push_inbound_pilot(pilot);
-		}
-
 		for(const auto ready_instr : ready_instructions) {
 			active_instructions.emplace(ready_instr, active_instruction_info{begin_executing(*ready_instr)});
 		}
@@ -141,13 +137,13 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	return matchbox::match<event>(
 	    instr,
 	    [&](const alloc_instruction& ainstr) {
-		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
-		        ainstr.get_size(), ainstr.get_alignment());
+		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(), ainstr.get_size(),
+		        ainstr.get_alignment());
 
 		    auto [ptr, event] = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
 		    m_allocations.emplace(ainstr.get_allocation_id(), allocation{ainstr.get_memory_id(), ptr});
 
-			CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
+		    CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
 		    return std::move(event);
 	    },
 	    [&](const free_instruction& finstr) {
@@ -270,14 +266,27 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    };
 		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
 	    },
-	    [&](const recv_instruction& rinstr) {
-		    CELERITY_DEBUG("[executor] I{}: recv M{}.A{}+{}, {}x{} bytes (transfer id {})", rinstr.get_id(), rinstr.get_dest_memory_id(),
-		        rinstr.get_dest_allocation_id(), rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size(),
-		        rinstr.get_transfer_id());
+	    [&](const begin_receive_instruction& brinstr) {
+		    CELERITY_DEBUG("[executor] I{}: begin receive TR{}.B{} {} into M{}.A{} ({}), x{} bytes", brinstr.get_id(), brinstr.get_transfer_id(),
+		        brinstr.get_buffer_id(), brinstr.get_allocated_bounding_box(), brinstr.get_dest_memory_id(), brinstr.get_dest_allocation_id(),
+		        brinstr.get_allocated_bounding_box().get_range(), brinstr.get_element_size());
 
-		    const auto allocation_base = m_allocations.at(rinstr.get_dest_allocation_id()).pointer;
-		    return m_recv_arbiter.begin_aggregated_recv(rinstr.get_transfer_id(), rinstr.get_buffer_id(), allocation_base, rinstr.get_allocation_range(),
-		        rinstr.get_offset_in_buffer(), rinstr.get_offset_in_allocation(), rinstr.get_recv_range(), rinstr.get_element_size());
+		    const auto allocation_base = m_allocations.at(brinstr.get_dest_allocation_id()).pointer;
+		    m_recv_arbiter.begin_receive(
+		        brinstr.get_transfer_id(), brinstr.get_buffer_id(), allocation_base, brinstr.get_allocated_bounding_box(), brinstr.get_element_size());
+		    return completed_synchronous();
+	    },
+	    [&](const await_receive_instruction& arinstr) {
+		    CELERITY_DEBUG("[executor] I{}: await receive TR{}.B{} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_buffer_id(),
+		        arinstr.get_received_region());
+
+		    return m_recv_arbiter.await_receive(arinstr.get_transfer_id(), arinstr.get_buffer_id(), arinstr.get_received_region());
+	    },
+	    [&](const end_receive_instruction& erinstr) {
+		    CELERITY_DEBUG("[executor] I{}: end receive TR{}.B{}", erinstr.get_id(), erinstr.get_transfer_id(), erinstr.get_buffer_id());
+
+		    m_recv_arbiter.end_receive(erinstr.get_transfer_id(), erinstr.get_buffer_id());
+		    return completed_synchronous();
 	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());

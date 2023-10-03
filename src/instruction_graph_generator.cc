@@ -279,16 +279,10 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 			}
 			for(auto& [trid, accepted_transfer_region] : transfer_regions) {
 				for(auto& alloc : memory.allocations) {
-					const auto accepted_alloc_region = region_intersection(alloc.box, accepted_transfer_region);
-					for(const box<3>& tr_box : accepted_alloc_region.get_boxes()) {
-						const auto recv_box = box_intersection(alloc.box, tr_box);
-						if(recv_box.empty()) return;
+					const auto recv_region = region_intersection(alloc.box, accepted_transfer_region);
+					const auto recv_instr = &create<await_receive_instruction>(trid, bid, recv_region);
 
-						const auto [alloc_offset, alloc_range] = alloc.box.get_subrange();
-						const auto [recv_offset, recv_range] = recv_box.get_subrange();
-						const auto recv_instr = &create<recv_instruction>(
-						    bid, trid, mid, alloc.aid, alloc_range, recv_offset - alloc_offset, recv_offset, recv_range, buffer.elem_size);
-
+					for(const auto& recv_box : recv_region.get_boxes()) {
 						// TODO the dependency logic here is duplicated from copy-instruction generation
 						for(const auto& [_, front] : alloc.access_fronts.get_region_values(recv_box)) {
 							for(const auto dep_instr : front.front) {
@@ -298,9 +292,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 						alloc.record_write(recv_box, recv_instr);
 
 						buffer.original_writers.update_region(recv_box, recv_instr);
-
-						if(m_recorder != nullptr) { *m_recorder << recv_instruction_record(*recv_instr); }
 					}
+					if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*recv_instr); }
 				}
 				// TODO assert that the entire region is consumed (... eventually?)
 

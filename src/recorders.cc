@@ -203,11 +203,17 @@ send_instruction_record::send_instruction_record(
       offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
       buffer(buffer), offset_in_buffer(offset_in_buffer) {}
 
-recv_instruction_record::recv_instruction_record(const recv_instruction& rinstr)
-    : instruction_record_base(rinstr), buffer_id(rinstr.get_buffer_id()), transfer_id(rinstr.get_transfer_id()), dest_memory_id(rinstr.get_dest_memory_id()),
-      dest_allocation_id(rinstr.get_dest_allocation_id()), allocation_range(rinstr.get_allocation_range()),
-      offset_in_allocation(rinstr.get_offset_in_allocation()), offset_in_buffer(rinstr.get_offset_in_buffer()), recv_range(rinstr.get_recv_range()),
-      element_size(rinstr.get_element_size()) {}
+begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr)
+    : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), buffer_id(brinstr.get_buffer_id()),
+      dest_memory_id(brinstr.get_dest_memory_id()), dest_allocation_id(brinstr.get_dest_allocation_id()),
+      allocated_bounding_box(brinstr.get_allocated_bounding_box()), element_size(brinstr.get_element_size()) {}
+
+await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
+    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), buffer_id(arinstr.get_buffer_id()),
+      received_region(arinstr.get_received_region()) {}
+
+end_receive_instruction_record::end_receive_instruction_record(const end_receive_instruction& erinstr)
+    : instruction_record_base(erinstr), transfer_id(erinstr.get_transfer_id()), buffer_id(erinstr.get_buffer_id()) {}
 
 fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, buffer_id bid, const box<3>& box)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(buffer_variant{bid, box}) {}
@@ -238,7 +244,8 @@ void instruction_recorder::record_dependencies(const instruction& instr) {
 	assert(record != m_recorded_instructions.end());
 
 	const auto& graph_deps = instr.get_dependencies();
-	auto& record_deps = matchbox::match(*record, [](auto& r) -> auto& { return r.dependencies; });
+	auto& record_deps = matchbox::match(
+	    *record, [](auto& r) -> auto& { return r.dependencies; });
 	record_deps.reserve(graph_deps.size());
 	for(auto& d : graph_deps) {
 		record_deps.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});

@@ -10,6 +10,9 @@
 namespace celerity::detail {
 
 class recv_arbiter {
+  private:
+	struct region_transfer;
+
   public:
 	class event {
 	  public:
@@ -17,37 +20,53 @@ class recv_arbiter {
 
 	  private:
 		friend class recv_arbiter;
-		event(recv_arbiter& arbiter, const transfer_id trid, const buffer_id bid) : m_arbiter(&arbiter), m_trid(trid), m_bid(bid) {}
-		recv_arbiter* m_arbiter;
-		transfer_id m_trid;
-		buffer_id m_bid;
+
+		const region_transfer* m_region_transfer;
+		region<3> m_awaited_region;
+
+		event(const region_transfer* region_transfer, const region<3>& awaited_region) : m_region_transfer(region_transfer), m_awaited_region(awaited_region) {}
 	};
 
-	explicit recv_arbiter(communicator& comm) : m_comm(&comm) {}
-	[[nodiscard]] event begin_aggregated_recv(transfer_id trid, buffer_id bid, void* allocation, const range<3>& allocation_range,
-	    const id<3>& allocation_offset_in_buffer, const id<3>& recv_offset_in_allocation, const range<3>& recv_range, size_t elem_size);
-	void push_inbound_pilot(const inbound_pilot& pilot); // TODO should this class poll the communicator instead?
+	explicit recv_arbiter(communicator& comm);
+	recv_arbiter(const recv_arbiter&) = delete;
+	recv_arbiter(recv_arbiter&&) = default;
+	recv_arbiter& operator=(const recv_arbiter&) = delete;
+	recv_arbiter& operator=(recv_arbiter&&) = default;
+	~recv_arbiter();
+
+	void begin_receive(transfer_id trid, buffer_id bid, void* allocation, const box<3>& allocated_box, size_t elem_size);
+	[[nodiscard]] event await_receive(transfer_id trid, buffer_id bid, const region<3>& awaited_region);
+	void end_receive(transfer_id trid, buffer_id bid);
+
+	void poll_communicator();
 
   private:
+	struct incoming_fragment {
+		box<3> box;
+		std::unique_ptr<communicator::event> done;
+	};
 	struct waiting_for_begin {
 		std::vector<inbound_pilot> pilots;
 	};
-	struct waiting_for_communication {
-		std::vector<std::unique_ptr<communicator::event>> active_fragment_recvs;
-		void* allocation_base;
-		range<3> allocation_range;
-		id<3> allocation_offset_in_buffer;
-		id<3> recv_offset_in_allocation;
-		region<3> pending_recv_region_in_allocation;
-		size_t elem_size;
+	struct region_transfer {
+		void* allocation;
+		box<3> allocated_bounding_box;
+		region<3> complete_region;
+		std::vector<incoming_fragment> incoming_fragments;
+
+		region_transfer(void* const allocation, const box<3>& allocated_bounding_box)
+		    : allocation(allocation), allocated_bounding_box(allocated_bounding_box) {}
 	};
-	using active_recv = std::variant<waiting_for_begin, waiting_for_communication>;
+	struct buffer_transfer {
+		std::optional<size_t> elem_size; // nullopt until the first `transfer` is inserted
+		std::vector<inbound_pilot> unassigned_pilots;
+		std::vector<std::unique_ptr<region_transfer>> regions; // unique_ptr for pointer stability (referenced by recv_arbiter::event)
+	};
 
 	communicator* m_comm;
-	std::unordered_map<std::pair<transfer_id, buffer_id>, active_recv, utils::pair_hash> m_active;
+	std::unordered_map<std::pair<transfer_id, buffer_id>, buffer_transfer, utils::pair_hash> m_transfers;
 
-	void begin_receiving_fragment(waiting_for_communication& state, const inbound_pilot& pilot);
-	bool forget_if_complete(const transfer_id trid, const buffer_id bid);
+	void begin_receiving_fragment(region_transfer* region_tr, const inbound_pilot& pilot, size_t elem_size);
 };
 
 } // namespace celerity::detail
