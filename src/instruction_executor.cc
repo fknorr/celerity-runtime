@@ -8,6 +8,7 @@
 #include "types.h"
 
 #include <atomic>
+#include <exception>
 #include <mutex>
 
 #include <matchbox.hh>
@@ -17,10 +18,20 @@ namespace celerity::detail {
 instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, std::unique_ptr<communicator> comm, delegate* dlg)
     : m_delegate(dlg), m_communicator(std::move(comm)), m_backend_queue(std::move(backend_queue)), m_recv_arbiter(*m_communicator),
       m_thread(&instruction_executor::loop, this) {
+	m_allocations.emplace(null_allocation_id, allocation{host_memory_id, nullptr});
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
 
-instruction_executor::~instruction_executor() { m_thread.join(); }
+instruction_executor::~instruction_executor() {
+	m_thread.join();
+
+#ifndef NDEBUG
+	if(std::uncaught_exceptions() == 0) {
+		assert(m_allocations.size() == 1); // null allocation
+		assert(m_host_object_instances.empty());
+	}
+#endif
+}
 
 void instruction_executor::submit_instruction(const instruction& instr) { m_submission_queue.push_back(&instr); }
 

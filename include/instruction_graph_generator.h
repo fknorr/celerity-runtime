@@ -202,7 +202,7 @@ class instruction_graph_generator {
 	instruction_graph m_idag;
 	std::vector<outbound_pilot> m_pending_pilots;
 	instruction_id m_next_iid = 0;
-	allocation_id m_next_aid = 0;
+	allocation_id m_next_aid = null_allocation_id + 1;
 	int m_next_p2p_tag = 10; // TODO
 	const task_manager& m_tm;
 	std::vector<device_info> m_devices;

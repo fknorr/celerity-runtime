@@ -179,5 +179,16 @@ TEST_CASE("matmul pattern", "[instruction graph]") {
 	ictx.fence(passed_obj);
 }
 
+TEST_CASE("await-push of disconnected subregions does not allocate their bounding-box", "[instruction-graph]") {
+	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+
+	auto buf = ictx.create_buffer(range(1024));
+	const auto acc_first = acc::fixed(subrange<1>(0, 1));
+	const auto acc_last = acc::fixed(subrange<1>(1023, 1));
+	ictx.device_compute<class writer_1>(range(1)).discard_write(buf, acc_first).submit();
+	ictx.device_compute<class writer_2>(range(1)).discard_write(buf, acc_last).submit();
+	ictx.device_compute<class reader>(buf.get_range()).read(buf, acc_first).read(buf, acc_last).submit();
+}
+
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects

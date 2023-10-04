@@ -13,6 +13,52 @@
 
 namespace celerity::detail {
 
+// 2-connectivity for 1d boxes, 4-connectivity for 2d boxes and 6-connectivity for 3d boxes.
+template <int Dims>
+bool boxes_edge_connected(const box<Dims>& box1, const box<Dims>& box2) {
+	if(box1.empty() || box2.empty()) return false;
+
+	const auto min = id_max(box1.get_min(), box2.get_min());
+	const auto max = id_min(box1.get_max(), box2.get_max());
+	bool touching = false;
+	for(int d = 0; d < Dims; ++d) {
+		if(min[d] > max[d]) return false; // fully disconnected, even across corners
+		if(min[d] == max[d]) {
+			// when boxes are touching (but not intersecting) in more than one dimension, they can only be connected via corners
+			if(touching) return false;
+			touching = true;
+		}
+	}
+	return true;
+}
+
+// TODO can this re-use some code from bounding_box_set?
+template <int Dims>
+std::pair<std::vector<region<Dims>>, box_vector<Dims>> edge_connected_subregions_with_bounding_boxes(box_vector<Dims> boxes) {
+	std::vector<region<Dims>> subregions;
+	box_vector<Dims> bounding_boxes;
+
+	auto begin = boxes.begin();
+	const auto end = boxes.end();
+	while(begin != end) {
+		auto connected_end = std::next(begin);
+		auto connected_bounding_box = *begin; // optimization: skip connectivity checks if bounding box is disconnected
+		for(; connected_end != end; ++connected_end) {
+			const auto next_connected = std::find_if(connected_end, end, [&](const auto& candidate) {
+				return boxes_edge_connected(connected_bounding_box, candidate)
+				       && std::any_of(begin, connected_end, [&](const auto& box) { return boxes_edge_connected(candidate, box); });
+			});
+			if(next_connected == end) break;
+			connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
+			std::swap(*next_connected, *connected_end);
+		}
+		subregions.push_back(region<Dims>(box_vector<Dims>(begin, connected_end)));
+		bounding_boxes.push_back(connected_bounding_box);
+		begin = connected_end;
+	}
+	return {std::move(subregions), std::move(bounding_boxes)};
+}
+
 instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices, instruction_recorder* const recorder)
     : m_tm(tm), m_devices(std::move(devices)), m_recorder(recorder) {
 	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const device_info& info) { return info.native_memory < max_memories; }));
@@ -264,7 +310,6 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 	}
 
 	// First, see if there are pending await-pushes for any of the unsatisfied read regions.
-	std::vector<transfer_id> completed_transfers;
 	for(auto& [mid, disjoint_regions] : unsatisfied_reads) {
 		auto& memory = buffer.memories[host_memory_id];
 
@@ -308,7 +353,6 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					for(auto await_recv_instr : transfer.await_receives) {
 						add_dependency(*end_recv_instr, *await_recv_instr, dependency_kind::true_dep);
 					}
-					completed_transfers.push_back(transfer.id);
 				}
 
 				// if the requirement is on host memory, we do not need to do a follow-up host-to-device coherence copy
@@ -320,13 +364,9 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 		disjoint_regions.erase(std::remove_if(disjoint_regions.begin(), disjoint_regions.end(), std::mem_fn(&region<3>::empty)), disjoint_regions.end());
 	}
 
-	if(!completed_transfers.empty()) {
-		const auto last_incomplete_transfer =
-		    std::remove_if(buffer.inbound_transfers.begin(), buffer.inbound_transfers.end(), [&](const per_buffer_data::partial_inbound_transfer& transfer) {
-			    return std::find(completed_transfers.begin(), completed_transfers.end(), transfer.id) != completed_transfers.end();
-		    });
-		buffer.inbound_transfers.erase(last_incomplete_transfer, buffer.inbound_transfers.end());
-	}
+	const auto last_incomplete_transfer = std::remove_if(buffer.inbound_transfers.begin(), buffer.inbound_transfers.end(),
+	    [&](const per_buffer_data::partial_inbound_transfer& transfer) { return transfer.unconsumed_region.empty(); });
+	buffer.inbound_transfers.erase(last_incomplete_transfer, buffer.inbound_transfers.end());
 
 	// Next, satisfy any remaining reads by copying locally from the newest data location
 	struct copy_template {
@@ -405,19 +445,20 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
 					    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
-					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy.region)) {
+					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(source.box)) {
 						assert(last_writer_instr != nullptr);
 						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
 					}
-					source.record_read(copy.region, copy_instr);
+					source.record_read(source.box, copy_instr);
 
-					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy.region)) { // TODO copy-pasta
+					for(const auto& [_, front] : dest.access_fronts.get_region_values(dest.box)) { // TODO copy-pasta
 						for(const auto dep_instr : front.front) {
 							add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 						}
 					}
-					dest.record_write(copy.region, copy_instr);
-					for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy.region)) {
+					dest.record_write(dest.box, copy_instr);
+
+					for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy_box)) {
 						buffer.newest_data_location.update_region(box, data_location(location).set(copy.dest_mid));
 					}
 
@@ -635,14 +676,19 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
 			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.execution_sr, tsk.get_global_size());
-			const auto& buffer = m_buffers.at(bid);
-			const auto& allocations = buffer.memories[instr.mid].allocations;
-			const auto allocation_it = std::find_if(
-			    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
-			assert(allocation_it != allocations.end());
-			const auto& alloc = *allocation_it;
-			allocation_map[i] = access_allocation{alloc.aid, alloc.box, accessed_box};
-			if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, alloc.box}; }
+			if(!accessed_box.empty()) {
+				const auto& buffer = m_buffers.at(bid);
+				const auto& allocations = buffer.memories[instr.mid].allocations;
+				const auto allocation_it = std::find_if(
+				    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
+				assert(allocation_it != allocations.end());
+				const auto& alloc = *allocation_it;
+				allocation_map[i] = access_allocation{alloc.aid, alloc.box, accessed_box};
+				if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, alloc.box}; }
+			} else {
+				allocation_map[i] = access_allocation{null_allocation_id, {}, {}};
+				if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, {}}; }
+			}
 		}
 
 		kernel_instruction* kernel_instr;
@@ -820,26 +866,30 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 	}
 #endif
 
-	// TODO allocating the bounding box may overcommit this allocation, operate on bounding boxes of connected partitions instead
-	const auto ap_bounding_box = bounding_box(ap_region);
-	allocate_contiguously(ap_bid, host_memory_id, {ap_bounding_box});
-	const auto alloc = buffer.memories.at(host_memory_id).find_contiguous_allocation(ap_bounding_box);
-	assert(alloc != nullptr);
+	const auto [recv_regions, recv_bounding_boxes] = edge_connected_subregions_with_bounding_boxes(ap_region.get_boxes());
 
-	const auto begin_recv_instr = &create<begin_receive_instruction>(ap_trid, ap_bid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
-	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
+	allocate_contiguously(ap_bid, host_memory_id, recv_bounding_boxes);
 
-	// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
-	// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
-	// that there are no pending transfers for the region they are trying to read or to access (TODO).
-	for(const auto& [_, front] : alloc->access_fronts.get_region_values(ap_region)) { // TODO copy-pasta
-		for(const auto dep_instr : front.front) {
-			add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
+	for(size_t i = 0; i < recv_regions.size(); ++i) {
+		const auto alloc = buffer.memories.at(host_memory_id).find_contiguous_allocation(recv_bounding_boxes[i]);
+		assert(alloc != nullptr);
+
+		const auto begin_recv_instr = &create<begin_receive_instruction>(ap_trid, ap_bid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
+		if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
+
+		// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
+		// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
+		// that there are no pending transfers for the region they are trying to read or to access (TODO).
+		for(const auto& [_, front] : alloc->access_fronts.get_region_values(recv_regions[i])) { // TODO copy-pasta
+			for(const auto dep_instr : front.front) {
+				add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
+			}
 		}
+
+		buffer.inbound_transfers.push_back({ap_trid, recv_regions[i], begin_recv_instr});
 	}
 
 	buffer.newest_data_location.update_region(ap_region, data_location()); // not present anywhere locally
-	buffer.inbound_transfers.push_back({ap_trid, ap_region, begin_recv_instr});
 }
 
 
