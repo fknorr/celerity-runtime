@@ -45,9 +45,6 @@ class recv_arbiter {
 		box<3> box;
 		std::unique_ptr<communicator::event> done;
 	};
-	struct waiting_for_begin {
-		std::vector<inbound_pilot> pilots;
-	};
 	struct region_transfer {
 		void* allocation;
 		box<3> allocated_bounding_box;

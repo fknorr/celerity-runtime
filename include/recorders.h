@@ -239,10 +239,10 @@ struct send_instruction_record : instruction_record_base {
 	range<3> send_range;
 	size_t element_size;
 	command_id push_cid;
-	buffer_id buffer;
+	buffer_id buffer_id;
 	celerity::id<3> offset_in_buffer;
 
-	send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const buffer_id buffer, const celerity::id<3>& offset_in_buffer);
+	send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const detail::buffer_id buffer, const celerity::id<3>& offset_in_buffer);
 };
 
 struct begin_receive_instruction_record : instruction_record_base {
