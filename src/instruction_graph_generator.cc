@@ -217,6 +217,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 			}
 			region<3> live_copy_region(std::move(live_copy_boxes));
 
+			// TODO v--- this is duplicated in satisfy_read_requirements
+
 			for(const auto& copy_box : live_copy_region.get_boxes()) {
 				assert(!copy_box.empty());
 
@@ -445,18 +447,18 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
 					    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
-					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(source.box)) {
+					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
 						assert(last_writer_instr != nullptr);
 						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
 					}
-					source.record_read(source.box, copy_instr);
+					source.record_read(copy_box, copy_instr);
 
-					for(const auto& [_, front] : dest.access_fronts.get_region_values(dest.box)) { // TODO copy-pasta
+					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
 						for(const auto dep_instr : front.front) {
 							add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 						}
 					}
-					dest.record_write(dest.box, copy_instr);
+					dest.record_write(copy_box, copy_instr);
 
 					for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy_box)) {
 						buffer.newest_data_location.update_region(box, data_location(location).set(copy.dest_mid));
@@ -684,7 +686,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				assert(allocation_it != allocations.end());
 				const auto& alloc = *allocation_it;
 				allocation_map[i] = access_allocation{alloc.aid, alloc.box, accessed_box};
-				if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, alloc.box}; }
+				if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, accessed_box}; }
 			} else {
 				allocation_map[i] = access_allocation{null_allocation_id, {}, {}};
 				if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, {}}; }
