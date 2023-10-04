@@ -64,7 +64,7 @@ class mock_recv_communicator : public communicator {
 	std::unordered_map<std::pair<node_id, int>, std::tuple<void*, stride, completion_flag>, utils::pair_hash> m_pending_recvs;
 };
 
-TEST_CASE("recv_arbiter correctly aggregates receives", "[recv_arbiter]") {
+TEST_CASE("recv_arbiter aggregates receives of subsets", "[recv_arbiter]") {
 	const transfer_id trid = 1234567890;
 	const buffer_id bid = 420;
 	const range<3> buffer_range = {40, 10, 12};
@@ -133,5 +133,52 @@ TEST_CASE("recv_arbiter correctly aggregates receives", "[recv_arbiter]") {
 			expected_allocation[linear_index] = static_cast<int>(from);
 		});
 	}
+	CHECK(allocation == expected_allocation);
+}
+
+TEST_CASE("recv_arbiter accepts superset receives", "[recv_arbiter]") {
+	const transfer_id trid = 1234567890;
+	const buffer_id bid = 420;
+	const range<3> buffer_range = {20, 20, 1};
+	const box<3> alloc_box = {{2, 1, 0}, {19, 20, 1}};
+	const region<3> recv_regions[] = {
+		region<3>{{{{4, 1, 0}, {14, 10, 1}}, {{14, 1, 0}, {19, 18, 1}}}},
+		box<3>{{4, 10, 0}, {14, 18, 1}},
+	};
+	const box<3> fragment_box = {{4, 1, 0}, {19, 18, 1}}; // union of recv_regions
+	const size_t elem_size = sizeof(int);
+	const node_id from = 1;
+	const int tag = 15;
+
+	mock_recv_communicator comm;
+	recv_arbiter ra(comm);
+
+	comm.push_inbound_pilot(inbound_pilot{from, pilot_message{tag, bid, trid, fragment_box}});
+	ra.poll_communicator();
+
+	std::vector<int> allocation(alloc_box.get_range().size());
+	ra.begin_receive(trid, bid, allocation.data(), alloc_box, elem_size);
+	const auto event_0 = ra.await_receive(trid, bid, recv_regions[0]);
+	const auto event_1 = ra.await_receive(trid, bid, recv_regions[1]);
+	ra.poll_communicator();
+
+	CHECK(!event_0.is_complete());
+	CHECK(!event_1.is_complete());
+
+	std::vector<int> fragment(fragment_box.get_range().size(), static_cast<int>(from));
+	comm.complete_receiving_payload(from, tag, fragment.data(), fragment_box.get_range());
+	ra.poll_communicator();
+
+	CHECK(event_0.is_complete());
+	CHECK(event_1.is_complete());
+
+	ra.end_receive(trid, bid);
+
+	std::vector<int> expected_allocation(alloc_box.get_range().size());
+	experimental::for_each_item(fragment_box.get_range(), [&](const item<3>& it) {
+		const auto id_in_allocation = fragment_box.get_offset() - alloc_box.get_offset() + it.get_id();
+		const auto linear_index = get_linear_index(alloc_box.get_range(), id_in_allocation);
+		expected_allocation[linear_index] = static_cast<int>(from);
+	});
 	CHECK(allocation == expected_allocation);
 }
