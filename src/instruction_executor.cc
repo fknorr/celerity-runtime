@@ -60,6 +60,8 @@ void instruction_executor::loop() {
 	std::vector<const instruction*> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
 	while(m_expecting_more_submissions || !pending_instructions.empty() || !active_instructions.empty()) {
+		m_recv_arbiter.poll_communicator();
+
 		for(auto active_it = active_instructions.begin(); active_it != active_instructions.end();) {
 			auto& [active_instr, active_info] = *active_it;
 			if(active_info.is_complete()) {
