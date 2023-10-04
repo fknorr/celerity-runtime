@@ -134,6 +134,17 @@ class instruction_graph_generator {
 	};
 
 	struct per_buffer_data {
+		/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
+		struct partial_inbound_transfer {
+			transfer_id id;
+			region<3> unconsumed_region;
+			begin_receive_instruction *begin_receive;
+			std::vector<await_receive_instruction*> await_receives;
+
+			partial_inbound_transfer(const transfer_id id, region<3> region, begin_receive_instruction* const begin_receive)
+			    : id(id), unconsumed_region(std::move(region)), begin_receive(begin_receive) {}
+		};
+
 		int dims;
 		range<3> range;
 		size_t elem_size;
@@ -141,11 +152,14 @@ class instruction_graph_generator {
 		std::vector<buffer_per_memory_data> memories;
 		region_map<data_location> newest_data_location;
 		region_map<instruction*> original_writers;
-		region_map<transfer_id> pending_await_pushes;
+
+		/// Since the CDAG only contains a single await-push per task and buffer, we track partial receives in a vector instead of a region_map - this allows us
+		/// to easily find transfers with an empty unconsumed region for which we then emit end_receive_instruction.
+		std::vector<partial_inbound_transfer> inbound_transfers;
 
 		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
 		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), newest_data_location(range, dims),
-		      original_writers(range, dims), pending_await_pushes(range, dims) {}
+		      original_writers(range, dims) {}
 
 		void apply_epoch(instruction* const epoch) {
 			for(auto& memory : memories) {
@@ -158,6 +172,11 @@ class instruction_graph_generator {
 					return instr;
 				}
 			});
+
+			// This is an opportune point to verify that all await-pushes are fully consumed eventually. On epoch application,
+			// original_writers[*].await_receives potentially points to instructions before the new epoch, but when compiling a horizon or epoch command, all
+			// previous await-pushes should have been consumed by the task command they were generated for.
+			assert(inbound_transfers.empty());
 		}
 	};
 
@@ -254,6 +273,8 @@ class instruction_graph_generator {
 	void compile_execution_command(const execution_command& ecmd);
 
 	void compile_push_command(const push_command& pcmd);
+
+	void compile_await_push_command(const await_push_command& apcmd);
 
 	void compile_fence_command(const fence_command& fcmd);
 };
