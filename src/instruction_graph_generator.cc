@@ -785,15 +785,16 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			const auto send_instr = &create<send_instruction>(pcmd.get_transfer_id(), pcmd.get_target(), tag, host_memory_id, allocation->aid,
 			    allocation->box.get_range(), offset_in_allocation, box.get_range(), buffer.elem_size);
 
-			for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
-				assert(dep_instr != nullptr);
-				add_dependency(*send_instr, *dep_instr, dependency_kind::true_dep);
-			}
-
 			if(m_recorder != nullptr) {
 				const auto offset_in_buffer = box.get_offset();
 				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), bid, offset_in_buffer);
 			}
+
+			for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
+				assert(dep_instr != nullptr);
+				add_dependency(*send_instr, *dep_instr, dependency_kind::true_dep);
+			}
+			allocation->record_read(box, send_instr);
 		}
 	}
 }
