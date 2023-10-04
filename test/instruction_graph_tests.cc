@@ -129,7 +129,7 @@ TEST_CASE("hello world pattern (host initialization)", "[instruction-graph]") {
 	auto buf = ictx.create_buffer<1>(input_str.size(), true /* host initialized */);
 
 	ictx.device_compute(buf.get_range()).read_write(buf, acc::one_to_one()).submit();
-	// ictx.fence(buf); TODO currently unimplemented
+	ictx.fence(buf);
 }
 
 TEST_CASE("matmul pattern", "[instruction graph]") {

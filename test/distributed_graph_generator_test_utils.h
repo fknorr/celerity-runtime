@@ -28,6 +28,12 @@ using namespace celerity::detail;
 
 namespace celerity::test_utils {
 
+class null_fence_promise : public fence_promise {
+  public:
+	void fulfill() override { utils::panic("unimplemented"); }
+	void* get_snapshot_pointer() override { return nullptr; }
+};
+
 class dist_cdag_test_context;
 class idag_test_context;
 
@@ -845,7 +851,7 @@ class idag_test_context {
 	}
 
 	task_id fence(buffer_access_map access_map, side_effect_map side_effects) {
-		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), nullptr);
+		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::make_unique<null_fence_promise>());
 		build_task(tid);
 		maybe_build_horizon();
 		return tid;
