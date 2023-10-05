@@ -80,10 +80,10 @@ class instruction_graph_generator {
 					assert(at == record.front.end() || *at != instr);
 					record.front.insert(at, instr);
 				} else {
-					record.front = {instr};
+					record = {{instr}, access_front::read};
 				}
 				assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
-				access_fronts.update_region(region, std::move(record));
+				access_fronts.update_region(box, std::move(record));
 			}
 		}
 
