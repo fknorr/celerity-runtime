@@ -190,5 +190,11 @@ TEST_CASE("await-push of disconnected subregions does not allocate their boundin
 	ictx.device_compute<class reader>(buf.get_range()).read(buf, acc_first).read(buf, acc_last).submit();
 }
 
+TEST_CASE("collective host tasks", "[instruction-graph]") {
+	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	ictx.collective_host_task(default_collective_group).submit();
+	ictx.collective_host_task(collective_group()).submit();
+}
+
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects

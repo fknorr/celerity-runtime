@@ -4,12 +4,9 @@
 #include "communicator.h"
 #include "host_object.h"
 #include "instruction_graph.h"
+#include "mpi_communicator.h" // TODO
 #include "receive_arbiter.h"
 #include "types.h"
-
-#include <atomic>
-#include <exception>
-#include <mutex>
 
 #include <matchbox.hh>
 
@@ -18,20 +15,10 @@ namespace celerity::detail {
 instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, std::unique_ptr<communicator> comm, delegate* dlg)
     : m_delegate(dlg), m_communicator(std::move(comm)), m_backend_queue(std::move(backend_queue)), m_recv_arbiter(*m_communicator),
       m_thread(&instruction_executor::loop, this) {
-	m_allocations.emplace(null_allocation_id, allocation{host_memory_id, nullptr});
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
 
-instruction_executor::~instruction_executor() {
-	m_thread.join();
-
-#ifndef NDEBUG
-	if(std::uncaught_exceptions() == 0) {
-		assert(m_allocations.size() == 1); // null allocation
-		assert(m_host_object_instances.empty());
-	}
-#endif
-}
+instruction_executor::~instruction_executor() { m_thread.join(); }
 
 void instruction_executor::submit_instruction(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
@@ -65,6 +52,10 @@ void instruction_executor::loop() {
 			    [](const completed_synchronous) { return true; });
 		};
 	};
+
+	m_allocations.emplace(null_allocation_id, allocation{host_memory_id, nullptr});
+	m_collective_groups.emplace(root_collective_group_id, m_communicator->get_collective_root());
+	m_host_queue.require_collective_group(root_collective_group_id);
 
 	std::vector<submission> loop_submission_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
@@ -132,6 +123,9 @@ void instruction_executor::loop() {
 		}
 		ready_instructions.clear();
 	}
+
+	assert(m_allocations.size() == 1); // null allocation
+	assert(m_host_object_instances.empty());
 }
 
 instruction_executor::event instruction_executor::begin_executing(const instruction& instr) {
@@ -149,6 +143,17 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	// TODO submit synchronous operations to thread pool
 	return matchbox::match<event>(
 	    instr,
+	    [&](const clone_collective_group_instruction& ccginstr) {
+		    const auto new_cgid = ccginstr.get_new_collective_group_id();
+		    const auto origin_cgid = ccginstr.get_origin_collective_group_id();
+		    CELERITY_DEBUG("[executor] I{}: clone collective group CG{} -> CG{}", ccginstr.get_id(), origin_cgid, new_cgid);
+
+		    assert(m_collective_groups.count(new_cgid) == 0);
+		    const auto new_group = m_collective_groups.at(origin_cgid)->clone();
+		    m_collective_groups.emplace(new_cgid, new_group);
+		    m_host_queue.require_collective_group(new_cgid);
+		    return completed_synchronous();
+	    },
 	    [&](const alloc_instruction& ainstr) {
 		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(), ainstr.get_size(),
 		        ainstr.get_alignment());
@@ -250,21 +255,28 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return m_backend_queue->launch_kernel(
 		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, is_reduction_initializer);
 	    },
-	    [&](const host_kernel_instruction& hkinstr) {
+	    [&](const host_task_instruction& htinstr) {
 		    CELERITY_DEBUG(
-		        "[executor] I{}: launch host task, {}{}", hkinstr.get_id(), hkinstr.get_execution_range(), log_accesses(hkinstr.get_allocation_map()));
+		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_allocation_map()));
 
 		    std::vector<closure_hydrator::accessor_info> accessor_infos;
-		    accessor_infos.reserve(hkinstr.get_allocation_map().size());
-		    for(const auto& aa : hkinstr.get_allocation_map()) {
+		    accessor_infos.reserve(htinstr.get_allocation_map().size());
+		    for(const auto& aa : htinstr.get_allocation_map()) {
 			    const auto ptr = m_allocations.at(aa.aid).pointer;
 			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer});
 		    }
 
 		    closure_hydrator::get_instance().arm(target::host_task, std::move(accessor_infos));
 
-		    const auto& launch = hkinstr.get_launcher();
-		    return launch(m_host_queue, hkinstr.get_execution_range());
+		    // TODO executor must not have any direct dependency on MPI!
+		    MPI_Comm mpi_comm = MPI_COMM_NULL;
+		    if(const auto cgid = htinstr.get_collective_group_id(); cgid != non_collective_group_id) {
+			    const auto cg = m_collective_groups.at(htinstr.get_collective_group_id());
+			    mpi_comm = dynamic_cast<mpi_communicator::collective_group&>(*cg).get_mpi_comm();
+		    }
+
+		    const auto& launch = htinstr.get_launcher();
+		    return launch(m_host_queue, htinstr.get_execution_range(), mpi_comm);
 	    },
 	    [&](const send_instruction& sinstr) {
 		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), host_memory_id /* TODO RDMA */,
@@ -323,7 +335,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    case epoch_action::none: CELERITY_DEBUG("[executor] I{}: epoch", einstr.get_id()); break;
 		    case epoch_action::barrier:
 			    CELERITY_DEBUG("[executor] I{}: epoch (barrier)", einstr.get_id());
-			    MPI_Barrier(MPI_COMM_WORLD); // TODO this should not be in executor
+			    m_communicator->get_collective_root()->barrier();
 			    break;
 		    case epoch_action::shutdown:
 			    CELERITY_DEBUG("[executor] I{}: epoch (shutdown)", einstr.get_id());

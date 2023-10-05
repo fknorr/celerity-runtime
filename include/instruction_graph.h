@@ -13,11 +13,12 @@
 
 namespace celerity::detail {
 
-class instruction : public intrusive_graph_node<instruction>,
-                    public matchbox::acceptor<class alloc_instruction, class free_instruction, class init_buffer_instruction, class export_instruction,
-                        class copy_instruction, class sycl_kernel_instruction, class host_kernel_instruction, class send_instruction,
-                        class begin_receive_instruction, class await_receive_instruction, class end_receive_instruction, class fence_instruction,
-                        class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+class instruction
+    : public intrusive_graph_node<instruction>,
+      public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class init_buffer_instruction,
+          class export_instruction, class copy_instruction, class sycl_kernel_instruction, class host_task_instruction, class send_instruction,
+          class begin_receive_instruction, class await_receive_instruction, class end_receive_instruction, class fence_instruction,
+          class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -29,6 +30,19 @@ class instruction : public intrusive_graph_node<instruction>,
 
 struct instruction_id_less {
 	bool operator()(const instruction* const lhs, const instruction* const rhs) const { return lhs->get_id() < rhs->get_id(); }
+};
+
+class clone_collective_group_instruction : public matchbox::implement_acceptor<instruction, clone_collective_group_instruction> {
+  public:
+	explicit clone_collective_group_instruction(const instruction_id iid, const collective_group_id origin_cgid, const collective_group_id new_cgid)
+	    : acceptor_base(iid), m_origin_cgid(origin_cgid), m_new_cgid(new_cgid) {}
+
+	collective_group_id get_origin_collective_group_id() const { return m_origin_cgid; }
+	collective_group_id get_new_collective_group_id() const { return m_new_cgid; }
+
+  private:
+	collective_group_id m_origin_cgid;
+	collective_group_id m_new_cgid;
 };
 
 class alloc_instruction final : public matchbox::implement_acceptor<instruction, alloc_instruction> {
@@ -158,9 +172,9 @@ using access_allocation_map = std::vector<access_allocation>;
 using buffer_read_write_map = std::unordered_map<buffer_id, reads_writes>;
 
 // TODO is a common base class for host and device "kernels" the right thing to do? On the host these are not called kernels but "host tasks" everywhere else.
-class kernel_instruction : public instruction {
+class launch_instruction : public instruction {
   public:
-	explicit kernel_instruction(const instruction_id iid, const subrange<3>& execution_range, access_allocation_map allocation_map)
+	explicit launch_instruction(const instruction_id iid, const subrange<3>& execution_range, access_allocation_map allocation_map)
 	    : instruction(iid), m_execution_range(execution_range), m_allocation_map(std::move(allocation_map)) {}
 
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
@@ -171,7 +185,7 @@ class kernel_instruction : public instruction {
 	access_allocation_map m_allocation_map;
 };
 
-class sycl_kernel_instruction final : public matchbox::implement_acceptor<kernel_instruction, sycl_kernel_instruction> {
+class sycl_kernel_instruction final : public matchbox::implement_acceptor<launch_instruction, sycl_kernel_instruction> {
   public:
 	explicit sycl_kernel_instruction(
 	    const instruction_id iid, const device_id did, sycl_kernel_launcher launcher, const subrange<3>& execution_range, access_allocation_map allocation_map)
@@ -186,22 +200,22 @@ class sycl_kernel_instruction final : public matchbox::implement_acceptor<kernel
 	sycl_kernel_launcher m_launcher;
 };
 
-// TODO rename to host_task_instruction
-class host_kernel_instruction final : public matchbox::implement_acceptor<kernel_instruction, host_kernel_instruction> {
+class host_task_instruction final : public matchbox::implement_acceptor<launch_instruction, host_task_instruction> {
   public:
-	using acceptor_base::acceptor_base;
+	using acceptor_base::launch_instruction;
 
-	host_kernel_instruction(const instruction_id iid, host_task_launcher launcher, const subrange<3>& execution_range, const range<3>& global_range,
-	    access_allocation_map allocation_map)
-	    : acceptor_base(iid, execution_range, std::move(allocation_map)), m_launcher(std::move(launcher)), m_global_range(global_range) {}
+	host_task_instruction(const instruction_id iid, host_task_launcher launcher, const subrange<3>& execution_range, const range<3>& global_range,
+	    access_allocation_map allocation_map, const collective_group_id cgid)
+	    : acceptor_base(iid, execution_range, std::move(allocation_map)), m_launcher(std::move(launcher)), m_global_range(global_range), m_cgid(cgid) {}
 
 	const range<3>& get_global_range() const { return m_global_range; }
-
 	const host_task_launcher& get_launcher() const { return m_launcher; }
+	collective_group_id get_collective_group_id() const { return m_cgid; }
 
   private:
 	host_task_launcher m_launcher;
 	range<3> m_global_range;
+	collective_group_id m_cgid;
 };
 
 struct pilot_message {

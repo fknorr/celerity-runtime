@@ -1,8 +1,9 @@
 #include "mpi_communicator.h"
 #include "instruction_graph.h"
 #include "ranges.h"
-#include <atomic>
+
 #include <cstddef>
+
 #include <mpi.h>
 
 namespace celerity::detail {
@@ -21,9 +22,17 @@ bool mpi_communicator::event::is_complete() const {
 	return flag != 0;
 }
 
-mpi_communicator::mpi_communicator(const MPI_Comm comm) : m_comm(comm) { //
-	begin_receive_pilot();
+mpi_communicator::collective_group* mpi_communicator::collective_group::clone() {
+	MPI_Comm new_comm = MPI_COMM_NULL;
+	MPI_Comm_dup(m_comm, &new_comm);
+	const auto group = new collective_group(m_owner, new_comm); // NOLINT(cppcoreguidelines-owning-memory)
+	m_owner->m_collective_groups.emplace_back(group);
+	return group;
 }
+
+void mpi_communicator::collective_group::barrier() { MPI_Barrier(m_comm); }
+
+mpi_communicator::mpi_communicator(const MPI_Comm comm) : m_root_comm(comm), m_collective_groups{new collective_group(this, comm)} { begin_receive_pilot(); }
 
 mpi_communicator::~mpi_communicator() {
 	for(auto& outbound : m_outbound_pilots) {
@@ -31,17 +40,24 @@ mpi_communicator::~mpi_communicator() {
 	}
 	MPI_Cancel(&m_inbound_pilot.request);
 	MPI_Wait(&m_inbound_pilot.request, MPI_STATUS_IGNORE);
+
+	for(size_t i = 1 /* all except groups[0] (root) */; i < m_collective_groups.size(); ++i) {
+		MPI_Comm_free(&m_collective_groups[m_collective_groups.size() - i]->m_comm);
+	}
+	for(const auto group : m_collective_groups) {
+		delete group; // NOLINT(cppcoreguidelines-owning-memory)
+	}
 }
 
 size_t mpi_communicator::get_num_nodes() const {
 	int size = -1;
-	MPI_Comm_size(m_comm, &size);
+	MPI_Comm_size(m_root_comm, &size);
 	return static_cast<size_t>(size);
 }
 
 node_id mpi_communicator::get_local_node_id() const {
 	int rank = -1;
-	MPI_Comm_rank(m_comm, &rank);
+	MPI_Comm_rank(m_root_comm, &rank);
 	return static_cast<node_id>(rank);
 }
 
@@ -53,7 +69,7 @@ void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
 	in_flight_pilot newly_in_flight;
 	*newly_in_flight.message = pilot.message;
 	MPI_Isend(
-	    newly_in_flight.message.get(), sizeof *newly_in_flight.message, MPI_BYTE, static_cast<int>(pilot.to), pilot_tag, m_comm, &newly_in_flight.request);
+	    newly_in_flight.message.get(), sizeof *newly_in_flight.message, MPI_BYTE, static_cast<int>(pilot.to), pilot_tag, m_root_comm, &newly_in_flight.request);
 
 	// collect finished sends (TODO rate-limit this to avoid quadratic behavior)
 	for(auto& already_in_flight : m_outbound_pilots) {
@@ -90,7 +106,7 @@ std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_i
 
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
-	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_comm, &req);
+	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_root_comm, &req);
 	return std::make_unique<event>(req);
 }
 
@@ -99,13 +115,15 @@ std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const nod
 
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
-	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), tag, m_comm, &req);
+	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), tag, m_root_comm, &req);
 	return std::make_unique<event>(req);
 }
 
+mpi_communicator::collective_group* mpi_communicator::get_collective_root() { return m_collective_groups.front(); }
+
 void mpi_communicator::begin_receive_pilot() {
 	assert(m_inbound_pilot.request == MPI_REQUEST_NULL);
-	MPI_Irecv(m_inbound_pilot.message.get(), sizeof *m_inbound_pilot.message, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_comm, &m_inbound_pilot.request);
+	MPI_Irecv(m_inbound_pilot.message.get(), sizeof *m_inbound_pilot.message, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_root_comm, &m_inbound_pilot.request);
 }
 
 MPI_Datatype mpi_communicator::get_scalar_type(const size_t bytes) {

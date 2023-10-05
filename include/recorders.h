@@ -143,6 +143,13 @@ struct instruction_record_base {
 	explicit instruction_record_base(const instruction& instr);
 };
 
+struct clone_collective_group_instruction_record : instruction_record_base {
+	collective_group_id origin_collective_group_id;
+	collective_group_id new_collective_group_id;
+
+	explicit clone_collective_group_instruction_record(const clone_collective_group_instruction& ccginstr);
+};
+
 struct alloc_instruction_record : instruction_record_base {
 	enum class alloc_origin {
 		buffer,
@@ -214,9 +221,10 @@ struct copy_instruction_record : instruction_record_base {
 	copy_instruction_record(const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, const detail::box<3>& box);
 };
 
-struct kernel_instruction_record : instruction_record_base {
+struct launch_instruction_record : instruction_record_base {
 	execution_target target;
 	std::optional<detail::device_id> device_id;
+	std::optional<detail::collective_group_id> collective_group_id;
 	subrange<3> execution_range;
 	access_allocation_map allocation_map;
 	task_id command_group_task_id;
@@ -224,7 +232,7 @@ struct kernel_instruction_record : instruction_record_base {
 	std::string kernel_debug_name;
 	std::vector<buffer_allocation_record> allocation_buffer_map;
 
-	kernel_instruction_record(const kernel_instruction& kinstr, const task_id cg_tid, const command_id execution_cid, const std::string& kernel_debug_name,
+	launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid, const std::string& kernel_debug_name,
 	    std::vector<buffer_allocation_record> allocation_buffer_map);
 };
 
@@ -309,9 +317,10 @@ struct epoch_instruction_record : instruction_record_base {
 	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid);
 };
 
-using instruction_record = std::variant<alloc_instruction_record, free_instruction_record, init_buffer_instruction_record, export_instruction_record,
-    copy_instruction_record, kernel_instruction_record, send_instruction_record, begin_receive_instruction_record, await_receive_instruction_record,
-    end_receive_instruction_record, fence_instruction_record, destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+using instruction_record = std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record,
+    init_buffer_instruction_record, export_instruction_record, copy_instruction_record, launch_instruction_record, send_instruction_record,
+    begin_receive_instruction_record, await_receive_instruction_record, end_receive_instruction_record, fence_instruction_record,
+    destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
 class instruction_recorder {
   public:

@@ -28,6 +28,28 @@ class mpi_communicator final : public communicator {
 		mutable MPI_Request m_req;
 	};
 
+	class collective_group final : public communicator::collective_group {
+	  public:
+		collective_group(const collective_group&) = delete;
+		collective_group(collective_group&&) = delete;
+		collective_group& operator=(const collective_group&) = delete;
+		collective_group& operator=(collective_group&&) = delete;
+
+		collective_group* clone() override;
+		void barrier() override;
+
+		MPI_Comm get_mpi_comm() const { return m_comm; }
+
+	  private:
+		friend class mpi_communicator;
+
+		mpi_communicator* m_owner;
+		MPI_Comm m_comm;
+
+		collective_group(mpi_communicator* owner, const MPI_Comm comm) : m_owner(owner), m_comm(comm) {}
+		~collective_group() = default;
+	};
+
 	explicit mpi_communicator(MPI_Comm comm);
 
 	mpi_communicator(mpi_communicator&&) = default;
@@ -43,9 +65,9 @@ class mpi_communicator final : public communicator {
 	[[nodiscard]] std::unique_ptr<communicator::event> send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) override;
 	[[nodiscard]] std::unique_ptr<communicator::event> receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) override;
 
-  private:
-	inline constexpr static int pilot_tag = 0; // TODO have a celerity pilot_id and translate it to an MPI tag on this level
+	collective_group* get_collective_root() override;
 
+  private:
 	struct datatype_deleter {
 		void operator()(MPI_Datatype dtype) const;
 	};
@@ -57,7 +79,11 @@ class mpi_communicator final : public communicator {
 		MPI_Request request = MPI_REQUEST_NULL;
 	};
 
-	MPI_Comm m_comm;
+	inline constexpr static int pilot_tag = 0; // TODO have a celerity pilot_id and translate it to an MPI tag on this level
+
+	MPI_Comm m_root_comm;
+
+	std::vector<collective_group*> m_collective_groups;
 
 	in_flight_pilot m_inbound_pilot; // TODO do we want to have multiple of these buffers around to increase throughput?
 	std::vector<in_flight_pilot> m_outbound_pilots;

@@ -133,7 +133,7 @@ namespace experimental {
 	  private:
 		friend class collective_tag_factory;
 		detail::collective_group_id m_cgid;
-		inline static size_t next_cgid = 1;
+		inline static size_t next_cgid = 2;
 	};
 
 	/**
@@ -574,10 +574,11 @@ class handler {
 			detail::cgf_diagnostics::get_instance().check<target::host_task>(kernel, m_access_map, m_non_void_side_effects_count);
 		}
 
-		return [kernel, cgid, global_range](detail::host_queue& q, const subrange<3>& execution_sr) {
+		return [kernel, cgid, global_range](detail::host_queue& q, const subrange<3>& execution_sr, const MPI_Comm comm) {
 			auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate<target::host_task>(kernel);
-			return q.submit(cgid, [hydrated_kernel, global_range, execution_sr](MPI_Comm comm) {
+			return q.submit(cgid, [hydrated_kernel, global_range, execution_sr, comm] {
 				(void)global_range;
+				(void)comm;
 				if constexpr(Dims > 0) {
 					if constexpr(Collective) {
 						static_assert(Dims == 1);

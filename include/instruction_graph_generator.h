@@ -5,7 +5,6 @@
 #include "instruction_graph.h"
 #include "intrusive_graph.h"
 #include "region_map.h"
-#include "task.h"
 #include "types.h"
 
 #include <bitset>

@@ -115,17 +115,13 @@ namespace detail {
 
 		host_queue() {
 			// TODO what is a good thread count for the non-collective thread pool?
-			m_threads.emplace(std::piecewise_construct, std::tuple{0}, std::tuple{MPI_COMM_NULL, 4, m_id++});
+			m_pools.emplace(std::piecewise_construct, std::tuple{non_collective_group_id}, std::tuple{4, m_next_pool_id++});
 		}
 
-		void require_collective_group(collective_group_id cgid) {
-			const std::lock_guard lock(m_mutex); // called by main thread
-			if(m_threads.count(cgid) > 0) return;
-
-			assert(cgid != 0);
-			MPI_Comm comm;
-			MPI_Comm_dup(MPI_COMM_WORLD, &comm);
-			m_threads.emplace(std::piecewise_construct, std::tuple{cgid}, std::tuple{comm, 1, m_id++});
+		// Concurrent, blocking collectives must run in separate threads to avoid deadlocks (the executor might schedule collectives in different orders on
+		// different nodes)
+		void require_collective_group(const collective_group_id cgid) {
+			if(m_pools.count(cgid) == 0) { m_pools.emplace(std::piecewise_construct, std::tuple{cgid}, std::tuple{1 /* n_threads */, m_next_pool_id++}); }
 		}
 
 		template <typename Fn>
@@ -135,12 +131,10 @@ namespace detail {
 
 		template <typename Fn>
 		std::future<execution_info> submit(collective_group_id cgid, Fn&& fn) {
-			const std::lock_guard lock(m_mutex); // called by executor thread
-			auto& [comm, pool] = m_threads.at(cgid);
-			return pool.push([fn = std::forward<Fn>(fn), submit_time = std::chrono::steady_clock::now(), comm = comm](int) {
+			return m_pools.at(cgid).pool.push([fn = std::forward<Fn>(fn), submit_time = std::chrono::steady_clock::now()](int) {
 				auto start_time = std::chrono::steady_clock::now();
 				try {
-					fn(comm);
+					fn();
 				} catch(std::exception& e) { CELERITY_ERROR("exception in thread pool: {}", e.what()); } catch(...) {
 					CELERITY_ERROR("unknown exception in thread pool");
 				}
@@ -149,22 +143,11 @@ namespace detail {
 			});
 		}
 
-		/**
-		 * @brief Waits until all currently submitted operations have completed.
-		 */
-		void wait() {
-			const std::lock_guard lock(m_mutex); // called by main thread - never contended because the executor is shut down at this point
-			for(auto& [_, ct] : m_threads) {
-				ct.pool.stop(true /* isWait */);
-			}
-		}
-
 	  private:
-		struct comm_thread {
-			MPI_Comm comm;
+		struct thread_pool {
 			ctpl::thread_pool pool;
 
-			comm_thread(MPI_Comm comm, size_t n_threads, size_t id) : comm(comm), pool(n_threads) {
+			thread_pool(size_t n_threads, size_t id) : pool(n_threads) {
 				for(size_t i = 0; i < n_threads; ++i) {
 					auto& worker = pool.get_thread(i);
 					set_thread_name(worker.native_handle(), fmt::format("cy-worker-{}.{}", id, i));
@@ -172,9 +155,8 @@ namespace detail {
 			}
 		};
 
-		std::mutex m_mutex;
-		std::unordered_map<collective_group_id, comm_thread> m_threads;
-		size_t m_id = 0;
+		std::unordered_map<collective_group_id, thread_pool> m_pools;
+		size_t m_next_pool_id = 0;
 	};
 
 } // namespace detail

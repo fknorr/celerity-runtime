@@ -22,6 +22,21 @@ class communicator {
 		virtual bool is_complete() const = 0;
 	};
 
+	class collective_group {
+	  public:
+		collective_group(const collective_group&) = delete;
+		collective_group(collective_group&&) = delete;
+		collective_group& operator=(const collective_group&) = delete;
+		collective_group& operator=(collective_group&&) = delete;
+
+		virtual collective_group* clone() = 0;
+		virtual void barrier() = 0;
+
+	  protected:
+		collective_group() = default;
+		~collective_group() = default;
+	};
+
 	struct stride {
 		range<3> allocation;
 		subrange<3> subrange;
@@ -35,13 +50,16 @@ class communicator {
 
 	virtual ~communicator() = default;
 
-	// TODO give this a poll() method
 	virtual size_t get_num_nodes() const = 0;
 	virtual node_id get_local_node_id() const = 0;
+
 	virtual void send_outbound_pilot(const outbound_pilot& pilot) = 0;
 	[[nodiscard]] virtual std::vector<inbound_pilot> poll_inbound_pilots() = 0;
+
 	[[nodiscard]] virtual std::unique_ptr<event> send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) = 0;
 	[[nodiscard]] virtual std::unique_ptr<event> receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) = 0;
+
+	virtual collective_group* get_collective_root() = 0;
 
   protected:
 	communicator() = default;

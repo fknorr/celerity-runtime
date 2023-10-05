@@ -278,6 +278,12 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 	for(const auto& instr : irec.get_instructions()) {
 		matchbox::match(
 		    instr,
+		    [&](const clone_collective_group_instruction_record& ccginstr) {
+			    begin_node(ccginstr, "ellipse", "darkred");
+			    fmt::format_to(back, "I{}<br/><b>clone collective group</b><br/>CG{} -&gt; CG{}", ccginstr.id, ccginstr.origin_collective_group_id,
+			        ccginstr.new_collective_group_id);
+			    end_node();
+		    },
 		    [&](const alloc_instruction_record& ainstr) {
 			    begin_node(ainstr, "ellipse", "cyan3");
 			    fmt::format_to(back, "I{}<br/>", ainstr.id);
@@ -330,25 +336,29 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			        cinstr.copy_range, cinstr.element_size);
 			    end_node();
 		    },
-		    [&](const kernel_instruction_record& kinstr) {
-			    begin_node(kinstr, "box,margin=0.2", "darkorange2");
-			    fmt::format_to(back, "I{}", kinstr.id);
-			    // TODO does not correctly label master-node / collective host tasks
-			    fmt::format_to(back, " ({}-compute T{}, exectuion C{})", kinstr.target == execution_target::device ? "device" : "host",
-			        kinstr.command_group_task_id, kinstr.execution_command_id);
-			    fmt::format_to(back, "<br/><b>{} kernel</b>", kinstr.target == execution_target::device ? "device" : "host");
-			    if(!kinstr.kernel_debug_name.empty()) { fmt::format_to(back, " {}", kinstr.kernel_debug_name /* TODO escape? */); }
-			    if(kinstr.device_id.has_value()) { fmt::format_to(back, " on D{}", *kinstr.device_id); }
-			    fmt::format_to(back, " {}", kinstr.execution_range);
+		    [&](const launch_instruction_record& linstr) {
+			    begin_node(linstr, "box,margin=0.2", "darkorange2");
+			    fmt::format_to(back, "I{}", linstr.id);
+			    // TODO does not correctly label master-node host tasks
+			    fmt::format_to(back, " ({} T{}, execution C{})",
+			        linstr.target == execution_target::device ? "device-compute"
+			        : linstr.collective_group_id.has_value() && *linstr.collective_group_id != non_collective_group_id
+			            ? fmt::format("CG{} collective-host", *linstr.collective_group_id)
+			            : "host-compute",
+			        linstr.command_group_task_id, linstr.execution_command_id);
+			    fmt::format_to(back, "<br/><b>{}</b>", linstr.target == execution_target::device ? "device kernel" : "host task");
+			    if(!linstr.kernel_debug_name.empty()) { fmt::format_to(back, " {}", linstr.kernel_debug_name /* TODO escape? */); }
+			    if(linstr.device_id.has_value()) { fmt::format_to(back, " on D{}", *linstr.device_id); }
+			    fmt::format_to(back, " {}", linstr.execution_range);
 
-			    const auto& amap = kinstr.allocation_map;
+			    const auto& amap = linstr.allocation_map;
 			    for(size_t i = 0; i < amap.size(); ++i) {
-				    assert(amap.size() == kinstr.allocation_buffer_map.size()); // TODO why separate structs?
+				    assert(amap.size() == linstr.allocation_buffer_map.size()); // TODO why separate structs?
 				    const auto accessed_box_in_allocation = box(                //
 				        amap[i].accessed_box_in_buffer.get_min() - amap[i].allocated_box_in_buffer.get_min(),
 				        amap[i].accessed_box_in_buffer.get_max() - amap[i].allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>{} {} via A{} {}", get_buffer_label(kinstr.allocation_buffer_map[i].buffer_id),
-				        kinstr.allocation_buffer_map[i].box, amap[i].aid, accessed_box_in_allocation);
+				    fmt::format_to(back, "<br/>{} {} via A{} {}", get_buffer_label(linstr.allocation_buffer_map[i].buffer_id),
+				        linstr.allocation_buffer_map[i].box, amap[i].aid, accessed_box_in_allocation);
 			    }
 			    end_node();
 		    },

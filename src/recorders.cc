@@ -162,6 +162,10 @@ command_record::command_record(const abstract_command& cmd, const task& tsk, con
 
 instruction_record_base::instruction_record_base(const instruction& instr) : id(instr.get_id()) {}
 
+clone_collective_group_instruction_record::clone_collective_group_instruction_record(const clone_collective_group_instruction& ccginstr)
+    : instruction_record_base(ccginstr), origin_collective_group_id(ccginstr.get_origin_collective_group_id()),
+      new_collective_group_id(ccginstr.get_new_collective_group_id()) {}
+
 alloc_instruction_record::alloc_instruction_record(
     const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation)
     : instruction_record_base(ainstr), allocation_id(ainstr.get_allocation_id()), memory_id(ainstr.get_memory_id()), size(ainstr.get_size()),
@@ -187,12 +191,14 @@ copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr,
       offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), element_size(cinstr.get_element_size()), origin(origin), buffer(buffer),
       box(box) {}
 
-kernel_instruction_record::kernel_instruction_record(const kernel_instruction& kinstr, const task_id cg_tid, const command_id execution_cid,
+launch_instruction_record::launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid,
     const std::string& kernel_debug_name, std::vector<buffer_allocation_record> allocation_buffer_map)
-    : instruction_record_base(kinstr), target(utils::isa<host_kernel_instruction>(&kinstr) ? execution_target::host : execution_target::device),
-      device_id(
-          utils::isa<sycl_kernel_instruction>(&kinstr) ? utils::as<sycl_kernel_instruction>(&kinstr)->get_device_id() : std::optional<detail::device_id>()),
-      execution_range(kinstr.get_execution_range()), allocation_map(kinstr.get_allocation_map()), command_group_task_id(cg_tid),
+    : instruction_record_base(linstr), target(utils::isa<host_task_instruction>(&linstr) ? execution_target::host : execution_target::device),
+      device_id(matchbox::match<std::optional<detail::device_id>>(
+          linstr, [](const sycl_kernel_instruction& skinstr) { return skinstr.get_device_id(); }, [](const auto&) { return std::nullopt; })),
+      collective_group_id(matchbox::match<std::optional<detail::collective_group_id>>(
+          linstr, [](const host_task_instruction& htinstr) { return htinstr.get_collective_group_id(); }, [](const auto&) { return std::nullopt; })),
+      execution_range(linstr.get_execution_range()), allocation_map(linstr.get_allocation_map()), command_group_task_id(cg_tid),
       execution_command_id(execution_cid), kernel_debug_name(utils::simplify_task_name(kernel_debug_name)),
       allocation_buffer_map(std::move(allocation_buffer_map)) {}
 

@@ -65,6 +65,7 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */), epoch_action::none);
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
+	m_collective_groups.emplace(root_collective_group_id, per_collective_group_data{initial_epoch});
 }
 
 void instruction_graph_generator::create_buffer(
@@ -564,6 +565,17 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	if(tsk.get_execution_target() == execution_target::device && m_devices.empty()) { utils::panic("no device on which to execute device kernel"); }
 
+	// 0) collectively generate any non-existing collective group
+
+	if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id && m_collective_groups.count(cgid) == 0) {
+		auto& root_cg = m_collective_groups.at(root_collective_group_id);
+		const auto clone_cg_isntr = &create<clone_collective_group_instruction>(root_collective_group_id, tsk.get_collective_group_id());
+		if(m_recorder != nullptr) { *m_recorder << clone_collective_group_instruction_record(*clone_cg_isntr); }
+		add_dependency(*clone_cg_isntr, *root_cg.last_host_task, dependency_kind::true_dep);
+		root_cg.last_host_task = clone_cg_isntr;
+		m_collective_groups.emplace(cgid, per_collective_group_data{clone_cg_isntr});
+	}
+
 	struct partial_instruction {
 		subrange<3> execution_sr;
 		device_id did = -1;
@@ -693,20 +705,25 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			}
 		}
 
-		kernel_instruction* kernel_instr;
+		launch_instruction* launch_instr;
 		if(tsk.get_execution_target() == execution_target::device) {
 			assert(instr.execution_sr.range.size() > 0);
 			assert(instr.mid != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			kernel_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
+			launch_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.mid == host_memory_id);
-			kernel_instr =
-			    &create<host_kernel_instruction>(tsk.get_launcher<host_task_launcher>(), instr.execution_sr, tsk.get_global_size(), std::move(allocation_map));
+			launch_instr = &create<host_task_instruction>(
+			    tsk.get_launcher<host_task_launcher>(), instr.execution_sr, tsk.get_global_size(), std::move(allocation_map), tsk.get_collective_group_id());
 		}
 
-		instr.instruction = kernel_instr;
+		if(m_recorder != nullptr) {
+			*m_recorder << launch_instruction_record(
+			    *launch_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(instr.allocation_buffer_map));
+		}
+
+		instr.instruction = launch_instr;
 	}
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
@@ -725,6 +742,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				}
 			}
 		}
+		// TODO ^--v--- these blocks are mostly identical
 		for(const auto& [bid, rw] : instr.rw_map) {
 			auto& buffer = m_buffers.at(bid);
 			auto& memory = buffer.memories[instr.mid];
@@ -743,10 +761,10 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				add_dependency(*instr.instruction, *last_side_effect, dependency_kind::true_dep);
 			}
 		}
-		if(tsk.get_collective_group_id() != collective_group_id(0) /* 0 means "no collective group association" */) {
+		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
 			assert(instr.mid == host_memory_id);
-			auto& group = m_collective_groups[tsk.get_collective_group_id()]; // allow default-insertion since we do not register CGs explicitly
-			if(group.last_host_task) { add_dependency(*instr.instruction, *group.last_host_task, dependency_kind::true_dep); }
+			auto& group = m_collective_groups.at(cgid); // created previously with clone_collective_group_instruction
+			add_dependency(*instr.instruction, *group.last_host_task, dependency_kind::true_dep);
 		}
 	}
 
@@ -776,7 +794,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			assert(instr.mid == host_memory_id);
 			m_host_objects.at(hoid).last_side_effect = instr.instruction;
 		}
-		if(tsk.get_collective_group_id() != collective_group_id(0) /* 0 means "no collective group association" */) {
+		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
 			assert(instr.mid == host_memory_id);
 			m_collective_groups.at(tsk.get_collective_group_id()).last_host_task = instr.instruction;
 		}
@@ -790,13 +808,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		const auto deps = instr.instruction->get_dependencies();
 		if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
 			add_dependency(*instr.instruction, *m_last_epoch, dependency_kind::true_dep);
-		}
-
-		if(m_recorder != nullptr) {
-			if(const auto kernel_instr = dynamic_cast<kernel_instruction*>(instr.instruction)) {
-				*m_recorder << kernel_instruction_record(
-				    *kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(instr.allocation_buffer_map));
-			}
 		}
 	}
 }
