@@ -73,7 +73,7 @@ namespace detail {
 		buffer_id get_bid() const { return m_bid; }
 		reduction_id get_reduction_id() const { return m_rid; }
 		transfer_id get_transfer_id() const { return m_trid; }
-		const region<3> &get_region() const { return m_region; }
+		const region<3>& get_region() const { return m_region; }
 
 	  private:
 		buffer_id m_bid;

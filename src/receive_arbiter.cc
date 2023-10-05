@@ -1,21 +1,19 @@
-#include "recv_arbiter.h"
-#include "device_queue.h"
+#include "receive_arbiter.h"
 #include "grid.h"
 #include "instruction_graph.h"
-#include "utils.h"
 
 #include <exception>
 #include <memory>
 
 namespace celerity::detail {
 
-recv_arbiter::recv_arbiter(communicator& comm) : m_comm(&comm) {}
+receive_arbiter::receive_arbiter(communicator& comm) : m_comm(&comm) {}
 
-recv_arbiter::~recv_arbiter() { assert(std::uncaught_exceptions() > 0 || m_transfers.empty()); }
+receive_arbiter::~receive_arbiter() { assert(std::uncaught_exceptions() > 0 || m_transfers.empty()); }
 
-bool recv_arbiter::event::is_complete() const { return region_intersection(m_region_transfer->complete_region, m_awaited_region) == m_awaited_region; }
+bool receive_arbiter::event::is_complete() const { return region_intersection(m_region_transfer->complete_region, m_awaited_region) == m_awaited_region; }
 
-void recv_arbiter::begin_receive(const transfer_id trid, const buffer_id bid, void* const allocation, const box<3>& allocated_box, const size_t elem_size) {
+void receive_arbiter::begin_receive(const transfer_id trid, const buffer_id bid, void* const allocation, const box<3>& allocated_box, const size_t elem_size) {
 	auto& transfer = m_transfers[{trid, bid}]; // allow default-insert
 
 	assert(!transfer.elem_size.has_value() || *transfer.elem_size == elem_size);
@@ -36,7 +34,7 @@ void recv_arbiter::begin_receive(const transfer_id trid, const buffer_id bid, vo
 	transfer.unassigned_pilots.erase(remaining_unassigned_pilots_end, transfer.unassigned_pilots.end());
 }
 
-recv_arbiter::event recv_arbiter::await_receive(const transfer_id trid, const buffer_id bid, const region<3>& awaited_region) {
+receive_arbiter::event receive_arbiter::await_receive(const transfer_id trid, const buffer_id bid, const region<3>& awaited_region) {
 	auto& transfer = m_transfers.at({trid, bid});
 	const auto region_it = std::find_if(transfer.regions.begin(), transfer.regions.end(),
 	    [&](const std::unique_ptr<region_transfer>& rt) { return rt->allocated_bounding_box.covers(bounding_box(awaited_region)); });
@@ -44,7 +42,7 @@ recv_arbiter::event recv_arbiter::await_receive(const transfer_id trid, const bu
 	return event(region_it->get(), awaited_region);
 }
 
-void recv_arbiter::end_receive(const transfer_id trid, const buffer_id bid) {
+void receive_arbiter::end_receive(const transfer_id trid, const buffer_id bid) {
 #if CELERITY_DETAIL_ENABLE_DEBUG
 	auto& transfer = m_transfers.at(std::pair{trid, bid}); // must exist
 	assert(transfer.unassigned_pilots.empty());
@@ -55,7 +53,7 @@ void recv_arbiter::end_receive(const transfer_id trid, const buffer_id bid) {
 	m_transfers.erase(std::pair{trid, bid});
 }
 
-void recv_arbiter::poll_communicator() {
+void receive_arbiter::poll_communicator() {
 	for(auto& [id, transfer] : m_transfers) {
 		for(auto& region_tr : transfer.regions) {
 			const auto incomplete_fragments_end =
@@ -81,7 +79,7 @@ void recv_arbiter::poll_communicator() {
 	}
 }
 
-void recv_arbiter::begin_receiving_fragment(region_transfer* const region_tr, const inbound_pilot& pilot, const size_t elem_size) {
+void receive_arbiter::begin_receiving_fragment(region_transfer* const region_tr, const inbound_pilot& pilot, const size_t elem_size) {
 	assert(region_tr->allocated_bounding_box.covers(pilot.message.box));
 	const auto offset_in_allocation = pilot.message.box.get_offset() - region_tr->allocated_bounding_box.get_offset();
 	const communicator::stride stride{

@@ -339,10 +339,10 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 				// How to realize this in the presence of CUDA-aware MPI? We want to have RDMA MPI_Recv to device buffers as the happy path, and a copy from
 				// receive buffer as fallback - but only in the absence of a broadcast condition.
 				// 	 - annotate recv_instructions with the desired allocation to RDMA to (if any)
-				//   - have a conditional copy_instruction following it, in case the RDMA fails (or should the recv_arbiter dispatch that copy?)
+				//   - have a conditional copy_instruction following it, in case the RDMA fails (or should the receive_arbiter dispatch that copy?)
 				//   - in case of a RDMA failure, or when we want to broadcast, we need a release_transfer_instruction to hand the transfer_allocation_id
 				//   back
-				// 	   to the recv_arbiter (again kinda conditional on whether we did an RDMA receive or not)
+				// 	   to the receive_arbiter (again kinda conditional on whether we did an RDMA receive or not)
 				buffer.newest_data_location.update_region(recv_region, data_location().set(host_memory_id));
 
 				transfer.await_receives.push_back(recv_instr);
@@ -870,6 +870,8 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 
 	const auto [recv_regions, recv_bounding_boxes] = edge_connected_subregions_with_bounding_boxes(ap_region.get_boxes());
 
+	// TODO defer this (as well as begin_receive_instruction creation) until we encounter the first read from the await-pushed region. This way we can find the
+	// optimal allocation that satisfies the requirement of both the await-push and the following reader without causing immediate re-allocations.
 	allocate_contiguously(ap_bid, host_memory_id, recv_bounding_boxes);
 
 	for(size_t i = 0; i < recv_regions.size(); ++i) {

@@ -4,7 +4,7 @@
 #include "communicator.h"
 #include "host_object.h"
 #include "instruction_graph.h"
-#include "recv_arbiter.h"
+#include "receive_arbiter.h"
 #include "types.h"
 
 #include <atomic>
@@ -60,7 +60,7 @@ void instruction_executor::loop() {
 			    completion_event, //
 			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
 			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); },
-			    [](const recv_arbiter::event& evt) { return evt.is_complete(); },
+			    [](const receive_arbiter::event& evt) { return evt.is_complete(); },
 			    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; },
 			    [](const completed_synchronous) { return true; });
 		};

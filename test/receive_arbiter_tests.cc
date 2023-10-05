@@ -1,6 +1,6 @@
 #include "buffer_storage.h" // for memcpy_strided_host
 #include "host_utils.h"
-#include "recv_arbiter.h"
+#include "receive_arbiter.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -64,7 +64,7 @@ class mock_recv_communicator : public communicator {
 	std::unordered_map<std::pair<node_id, int>, std::tuple<void*, stride, completion_flag>, utils::pair_hash> m_pending_recvs;
 };
 
-TEST_CASE("recv_arbiter aggregates receives of subsets", "[recv_arbiter]") {
+TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]") {
 	const transfer_id trid = 1234567890;
 	const buffer_id bid = 420;
 	const range<3> buffer_range = {40, 10, 12};
@@ -91,7 +91,7 @@ TEST_CASE("recv_arbiter aggregates receives of subsets", "[recv_arbiter]") {
 	}
 
 	mock_recv_communicator comm;
-	recv_arbiter ra(comm);
+	receive_arbiter ra(comm);
 
 	const size_t num_pilots_pushed_before_recv = GENERATE(values<size_t>({0, num_fragments / 2, num_fragments}));
 	CAPTURE(num_pilots_pushed_before_recv);
@@ -136,14 +136,14 @@ TEST_CASE("recv_arbiter aggregates receives of subsets", "[recv_arbiter]") {
 	CHECK(allocation == expected_allocation);
 }
 
-TEST_CASE("recv_arbiter accepts superset receives", "[recv_arbiter]") {
+TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
 	const transfer_id trid = 1234567890;
 	const buffer_id bid = 420;
 	const range<3> buffer_range = {20, 20, 1};
 	const box<3> alloc_box = {{2, 1, 0}, {19, 20, 1}};
 	const region<3> recv_regions[] = {
-		region<3>{{{{4, 1, 0}, {14, 10, 1}}, {{14, 1, 0}, {19, 18, 1}}}},
-		box<3>{{4, 10, 0}, {14, 18, 1}},
+	    region<3>{{{{4, 1, 0}, {14, 10, 1}}, {{14, 1, 0}, {19, 18, 1}}}},
+	    box<3>{{4, 10, 0}, {14, 18, 1}},
 	};
 	const box<3> fragment_box = {{4, 1, 0}, {19, 18, 1}}; // union of recv_regions
 	const size_t elem_size = sizeof(int);
@@ -151,7 +151,7 @@ TEST_CASE("recv_arbiter accepts superset receives", "[recv_arbiter]") {
 	const int tag = 15;
 
 	mock_recv_communicator comm;
-	recv_arbiter ra(comm);
+	receive_arbiter ra(comm);
 
 	comm.push_inbound_pilot(inbound_pilot{from, pilot_message{tag, bid, trid, fragment_box}});
 	ra.poll_communicator();

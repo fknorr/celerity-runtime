@@ -4,7 +4,7 @@
 #include "communicator.h"
 #include "double_buffered_queue.h"
 #include "instruction_graph.h"
-#include "recv_arbiter.h"
+#include "receive_arbiter.h"
 #include "scheduler.h"
 
 #include <unordered_map>
@@ -46,7 +46,7 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	friend struct executor_testspy;
 
 	struct completed_synchronous {};
-	using event = std::variant<std::unique_ptr<backend::event>, std::unique_ptr<communicator::event>, recv_arbiter::event,
+	using event = std::variant<std::unique_ptr<backend::event>, std::unique_ptr<communicator::event>, receive_arbiter::event,
 	    std::future<host_queue::execution_info>, completed_synchronous>;
 
 	struct allocation {
@@ -77,7 +77,7 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	std::unordered_map<buffer_id, const void*> m_buffer_user_pointers;
 	std::unordered_map<allocation_id, allocation> m_allocations;
 	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> m_host_object_instances;
-	recv_arbiter m_recv_arbiter;
+	receive_arbiter m_recv_arbiter;
 	host_queue m_host_queue;
 
 	std::thread m_thread;

@@ -9,7 +9,7 @@
 
 namespace celerity::detail {
 
-class recv_arbiter {
+class receive_arbiter {
   private:
 	struct region_transfer;
 
@@ -19,7 +19,7 @@ class recv_arbiter {
 		bool is_complete() const;
 
 	  private:
-		friend class recv_arbiter;
+		friend class receive_arbiter;
 
 		const region_transfer* m_region_transfer;
 		region<3> m_awaited_region;
@@ -27,12 +27,12 @@ class recv_arbiter {
 		event(const region_transfer* region_transfer, const region<3>& awaited_region) : m_region_transfer(region_transfer), m_awaited_region(awaited_region) {}
 	};
 
-	explicit recv_arbiter(communicator& comm);
-	recv_arbiter(const recv_arbiter&) = delete;
-	recv_arbiter(recv_arbiter&&) = default;
-	recv_arbiter& operator=(const recv_arbiter&) = delete;
-	recv_arbiter& operator=(recv_arbiter&&) = default;
-	~recv_arbiter();
+	explicit receive_arbiter(communicator& comm);
+	receive_arbiter(const receive_arbiter&) = delete;
+	receive_arbiter(receive_arbiter&&) = default;
+	receive_arbiter& operator=(const receive_arbiter&) = delete;
+	receive_arbiter& operator=(receive_arbiter&&) = default;
+	~receive_arbiter();
 
 	void begin_receive(transfer_id trid, buffer_id bid, void* allocation, const box<3>& allocated_box, size_t elem_size);
 	[[nodiscard]] event await_receive(transfer_id trid, buffer_id bid, const region<3>& awaited_region);
@@ -57,7 +57,7 @@ class recv_arbiter {
 	struct buffer_transfer {
 		std::optional<size_t> elem_size; // nullopt until the first `transfer` is inserted
 		std::vector<inbound_pilot> unassigned_pilots;
-		std::vector<std::unique_ptr<region_transfer>> regions; // unique_ptr for pointer stability (referenced by recv_arbiter::event)
+		std::vector<std::unique_ptr<region_transfer>> regions; // unique_ptr for pointer stability (referenced by receive_arbiter::event)
 	};
 
 	communicator* m_comm;

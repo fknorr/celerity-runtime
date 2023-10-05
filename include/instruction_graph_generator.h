@@ -138,7 +138,7 @@ class instruction_graph_generator {
 		struct partial_inbound_transfer {
 			transfer_id id;
 			region<3> unconsumed_region;
-			begin_receive_instruction *begin_receive;
+			begin_receive_instruction* begin_receive;
 			std::vector<await_receive_instruction*> await_receives;
 
 			partial_inbound_transfer(const transfer_id id, region<3> region, begin_receive_instruction* const begin_receive)
