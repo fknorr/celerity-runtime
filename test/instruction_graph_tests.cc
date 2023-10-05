@@ -196,5 +196,17 @@ TEST_CASE("collective host tasks", "[instruction-graph]") {
 	ictx.collective_host_task(collective_group()).submit();
 }
 
+TEST_CASE("syncing pattern", "[instruction graph]") {
+	const auto my_nid = GENERATE(values<node_id>({0, 1}));
+	CAPTURE(my_nid);
+
+	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 1 /* devices */);
+
+	auto buf = ictx.create_buffer<1>(512);
+	ictx.device_compute(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	ictx.collective_host_task().read(buf, acc::all()).submit();
+	ictx.epoch(epoch_action::barrier);
+}
+
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects
