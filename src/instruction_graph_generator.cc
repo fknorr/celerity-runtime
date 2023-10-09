@@ -163,7 +163,7 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 }
 
 // TODO decide if this should only receive non-contiguous boxes (and assert that) or it should filter for non-contiguous boxes itself
-void instruction_graph_generator::allocate_contiguously(const buffer_id bid, const memory_id mid, const box_vector<3>& boxes) {
+void instruction_graph_generator::allocate_contiguously(const buffer_id bid, const memory_id mid, const bounding_box_set& boxes) {
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories[mid];
 
@@ -299,7 +299,7 @@ restart:
 	}
 }
 
-void instruction_graph_generator::apply_receive(
+void instruction_graph_generator::commit_pending_receive(
     const buffer_id bid, const per_buffer_data::pending_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories.at(host_memory_id);
@@ -354,7 +354,7 @@ void instruction_graph_generator::apply_receive(
 	buffer.newest_data_location.update_region(receive.received_region, data_location().set(host_memory_id));
 }
 
-void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads) {
+void instruction_graph_generator::locally_satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads) {
 	auto& buffer = m_buffers.at(bid);
 
 	std::unordered_map<memory_id, std::vector<region<3>>> unsatisfied_reads;
@@ -476,6 +476,69 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 }
 
 
+void instruction_graph_generator::satisfy_buffer_requirements(
+    const buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks) {
+	const auto& bam = tsk.get_buffer_access_map();
+
+	// collect all receives that we must apply before execution of this command
+	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
+	// read-write access conflicts, TODO)
+
+	auto& buffer = m_buffers.at(bid);
+
+	std::unordered_map<memory_id, bounding_box_set> contiguous_allocations;
+	std::vector<per_buffer_data::pending_receive> applied_receives;
+
+	region<3> accessed;  // which elements have are accessed (to figure out applying receives)
+	region<3> discarded; // which elements are received with a non-consuming access or received (these don't need to be preserved)
+	for(const auto mode : access::all_modes) {
+		const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), local_sr, tsk.get_global_size());
+		accessed = region_union(accessed, req);
+		if(!access::mode_traits::is_consumer(mode)) { discarded = region_union(discarded, req); }
+	}
+
+	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
+	    [&](const per_buffer_data::pending_receive& r) { return region_intersection(accessed, r.received_region).empty(); });
+	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
+		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
+		discarded = region_union(discarded, it->received_region);
+		// begin_receive_instruction needs a contiguous allocation
+		contiguous_allocations[host_memory_id].insert(it->bounding_box);
+	}
+
+	if(first_applied_receive != buffer.pending_receives.end()) {
+		applied_receives.insert(applied_receives.end(), first_applied_receive, buffer.pending_receives.end());
+		buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
+	}
+	// data received / written by this task is not yet present anywhere locally
+	buffer.newest_data_location.update_region(discarded, data_location());
+
+	for(const auto& chunk : local_chunks) {
+		const auto chunk_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
+		contiguous_allocations[chunk.memory_id].insert(chunk_boxes.begin(), chunk_boxes.end());
+	}
+
+	for(const auto& [mid, boxes] : contiguous_allocations) {
+		allocate_contiguously(bid, mid, boxes);
+	}
+
+	std::vector<std::pair<memory_id, region<3>>> local_chunk_reads;
+	for(const auto& chunk : local_chunks) {
+		for(const auto mode : access::consumer_modes) {
+			const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
+			if(!req.empty()) { local_chunk_reads.emplace_back(chunk.memory_id, req); }
+		}
+	}
+
+	for(const auto& receive : applied_receives) {
+		commit_pending_receive(bid, receive, local_chunk_reads);
+	}
+
+	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
+
+	locally_satisfy_read_requirements(bid, local_chunk_reads);
+}
+
 std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_subrange(
     const buffer_id bid, const box<3>& box, const memory_id out_mid, alloc_instruction& alloc_instr) {
 	auto& buffer = m_buffers.at(bid);
@@ -487,6 +550,7 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 		// TODO for convenience, we want to accept read-write access by the first kernel that ever touches a given buffer range (think a read-write
 		//  kernel in a loop). However we still want to be able to detect the error condition of not having received a buffer region that was produced
 		//  by some other kernel in the past.
+		// TODO this should only be allowed for requirements of a task command, not from a push command!
 		assert(sources.any() && "trying to read data that is neither found locally nor has been await-pushed before");
 	}
 	for(const auto& transfer : buffer.pending_receives) {
@@ -567,43 +631,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	if(tsk.get_execution_target() == execution_target::device && m_devices.empty()) { utils::panic("no device on which to execute device kernel"); }
 
-	// collect all receives that we must apply before execution of this command
-	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
-	// read-write access conflicts, TODO)
-
-	std::unordered_map<std::pair<buffer_id, memory_id>, box_vector<3>, utils::pair_hash> not_contiguously_allocated_boxes;
-	std::unordered_map<buffer_id, std::vector<per_buffer_data::pending_receive>> applied_receives;
-	for(const auto bid : bam.get_accessed_buffers()) {
-		auto& buffer = m_buffers.at(bid);
-
-		region<3> accessed;  // which elements have are accessed (to figure out applying receives)
-		region<3> discarded; // which elements are received with a non-consuming access or received (these don't need to be preserved)
-		for(const auto mode : access::all_modes) {
-			const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), ecmd.get_execution_range(), tsk.get_global_size());
-			accessed = region_union(accessed, req);
-			if(!access::mode_traits::is_consumer(mode)) { discarded = region_union(discarded, req); }
-		}
-
-		const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
-		    [&](const per_buffer_data::pending_receive& r) { return region_intersection(accessed, r.received_region).empty(); });
-		for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
-			// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
-			discarded = region_union(discarded, it->received_region);
-			// begin_receive_instruction needs a contiguous allocation
-			if(!buffer.memories[host_memory_id].is_allocated_contiguously(it->bounding_box)) {
-				not_contiguously_allocated_boxes[{bid, host_memory_id}].push_back(it->bounding_box);
-			}
-		}
-
-		if(first_applied_receive != buffer.pending_receives.end()) {
-			applied_receives.emplace(bid, std::vector(first_applied_receive, buffer.pending_receives.end()));
-			buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
-		}
-
-		// data received / written by this task is not yet present anywhere locally
-		buffer.newest_data_location.update_region(discarded, data_location());
-	}
-
 	// 0) collectively generate any non-existing collective group
 
 	if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id && m_collective_groups.count(cgid) == 0) {
@@ -618,20 +645,18 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	struct reads_writes {
 		region<3> reads;
 		region<3> writes;
-		bounding_box_set contiguous_boxes;
 
 		bool empty() const { return reads.empty() && writes.empty(); }
 	};
 
-	struct partial_instruction {
-		subrange<3> execution_sr;
+	struct partial_instruction : localized_chunk {
 		device_id did = -1;
-		memory_id mid = host_memory_id;
 		std::unordered_map<buffer_id, reads_writes> rw_map;
 		side_effect_map se_map;
 		instruction* instruction = nullptr;
 		std::vector<buffer_allocation_record> allocation_buffer_map; // for kernel_instructions, if (m_recorder)
 	};
+	// TODO deduplicate these two structures
 	std::vector<partial_instruction> cmd_instrs;
 
 	const auto command_sr = ecmd.get_execution_range();
@@ -641,81 +666,45 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		for(device_id did = 0; did < m_devices.size() && did < device_chunks.size(); ++did) {
 			const auto& chunk = device_chunks[did];
 			auto& insn = cmd_instrs.emplace_back();
-			insn.execution_sr = subrange<3>(chunk.offset, chunk.range);
+			insn.subrange = subrange<3>(chunk.offset, chunk.range);
 			insn.did = did;
-			insn.mid = m_devices[did].native_memory;
+			insn.memory_id = m_devices[did].native_memory;
 		}
 	} else {
 		// TODO oversubscribe distributed host tasks (but not if they have side effects)
 		auto& insn = cmd_instrs.emplace_back();
-		insn.execution_sr = command_sr;
+		insn.subrange = command_sr;
 		if(tsk.get_execution_target() == execution_target::device) {
 			// Assign work to the first device - note this may lead to load imbalance if there's multiple independent unsplittable tasks.
 			//   - but at the same time, keeping work on one device minimizes data transfers => this can only truly be solved through profiling.
 			const device_id did = 0;
 			insn.did = did;
-			insn.mid = m_devices[did].native_memory;
+			insn.memory_id = m_devices[did].native_memory;
 		} else {
-			insn.mid = host_memory_id;
+			insn.memory_id = host_memory_id;
 		}
+	}
+
+	for(const auto bid : bam.get_accessed_buffers()) {
+		satisfy_buffer_requirements(bid, tsk, ecmd.get_execution_range(), std::vector<localized_chunk>(cmd_instrs.begin(), cmd_instrs.end()));
 	}
 
 	for(const auto bid : bam.get_accessed_buffers()) {
 		for(auto& insn : cmd_instrs) {
 			reads_writes rw;
 			for(const auto mode : bam.get_access_modes(bid)) {
-				const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
+				const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.subrange, tsk.get_global_size());
 				if(access::mode_traits::is_consumer(mode)) { rw.reads = region_union(rw.reads, req); }
 				if(access::mode_traits::is_producer(mode)) { rw.writes = region_union(rw.writes, req); }
 			}
-			rw.contiguous_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
 			insn.rw_map.emplace(bid, std::move(rw));
 		}
 	}
 
 	if(!tsk.get_side_effect_map().empty()) {
 		assert(cmd_instrs.size() == 1); // split instructions for host tasks with side effects would race
-		assert(cmd_instrs[0].mid == host_memory_id);
+		assert(cmd_instrs[0].memory_id == host_memory_id);
 		cmd_instrs[0].se_map = tsk.get_side_effect_map();
-	}
-
-	// 2) allocate memory
-
-	for(const auto& insn : cmd_instrs) {
-		for(const auto& [bid, rw] : insn.rw_map) {
-			const auto& memory = m_buffers.at(bid).memories[insn.mid];
-			for(auto& box : rw.contiguous_boxes) {
-				if(!memory.is_allocated_contiguously(box)) { not_contiguously_allocated_boxes[{bid, insn.mid}].push_back(box); }
-			}
-		}
-	}
-
-	for(auto& [bid_mid, boxes] : not_contiguously_allocated_boxes) {
-		const auto& [bid, mid] = bid_mid;
-		allocate_contiguously(bid, mid, boxes);
-	}
-
-
-	std::unordered_map<buffer_id, std::vector<std::pair<memory_id, region<3>>>> buffer_reads;
-	for(size_t cmd_insn_idx = 0; cmd_insn_idx < cmd_instrs.size(); ++cmd_insn_idx) {
-		auto& insn = cmd_instrs[cmd_insn_idx];
-		for(const auto& [bid, rw] : insn.rw_map) {
-			if(!rw.reads.empty()) { buffer_reads[bid].emplace_back(insn.mid, rw.reads); }
-		}
-	}
-	// 2.5) apply all receives whose regions intersect with accesses from this command
-
-	for(const auto& [bid, pending_receives] : applied_receives) {
-		const auto& reads = buffer_reads.at(bid);
-		for(const auto& receive : pending_receives) {
-			apply_receive(bid, receive, reads);
-		}
-	}
-
-	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
-
-	for(const auto& [bid, reads] : buffer_reads) {
-		satisfy_read_requirements(bid, reads);
 	}
 
 	// 4) create the actual command instructions
@@ -726,10 +715,10 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
-			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.execution_sr, tsk.get_global_size());
+			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.subrange, tsk.get_global_size());
 			if(!accessed_box.empty()) {
 				const auto& buffer = m_buffers.at(bid);
-				const auto& allocations = buffer.memories[instr.mid].allocations;
+				const auto& allocations = buffer.memories[instr.memory_id].allocations;
 				const auto allocation_it = std::find_if(
 				    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
 				assert(allocation_it != allocations.end());
@@ -744,15 +733,15 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 		launch_instruction* launch_instr;
 		if(tsk.get_execution_target() == execution_target::device) {
-			assert(instr.execution_sr.range.size() > 0);
-			assert(instr.mid != host_memory_id);
+			assert(instr.subrange.range.size() > 0);
+			assert(instr.memory_id != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			launch_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.execution_sr, std::move(allocation_map));
+			launch_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.subrange, std::move(allocation_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
-			assert(instr.mid == host_memory_id);
+			assert(instr.memory_id == host_memory_id);
 			launch_instr = &create<host_task_instruction>(
-			    tsk.get_launcher<host_task_launcher>(), instr.execution_sr, tsk.get_global_size(), std::move(allocation_map), tsk.get_collective_group_id());
+			    tsk.get_launcher<host_task_launcher>(), instr.subrange, tsk.get_global_size(), std::move(allocation_map), tsk.get_collective_group_id());
 		}
 
 		if(m_recorder != nullptr) {
@@ -770,7 +759,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	for(const auto& instr : cmd_instrs) {
 		for(const auto& [bid, rw] : instr.rw_map) {
 			auto& buffer = m_buffers.at(bid);
-			auto& memory = buffer.memories[instr.mid];
+			auto& memory = buffer.memories[instr.memory_id];
 			for(auto& alloc : memory.allocations) {
 				const auto reads_from_alloc = region_intersection(rw.reads, alloc.box);
 				for(const auto& [_, last_writer_instr] : alloc.last_writers.get_region_values(reads_from_alloc)) {
@@ -782,7 +771,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		// TODO ^--v--- these blocks are mostly identical
 		for(const auto& [bid, rw] : instr.rw_map) {
 			auto& buffer = m_buffers.at(bid);
-			auto& memory = buffer.memories[instr.mid];
+			auto& memory = buffer.memories[instr.memory_id];
 			for(auto& alloc : memory.allocations) {
 				const auto writes_to_alloc = region_intersection(rw.writes, alloc.box);
 				for(const auto& [_, front] : alloc.access_fronts.get_region_values(writes_to_alloc)) {
@@ -793,13 +782,13 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			}
 		}
 		for(const auto& [hoid, order] : instr.se_map) {
-			assert(instr.mid == host_memory_id);
+			assert(instr.memory_id == host_memory_id);
 			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
 				add_dependency(*instr.instruction, *last_side_effect, dependency_kind::true_dep);
 			}
 		}
 		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
-			assert(instr.mid == host_memory_id);
+			assert(instr.memory_id == host_memory_id);
 			auto& group = m_collective_groups.at(cgid); // created previously with clone_collective_group_instruction
 			add_dependency(*instr.instruction, *group.last_host_task, dependency_kind::true_dep);
 		}
@@ -811,10 +800,10 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		for(const auto& [bid, rw] : instr.rw_map) {
 			assert(instr.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
-			buffer.newest_data_location.update_region(rw.writes, data_location().set(instr.mid));
+			buffer.newest_data_location.update_region(rw.writes, data_location().set(instr.memory_id));
 			buffer.original_writers.update_region(rw.writes, instr.instruction);
 
-			for(auto& alloc : buffer.memories[instr.mid].allocations) {
+			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
 				// TODO we're calling record_read / record_write for partially overlapping regions here. Is this really the right API or should this modify
 				// last_writers and access_front directly?
 				for(const auto& box : rw.reads.get_boxes()) {
@@ -828,11 +817,11 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			}
 		}
 		for(const auto& [hoid, order] : instr.se_map) {
-			assert(instr.mid == host_memory_id);
+			assert(instr.memory_id == host_memory_id);
 			m_host_objects.at(hoid).last_side_effect = instr.instruction;
 		}
 		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
-			assert(instr.mid == host_memory_id);
+			assert(instr.memory_id == host_memory_id);
 			m_collective_groups.at(tsk.get_collective_group_id()).last_host_task = instr.instruction;
 		}
 	}
@@ -866,8 +855,8 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 	for(auto& [_, region] : writer_regions) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
 		// writer without any effect from the order of operations
-		allocate_contiguously(bid, host_memory_id, region.get_boxes());
-		satisfy_read_requirements(bid, {{host_memory_id, region}});
+		allocate_contiguously(bid, host_memory_id, bounding_box_set(region.get_boxes()));
+		locally_satisfy_read_requirements(bid, {{host_memory_id, region}});
 	}
 
 	for(auto& [_, region] : writer_regions) {
@@ -938,25 +927,25 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 
 void instruction_graph_generator::compile_fence_command(const fence_command& fcmd) {
 	const auto& tsk = *m_tm.get_task(fcmd.get_tid());
+
 	const auto& bam = tsk.get_buffer_access_map();
 	const auto& sem = tsk.get_side_effect_map();
-
-	// the fact that fence tasks use buffer_access_map and side_effect_map to describe their source is rather ugly
 	assert(bam.get_num_accesses() + sem.size() == 1);
 
 	for(const auto bid : bam.get_accessed_buffers()) {
-		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros); // fence uses a fixed range mapper
+		// fences encode their buffer requirements through buffer_access_map with a fixed range mapper (this is rather ugly)
+		const subrange<3> local_sr{};
+		const std::vector chunks{localized_chunk{host_memory_id, local_sr}};
+		satisfy_buffer_requirements(bid, tsk, local_sr, chunks);
+
+		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros);
 		assert(region.get_boxes().size() == 1);
 		const auto box = region.get_boxes().front();
 		// TODO explicitly verify support for empty-range buffer fences
 
 		auto& buffer = m_buffers.at(bid);
-		auto& memory = buffer.memories.at(host_memory_id);
-		if(!memory.is_allocated_contiguously(box)) { allocate_contiguously(bid, host_memory_id, {box}); }
 		const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
 		assert(allocation != nullptr);
-
-		satisfy_read_requirements(bid, {{host_memory_id, box}});
 
 		// TODO this should become copy_instruction as soon as IGGEN supports user_memory_id
 		const auto export_instr = &create<export_instruction>(allocation->aid, buffer.dims, allocation->box.get_range(),

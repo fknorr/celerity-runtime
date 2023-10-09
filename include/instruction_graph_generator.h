@@ -197,6 +197,11 @@ class instruction_graph_generator {
 		}
 	};
 
+	struct localized_chunk {
+		memory_id memory_id = host_memory_id;
+		subrange<3> subrange;
+	};
+
 	instruction_graph m_idag;
 	std::vector<outbound_pilot> m_pending_pilots;
 	instruction_id m_next_iid = 0;
@@ -258,13 +263,15 @@ class instruction_graph_generator {
 
 	// Re-allocation of one buffer on one memory never interacts with other buffers or other memories backing the same buffer, this function can be called
 	// in any order of allocation requirements without generating additional dependencies.
-	void allocate_contiguously(const buffer_id bid, const memory_id mid, const box_vector<3>& boxes);
+	void allocate_contiguously(buffer_id bid, memory_id mid, const bounding_box_set& boxes);
 
-	void apply_receive(const buffer_id bid, const per_buffer_data::pending_receive& receives, const std::vector<std::pair<memory_id, region<3>>>& reads);
+	void commit_pending_receive(buffer_id bid, const per_buffer_data::pending_receive& receives, const std::vector<std::pair<memory_id, region<3>>>& reads);
 
 	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
-	void satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads);
+	void locally_satisfy_read_requirements(buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads);
+
+	void satisfy_buffer_requirements(buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks);
 
 	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction& ainstr);
 

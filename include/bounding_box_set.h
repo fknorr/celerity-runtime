@@ -16,6 +16,9 @@ class bounding_box_set : private box_vector<3> {
 	using typename vector::value_type;
 	using iterator = const_iterator;
 
+	bounding_box_set() = default;
+	explicit bounding_box_set(const vector& boxes) { insert(boxes.begin(), boxes.end()); }
+
 	using vector::empty;
 	using vector::size;
 	using vector::swap;
@@ -38,7 +41,7 @@ class bounding_box_set : private box_vector<3> {
 	}
 
 	template <typename Iterator>
-	void insert(const Iterator first, const Iterator last) {
+	void insert(Iterator first, const Iterator last) {
 		while(first != last) {
 			bounding_box_set::insert(*first++);
 		}
