@@ -124,7 +124,11 @@ TEST_CASE("RSim pattern", "[instruction-graph]") {
 }
 
 TEST_CASE("hello world pattern (host initialization)", "[instruction-graph]") {
-	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	const auto [num_nodes, my_nid] = GENERATE(values<std::pair<size_t, node_id>>({{1, 0}, {2, 0}, {2, 1}}));
+	CAPTURE(num_nodes);
+	CAPTURE(my_nid);
+
+	test_utils::idag_test_context ictx(num_nodes, my_nid, 1 /* devices */);
 	const std::string input_str = "Ifmmp!Xpsme\"\x01";
 	auto buf = ictx.create_buffer<1>(input_str.size(), true /* host initialized */);
 
@@ -200,7 +204,7 @@ TEST_CASE("syncing pattern", "[instruction graph]") {
 	const auto my_nid = GENERATE(values<node_id>({0, 1}));
 	CAPTURE(my_nid);
 
-	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 1 /* devices */);
+	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 2 /* devices */);
 
 	auto buf = ictx.create_buffer<1>(512);
 	ictx.device_compute(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();

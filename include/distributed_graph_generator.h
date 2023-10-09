@@ -2,7 +2,6 @@
 
 #include <bitset>
 #include <unordered_map>
-#include <variant>
 
 #include "command_graph.h"
 #include "ranges.h"
@@ -95,7 +94,8 @@ class distributed_graph_generator {
 
 	void destroy_host_object(host_object_id hoid);
 
-	std::unordered_set<abstract_command*> build_task(const task& tsk);
+	// Resulting commands are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
+	std::vector<abstract_command*> build_task(const task& tsk);
 
 	command_graph& get_command_graph() { return m_cdag; }
 

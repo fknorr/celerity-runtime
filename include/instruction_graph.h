@@ -151,15 +151,6 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
 	size_t m_elem_size;
 };
 
-struct reads_writes {
-	region<3> reads;
-	region<3> writes;
-	region<3> invalidations;
-	bounding_box_set contiguous_boxes;
-
-	bool empty() const { return reads.empty() && writes.empty(); }
-};
-
 struct access_allocation {
 	allocation_id aid;
 	box<3> allocated_box_in_buffer;
@@ -167,9 +158,6 @@ struct access_allocation {
 };
 
 using access_allocation_map = std::vector<access_allocation>;
-
-// TODO maybe overhaul buffer_access_map to provide this functionality?
-using buffer_read_write_map = std::unordered_map<buffer_id, reads_writes>;
 
 // TODO is a common base class for host and device "kernels" the right thing to do? On the host these are not called kernels but "host tasks" everywhere else.
 class launch_instruction : public instruction {

@@ -113,7 +113,33 @@ static buffer_requirements_map get_buffer_requirements_for_mapped_access(const t
 	return result;
 }
 
-std::unordered_set<abstract_command*> distributed_graph_generator::build_task(const task& tsk) {
+// According to Wikipedia https://en.wikipedia.org/wiki/Topological_sorting#Depth-first_search
+std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*> unmarked) {
+	std::unordered_set<abstract_command*> temporary_marked;
+	std::unordered_set<abstract_command*> permanent_marked;
+	std::vector<abstract_command*> sorted(unmarked.size());
+	auto sorted_front = sorted.rbegin();
+
+	const auto visit = [&](abstract_command* const cmd, auto& visit /* to allow recursion in lambda */) {
+		if(permanent_marked.count(cmd) != 0) return;
+		assert(temporary_marked.count(cmd) == 0 && "cyclic command graph");
+		unmarked.erase(cmd);
+		temporary_marked.insert(cmd);
+		for(const auto dep : cmd->get_dependents()) {
+			visit(dep.node, visit);
+		}
+		temporary_marked.erase(cmd);
+		permanent_marked.insert(cmd);
+		*sorted_front++ = cmd;
+	};
+
+	while(!unmarked.empty()) {
+		visit(*unmarked.begin(), visit);
+	}
+	return sorted;
+}
+
+std::vector<abstract_command*> distributed_graph_generator::build_task(const task& tsk) {
 	assert(m_current_cmd_batch.empty());
 	[[maybe_unused]] const auto cmd_count_before = m_cdag.command_count();
 
@@ -163,7 +189,7 @@ std::unordered_set<abstract_command*> distributed_graph_generator::build_task(co
 		}
 	}
 
-	return std::move(m_current_cmd_batch);
+	return topsort(std::move(m_current_cmd_batch));
 }
 
 void distributed_graph_generator::generate_distributed_commands(const task& tsk) {

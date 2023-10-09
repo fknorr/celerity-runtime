@@ -795,40 +795,13 @@ class idag_test_context {
 	instruction_recorder m_instr_recorder;
 	instruction_graph_generator m_iggen;
 
-	// According to Wikipedia https://en.wikipedia.org/wiki/Topological_sorting#Depth-first_search
-	static std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*> unmarked) {
-		std::unordered_set<abstract_command*> temporary_marked;
-		std::unordered_set<abstract_command*> permanent_marked;
-		std::vector<abstract_command*> sorted(unmarked.size());
-		auto sorted_front = sorted.rbegin();
-
-		const auto visit = [&](abstract_command* const cmd, auto& visit /* to allow recursion in lambda */) {
-			if(permanent_marked.count(cmd) != 0) return;
-			assert(temporary_marked.count(cmd) == 0 && "cyclic command graph");
-			unmarked.erase(cmd);
-			temporary_marked.insert(cmd);
-			for(const auto dep : cmd->get_dependents()) {
-				visit(dep.node, visit);
-			}
-			temporary_marked.erase(cmd);
-			permanent_marked.insert(cmd);
-			*sorted_front++ = cmd;
-		};
-
-		while(!unmarked.empty()) {
-			visit(*unmarked.begin(), visit);
-		}
-		return sorted;
-	}
-
 	reduction_info create_reduction(const buffer_id bid, const bool include_current_buffer_value) {
 		return reduction_info{m_next_reduction_id++, bid, include_current_buffer_value};
 	}
 
-	void build_task(const task_id tid) { compile_commands(m_dggen.build_task(*m_tm.get_task(tid))); }
-
-	void compile_commands(std::unordered_set<abstract_command*>&& cmds) {
-		for(const auto cmd : topsort(std::move(cmds))) {
+	void build_task(const task_id tid) {
+		const auto commands = m_dggen.build_task(*m_tm.get_task(tid));
+		for(const auto cmd : commands) {
 			m_iggen.compile(*cmd);
 		}
 	}

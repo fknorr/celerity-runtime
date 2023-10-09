@@ -162,6 +162,7 @@ memory_id instruction_graph_generator::next_location(const data_location& locati
 	utils::panic("data is requested to be read, but not located in any memory");
 }
 
+// TODO decide if this should only receive non-contiguous boxes (and assert that) or it should filter for non-contiguous boxes itself
 void instruction_graph_generator::allocate_contiguously(const buffer_id bid, const memory_id mid, const box_vector<3>& boxes) {
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories[mid];
@@ -181,13 +182,14 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		}
 	}
 
+	// ?? TODO what does this even do?
 	auto unmerged_new_allocation = std::move(contiguous_after_reallocation).into_vector();
 	const auto last_new_allocation = std::remove_if(unmerged_new_allocation.begin(), unmerged_new_allocation.end(),
 	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
 	unmerged_new_allocation.erase(last_new_allocation, unmerged_new_allocation.end());
 
 	// region-merge adjacent boxes that need to be allocated (usually for oversubscriptions). This should not introduce problematic synchronization points since
-
+	// ??? TODO this is an old comment but does not seem to have an implementation
 
 	// TODO but it does introduce synchronization between producers on the resize-copies, which we want to avoid. To resolve this, allocate the fused boxes as
 	// before, but use the non-fused boxes as copy destinations.
@@ -280,6 +282,77 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	memory.allocations.erase(end_retain_after_allocation, memory.allocations.end());
 }
 
+void symmetrically_split_overlapping_regions(std::vector<region<3>>& regions) {
+restart:
+	for(size_t i = 0; i < regions.size(); ++i) {
+		for(size_t j = i + 1; j < regions.size(); ++j) {
+			auto intersection = region_intersection(regions[i], regions[j]);
+			if(!intersection.empty()) {
+				regions[i] = region_difference(regions[i], intersection);
+				regions[j] = region_difference(regions[j], intersection);
+				regions.push_back(std::move(intersection));
+				// if intersections above are actually subsets, we will end up with empty regions
+				regions.erase(std::remove_if(regions.begin(), regions.end(), std::mem_fn(&region<3>::empty)), regions.end());
+				goto restart; // NOLINT(cppcoreguidelines-avoid-goto)
+			}
+		}
+	}
+}
+
+void instruction_graph_generator::apply_receive(
+    const buffer_id bid, const per_buffer_data::pending_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
+	auto& buffer = m_buffers.at(bid);
+	auto& memory = buffer.memories.at(host_memory_id);
+	const auto alloc = memory.find_contiguous_allocation(receive.bounding_box);
+	assert(alloc != nullptr);
+
+	const auto begin_recv_instr = &create<begin_receive_instruction>(receive.trid, bid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
+	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
+
+	// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
+	// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
+	// that there are no pending transfers for the region they are trying to read or to access (TODO).
+	for(const auto& [_, front] : alloc->access_fronts.get_region_values(receive.received_region)) { // TODO copy-pasta
+		for(const auto dep_instr : front.front) {
+			add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
+		}
+	}
+
+	std::vector<region<3>> independent_await_regions;
+	for(const auto& [_, read_region] : reads) {
+		const auto await_region = region_intersection(read_region, receive.received_region);
+		if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
+	}
+	symmetrically_split_overlapping_regions(independent_await_regions);
+
+#if CELERITY_DETAIL_ENABLE_DEBUG
+	region<3> full_await_region;
+	for(const auto& await_region : independent_await_regions) {
+		full_await_region = region_union(full_await_region, await_region);
+	}
+	assert(full_await_region == receive.received_region);
+#endif
+
+	std::vector<instruction*> await_receives;
+	for(const auto& await_region : independent_await_regions) {
+		const auto await_instr = &create<await_receive_instruction>(receive.trid, bid, await_region);
+		if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr); }
+		await_receives.push_back(await_instr);
+
+		add_dependency(*await_instr, *begin_recv_instr, dependency_kind::true_dep);
+
+		alloc->record_write(await_region, await_instr);
+		buffer.original_writers.update_region(await_region, await_instr);
+	}
+
+	const auto end_recv_instr = &create<end_receive_instruction>(receive.trid, bid);
+	if(m_recorder != nullptr) { *m_recorder << end_receive_instruction_record(*end_recv_instr); }
+	for(auto await_recv_instr : await_receives) {
+		add_dependency(*end_recv_instr, *await_recv_instr, dependency_kind::true_dep);
+	}
+
+	buffer.newest_data_location.update_region(receive.received_region, data_location().set(host_memory_id));
+}
 
 void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads) {
 	auto& buffer = m_buffers.at(bid);
@@ -296,80 +369,8 @@ void instruction_graph_generator::satisfy_read_requirements(const buffer_id bid,
 
 	// transform vectors of potentially-overlapping unsatisfied regions into disjoint regions
 	for(auto& [mid, regions] : unsatisfied_reads) {
-	restart:
-		for(size_t i = 0; i < regions.size(); ++i) {
-			for(size_t j = i + 1; j < regions.size(); ++j) {
-				auto intersection = region_intersection(regions[i], regions[j]);
-				if(!intersection.empty()) {
-					regions[i] = region_difference(regions[i], intersection);
-					regions[j] = region_difference(regions[j], intersection);
-					regions.push_back(std::move(intersection));
-					// if intersections above are actually subsets, we will end up with empty regions
-					regions.erase(std::remove_if(regions.begin(), regions.end(), std::mem_fn(&region<3>::empty)), regions.end());
-					goto restart; // NOLINT(cppcoreguidelines-avoid-goto)
-				}
-			}
-		}
+		symmetrically_split_overlapping_regions(regions);
 	}
-
-	// First, see if there are pending await-pushes for any of the unsatisfied read regions.
-	for(auto& [mid, disjoint_regions] : unsatisfied_reads) {
-		auto& memory = buffer.memories[host_memory_id];
-
-		for(auto& unsatisfied_region : disjoint_regions) {
-			for(auto& transfer : buffer.inbound_transfers) {
-				const auto recv_region = region_intersection(unsatisfied_region, transfer.unconsumed_region);
-				if(recv_region.empty()) continue;
-
-				const auto recv_instr = &create<await_receive_instruction>(transfer.id, bid, recv_region);
-				if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*recv_instr); }
-
-				add_dependency(*recv_instr, *transfer.begin_receive, dependency_kind::true_dep);
-
-				const auto recv_bounds = bounding_box(recv_region);
-				const auto allocation = std::find_if(memory.allocations.begin(), memory.allocations.end(), //
-				    [&](const auto& a) { return a.box.covers(recv_bounds); });
-				assert(allocation != memory.allocations.end()); // we guarantee a contiguous allocation when generating begin_receive_instruction
-				allocation->record_write(recv_region, recv_instr);
-
-				buffer.original_writers.update_region(recv_region, recv_instr);
-
-				// TODO this always transfers to a single memory, which is suboptimal. Find a way to implement "device broadcast" from a single receive
-				// buffer. This will probably require explicit handling of the receive buffer inside the IDAG.
-				//
-				// How to realize this in the presence of CUDA-aware MPI? We want to have RDMA MPI_Recv to device buffers as the happy path, and a copy from
-				// receive buffer as fallback - but only in the absence of a broadcast condition.
-				// 	 - annotate recv_instructions with the desired allocation to RDMA to (if any)
-				//   - have a conditional copy_instruction following it, in case the RDMA fails (or should the receive_arbiter dispatch that copy?)
-				//   - in case of a RDMA failure, or when we want to broadcast, we need a release_transfer_instruction to hand the transfer_allocation_id
-				//   back
-				// 	   to the receive_arbiter (again kinda conditional on whether we did an RDMA receive or not)
-				buffer.newest_data_location.update_region(recv_region, data_location().set(host_memory_id));
-
-				transfer.await_receives.push_back(recv_instr);
-				transfer.unconsumed_region = region_difference(transfer.unconsumed_region, recv_region);
-
-				// if this was the last await-push, insert an end_receive_instruction
-				if(transfer.unconsumed_region.empty()) {
-					const auto end_recv_instr = &create<end_receive_instruction>(transfer.id, bid);
-					if(m_recorder != nullptr) { *m_recorder << end_receive_instruction_record(*end_recv_instr); }
-					for(auto await_recv_instr : transfer.await_receives) {
-						add_dependency(*end_recv_instr, *await_recv_instr, dependency_kind::true_dep);
-					}
-				}
-
-				// if the requirement is on host memory, we do not need to do a follow-up host-to-device coherence copy
-				if(mid == host_memory_id) { unsatisfied_region = region_difference(unsatisfied_region, recv_region); }
-			}
-		}
-
-		// remove regions that are fully satisfied by incoming transfers
-		disjoint_regions.erase(std::remove_if(disjoint_regions.begin(), disjoint_regions.end(), std::mem_fn(&region<3>::empty)), disjoint_regions.end());
-	}
-
-	const auto last_incomplete_transfer = std::remove_if(buffer.inbound_transfers.begin(), buffer.inbound_transfers.end(),
-	    [&](const per_buffer_data::partial_inbound_transfer& transfer) { return transfer.unconsumed_region.empty(); });
-	buffer.inbound_transfers.erase(last_incomplete_transfer, buffer.inbound_transfers.end());
 
 	// Next, satisfy any remaining reads by copying locally from the newest data location
 	struct copy_template {
@@ -488,8 +489,8 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 		//  by some other kernel in the past.
 		assert(sources.any() && "trying to read data that is neither found locally nor has been await-pushed before");
 	}
-	for(const auto& transfer : buffer.inbound_transfers) {
-		assert(region_intersection(transfer.unconsumed_region, box).empty() && "attempting to linearize a subrange with uncommitted await-pushes");
+	for(const auto& transfer : buffer.pending_receives) {
+		assert(region_intersection(transfer.received_region, box).empty() && "attempting to linearize a subrange with uncommitted await-pushes");
 	}
 #endif
 
@@ -562,8 +563,46 @@ std::vector<chunk<3>> split_equal(const chunk<3>& full_chunk, const range<3>& gr
 
 void instruction_graph_generator::compile_execution_command(const execution_command& ecmd) {
 	const auto& tsk = *m_tm.get_task(ecmd.get_tid());
+	const auto& bam = tsk.get_buffer_access_map();
 
 	if(tsk.get_execution_target() == execution_target::device && m_devices.empty()) { utils::panic("no device on which to execute device kernel"); }
+
+	// collect all receives that we must apply before execution of this command
+	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
+	// read-write access conflicts, TODO)
+
+	std::unordered_map<std::pair<buffer_id, memory_id>, box_vector<3>, utils::pair_hash> not_contiguously_allocated_boxes;
+	std::unordered_map<buffer_id, std::vector<per_buffer_data::pending_receive>> applied_receives;
+	for(const auto bid : bam.get_accessed_buffers()) {
+		auto& buffer = m_buffers.at(bid);
+
+		region<3> accessed;  // which elements have are accessed (to figure out applying receives)
+		region<3> discarded; // which elements are received with a non-consuming access or received (these don't need to be preserved)
+		for(const auto mode : access::all_modes) {
+			const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), ecmd.get_execution_range(), tsk.get_global_size());
+			accessed = region_union(accessed, req);
+			if(!access::mode_traits::is_consumer(mode)) { discarded = region_union(discarded, req); }
+		}
+
+		const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
+		    [&](const per_buffer_data::pending_receive& r) { return region_intersection(accessed, r.received_region).empty(); });
+		for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
+			// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
+			discarded = region_union(discarded, it->received_region);
+			// begin_receive_instruction needs a contiguous allocation
+			if(!buffer.memories[host_memory_id].is_allocated_contiguously(it->bounding_box)) {
+				not_contiguously_allocated_boxes[{bid, host_memory_id}].push_back(it->bounding_box);
+			}
+		}
+
+		if(first_applied_receive != buffer.pending_receives.end()) {
+			applied_receives.emplace(bid, std::vector(first_applied_receive, buffer.pending_receives.end()));
+			buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
+		}
+
+		// data received / written by this task is not yet present anywhere locally
+		buffer.newest_data_location.update_region(discarded, data_location());
+	}
 
 	// 0) collectively generate any non-existing collective group
 
@@ -576,11 +615,19 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		m_collective_groups.emplace(cgid, per_collective_group_data{clone_cg_isntr});
 	}
 
+	struct reads_writes {
+		region<3> reads;
+		region<3> writes;
+		bounding_box_set contiguous_boxes;
+
+		bool empty() const { return reads.empty() && writes.empty(); }
+	};
+
 	struct partial_instruction {
 		subrange<3> execution_sr;
 		device_id did = -1;
 		memory_id mid = host_memory_id;
-		buffer_read_write_map rw_map;
+		std::unordered_map<buffer_id, reads_writes> rw_map;
 		side_effect_map se_map;
 		instruction* instruction = nullptr;
 		std::vector<buffer_allocation_record> allocation_buffer_map; // for kernel_instructions, if (m_recorder)
@@ -613,8 +660,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	}
 
-	std::unordered_map<std::pair<buffer_id, memory_id>, region<3>, utils::pair_hash> invalidations;
-	const auto& bam = tsk.get_buffer_access_map();
 	for(const auto bid : bam.get_accessed_buffers()) {
 		for(auto& insn : cmd_instrs) {
 			reads_writes rw;
@@ -622,13 +667,9 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
 				if(access::mode_traits::is_consumer(mode)) { rw.reads = region_union(rw.reads, req); }
 				if(access::mode_traits::is_producer(mode)) { rw.writes = region_union(rw.writes, req); }
-				if(!access::mode_traits::is_consumer(mode)) {
-					auto& region = invalidations[{bid, insn.mid}]; // allow default-insert
-					region = region_union(region, req);
-				}
 			}
 			rw.contiguous_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), insn.execution_sr, tsk.get_global_size());
-			if(!rw.empty()) { insn.rw_map.emplace(bid, std::move(rw)); }
+			insn.rw_map.emplace(bid, std::move(rw));
 		}
 	}
 
@@ -638,19 +679,8 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		cmd_instrs[0].se_map = tsk.get_side_effect_map();
 	}
 
-	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
-	// read-write access conflicts, TODO)
-	for(auto& [bid_mid, region] : invalidations) {
-		const auto& [bid, mid] = bid_mid;
-		auto& buffer = m_buffers.at(bid);
-		for(auto& [box, location] : buffer.newest_data_location.get_region_values(region)) {
-			buffer.newest_data_location.update_region(box, data_location(location).reset(mid));
-		}
-	}
-
 	// 2) allocate memory
 
-	std::unordered_map<std::pair<buffer_id, memory_id>, box_vector<3>, utils::pair_hash> not_contiguously_allocated_boxes;
 	for(const auto& insn : cmd_instrs) {
 		for(const auto& [bid, rw] : insn.rw_map) {
 			const auto& memory = m_buffers.at(bid).memories[insn.mid];
@@ -660,14 +690,11 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	}
 
-	// TODO allocate for await-pushes!
-
 	for(auto& [bid_mid, boxes] : not_contiguously_allocated_boxes) {
 		const auto& [bid, mid] = bid_mid;
 		allocate_contiguously(bid, mid, boxes);
 	}
 
-	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
 
 	std::unordered_map<buffer_id, std::vector<std::pair<memory_id, region<3>>>> buffer_reads;
 	for(size_t cmd_insn_idx = 0; cmd_insn_idx < cmd_instrs.size(); ++cmd_insn_idx) {
@@ -676,12 +703,22 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			if(!rw.reads.empty()) { buffer_reads[bid].emplace_back(insn.mid, rw.reads); }
 		}
 	}
+	// 2.5) apply all receives whose regions intersect with accesses from this command
 
-	// 4) create the actual command instructions
+	for(const auto& [bid, pending_receives] : applied_receives) {
+		const auto& reads = buffer_reads.at(bid);
+		for(const auto& receive : pending_receives) {
+			apply_receive(bid, receive, reads);
+		}
+	}
+
+	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
 
 	for(const auto& [bid, reads] : buffer_reads) {
 		satisfy_read_requirements(bid, reads);
 	}
+
+	// 4) create the actual command instructions
 
 	for(auto& instr : cmd_instrs) {
 		access_allocation_map allocation_map(bam.get_num_accesses());
@@ -866,45 +903,36 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 
 	if(m_recorder != nullptr) { m_recorder->record_await_push_command_id(apcmd.get_transfer_id(), apcmd.get_cid()); }
 
-	const auto ap_trid = apcmd.get_transfer_id();
-	const auto ap_bid = apcmd.get_bid();
-	const auto& ap_region = apcmd.get_region();
 	auto& buffer = m_buffers.at(apcmd.get_bid());
 
 #ifndef NDEBUG
-	for(const auto& transfer : buffer.inbound_transfers) {
-		assert(transfer.id != ap_trid && "received multiple await-pushes with the same transfer and buffer id");
-		assert(region_intersection(transfer.unconsumed_region, ap_region).empty()
+	for(const auto& receive : buffer.pending_receives) {
+		assert(receive.trid != apcmd.get_transfer_id() && "received multiple await-pushes with the same transfer and buffer id");
+		assert(region_intersection(receive.received_region, apcmd.get_region()).empty()
 		       && "received an await-push command into a previously await-pushed region without an intermediate read");
 	}
 #endif
 
-	const auto [recv_regions, recv_bounding_boxes] = edge_connected_subregions_with_bounding_boxes(ap_region.get_boxes());
-
-	// TODO defer this (as well as begin_receive_instruction creation) until we encounter the first read from the await-pushed region. This way we can find the
-	// optimal allocation that satisfies the requirement of both the await-push and the following reader without causing immediate re-allocations.
-	allocate_contiguously(ap_bid, host_memory_id, recv_bounding_boxes);
-
-	for(size_t i = 0; i < recv_regions.size(); ++i) {
-		const auto alloc = buffer.memories.at(host_memory_id).find_contiguous_allocation(recv_bounding_boxes[i]);
-		assert(alloc != nullptr);
-
-		const auto begin_recv_instr = &create<begin_receive_instruction>(ap_trid, ap_bid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
-		if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
-
-		// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
-		// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
-		// that there are no pending transfers for the region they are trying to read or to access (TODO).
-		for(const auto& [_, front] : alloc->access_fronts.get_region_values(recv_regions[i])) { // TODO copy-pasta
-			for(const auto dep_instr : front.front) {
-				add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
+	{
+		auto ap_boxes = apcmd.get_region().get_boxes();
+		auto begin = ap_boxes.begin();
+		auto end = ap_boxes.end();
+		while(begin != end) {
+			auto connected_end = std::next(begin);
+			auto connected_bounding_box = *begin; // optimization: skip connectivity checks if bounding box is disconnected
+			for(; connected_end != end; ++connected_end) {
+				const auto next_connected = std::find_if(connected_end, end, [&](const auto& candidate) {
+					return boxes_edge_connected(connected_bounding_box, candidate)
+					       && std::any_of(begin, connected_end, [&](const auto& box) { return boxes_edge_connected(candidate, box); });
+				});
+				if(next_connected == end) break;
+				connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
+				std::swap(*next_connected, *connected_end);
 			}
+			buffer.pending_receives.emplace_back(apcmd.get_transfer_id(), region(box_vector<3>(begin, connected_end)), connected_bounding_box);
+			begin = connected_end;
 		}
-
-		buffer.inbound_transfers.push_back({ap_trid, recv_regions[i], begin_recv_instr});
 	}
-
-	buffer.newest_data_location.update_region(ap_region, data_location()); // not present anywhere locally
 }
 
 
@@ -971,9 +999,10 @@ bool is_topologically_sorted(Iterator begin, Iterator end) {
 
 std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruction_graph_generator::compile(const abstract_command& cmd) {
 	matchbox::match(
-	    cmd,                                                                     //
-	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); }, //
-	    [&](const push_command& pcmd) { compile_push_command(pcmd); }, [&](const await_push_command& apcmd) { compile_await_push_command(apcmd); },
+	    cmd,                                                                         //
+	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); },     //
+	    [&](const push_command& pcmd) { compile_push_command(pcmd); },               //
+	    [&](const await_push_command& apcmd) { compile_await_push_command(apcmd); }, //
 	    [&](const horizon_command& hcmd) {
 		    const auto horizon = &create<horizon_instruction>(hcmd.get_tid());
 		    collapse_execution_front_to(horizon);
