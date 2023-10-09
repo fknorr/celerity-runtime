@@ -64,11 +64,13 @@ class alloc_instruction final : public matchbox::implement_acceptor<instruction,
 
 class free_instruction final : public matchbox::implement_acceptor<instruction, free_instruction> {
   public:
-	explicit free_instruction(const instruction_id iid, const allocation_id aid) : acceptor_base(iid), m_aid(aid) {}
+	explicit free_instruction(const instruction_id iid, const memory_id mid, const allocation_id aid) : acceptor_base(iid), m_mid(mid), m_aid(aid) {}
 
+	memory_id get_memory_id() const { return m_mid; }
 	allocation_id get_allocation_id() const { return m_aid; }
 
   private:
+	memory_id m_mid;
 	allocation_id m_aid;
 };
 
@@ -152,7 +154,7 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
 };
 
 struct access_allocation {
-	allocation_id aid;
+	allocation_id allocation_id;
 	box<3> allocated_box_in_buffer;
 	box<3> accessed_box_in_buffer;
 };

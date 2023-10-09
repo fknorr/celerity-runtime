@@ -167,14 +167,12 @@ struct alloc_instruction_record : instruction_record_base {
 };
 
 struct free_instruction_record : instruction_record_base {
-	detail::allocation_id allocation_id;
 	detail::memory_id memory_id;
+	detail::allocation_id allocation_id;
 	size_t size;
-	size_t alignment;
 	std::optional<buffer_allocation_record> buffer_allocation;
 
-	free_instruction_record(const free_instruction& finstr, const detail::memory_id mid, const size_t size, const size_t alignment,
-	    const std::optional<buffer_allocation_record>& buffer_allocation);
+	free_instruction_record(const free_instruction& finstr, const size_t size, const std::optional<buffer_allocation_record>& buffer_allocation);
 };
 
 struct init_buffer_instruction_record : instruction_record_base {
@@ -186,6 +184,8 @@ struct init_buffer_instruction_record : instruction_record_base {
 };
 
 struct export_instruction_record : instruction_record_base {
+	buffer_id buffer;
+	celerity::id<3> offset_in_buffer;
 	allocation_id host_allocation_id;
 	int dimensions;
 	range<3> allocation_range;
@@ -193,7 +193,7 @@ struct export_instruction_record : instruction_record_base {
 	range<3> copy_range;
 	size_t element_size;
 
-	explicit export_instruction_record(const export_instruction& einstr);
+	explicit export_instruction_record(const export_instruction& einstr, buffer_id buffer, const celerity::id<3>& offset_in_buffer);
 };
 
 struct copy_instruction_record : instruction_record_base {
@@ -221,19 +221,29 @@ struct copy_instruction_record : instruction_record_base {
 	copy_instruction_record(const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, const detail::box<3>& box);
 };
 
+struct buffer_memory_allocation_record {
+	detail::buffer_id buffer_id;
+	detail::memory_id memory_id;
+	box<3> box;
+};
+
+struct buffer_allocation_access_record : access_allocation, buffer_memory_allocation_record {
+	constexpr buffer_allocation_access_record(const access_allocation& aa, const buffer_memory_allocation_record& bmar)
+	    : access_allocation(aa), buffer_memory_allocation_record(bmar) {}
+};
+
 struct launch_instruction_record : instruction_record_base {
 	execution_target target;
 	std::optional<detail::device_id> device_id;
 	std::optional<detail::collective_group_id> collective_group_id;
 	subrange<3> execution_range;
-	access_allocation_map allocation_map;
+	std::vector<buffer_allocation_access_record> allocation_map;
 	task_id command_group_task_id;
 	command_id execution_command_id;
 	std::string kernel_debug_name;
-	std::vector<buffer_allocation_record> allocation_buffer_map;
 
 	launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid, const std::string& kernel_debug_name,
-	    std::vector<buffer_allocation_record> allocation_buffer_map);
+	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map);
 };
 
 struct send_instruction_record : instruction_record_base {
@@ -260,8 +270,9 @@ struct begin_receive_instruction_record : instruction_record_base {
 	allocation_id dest_allocation_id;
 	box<3> allocated_bounding_box;
 	size_t element_size;
+	region<3> received_region;
 
-	begin_receive_instruction_record(const begin_receive_instruction& brinstr);
+	begin_receive_instruction_record(const begin_receive_instruction& brinstr, const region<3>& received_region);
 };
 
 struct await_receive_instruction_record : instruction_record_base {

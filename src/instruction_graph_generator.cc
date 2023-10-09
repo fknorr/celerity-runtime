@@ -119,7 +119,7 @@ void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
 	for(memory_id mid = 0; mid < buffer.memories.size(); ++mid) {
 		auto& memory = buffer.memories[mid];
 		for(auto& allocation : memory.allocations) {
-			const auto free_instr = &create<free_instruction>(allocation.aid);
+			const auto free_instr = &create<free_instruction>(mid, allocation.aid);
 			for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) {
 				for(const auto access_instr : front.front) {
 					add_dependency(*free_instr, *access_instr, dependency_kind::true_dep);
@@ -127,7 +127,7 @@ void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
 			}
 			if(m_recorder != nullptr) {
 				*m_recorder << free_instruction_record(
-				    *free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align, buffer_allocation_record{bid, allocation.box});
+				    *free_instr, allocation.box.get_area() * buffer.elem_size, buffer_allocation_record{bid, allocation.box});
 			}
 		}
 	}
@@ -260,15 +260,14 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 	// TODO consider keeping old allocations around until their box is written to in order to resolve "buffer-locking" anti-dependencies
 	for(const auto free_aid : free_after_reallocation) {
 		const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
-		const auto free_instr = &create<free_instruction>(allocation.aid);
+		const auto free_instr = &create<free_instruction>(mid, allocation.aid);
 		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
 				add_dependency(*free_instr, *dep_instr, dependency_kind::true_dep);
 			}
 		}
 		if(m_recorder != nullptr) {
-			*m_recorder << free_instruction_record(
-			    *free_instr, mid, allocation.box.get_area() * buffer.elem_size, buffer.elem_align, buffer_allocation_record{bid, allocation.box});
+			*m_recorder << free_instruction_record(*free_instr, allocation.box.get_area() * buffer.elem_size, buffer_allocation_record{bid, allocation.box});
 		}
 	}
 
@@ -307,7 +306,7 @@ void instruction_graph_generator::commit_pending_receive(
 	assert(alloc != nullptr);
 
 	const auto begin_recv_instr = &create<begin_receive_instruction>(receive.trid, bid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
-	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
+	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr, receive.received_region); }
 
 	// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
 	// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
@@ -654,7 +653,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		std::unordered_map<buffer_id, reads_writes> rw_map;
 		side_effect_map se_map;
 		instruction* instruction = nullptr;
-		std::vector<buffer_allocation_record> allocation_buffer_map; // for kernel_instructions, if (m_recorder)
+		std::vector<buffer_memory_allocation_record> buffer_memory_access_map; // for kernel_instructions, if (m_recorder)
 	};
 	// TODO deduplicate these two structures
 	std::vector<partial_instruction> cmd_instrs;
@@ -711,7 +710,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	for(auto& instr : cmd_instrs) {
 		access_allocation_map allocation_map(bam.get_num_accesses());
-		if(m_recorder != nullptr) { instr.allocation_buffer_map.resize(bam.get_num_accesses()); }
+		if(m_recorder != nullptr) { instr.buffer_memory_access_map.resize(bam.get_num_accesses()); }
 
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
@@ -724,10 +723,10 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				assert(allocation_it != allocations.end());
 				const auto& alloc = *allocation_it;
 				allocation_map[i] = access_allocation{alloc.aid, alloc.box, accessed_box};
-				if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, accessed_box}; }
+				if(m_recorder != nullptr) { instr.buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, accessed_box}; }
 			} else {
 				allocation_map[i] = access_allocation{null_allocation_id, {}, {}};
-				if(m_recorder != nullptr) { instr.allocation_buffer_map[i] = buffer_allocation_record{bid, {}}; }
+				if(m_recorder != nullptr) { instr.buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, {}}; }
 			}
 		}
 
@@ -745,8 +744,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 
 		if(m_recorder != nullptr) {
-			*m_recorder << launch_instruction_record(
-			    *launch_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), std::move(instr.allocation_buffer_map));
+			*m_recorder << launch_instruction_record(*launch_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), instr.buffer_memory_access_map);
 		}
 
 		instr.instruction = launch_instr;
@@ -960,7 +958,7 @@ void instruction_graph_generator::compile_fence_command(const fence_command& fcm
 		add_dependency(*fence_instr, *export_instr, dependency_kind::true_dep);
 
 		if(m_recorder != nullptr) {
-			*m_recorder << export_instruction_record(*export_instr);
+			*m_recorder << export_instruction_record(*export_instr, bid, box.get_offset());
 			*m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), bid, box.get_subrange());
 		}
 	}

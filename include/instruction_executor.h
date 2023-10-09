@@ -49,11 +49,6 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	using event = std::variant<std::unique_ptr<backend::event>, std::unique_ptr<communicator::event>, receive_arbiter::event,
 	    std::future<host_queue::execution_info>, completed_synchronous>;
 
-	struct allocation {
-		memory_id memory;
-		void* pointer;
-	};
-
 	struct buffer_user_pointer_announcement {
 		buffer_id bid;
 		const void* ptr;
@@ -75,7 +70,7 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	bool m_expecting_more_submissions = true;
 	std::unique_ptr<backend::queue> m_backend_queue;
 	std::unordered_map<buffer_id, const void*> m_buffer_user_pointers;
-	std::unordered_map<allocation_id, allocation> m_allocations; // TODO should be allocation_id -> void *
+	std::unordered_map<allocation_id, void*> m_allocations;
 	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> m_host_object_instances;
 	std::unordered_map<collective_group_id, communicator::collective_group*> m_collective_groups;
 	receive_arbiter m_recv_arbiter;

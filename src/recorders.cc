@@ -171,18 +171,18 @@ alloc_instruction_record::alloc_instruction_record(
     : instruction_record_base(ainstr), allocation_id(ainstr.get_allocation_id()), memory_id(ainstr.get_memory_id()), size(ainstr.get_size()),
       alignment(ainstr.get_alignment()), origin(origin), buffer_allocation(buffer_allocation) {}
 
-free_instruction_record::free_instruction_record(const free_instruction& finstr, const detail::memory_id mid, const size_t size, const size_t alignment,
-    const std::optional<buffer_allocation_record>& buffer_allocation)
-    : instruction_record_base(finstr), allocation_id(finstr.get_allocation_id()), memory_id(mid), size(size), alignment(alignment),
+free_instruction_record::free_instruction_record(
+    const free_instruction& finstr, const size_t size, const std::optional<buffer_allocation_record>& buffer_allocation)
+    : instruction_record_base(finstr), memory_id(finstr.get_memory_id()), allocation_id(finstr.get_allocation_id()), size(size),
       buffer_allocation(buffer_allocation) {}
 
 init_buffer_instruction_record::init_buffer_instruction_record(const init_buffer_instruction& ibinstr)
     : instruction_record_base(ibinstr), buffer_id(ibinstr.get_buffer_id()), host_allocation_id(ibinstr.get_host_allocation_id()), size(ibinstr.get_size()) {}
 
-export_instruction_record::export_instruction_record(const export_instruction& einstr)
-    : instruction_record_base(einstr), host_allocation_id(einstr.get_host_allocation_id()), dimensions(einstr.get_dimensions()),
-      allocation_range(einstr.get_allocation_range()), offset_in_allocation(einstr.get_offset_in_allocation()), copy_range(einstr.get_copy_range()),
-      element_size(einstr.get_element_size()) {}
+export_instruction_record::export_instruction_record(const export_instruction& einstr, const buffer_id buffer, const celerity::id<3>& offset_in_buffer)
+    : instruction_record_base(einstr), buffer(buffer), offset_in_buffer(offset_in_buffer), host_allocation_id(einstr.get_host_allocation_id()),
+      dimensions(einstr.get_dimensions()), allocation_range(einstr.get_allocation_range()), offset_in_allocation(einstr.get_offset_in_allocation()),
+      copy_range(einstr.get_copy_range()), element_size(einstr.get_element_size()) {}
 
 copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, const detail::box<3>& box)
     : instruction_record_base(cinstr), source_memory(cinstr.get_source_memory()), source_allocation(cinstr.get_source_allocation()),
@@ -192,15 +192,21 @@ copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr,
       box(box) {}
 
 launch_instruction_record::launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid,
-    const std::string& kernel_debug_name, std::vector<buffer_allocation_record> allocation_buffer_map)
+    const std::string& kernel_debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map)
     : instruction_record_base(linstr), target(utils::isa<host_task_instruction>(&linstr) ? execution_target::host : execution_target::device),
       device_id(matchbox::match<std::optional<detail::device_id>>(
           linstr, [](const sycl_kernel_instruction& skinstr) { return skinstr.get_device_id(); }, [](const auto&) { return std::nullopt; })),
       collective_group_id(matchbox::match<std::optional<detail::collective_group_id>>(
           linstr, [](const host_task_instruction& htinstr) { return htinstr.get_collective_group_id(); }, [](const auto&) { return std::nullopt; })),
-      execution_range(linstr.get_execution_range()), allocation_map(linstr.get_allocation_map()), command_group_task_id(cg_tid),
-      execution_command_id(execution_cid), kernel_debug_name(utils::simplify_task_name(kernel_debug_name)),
-      allocation_buffer_map(std::move(allocation_buffer_map)) {}
+      execution_range(linstr.get_execution_range()), command_group_task_id(cg_tid), execution_command_id(execution_cid),
+      kernel_debug_name(utils::simplify_task_name(kernel_debug_name)) //
+{
+	assert(linstr.get_allocation_map().size() == buffer_memory_allocation_map.size());
+	allocation_map.reserve(linstr.get_allocation_map().size());
+	for(size_t i = 0; i < linstr.get_allocation_map().size(); ++i) {
+		allocation_map.emplace_back(linstr.get_allocation_map()[i], buffer_memory_allocation_map[i]);
+	}
+}
 
 send_instruction_record::send_instruction_record(
     const send_instruction& sinstr, const command_id push_cid, const detail::buffer_id buffer_id, const celerity::id<3>& offset_in_buffer)
@@ -209,10 +215,10 @@ send_instruction_record::send_instruction_record(
       offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
       buffer_id(buffer_id), offset_in_buffer(offset_in_buffer) {}
 
-begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr)
+begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr, const region<3>& received_region)
     : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), buffer_id(brinstr.get_buffer_id()),
       dest_memory_id(brinstr.get_dest_memory_id()), dest_allocation_id(brinstr.get_dest_allocation_id()),
-      allocated_bounding_box(brinstr.get_allocated_bounding_box()), element_size(brinstr.get_element_size()) {}
+      allocated_bounding_box(brinstr.get_allocated_bounding_box()), element_size(brinstr.get_element_size()), received_region(received_region) {}
 
 await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
     : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), buffer_id(arinstr.get_buffer_id()),

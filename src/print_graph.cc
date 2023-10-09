@@ -305,20 +305,23 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    if(finstr.buffer_allocation.has_value()) {
 				    fmt::format_to(back, "<br/>{} {}", get_buffer_label(finstr.buffer_allocation->buffer_id), finstr.buffer_allocation->box);
 			    }
-			    fmt::format_to(back, " <br/>{}%{} bytes", finstr.size, finstr.alignment);
+			    fmt::format_to(back, " <br/>{} bytes", finstr.size);
 			    end_node();
 		    },
 		    [&](const init_buffer_instruction_record& ibinstr) {
 			    begin_node(ibinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", ibinstr.id);
-			    fmt::format_to(back, "<b>init buffer</b> B{}<br/>via M0.A{}, {} bytes", ibinstr.buffer_id, ibinstr.host_allocation_id, ibinstr.size);
+			    fmt::format_to(
+			        back, "<b>init buffer</b> {}<br/>via M0.A{}, {} bytes", get_buffer_label(ibinstr.buffer_id), ibinstr.host_allocation_id, ibinstr.size);
 			    end_node();
 		    },
 		    [&](const export_instruction_record& einstr) {
 			    begin_node(einstr, "ellipse", "green3");
-			    fmt::format_to(back, "I{}<br/>", einstr.id);
-			    fmt::format_to(back, "<b>export</b> from M0.A{} ({})+{}, {}D {}x{} bytes", einstr.host_allocation_id, einstr.allocation_range,
-			        einstr.offset_in_allocation, einstr.dimensions, einstr.copy_range, einstr.element_size);
+			    fmt::format_to(back, "I{}", einstr.id);
+			    fmt::format_to(back, "<br/>{}D <b>export</b>", einstr.dimensions);
+			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(einstr.buffer), box(subrange(einstr.offset_in_buffer, einstr.copy_range)));
+			    fmt::format_to(back, "<br/>via M0.A{} {}<br/>{}x{} bytes", einstr.host_allocation_id,
+			        box(subrange(einstr.offset_in_allocation, einstr.copy_range)), einstr.copy_range, einstr.element_size);
 			    end_node();
 		    },
 		    [&](const copy_instruction_record& cinstr) {
@@ -331,9 +334,9 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case copy_instruction_record::copy_origin::coherence: dot += "coherence "; break;
 			    }
 			    fmt::format_to(back, "<b>copy</b><br/>on {} {}", get_buffer_label(cinstr.buffer), cinstr.box);
-			    fmt::format_to(back, "<br/>from M{}.A{} ({}) +{}<br/>to M{}.A{} ({}) +{}<br/>{}x{} bytes", cinstr.source_memory, cinstr.source_allocation,
-			        cinstr.source_range, cinstr.offset_in_source, cinstr.dest_memory, cinstr.dest_allocation, cinstr.dest_range, cinstr.offset_in_dest,
-			        cinstr.copy_range, cinstr.element_size);
+			    fmt::format_to(back, "<br/>from M{}.A{} {}<br/>to M{}.A{} {}<br/>{}x{} bytes", cinstr.source_memory, cinstr.source_allocation,
+			        box(subrange(cinstr.offset_in_source, cinstr.copy_range)), cinstr.dest_memory, cinstr.dest_allocation,
+			        box(subrange(cinstr.offset_in_dest, cinstr.copy_range)), cinstr.copy_range, cinstr.element_size);
 			    end_node();
 		    },
 		    [&](const launch_instruction_record& linstr) {
@@ -348,37 +351,41 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			        linstr.command_group_task_id, linstr.execution_command_id);
 			    fmt::format_to(back, "<br/><b>{}</b>", linstr.target == execution_target::device ? "device kernel" : "host task");
 			    if(!linstr.kernel_debug_name.empty()) { fmt::format_to(back, " {}", linstr.kernel_debug_name /* TODO escape? */); }
-			    if(linstr.device_id.has_value()) { fmt::format_to(back, " on D{}", *linstr.device_id); }
-			    fmt::format_to(back, " {}", linstr.execution_range);
+			    if(linstr.device_id.has_value()) {
+				    fmt::format_to(back, "<br/>on D{} {}", *linstr.device_id, linstr.execution_range);
+			    } else {
+				    fmt::format_to(back, "<br/>on host {}", linstr.execution_range);
+			    }
 
-			    const auto& amap = linstr.allocation_map;
-			    for(size_t i = 0; i < amap.size(); ++i) {
-				    assert(amap.size() == linstr.allocation_buffer_map.size()); // TODO why separate structs?
-				    const auto accessed_box_in_allocation = box(                //
-				        amap[i].accessed_box_in_buffer.get_min() - amap[i].allocated_box_in_buffer.get_min(),
-				        amap[i].accessed_box_in_buffer.get_max() - amap[i].allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>{} {} via A{} {}", get_buffer_label(linstr.allocation_buffer_map[i].buffer_id),
-				        linstr.allocation_buffer_map[i].box, amap[i].aid, accessed_box_in_allocation);
+			    for(const auto& access : linstr.allocation_map) {
+				    const auto accessed_box_in_allocation = box( //
+				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
+				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
+				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.box);
+				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();
 		    },
 		    [&](const send_instruction_record& sinstr) {
 			    begin_node(sinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
-			    fmt::format_to(back, "<br/><b>send</b> TR{}.B{} to N{} tag {}", sinstr.transfer_id, sinstr.buffer_id, sinstr.dest_node_id, sinstr.tag);
+			    fmt::format_to(back, "<br/><b>send</b> TR{}.B{}", sinstr.transfer_id, sinstr.buffer_id);
+			    fmt::format_to(back, "<br/>to N{} tag {}", sinstr.dest_node_id, sinstr.tag);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(sinstr.buffer_id), box(subrange(sinstr.offset_in_buffer, sinstr.send_range)));
-			    fmt::format_to(back, "<br/>from M{}.A{} ({}) + {}, {}x{} bytes", sinstr.source_memory_id, sinstr.source_allocation_id, sinstr.allocation_range,
-			        sinstr.offset_in_allocation, sinstr.send_range, sinstr.element_size);
+			    fmt::format_to(back, "<br/>via M{}.A{} {}", sinstr.source_memory_id, sinstr.source_allocation_id,
+			        box(subrange(sinstr.offset_in_allocation, sinstr.send_range)));
+			    fmt::format_to(back, "<br/>{}x{} bytes", sinstr.send_range, sinstr.element_size);
 			    send_instructions_by_tag.emplace(sinstr.tag, sinstr.id);
 			    end_node();
 		    },
 		    [&](const begin_receive_instruction_record& brinstr) {
-			    begin_node(brinstr, "ellipse", "deeppink2");
+			    begin_node(brinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", brinstr.id, irec.get_await_push_command_id(brinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>begin receive</b> TR{}.B{}", brinstr.transfer_id, brinstr.buffer_id);
+			    fmt::format_to(back, "<br/>{} {}x{} bytes", get_buffer_label(brinstr.buffer_id), brinstr.received_region, brinstr.element_size);
 			    fmt::format_to(back, "<br/>into {} {}", get_buffer_label(brinstr.buffer_id), brinstr.allocated_bounding_box);
-			    fmt::format_to(back, "<br/>via M{}.A{} ({})", brinstr.dest_memory_id, brinstr.dest_allocation_id, brinstr.allocated_bounding_box.get_range());
-			    fmt::format_to(back, "<br/>x{} bytes", brinstr.element_size);
+			    fmt::format_to(back, "<br/>via M{}.A{} {}", brinstr.dest_memory_id, brinstr.dest_allocation_id,
+			        box(subrange(id<3>(), brinstr.allocated_bounding_box.get_range())));
 			    end_node();
 		    },
 		    [&](const await_receive_instruction_record& arinstr) {
@@ -389,7 +396,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const end_receive_instruction_record& erinstr) {
-			    begin_node(erinstr, "ellipse", "deeppink2");
+			    begin_node(erinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", erinstr.id, irec.get_await_push_command_id(erinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>end receive</b> TR{}.B{}<br/>", erinstr.transfer_id, erinstr.buffer_id);
 			    end_node();
@@ -431,8 +438,9 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	for(const auto& pilot : irec.get_outbound_pilots()) {
 		fmt::format_to(back,
-		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} tag {}<br/>TR{}.B{}<br/>for B{} {}</font>>];",
-		    pilot.message.tag, pilot.to, pilot.message.tag, pilot.message.transfer, pilot.message.buffer, pilot.message.buffer, pilot.message.box);
+		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} tag {}<br/>TR{}.B{}<br/>for {} {}</font>>];",
+		    pilot.message.tag, pilot.to, pilot.message.tag, pilot.message.transfer, pilot.message.buffer, get_buffer_label(pilot.message.buffer),
+		    pilot.message.box);
 		if(auto it = send_instructions_by_tag.find(pilot.message.tag); it != send_instructions_by_tag.end()) {
 			fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.message.tag, it->second);
 		}

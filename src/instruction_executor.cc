@@ -53,7 +53,7 @@ void instruction_executor::loop() {
 		};
 	};
 
-	m_allocations.emplace(null_allocation_id, allocation{host_memory_id, nullptr});
+	m_allocations.emplace(null_allocation_id, nullptr);
 	m_collective_groups.emplace(root_collective_group_id, m_communicator->get_collective_root());
 	m_host_queue.require_collective_group(root_collective_group_id);
 
@@ -135,7 +135,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 			auto& aa = map[i];
 			const auto accessed_box_in_allocation = box(aa.accessed_box_in_buffer.get_min() - aa.allocated_box_in_buffer.get_offset(),
 			    aa.accessed_box_in_buffer.get_max() - aa.allocated_box_in_buffer.get_offset());
-			fmt::format_to(std::back_inserter(acc_log), "{} A{} {}", i == 0 ? ", accessing" : ",", aa.aid, accessed_box_in_allocation);
+			fmt::format_to(std::back_inserter(acc_log), "{} A{} {}", i == 0 ? ", accessing" : ",", aa.allocation_id, accessed_box_in_allocation);
 		}
 		return acc_log;
 	};
@@ -159,7 +159,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		        ainstr.get_alignment());
 
 		    auto [ptr, event] = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
-		    m_allocations.emplace(ainstr.get_allocation_id(), allocation{ainstr.get_memory_id(), ptr});
+		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
 
 		    CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
 		    return std::move(event);
@@ -167,19 +167,19 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const free_instruction& finstr) {
 		    const auto it = m_allocations.find(finstr.get_allocation_id());
 		    assert(it != m_allocations.end());
-		    const auto [memory, ptr] = it->second;
+		    const auto ptr = it->second;
 
-		    CELERITY_DEBUG("[executor] I{}: free M{}.A{}", finstr.get_id(), memory, finstr.get_allocation_id());
+		    CELERITY_DEBUG("[executor] I{}: free M{}.A{}", finstr.get_id(), finstr.get_memory_id(), finstr.get_allocation_id());
 
 		    m_allocations.erase(it);
-		    return m_backend_queue->free(memory, ptr);
+		    return m_backend_queue->free(finstr.get_memory_id(), ptr);
 	    },
 	    [&](const init_buffer_instruction& ibinstr) {
 		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
 		        ibinstr.get_size());
 
 		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
-		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id()).pointer;
+		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id());
 		    memcpy(host_ptr, user_ptr, ibinstr.get_size());
 		    return completed_synchronous();
 	    },
@@ -188,7 +188,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		        einstr.get_allocation_range(), einstr.get_offset_in_allocation(), einstr.get_copy_range(), einstr.get_element_size());
 
 		    const auto dest_ptr = einstr.get_out_pointer(); // TODO very naughty
-		    const auto source_base_ptr = m_allocations.at(einstr.get_host_allocation_id()).pointer;
+		    const auto source_base_ptr = m_allocations.at(einstr.get_host_allocation_id());
 
 		    // TODO copy-pasted,but export_instruction will be removed anyway
 		    const auto dispatch_copy = [&](const auto dims) {
@@ -210,8 +210,8 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		        cinstr.get_source_allocation(), cinstr.get_offset_in_source(), cinstr.get_dest_memory(), cinstr.get_dest_allocation(),
 		        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
 
-		    const auto source_base_ptr = m_allocations.at(cinstr.get_source_allocation()).pointer;
-		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation()).pointer;
+		    const auto source_base_ptr = m_allocations.at(cinstr.get_source_allocation());
+		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation());
 		    if(cinstr.get_source_memory() == host_memory_id && cinstr.get_dest_memory() == host_memory_id) {
 			    const auto dispatch_copy = [&](const auto dims) {
 				    memcpy_strided_host(source_base_ptr, dest_base_ptr, cinstr.get_element_size(), range_cast<dims.value>(cinstr.get_source_range()),
@@ -239,7 +239,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    std::vector<closure_hydrator::accessor_info> accessor_infos;
 		    accessor_infos.reserve(skinstr.get_allocation_map().size());
 		    for(const auto& aa : skinstr.get_allocation_map()) {
-			    const auto ptr = m_allocations.at(aa.aid).pointer;
+			    const auto ptr = m_allocations.at(aa.allocation_id);
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer, nullptr /* TODO */});
 #else
@@ -262,7 +262,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    std::vector<closure_hydrator::accessor_info> accessor_infos;
 		    accessor_infos.reserve(htinstr.get_allocation_map().size());
 		    for(const auto& aa : htinstr.get_allocation_map()) {
-			    const auto ptr = m_allocations.at(aa.aid).pointer;
+			    const auto ptr = m_allocations.at(aa.allocation_id);
 			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer});
 		    }
 
@@ -283,7 +283,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		        sinstr.get_source_allocation_id(), sinstr.get_offset_in_allocation(), sinstr.get_send_range(), sinstr.get_element_size(),
 		        sinstr.get_dest_node_id(), sinstr.get_tag());
 
-		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id()).pointer;
+		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id());
 		    const communicator::stride stride{
 		        sinstr.get_allocation_range(),
 		        subrange<3>{sinstr.get_offset_in_allocation(), sinstr.get_send_range()},
@@ -296,7 +296,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		        brinstr.get_buffer_id(), brinstr.get_allocated_bounding_box(), brinstr.get_dest_memory_id(), brinstr.get_dest_allocation_id(),
 		        brinstr.get_allocated_bounding_box().get_range(), brinstr.get_element_size());
 
-		    const auto allocation_base = m_allocations.at(brinstr.get_dest_allocation_id()).pointer;
+		    const auto allocation_base = m_allocations.at(brinstr.get_dest_allocation_id());
 		    m_recv_arbiter.begin_receive(
 		        brinstr.get_transfer_id(), brinstr.get_buffer_id(), allocation_base, brinstr.get_allocated_bounding_box(), brinstr.get_element_size());
 		    return completed_synchronous();
