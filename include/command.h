@@ -42,45 +42,34 @@ namespace detail {
 
 	class push_command final : public matchbox::implement_acceptor<abstract_command, push_command> {
 		friend class command_graph;
-		push_command(command_id cid, buffer_id bid, reduction_id rid, node_id target, transfer_id trid, subrange<3> push_range)
-		    : acceptor_base(cid), m_bid(bid), m_rid(rid), m_target(target), m_trid(trid), m_push_range(push_range) {}
+		push_command(const command_id cid, const node_id target, const receive_id& rcvid, const subrange<3>& push_range)
+		    : acceptor_base(cid), m_target(target), m_rcvid(rcvid), m_push_range(push_range) {}
 
 		command_type get_type() const override { return command_type::push; }
 
 	  public:
-		buffer_id get_bid() const { return m_bid; }
-		reduction_id get_reduction_id() const { return m_rid; }
 		node_id get_target() const { return m_target; }
-		transfer_id get_transfer_id() const { return m_trid; }
+		const receive_id& get_receive_id() const { return m_rcvid; }
 		const subrange<3>& get_range() const { return m_push_range; }
 
 	  private:
-		buffer_id m_bid;
-		reduction_id m_rid;
 		node_id m_target;
-		transfer_id m_trid;
+		receive_id m_rcvid;
 		subrange<3> m_push_range;
 	};
 
 	class await_push_command final : public matchbox::implement_acceptor<abstract_command, await_push_command> {
 		friend class command_graph;
-		await_push_command(command_id cid, buffer_id bid, reduction_id rid, transfer_id trid, region<3> region)
-		    : acceptor_base(cid), m_bid(bid), m_rid(rid), m_trid(trid), m_region(std::move(region)) {}
+		await_push_command(const command_id cid, const receive_id& rcvid, region<3> region) : acceptor_base(cid), m_rcvid(rcvid), m_region(std::move(region)) {}
 
 		command_type get_type() const override { return command_type::await_push; }
 
 	  public:
-		buffer_id get_bid() const { return m_bid; }
-		reduction_id get_reduction_id() const { return m_rid; }
-		transfer_id get_transfer_id() const { return m_trid; }
+		const receive_id& get_receive_id() const { return m_rcvid; }
 		const region<3>& get_region() const { return m_region; }
 
 	  private:
-		buffer_id m_bid;
-		// Having the reduction ID here isn't strictly required for matching against incoming pushes,
-		// but it allows us to sanity check that they match as well as include the ID during graph printing.
-		reduction_id m_rid;
-		transfer_id m_trid;
+		receive_id m_rcvid;
 		region<3> m_region;
 	};
 

@@ -305,7 +305,9 @@ void instruction_graph_generator::commit_pending_receive(
 	const auto alloc = memory.find_contiguous_allocation(receive.bounding_box);
 	assert(alloc != nullptr);
 
-	const auto begin_recv_instr = &create<begin_receive_instruction>(receive.trid, bid, receive.rid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
+	const auto rcvid = receive_id(receive.trid, bid, receive.rid);
+
+	const auto begin_recv_instr = &create<begin_receive_instruction>(rcvid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
 	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr, receive.received_region); }
 
 	// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
@@ -334,7 +336,7 @@ void instruction_graph_generator::commit_pending_receive(
 
 	std::vector<instruction*> await_receives;
 	for(const auto& await_region : independent_await_regions) {
-		const auto await_instr = &create<await_receive_instruction>(receive.trid, bid, receive.rid, await_region);
+		const auto await_instr = &create<await_receive_instruction>(rcvid, await_region);
 		if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr); }
 		await_receives.push_back(await_instr);
 
@@ -344,7 +346,7 @@ void instruction_graph_generator::commit_pending_receive(
 		buffer.original_writers.update_region(await_region, await_instr);
 	}
 
-	const auto end_recv_instr = &create<end_receive_instruction>(receive.trid, bid, receive.rid);
+	const auto end_recv_instr = &create<end_receive_instruction>(rcvid);
 	if(m_recorder != nullptr) { *m_recorder << end_receive_instruction_record(*end_recv_instr); }
 	for(auto await_recv_instr : await_receives) {
 		add_dependency(*end_recv_instr, *await_recv_instr, dependency_kind::true_dep);
@@ -633,11 +635,9 @@ std::vector<copy_instruction*> instruction_graph_generator::linearize_buffer_sub
 }
 
 
-int instruction_graph_generator::create_pilot_message(
-    const node_id target, const transfer_id trid, const buffer_id bid, const reduction_id rid, const box<3>& box) //
-{
+int instruction_graph_generator::create_pilot_message(const node_id target, const receive_id& rcvid, const box<3>& box) {
 	int tag = m_next_p2p_tag++;
-	m_pending_pilots.push_back(outbound_pilot{target, pilot_message{tag, trid, bid, rid, box}});
+	m_pending_pilots.push_back(outbound_pilot{target, pilot_message{tag, rcvid, box}});
 	if(m_recorder != nullptr) { *m_recorder << m_pending_pilots.back(); }
 	return tag;
 }
@@ -899,11 +899,9 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 
 void instruction_graph_generator::compile_push_command(const push_command& pcmd) {
-	const auto bid = pcmd.get_bid();
-	const auto trid = pcmd.get_transfer_id();
-	const auto rid = pcmd.get_reduction_id();
+	const auto rcvid = pcmd.get_receive_id();
 
-	auto& buffer = m_buffers.at(bid);
+	auto& buffer = m_buffers.at(rcvid.bid);
 	const auto push_box = box(pcmd.get_range());
 
 	// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same
@@ -917,13 +915,13 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 	for(auto& [_, region] : writer_regions) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
 		// writer without any effect from the order of operations
-		allocate_contiguously(bid, host_memory_id, bounding_box_set(region.get_boxes()));
-		locally_satisfy_read_requirements(bid, {{host_memory_id, region}});
+		allocate_contiguously(rcvid.bid, host_memory_id, bounding_box_set(region.get_boxes()));
+		locally_satisfy_read_requirements(rcvid.bid, {{host_memory_id, region}});
 	}
 
 	for(auto& [_, region] : writer_regions) {
 		for(const auto& box : region.get_boxes()) {
-			const int tag = create_pilot_message(pcmd.get_target(), trid, bid, rid, box);
+			const int tag = create_pilot_message(pcmd.get_target(), rcvid, box);
 
 			const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
 			assert(allocation != nullptr); // we allocate_contiguously above
@@ -934,7 +932,7 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 
 			if(m_recorder != nullptr) {
 				const auto offset_in_buffer = box.get_offset();
-				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), trid, bid, rid, offset_in_buffer);
+				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), rcvid, offset_in_buffer);
 			}
 
 			for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
@@ -952,13 +950,14 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 	// recv-instructions as soon as data is to be read by another instruction. This way, we can split the recv instructions and avoid
 	// unnecessary synchronization points between chunks that can otherwise profit from a transfer-compute overlap.
 
-	if(m_recorder != nullptr) { m_recorder->record_await_push_command_id(apcmd.get_transfer_id(), apcmd.get_cid()); }
+	const auto& rcvid = apcmd.get_receive_id();
+	if(m_recorder != nullptr) { m_recorder->record_await_push_command_id(rcvid, apcmd.get_cid()); }
 
-	auto& buffer = m_buffers.at(apcmd.get_bid());
+	auto& buffer = m_buffers.at(rcvid.bid);
 
 #ifndef NDEBUG
 	for(const auto& receive : buffer.pending_receives) {
-		assert(receive.trid != apcmd.get_transfer_id() && "received multiple await-pushes with the same transfer and buffer id");
+		assert(receive.trid != rcvid.trid && "received multiple await-pushes with the same transfer and buffer id");
 		assert(region_intersection(receive.received_region, apcmd.get_region()).empty()
 		       && "received an await-push command into a previously await-pushed region without an intermediate read");
 	}
@@ -980,8 +979,7 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 				connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
 				std::swap(*next_connected, *connected_end);
 			}
-			buffer.pending_receives.emplace_back(
-			    apcmd.get_transfer_id(), apcmd.get_reduction_id(), region(box_vector<3>(begin, connected_end)), connected_bounding_box);
+			buffer.pending_receives.emplace_back(rcvid.trid, rcvid.rid, region(box_vector<3>(begin, connected_end)), connected_bounding_box);
 			begin = connected_end;
 		}
 	}

@@ -2,6 +2,7 @@
 
 #include "grid.h"
 #include "ranges.h"
+#include "types.h"
 
 #include <spdlog/fmt/fmt.h>
 
@@ -69,5 +70,21 @@ struct fmt::formatter<celerity::chunk<Dims>> : fmt::formatter<celerity::subrange
 		out = std::copy_n(" : ", 3, out);
 		out = formatter<celerity::id<Dims>>::format(celerity::id(chunk.global_size), ctx); // cast to id to avoid multiple inheritance
 		return out;
+	}
+};
+
+template <>
+struct fmt::formatter<celerity::detail::receive_id> {
+	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }
+
+	format_context::iterator format(const celerity::detail::receive_id& rcvid, format_context& ctx) const {
+		const auto [trid, bid, rid] = rcvid;
+		auto out = ctx.out();
+		if(rid != celerity::detail::no_reduction_id) {
+			out = fmt::format_to(out, "TR{}.B{}.R{}", trid, bid, rid);
+		} else {
+			out = fmt::format_to(out, "TR{}.B{}", trid, bid);
+		}
+		return ctx.out();
 	}
 };

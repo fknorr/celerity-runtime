@@ -91,7 +91,7 @@ struct command_record {
 	std::optional<node_id> target;
 	std::optional<region<3>> await_region;
 	std::optional<subrange<3>> push_range;
-	std::optional<transfer_id> transfer_id;
+	std::optional<receive_id> receive_id;
 	std::optional<task_id> task_id;
 	std::optional<task_geometry> task_geometry;
 	bool is_reduction_initializer;
@@ -267,19 +267,14 @@ struct send_instruction_record : instruction_record_base {
 	range<3> send_range;
 	size_t element_size;
 	command_id push_cid;
-	transfer_id transfer_id;
-	buffer_id buffer_id;
-	detail::reduction_id reduction_id;
+	detail::receive_id receive_id;
 	celerity::id<3> offset_in_buffer;
 
-	send_instruction_record(const send_instruction& sinstr, command_id push_cid, detail::transfer_id trid, detail::buffer_id bid, detail::reduction_id rid,
-	    const celerity::id<3>& offset_in_buffer);
+	send_instruction_record(const send_instruction& sinstr, command_id push_cid, const detail::receive_id& rcvid, const celerity::id<3>& offset_in_buffer);
 };
 
 struct begin_receive_instruction_record : instruction_record_base {
-	transfer_id transfer_id;
-	buffer_id buffer_id;
-	detail::reduction_id reduction_id;
+	detail::receive_id receive_id;
 	memory_id dest_memory_id;
 	allocation_id dest_allocation_id;
 	box<3> allocated_bounding_box;
@@ -290,18 +285,14 @@ struct begin_receive_instruction_record : instruction_record_base {
 };
 
 struct await_receive_instruction_record : instruction_record_base {
-	transfer_id transfer_id;
-	buffer_id buffer_id;
-	detail::reduction_id reduction_id;
+	detail::receive_id receive_id;
 	region<3> received_region;
 
 	await_receive_instruction_record(const await_receive_instruction& arinstr);
 };
 
 struct end_receive_instruction_record : instruction_record_base {
-	transfer_id transfer_id;
-	buffer_id buffer_id;
-	detail::reduction_id reduction_id;
+	detail::receive_id receive_id;
 
 	end_receive_instruction_record(const end_receive_instruction& erinstr);
 };
@@ -354,7 +345,7 @@ class instruction_recorder {
 	using instruction_records = std::vector<instruction_record>;
 	using outbound_pilots = std::vector<outbound_pilot>;
 
-	void record_await_push_command_id(const transfer_id trid, const command_id cid) { m_await_push_cids.emplace(trid, cid); }
+	void record_await_push_command_id(const receive_id& rcvid, const command_id cid) { m_await_push_cids.emplace(rcvid, cid); }
 	void record_buffer_debug_name(const buffer_id bid, const std::string& debug_name) { m_buffer_debug_names.emplace(bid, debug_name); }
 	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
 	void record_pilot_message(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
@@ -372,13 +363,13 @@ class instruction_recorder {
 
 	const instruction_records& get_instructions() const { return m_recorded_instructions; }
 	const outbound_pilots& get_outbound_pilots() const { return m_recorded_pilots; }
-	command_id get_await_push_command_id(transfer_id trid) const;
+	command_id get_await_push_command_id(const receive_id& rcvid) const;
 	const std::string& get_buffer_debug_name(buffer_id bid) const;
 
   private:
 	instruction_records m_recorded_instructions;
 	outbound_pilots m_recorded_pilots;
-	std::unordered_map<transfer_id, command_id> m_await_push_cids;
+	std::unordered_map<receive_id, command_id> m_await_push_cids;
 	std::unordered_map<buffer_id, std::string> m_buffer_debug_names;
 };
 

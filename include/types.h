@@ -55,8 +55,8 @@ MAKE_PHANTOM_TYPE(command_id, size_t)
 MAKE_PHANTOM_TYPE(collective_group_id, size_t)
 MAKE_PHANTOM_TYPE(reduction_id, size_t)
 MAKE_PHANTOM_TYPE(host_object_id, size_t)
-MAKE_PHANTOM_TYPE(hydration_id, size_t);
-MAKE_PHANTOM_TYPE(transfer_id, size_t)
+MAKE_PHANTOM_TYPE(hydration_id, size_t)
+MAKE_PHANTOM_TYPE(transfer_id, size_t) // TODO rename to chunk_id
 MAKE_PHANTOM_TYPE(memory_id, size_t)
 MAKE_PHANTOM_TYPE(device_id, size_t)
 MAKE_PHANTOM_TYPE(allocation_id, size_t)
@@ -79,4 +79,22 @@ inline constexpr collective_group_id non_collective_group_id = 0;
 inline constexpr collective_group_id root_collective_group_id = 1;
 inline constexpr reduction_id no_reduction_id = 0;
 
+// TODO rename to transfer_id
+struct receive_id {
+	transfer_id trid = -1;
+	buffer_id bid = -1;
+	reduction_id rid = no_reduction_id;
+
+	receive_id() = default;
+	receive_id(const transfer_id trid, const buffer_id bid, const reduction_id rid = no_reduction_id) : trid(trid), bid(bid), rid(rid) {}
+
+	friend bool operator==(const receive_id& lhs, const receive_id& rhs) { return lhs.trid == rhs.trid && lhs.bid == rhs.bid && lhs.rid == rhs.rid; }
+	friend bool operator!=(const receive_id& lhs, const receive_id& rhs) { return !(lhs == rhs); }
+};
+
 } // namespace celerity::detail
+
+template <>
+struct std::hash<celerity::detail::receive_id> {
+	std::size_t operator()(const celerity::detail::receive_id& t) const noexcept; // defined in utils.cc
+};

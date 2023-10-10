@@ -63,15 +63,15 @@ std::optional<subrange<3>> get_execution_range(const abstract_command& cmd) {
 }
 
 std::optional<reduction_id> get_reduction_id(const abstract_command& cmd) {
-	if(const auto* push_cmd = dynamic_cast<const push_command*>(&cmd)) return push_cmd->get_reduction_id();
-	if(const auto* await_push_cmd = dynamic_cast<const await_push_command*>(&cmd)) return await_push_cmd->get_reduction_id();
+	if(const auto* push_cmd = dynamic_cast<const push_command*>(&cmd)) return push_cmd->get_receive_id().rid;
+	if(const auto* await_push_cmd = dynamic_cast<const await_push_command*>(&cmd)) return await_push_cmd->get_receive_id().rid;
 	if(const auto* reduction_cmd = dynamic_cast<const reduction_command*>(&cmd)) return reduction_cmd->get_reduction_info().rid;
 	return {};
 }
 
 std::optional<buffer_id> get_buffer_id(const abstract_command& cmd) {
-	if(const auto* push_cmd = dynamic_cast<const push_command*>(&cmd)) return push_cmd->get_bid();
-	if(const auto* await_push_cmd = dynamic_cast<const await_push_command*>(&cmd)) return await_push_cmd->get_bid();
+	if(const auto* push_cmd = dynamic_cast<const push_command*>(&cmd)) return push_cmd->get_receive_id().bid;
+	if(const auto* await_push_cmd = dynamic_cast<const await_push_command*>(&cmd)) return await_push_cmd->get_receive_id().bid;
 	if(const auto* reduction_cmd = dynamic_cast<const reduction_command*>(&cmd)) return reduction_cmd->get_reduction_info().bid;
 	return {};
 }
@@ -96,9 +96,9 @@ std::optional<subrange<3>> get_push_range(const abstract_command& cmd) {
 	return {};
 }
 
-std::optional<transfer_id> get_transfer_id(const abstract_command& cmd) {
-	if(const auto* push_cmd = dynamic_cast<const push_command*>(&cmd)) return push_cmd->get_transfer_id();
-	if(const auto* await_push_cmd = dynamic_cast<const await_push_command*>(&cmd)) return await_push_cmd->get_transfer_id();
+std::optional<receive_id> get_receive_id(const abstract_command& cmd) {
+	if(const auto* push_cmd = dynamic_cast<const push_command*>(&cmd)) return push_cmd->get_receive_id();
+	if(const auto* await_push_cmd = dynamic_cast<const await_push_command*>(&cmd)) return await_push_cmd->get_receive_id();
 	return {};
 }
 
@@ -152,8 +152,8 @@ std::optional<collective_group_id> get_collective_group_id(const abstract_comman
 command_record::command_record(const abstract_command& cmd, const task& tsk, const buffer_name_map& accessed_buffer_names)
     : cid(cmd.get_cid()), type(cmd.get_type()), epoch_action(get_epoch_action(cmd)), execution_range(get_execution_range(cmd)),
       reduction_id(get_reduction_id(cmd)), buffer_id(get_buffer_id(cmd)), buffer_name(get_cmd_buffer_name(buffer_id, accessed_buffer_names)),
-      target(get_target(cmd)), await_region(get_await_region(cmd)), push_range(get_push_range(cmd)), transfer_id(get_transfer_id(cmd)),
-      task_id(get_task_id(cmd)), task_geometry(tsk.get_geometry()), is_reduction_initializer(get_is_reduction_initializer(cmd)),
+      target(get_target(cmd)), await_region(get_await_region(cmd)), push_range(get_push_range(cmd)), receive_id(get_receive_id(cmd)), task_id(get_task_id(cmd)),
+      task_geometry(tsk.get_geometry()), is_reduction_initializer(get_is_reduction_initializer(cmd)),
       accesses(build_cmd_access_list(cmd, tsk, accessed_buffer_names)), reductions(build_reduction_list(tsk, accessed_buffer_names)),
       side_effects(tsk.get_side_effect_map()), dependencies(build_command_dependency_list(cmd)), task_name(get_task_name(tsk)), task_type(tsk.get_type()),
       collective_group_id(tsk.get_collective_group_id()) {}
@@ -216,24 +216,23 @@ launch_instruction_record::launch_instruction_record(const launch_instruction& l
 	}
 }
 
-send_instruction_record::send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const detail::transfer_id trid,
-    const detail::buffer_id bid, const detail::reduction_id rid, const celerity::id<3>& offset_in_buffer)
+send_instruction_record::send_instruction_record(
+    const send_instruction& sinstr, const command_id push_cid, const detail::receive_id& rcvid, const celerity::id<3>& offset_in_buffer)
     : instruction_record_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()), source_memory_id(sinstr.get_source_memory_id()),
       source_allocation_id(sinstr.get_source_allocation_id()), allocation_range(sinstr.get_allocation_range()),
       offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
-      transfer_id(trid), buffer_id(bid), reduction_id(rid), offset_in_buffer(offset_in_buffer) {}
+      receive_id(rcvid), offset_in_buffer(offset_in_buffer) {}
 
 begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr, const region<3>& received_region)
-    : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), buffer_id(brinstr.get_buffer_id()), reduction_id(brinstr.get_reduction_id()),
-      dest_memory_id(brinstr.get_dest_memory_id()), dest_allocation_id(brinstr.get_dest_allocation_id()),
-      allocated_bounding_box(brinstr.get_allocated_bounding_box()), element_size(brinstr.get_element_size()), received_region(received_region) {}
+    : instruction_record_base(brinstr), receive_id(brinstr.get_receive_id()), dest_memory_id(brinstr.get_dest_memory_id()),
+      dest_allocation_id(brinstr.get_dest_allocation_id()), allocated_bounding_box(brinstr.get_allocated_bounding_box()),
+      element_size(brinstr.get_element_size()), received_region(received_region) {}
 
 await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
-    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), buffer_id(arinstr.get_buffer_id()), reduction_id(arinstr.get_reduction_id()),
-      received_region(arinstr.get_received_region()) {}
+    : instruction_record_base(arinstr), receive_id(arinstr.get_receive_id()), received_region(arinstr.get_received_region()) {}
 
 end_receive_instruction_record::end_receive_instruction_record(const end_receive_instruction& erinstr)
-    : instruction_record_base(erinstr), transfer_id(erinstr.get_transfer_id()), buffer_id(erinstr.get_buffer_id()), reduction_id(erinstr.get_reduction_id()) {}
+    : instruction_record_base(erinstr), receive_id(erinstr.get_receive_id()) {}
 
 fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, const command_id cid, const buffer_id bid, const box<3>& box)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(buffer_variant{bid, box}) {}
@@ -250,7 +249,7 @@ horizon_instruction_record::horizon_instruction_record(const horizon_instruction
 epoch_instruction_record::epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid)
     : instruction_record_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid), epoch_action(einstr.get_epoch_action()) {}
 
-command_id instruction_recorder::get_await_push_command_id(const transfer_id trid) const { return m_await_push_cids.at(trid); }
+command_id instruction_recorder::get_await_push_command_id(const receive_id& rcvid) const { return m_await_push_cids.at(rcvid); }
 
 const std::string& instruction_recorder::get_buffer_debug_name(const buffer_id bid) const {
 	if(const auto it = m_buffer_debug_names.find(bid); it != m_buffer_debug_names.end()) { return it->second; }

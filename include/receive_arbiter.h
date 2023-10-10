@@ -2,10 +2,8 @@
 
 #include "communicator.h"
 #include "instruction_graph.h" // for pilot_message. TODO?
-#include "utils.h"
 
 #include <unordered_map>
-#include <variant>
 
 namespace celerity::detail {
 
@@ -34,9 +32,9 @@ class receive_arbiter {
 	receive_arbiter& operator=(receive_arbiter&&) = default;
 	~receive_arbiter();
 
-	void begin_receive(transfer_id trid, buffer_id bid, void* allocation, const box<3>& allocated_box, size_t elem_size);
-	[[nodiscard]] event await_receive(transfer_id trid, buffer_id bid, const region<3>& awaited_region);
-	void end_receive(transfer_id trid, buffer_id bid);
+	void begin_receive(const receive_id& rcvid, void* allocation, const box<3>& instance_box, size_t elem_size);
+	[[nodiscard]] event await_receive(const receive_id& rcvid, const region<3>& awaited_region);
+	void end_receive(const receive_id& rcvid);
 
 	void poll_communicator();
 
@@ -61,7 +59,7 @@ class receive_arbiter {
 	};
 
 	communicator* m_comm;
-	std::unordered_map<std::pair<transfer_id, buffer_id>, buffer_transfer, utils::pair_hash> m_transfers;
+	std::unordered_map<receive_id, buffer_transfer> m_transfers;
 
 	void begin_receiving_fragment(region_transfer* region_tr, const inbound_pilot& pilot, size_t elem_size);
 };
