@@ -62,8 +62,7 @@ node_id mpi_communicator::get_local_node_id() const {
 }
 
 void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
-	CELERITY_DEBUG(
-	    "[mpi] pilot -> N{} (tag {}, B{}, transfer {}, {})", pilot.to, pilot.message.tag, pilot.message.buffer, pilot.message.transfer, pilot.message.box);
+	CELERITY_DEBUG("[mpi] pilot -> N{} (tag {}, B{}, transfer {}, {})", pilot.to, pilot.message.tag, pilot.message.bid, pilot.message.trid, pilot.message.box);
 
 	// initiate Isend as early as possible
 	in_flight_pilot newly_in_flight;
@@ -95,8 +94,8 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 		const inbound_pilot pilot{static_cast<node_id>(status.MPI_SOURCE), *m_inbound_pilot.message};
 		begin_receive_pilot(); // initiate next receive asap
 
-		CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, B{}, transfer {}, {})", pilot.from, pilot.message.tag, pilot.message.buffer, pilot.message.transfer,
-		    pilot.message.box);
+		CELERITY_DEBUG(
+		    "[mpi] pilot <- N{} (tag {}, B{}, transfer {}, {})", pilot.from, pilot.message.tag, pilot.message.bid, pilot.message.trid, pilot.message.box);
 		received_pilots.push_back(pilot);
 	}
 }

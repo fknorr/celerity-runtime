@@ -261,6 +261,10 @@ std::string print_command_reference_label(const command_record cmd, const task_r
 	return cmd_label;
 }
 
+std::string print_receive_id(const transfer_id trid, const buffer_id bid, const std::optional<reduction_id> rid) {
+	return rid.has_value() ? fmt::format("TR{}.B{}.R{}", trid, bid, *rid) : fmt::format("TR{}.B{}", trid, bid);
+}
+
 std::string print_instruction_graph(const instruction_recorder& irec, const command_recorder& crec, const task_recorder& trec, const std::string& title) {
 	std::string dot = make_graph_preamble(title);
 	const auto back = std::back_inserter(dot);
@@ -376,7 +380,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const send_instruction_record& sinstr) {
 			    begin_node(sinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
-			    fmt::format_to(back, "<br/><b>send</b> TR{}.B{}", sinstr.transfer_id, sinstr.buffer_id);
+			    fmt::format_to(back, "<br/><b>send</b> {}", print_receive_id(sinstr.transfer_id, sinstr.buffer_id, sinstr.reduction_id));
 			    fmt::format_to(back, "<br/>to N{} tag {}", sinstr.dest_node_id, sinstr.tag);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(sinstr.buffer_id), box(subrange(sinstr.offset_in_buffer, sinstr.send_range)));
 			    fmt::format_to(back, "<br/>via M{}.A{} {}", sinstr.source_memory_id, sinstr.source_allocation_id,
@@ -388,7 +392,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const begin_receive_instruction_record& brinstr) {
 			    begin_node(brinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", brinstr.id, irec.get_await_push_command_id(brinstr.transfer_id));
-			    fmt::format_to(back, "<br/><b>begin receive</b> TR{}.B{}", brinstr.transfer_id, brinstr.buffer_id);
+			    fmt::format_to(back, "<br/><b>begin receive</b> {}", print_receive_id(brinstr.transfer_id, brinstr.buffer_id, brinstr.reduction_id));
 			    fmt::format_to(back, "<br/>{} {}x{} bytes", get_buffer_label(brinstr.buffer_id), brinstr.received_region, brinstr.element_size);
 			    fmt::format_to(back, "<br/>into {} {}", get_buffer_label(brinstr.buffer_id), brinstr.allocated_bounding_box);
 			    fmt::format_to(back, "<br/>via M{}.A{} {}", brinstr.dest_memory_id, brinstr.dest_allocation_id,
@@ -398,14 +402,14 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const await_receive_instruction_record& arinstr) {
 			    begin_node(arinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", arinstr.id, irec.get_await_push_command_id(arinstr.transfer_id));
-			    fmt::format_to(back, "<br/><b>await receive</b> TR{}.B{}", arinstr.transfer_id, arinstr.buffer_id);
+			    fmt::format_to(back, "<br/><b>await receive</b> {}", print_receive_id(arinstr.transfer_id, arinstr.buffer_id, arinstr.reduction_id));
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(arinstr.buffer_id), arinstr.received_region);
 			    end_node();
 		    },
 		    [&](const end_receive_instruction_record& erinstr) {
 			    begin_node(erinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", erinstr.id, irec.get_await_push_command_id(erinstr.transfer_id));
-			    fmt::format_to(back, "<br/><b>end receive</b> TR{}.B{}<br/>", erinstr.transfer_id, erinstr.buffer_id);
+			    fmt::format_to(back, "<br/><b>end receive</b> {}<br/>", print_receive_id(erinstr.transfer_id, erinstr.buffer_id, erinstr.reduction_id));
 			    end_node();
 		    },
 		    [&](const fence_instruction_record& finstr) {
@@ -445,9 +449,9 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	for(const auto& pilot : irec.get_outbound_pilots()) {
 		fmt::format_to(back,
-		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} tag {}<br/>TR{}.B{}<br/>for {} {}</font>>];",
-		    pilot.message.tag, pilot.to, pilot.message.tag, pilot.message.transfer, pilot.message.buffer, get_buffer_label(pilot.message.buffer),
-		    pilot.message.box);
+		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} tag {}<br/>{}<br/>for {} {}</font>>];",
+		    pilot.message.tag, pilot.to, pilot.message.tag, print_receive_id(pilot.message.trid, pilot.message.bid, pilot.message.rid),
+		    get_buffer_label(pilot.message.bid), pilot.message.box);
 		if(auto it = send_instructions_by_tag.find(pilot.message.tag); it != send_instructions_by_tag.end()) {
 			fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.message.tag, it->second);
 		}

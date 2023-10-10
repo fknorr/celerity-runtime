@@ -163,7 +163,7 @@ struct alloc_instruction_record : instruction_record_base {
 	alloc_origin origin;
 	std::optional<buffer_allocation_record> buffer_allocation;
 
-	alloc_instruction_record(const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation);
+	alloc_instruction_record(const alloc_instruction& ainstr, alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation);
 };
 
 struct free_instruction_record : instruction_record_base {
@@ -172,7 +172,7 @@ struct free_instruction_record : instruction_record_base {
 	size_t size;
 	std::optional<buffer_allocation_record> buffer_allocation;
 
-	free_instruction_record(const free_instruction& finstr, const size_t size, const std::optional<buffer_allocation_record>& buffer_allocation);
+	free_instruction_record(const free_instruction& finstr, size_t size, const std::optional<buffer_allocation_record>& buffer_allocation);
 };
 
 struct init_buffer_instruction_record : instruction_record_base {
@@ -218,7 +218,7 @@ struct copy_instruction_record : instruction_record_base {
 	buffer_id buffer;
 	detail::box<3> box;
 
-	copy_instruction_record(const copy_instruction& cinstr, const copy_origin origin, const buffer_id buffer, const detail::box<3>& box);
+	copy_instruction_record(const copy_instruction& cinstr, copy_origin origin, buffer_id bid, const detail::box<3>& box);
 };
 
 struct buffer_memory_allocation_record {
@@ -252,13 +252,12 @@ struct launch_instruction_record : instruction_record_base {
 	command_id execution_command_id;
 	std::string kernel_debug_name;
 
-	launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid, const std::string& kernel_debug_name,
+	launch_instruction_record(const launch_instruction& linstr, task_id cg_tid, command_id execution_cid, const std::string& kernel_debug_name,
 	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
 	    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map);
 };
 
 struct send_instruction_record : instruction_record_base {
-	transfer_id transfer_id;
 	node_id dest_node_id;
 	int tag;
 	memory_id source_memory_id;
@@ -268,15 +267,19 @@ struct send_instruction_record : instruction_record_base {
 	range<3> send_range;
 	size_t element_size;
 	command_id push_cid;
+	transfer_id transfer_id;
 	buffer_id buffer_id;
+	detail::reduction_id reduction_id;
 	celerity::id<3> offset_in_buffer;
 
-	send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const detail::buffer_id buffer, const celerity::id<3>& offset_in_buffer);
+	send_instruction_record(const send_instruction& sinstr, command_id push_cid, detail::transfer_id trid, detail::buffer_id bid, detail::reduction_id rid,
+	    const celerity::id<3>& offset_in_buffer);
 };
 
 struct begin_receive_instruction_record : instruction_record_base {
 	transfer_id transfer_id;
 	buffer_id buffer_id;
+	detail::reduction_id reduction_id;
 	memory_id dest_memory_id;
 	allocation_id dest_allocation_id;
 	box<3> allocated_bounding_box;
@@ -289,6 +292,7 @@ struct begin_receive_instruction_record : instruction_record_base {
 struct await_receive_instruction_record : instruction_record_base {
 	transfer_id transfer_id;
 	buffer_id buffer_id;
+	detail::reduction_id reduction_id;
 	region<3> received_region;
 
 	await_receive_instruction_record(const await_receive_instruction& arinstr);
@@ -297,6 +301,7 @@ struct await_receive_instruction_record : instruction_record_base {
 struct end_receive_instruction_record : instruction_record_base {
 	transfer_id transfer_id;
 	buffer_id buffer_id;
+	detail::reduction_id reduction_id;
 
 	end_receive_instruction_record(const end_receive_instruction& erinstr);
 };
@@ -328,7 +333,7 @@ struct horizon_instruction_record : instruction_record_base {
 	task_id horizon_task_id;
 	command_id horizon_command_id;
 
-	horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid);
+	horizon_instruction_record(const horizon_instruction& hinstr, command_id horizon_cid);
 };
 
 struct epoch_instruction_record : instruction_record_base {
@@ -336,7 +341,7 @@ struct epoch_instruction_record : instruction_record_base {
 	command_id epoch_command_id;
 	epoch_action epoch_action;
 
-	epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid);
+	epoch_instruction_record(const epoch_instruction& einstr, command_id epoch_cid);
 };
 
 using instruction_record = std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record,
@@ -367,8 +372,8 @@ class instruction_recorder {
 
 	const instruction_records& get_instructions() const { return m_recorded_instructions; }
 	const outbound_pilots& get_outbound_pilots() const { return m_recorded_pilots; }
-	command_id get_await_push_command_id(const transfer_id trid) const;
-	const std::string& get_buffer_debug_name(const buffer_id bid) const;
+	command_id get_await_push_command_id(transfer_id trid) const;
+	const std::string& get_buffer_debug_name(buffer_id bid) const;
 
   private:
 	instruction_records m_recorded_instructions;

@@ -67,7 +67,7 @@ void receive_arbiter::poll_communicator() {
 	}
 
 	for(const auto& pilot : m_comm->poll_inbound_pilots()) {
-		auto& transfer = m_transfers[{pilot.message.transfer, pilot.message.buffer}]; // allow default-insert
+		auto& transfer = m_transfers[{pilot.message.trid, pilot.message.bid}]; // allow default-insert
 		const auto region_it = std::find_if(transfer.regions.begin(), transfer.regions.end(),
 		    [&](const std::unique_ptr<region_transfer>& rt) { return rt->allocated_bounding_box.covers(pilot.message.box); });
 		if(region_it != transfer.regions.end()) {

@@ -216,29 +216,29 @@ launch_instruction_record::launch_instruction_record(const launch_instruction& l
 	}
 }
 
-send_instruction_record::send_instruction_record(
-    const send_instruction& sinstr, const command_id push_cid, const detail::buffer_id buffer_id, const celerity::id<3>& offset_in_buffer)
-    : instruction_record_base(sinstr), transfer_id(sinstr.get_transfer_id()), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()),
-      source_memory_id(sinstr.get_source_memory_id()), source_allocation_id(sinstr.get_source_allocation_id()), allocation_range(sinstr.get_allocation_range()),
+send_instruction_record::send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const detail::transfer_id trid,
+    const detail::buffer_id bid, const detail::reduction_id rid, const celerity::id<3>& offset_in_buffer)
+    : instruction_record_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()), source_memory_id(sinstr.get_source_memory_id()),
+      source_allocation_id(sinstr.get_source_allocation_id()), allocation_range(sinstr.get_allocation_range()),
       offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
-      buffer_id(buffer_id), offset_in_buffer(offset_in_buffer) {}
+      transfer_id(trid), buffer_id(bid), reduction_id(rid), offset_in_buffer(offset_in_buffer) {}
 
 begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr, const region<3>& received_region)
-    : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), buffer_id(brinstr.get_buffer_id()),
+    : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), buffer_id(brinstr.get_buffer_id()), reduction_id(brinstr.get_reduction_id()),
       dest_memory_id(brinstr.get_dest_memory_id()), dest_allocation_id(brinstr.get_dest_allocation_id()),
       allocated_bounding_box(brinstr.get_allocated_bounding_box()), element_size(brinstr.get_element_size()), received_region(received_region) {}
 
 await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
-    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), buffer_id(arinstr.get_buffer_id()),
+    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), buffer_id(arinstr.get_buffer_id()), reduction_id(arinstr.get_reduction_id()),
       received_region(arinstr.get_received_region()) {}
 
 end_receive_instruction_record::end_receive_instruction_record(const end_receive_instruction& erinstr)
-    : instruction_record_base(erinstr), transfer_id(erinstr.get_transfer_id()), buffer_id(erinstr.get_buffer_id()) {}
+    : instruction_record_base(erinstr), transfer_id(erinstr.get_transfer_id()), buffer_id(erinstr.get_buffer_id()), reduction_id(erinstr.get_reduction_id()) {}
 
-fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, buffer_id bid, const box<3>& box)
+fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, const command_id cid, const buffer_id bid, const box<3>& box)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(buffer_variant{bid, box}) {}
 
-fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, host_object_id hoid)
+fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, const command_id cid, const host_object_id hoid)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(host_object_variant{hoid}) {}
 
 destroy_host_object_instruction_record::destroy_host_object_instruction_record(const destroy_host_object_instruction& dhoinstr)

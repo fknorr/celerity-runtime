@@ -211,8 +211,9 @@ class host_task_instruction final : public matchbox::implement_acceptor<launch_i
 
 struct pilot_message {
 	int tag = -1;
-	buffer_id buffer = -1;
-	transfer_id transfer = -1;
+	transfer_id trid = -1;
+	buffer_id bid = -1;
+	reduction_id rid = no_reduction_id;
 	box<3> box;
 };
 
@@ -228,12 +229,11 @@ struct inbound_pilot {
 
 class send_instruction final : public matchbox::implement_acceptor<instruction, send_instruction> {
   public:
-	explicit send_instruction(const instruction_id iid, const transfer_id trid, const node_id to_nid, const int tag, const memory_id source_memory,
+	explicit send_instruction(const instruction_id iid, const node_id to_nid, const int tag, const memory_id source_memory,
 	    const allocation_id source_allocation, const range<3>& alloc_range, const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
-	    : acceptor_base(iid), m_transfer_id(trid), m_to_nid(to_nid), m_tag(tag), m_source_memory(source_memory), m_source_allocation(source_allocation),
-	      m_alloc_range(alloc_range), m_offset_in_alloc(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
+	    : acceptor_base(iid), m_to_nid(to_nid), m_tag(tag), m_source_memory(source_memory), m_source_allocation(source_allocation), m_alloc_range(alloc_range),
+	      m_offset_in_alloc(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
 
-	transfer_id get_transfer_id() const { return m_transfer_id; }
 	node_id get_dest_node_id() const { return m_to_nid; }
 	int get_tag() const { return m_tag; }
 	memory_id get_source_memory_id() const { return m_source_memory; }
@@ -244,7 +244,6 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
-	transfer_id m_transfer_id;
 	node_id m_to_nid;
 	int m_tag;
 	memory_id m_source_memory;
@@ -261,13 +260,14 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 /// 2/4/8-connected component of the await_push region and passes it on to the receive_arbiter through a begin_receive_instruction.
 class begin_receive_instruction final : public matchbox::implement_acceptor<instruction, begin_receive_instruction> {
   public:
-	explicit begin_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, const memory_id dest_memory,
-	    const allocation_id dest_allocation, const box<3>& allocated_bounding_box, const size_t elem_size)
-	    : acceptor_base(iid), m_trid(trid), m_bid(bid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_alloc_bbox(allocated_bounding_box),
-	      m_elem_size(elem_size) {}
+	explicit begin_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, const reduction_id rid,
+	    const memory_id dest_memory, const allocation_id dest_allocation, const box<3>& allocated_bounding_box, const size_t elem_size)
+	    : acceptor_base(iid), m_trid(trid), m_bid(bid), m_rid(rid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation),
+	      m_alloc_bbox(allocated_bounding_box), m_elem_size(elem_size) {}
 
 	transfer_id get_transfer_id() const { return m_trid; }
 	buffer_id get_buffer_id() const { return m_bid; }
+	reduction_id get_reduction_id() const { return m_rid; }
 	memory_id get_dest_memory_id() const { return m_dest_memory; }
 	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }
 	const box<3>& get_allocated_bounding_box() const { return m_alloc_bbox; }
@@ -276,6 +276,7 @@ class begin_receive_instruction final : public matchbox::implement_acceptor<inst
   private:
 	transfer_id m_trid;
 	buffer_id m_bid;
+	reduction_id m_rid;
 	memory_id m_dest_memory;
 	allocation_id m_dest_allocation;
 	box<3> m_alloc_bbox;
@@ -287,16 +288,18 @@ class begin_receive_instruction final : public matchbox::implement_acceptor<inst
 /// buffer allocation that receive_arbiter would use in the "happy path" where there is a 1-to-1 correspondence between sends and receives.
 class await_receive_instruction final : public matchbox::implement_acceptor<instruction, await_receive_instruction> {
   public:
-	explicit await_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, region<3> recv_region)
-	    : acceptor_base(iid), m_trid(trid), m_bid(bid), m_recv_region(std::move(recv_region)) {}
+	explicit await_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, const reduction_id rid, region<3> recv_region)
+	    : acceptor_base(iid), m_trid(trid), m_bid(bid), m_rid(rid), m_recv_region(std::move(recv_region)) {}
 
 	transfer_id get_transfer_id() const { return m_trid; }
 	buffer_id get_buffer_id() const { return m_bid; }
+	reduction_id get_reduction_id() const { return m_rid; }
 	const region<3>& get_received_region() const { return m_recv_region; }
 
   private:
 	transfer_id m_trid;
 	buffer_id m_bid;
+	reduction_id m_rid;
 	region<3> m_recv_region;
 };
 
@@ -304,14 +307,17 @@ class await_receive_instruction final : public matchbox::implement_acceptor<inst
 /// await_receive_instruction subranges alone, since the actually received data can have the shape of an arbitrary connected region.
 class end_receive_instruction final : public matchbox::implement_acceptor<instruction, end_receive_instruction> {
   public:
-	explicit end_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid) : acceptor_base(iid), m_trid(trid), m_bid(bid) {}
+	explicit end_receive_instruction(const instruction_id iid, const transfer_id trid, const buffer_id bid, const reduction_id rid)
+	    : acceptor_base(iid), m_trid(trid), m_bid(bid), m_rid(rid) {}
 
 	transfer_id get_transfer_id() const { return m_trid; }
 	buffer_id get_buffer_id() const { return m_bid; }
+	reduction_id get_reduction_id() const { return m_rid; }
 
   private:
 	transfer_id m_trid;
 	buffer_id m_bid;
+	reduction_id m_rid;
 };
 
 class fence_instruction final : public matchbox::implement_acceptor<instruction, fence_instruction> {

@@ -136,11 +136,12 @@ class instruction_graph_generator {
 		/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
 		struct pending_receive {
 			transfer_id trid;
+			reduction_id rid;
 			region<3> received_region;
 			box<3> bounding_box;
 
-			pending_receive(const transfer_id trid, region<3>&& received_region, const box<3>& bounding_box)
-			    : trid(trid), received_region(std::move(received_region)), bounding_box(bounding_box) {}
+			pending_receive(const transfer_id trid, const reduction_id rid, region<3>&& received_region, const box<3>& bounding_box)
+			    : trid(trid), rid(rid), received_region(std::move(received_region)), bounding_box(bounding_box) {}
 		};
 
 		int dims;
@@ -282,7 +283,7 @@ class instruction_graph_generator {
 
 	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction& ainstr);
 
-	int create_pilot_message(node_id target, buffer_id bid, transfer_id trid, const box<3>& box);
+	int create_pilot_message(node_id target, transfer_id trid, buffer_id bid, reduction_id rid, const box<3>& box);
 
 	void compile_execution_command(const execution_command& ecmd);
 

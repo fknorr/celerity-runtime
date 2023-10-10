@@ -108,7 +108,7 @@ namespace detail {
 
 		buffer_id m_next_buffer_id = 0;
 		host_object_id m_next_host_object_id = 0;
-		reduction_id m_next_reduction_id = 0;
+		reduction_id m_next_reduction_id = 1;
 
 		// These management classes are only constructed on the master node.
 		std::unique_ptr<command_graph> m_cdag;

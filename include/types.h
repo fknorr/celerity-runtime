@@ -72,11 +72,11 @@ enum class side_effect_order { sequential };
 
 namespace celerity::detail {
 
-constexpr node_id master_node_id = 0;
-
+inline constexpr node_id master_node_id = 0;
 inline constexpr memory_id host_memory_id = 0;         // backend-allocated memory, usually pinned
 inline constexpr allocation_id null_allocation_id = 0; // allocation representation of a null pointer
 inline constexpr collective_group_id non_collective_group_id = 0;
 inline constexpr collective_group_id root_collective_group_id = 1;
+inline constexpr reduction_id no_reduction_id = 0;
 
 } // namespace celerity::detail

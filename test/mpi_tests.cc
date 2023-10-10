@@ -2,16 +2,12 @@
 #include "host_utils.h"
 #include "instruction_graph.h" // for pilot_message TODO
 #include "mpi_communicator.h"
-#include "spdlog/common.h"
 #include "test_utils.h"
 #include "types.h"
 
-#include <chrono>
-#include <mutex>
-#include <thread>
-
 #include <catch2/catch_test_macros.hpp>
 #include <spdlog/sinks/sink.h>
+
 
 using namespace celerity;
 using namespace celerity::detail;
@@ -26,8 +22,9 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		const int tag = static_cast<int>(p2p_id) * 13;
 		const buffer_id bid = p2p_id * 11;
 		const transfer_id trid = p2p_id * 17;
+		const reduction_id rid = p2p_id * 19;
 		const box<3> box = {id{p2p_id, p2p_id * 2, p2p_id * 3}, id{p2p_id * 4, p2p_id * 5, p2p_id * 6}};
-		return outbound_pilot{receiver, pilot_message{tag, bid, trid, box}};
+		return outbound_pilot{receiver, pilot_message{tag, trid, bid, rid, box}};
 	};
 
 	for(node_id to = 0; to < comm.get_num_nodes(); ++to) {
@@ -41,8 +38,9 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 			CAPTURE(pilot.from, comm.get_local_node_id());
 			const auto expect = make_pilot_message(pilot.from, comm.get_local_node_id());
 			CHECK(pilot.message.tag == expect.message.tag);
-			CHECK(pilot.message.buffer == expect.message.buffer);
-			CHECK(pilot.message.transfer == expect.message.transfer);
+			CHECK(pilot.message.bid == expect.message.bid);
+			CHECK(pilot.message.trid == expect.message.trid);
+			CHECK(pilot.message.rid == expect.message.rid);
 			CHECK(pilot.message.box == expect.message.box);
 			++num_pilots_received;
 		}
