@@ -227,9 +227,18 @@ struct buffer_memory_allocation_record {
 	box<3> box;
 };
 
+struct buffer_memory_reduction_record : buffer_memory_allocation_record {
+	detail::reduction_id reduction_id;
+};
+
 struct buffer_allocation_access_record : access_allocation, buffer_memory_allocation_record {
 	constexpr buffer_allocation_access_record(const access_allocation& aa, const buffer_memory_allocation_record& bmar)
 	    : access_allocation(aa), buffer_memory_allocation_record(bmar) {}
+};
+
+struct buffer_allocation_reduction_record : access_allocation, buffer_memory_reduction_record {
+	constexpr buffer_allocation_reduction_record(const access_allocation& aa, const buffer_memory_reduction_record& bmrr)
+	    : access_allocation(aa), buffer_memory_reduction_record(bmrr) {}
 };
 
 struct launch_instruction_record : instruction_record_base {
@@ -237,13 +246,15 @@ struct launch_instruction_record : instruction_record_base {
 	std::optional<detail::device_id> device_id;
 	std::optional<detail::collective_group_id> collective_group_id;
 	subrange<3> execution_range;
-	std::vector<buffer_allocation_access_record> allocation_map;
+	std::vector<buffer_allocation_access_record> access_map;
+	std::vector<buffer_allocation_reduction_record> reduction_map;
 	task_id command_group_task_id;
 	command_id execution_command_id;
 	std::string kernel_debug_name;
 
 	launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid, const std::string& kernel_debug_name,
-	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map);
+	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
+	    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map);
 };
 
 struct send_instruction_record : instruction_record_base {

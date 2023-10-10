@@ -200,7 +200,7 @@ TEST_CASE("collective host tasks", "[instruction-graph]") {
 	ictx.collective_host_task(collective_group()).submit();
 }
 
-TEST_CASE("syncing pattern", "[instruction graph]") {
+TEST_CASE("syncing pattern", "[instruction-graph]") {
 	const auto my_nid = GENERATE(values<node_id>({0, 1}));
 	CAPTURE(my_nid);
 
@@ -210,6 +210,14 @@ TEST_CASE("syncing pattern", "[instruction graph]") {
 	ictx.device_compute(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
 	ictx.collective_host_task().read(buf, acc::all()).submit();
 	ictx.epoch(epoch_action::barrier);
+}
+
+TEST_CASE("local reduction", "[instruction-graph]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0, 2 /* devices */);
+
+	auto buf = ictx.create_buffer<1>(1);
+	ictx.device_compute(range<1>(256)).reduce(buf, false /* include_current_buffer_value */).submit();
+	ictx.device_compute(range<1>(256)).read(buf, acc::all()).submit();
 }
 
 // TODO a test with impossible requirements (overlapping writes maybe?)

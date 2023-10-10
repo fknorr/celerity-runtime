@@ -33,6 +33,11 @@ void instruction_executor::announce_host_object_instance(const host_object_id ho
 	m_submission_queue.push_back(host_object_instance_announcement{hoid, std::move(instance)});
 }
 
+void instruction_executor::announce_reduction(const reduction_id rid, std::unique_ptr<reduction_interface> interface) {
+	assert(interface != nullptr);
+	m_submission_queue.push_back(reduction_announcement{rid, std::move(interface)});
+}
+
 void instruction_executor::loop() {
 	closure_hydrator::make_available();
 
@@ -113,6 +118,10 @@ void instruction_executor::loop() {
 				    [&](host_object_instance_announcement& ann) {
 					    assert(m_host_object_instances.count(ann.hoid) == 0);
 					    m_host_object_instances.emplace(ann.hoid, std::move(ann.instance));
+				    },
+				    [&](reduction_announcement& ann) {
+					    assert(m_reduction_interfaces.count(ann.rid) == 0);
+					    m_reduction_interfaces.emplace(ann.rid, std::move(ann.interface));
 				    });
 			}
 			loop_submission_queue.clear();
@@ -234,11 +243,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const sycl_kernel_instruction& skinstr) {
 		    CELERITY_DEBUG("[executor] I{}: launch SYCL kernel on D{}, {}{}", skinstr.get_id(), skinstr.get_device_id(), skinstr.get_execution_range(),
-		        log_accesses(skinstr.get_allocation_map()));
+		        log_accesses(skinstr.get_access_allocations()));
 
 		    std::vector<closure_hydrator::accessor_info> accessor_infos;
-		    accessor_infos.reserve(skinstr.get_allocation_map().size());
-		    for(const auto& aa : skinstr.get_allocation_map()) {
+		    accessor_infos.reserve(skinstr.get_access_allocations().size());
+		    for(const auto& aa : skinstr.get_access_allocations()) {
 			    const auto ptr = m_allocations.at(aa.allocation_id);
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer, nullptr /* TODO */});
@@ -247,21 +256,24 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 #endif
 		    }
 
-		    std::vector<void*> reduction_ptrs;     // TODO
-		    bool is_reduction_initializer = false; // TODO
+		    std::vector<void*> reduction_ptrs;
+		    reduction_ptrs.reserve(skinstr.get_reduction_allocations().size());
+		    for(const auto& ra : skinstr.get_reduction_allocations()) {
+			    reduction_ptrs.push_back(m_allocations.at(ra.allocation_id));
+		    }
 
 		    closure_hydrator::get_instance().arm(target::device, std::move(accessor_infos));
 
 		    return m_backend_queue->launch_kernel(
-		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, is_reduction_initializer);
+		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, skinstr.is_reduction_initializer());
 	    },
 	    [&](const host_task_instruction& htinstr) {
 		    CELERITY_DEBUG(
-		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_allocation_map()));
+		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_access_allocations()));
 
 		    std::vector<closure_hydrator::accessor_info> accessor_infos;
-		    accessor_infos.reserve(htinstr.get_allocation_map().size());
-		    for(const auto& aa : htinstr.get_allocation_map()) {
+		    accessor_infos.reserve(htinstr.get_access_allocations().size());
+		    for(const auto& aa : htinstr.get_access_allocations()) {
 			    const auto ptr = m_allocations.at(aa.allocation_id);
 			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer});
 		    }

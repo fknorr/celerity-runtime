@@ -1,8 +1,6 @@
 #include "runtime.h"
 
-#include <queue>
 #include <string>
-#include <unordered_map>
 
 #ifdef _MSC_VER
 #include <process.h>
@@ -18,11 +16,8 @@
 #endif
 
 #include "affinity.h"
-#include "buffer.h"
-#include "buffer_manager.h"
 #include "cgf_diagnostics.h"
 #include "command_graph.h"
-#include "device_queue.h"
 #include "device_selection.h"
 #include "distributed_graph_generator.h"
 #include "host_object.h"
@@ -33,10 +28,11 @@
 #include "mpi_support.h"
 #include "named_threads.h"
 #include "print_graph.h"
+#include "reduction.h"
+#include "reduction_manager.h"
 #include "scheduler.h"
 #include "task_manager.h"
 #include "user_bench.h"
-#include "utils.h"
 #include "version.h"
 
 namespace celerity {
@@ -330,6 +326,13 @@ namespace detail {
 		m_task_mngr->destroy_host_object(hoid);
 		m_live_host_objects.erase(hoid);
 		destroy_instance_if_unreferenced();
+	}
+
+
+	reduction_id runtime::create_reduction(std::unique_ptr<reduction_interface> interface) {
+		const auto rid = m_next_reduction_id++;
+		m_exec->announce_reduction(rid, std::move(interface));
+		return rid;
 	}
 
 	void runtime::destroy_instance_if_unreferenced() const {

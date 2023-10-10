@@ -1,15 +1,15 @@
 #include "print_graph.h"
 
-#include <spdlog/fmt/fmt.h>
-#include <spdlog/fmt/ostr.h>
-
+#include "access_modes.h"
 #include "command.h"
-#include "command_graph.h"
 #include "grid.h"
 #include "instruction_graph.h"
 #include "recorders.h"
 #include "task.h"
 #include "task_manager.h"
+
+#include <spdlog/fmt/fmt.h>
+
 
 namespace celerity::detail {
 
@@ -357,11 +357,18 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				    fmt::format_to(back, "<br/>on host {}", linstr.execution_range);
 			    }
 
-			    for(const auto& access : linstr.allocation_map) {
+			    for(const auto& access : linstr.access_map) {
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
 				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.box);
+				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
+			    }
+			    for(const auto& access : linstr.reduction_map) {
+				    const auto accessed_box_in_allocation = box( //
+				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
+				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
+				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, get_buffer_label(access.buffer_id), access.box);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();

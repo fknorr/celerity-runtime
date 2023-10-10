@@ -29,6 +29,7 @@ namespace detail {
 	class scheduler;
 	class task_manager;
 	struct host_object_instance;
+	class reduction_interface;
 
 	class runtime final : private instruction_executor::delegate {
 		friend struct runtime_testspy;
@@ -77,6 +78,8 @@ namespace detail {
 
 		void destroy_host_object(host_object_id hoid);
 
+		reduction_id create_reduction(std::unique_ptr<reduction_interface> interface);
+
 		// returns the combined command graph of all nodes on node 0, an empty string on other nodes
 		std::string gather_command_graph() const;
 
@@ -105,6 +108,7 @@ namespace detail {
 
 		buffer_id m_next_buffer_id = 0;
 		host_object_id m_next_host_object_id = 0;
+		reduction_id m_next_reduction_id = 0;
 
 		// These management classes are only constructed on the master node.
 		std::unique_ptr<command_graph> m_cdag;

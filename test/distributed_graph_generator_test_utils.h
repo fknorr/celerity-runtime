@@ -11,12 +11,12 @@
 #include <catch2/catch_message.hpp>
 #include <spdlog/fmt/fmt.h>
 
-#include "access_modes.h"
 #include "command_graph.h"
 #include "distributed_graph_generator.h"
 #include "instruction_graph_generator.h"
 #include "print_graph.h"
 #include "recorders.h"
+#include "reduction_manager.h"
 #include "task_manager.h"
 #include "types.h"
 #include "utils.h"

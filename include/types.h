@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <cstdlib>
 #include <functional>
 #include <utility>
@@ -72,12 +71,6 @@ enum class side_effect_order { sequential };
 }
 
 namespace celerity::detail {
-
-struct reduction_info {
-	reduction_id rid = 0;
-	buffer_id bid = 0;
-	bool init_from_buffer = false;
-};
 
 constexpr node_id master_node_id = 0;
 

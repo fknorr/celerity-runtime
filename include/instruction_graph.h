@@ -5,9 +5,6 @@
 #include "ranges.h"
 #include "task.h" // TODO the only dependencies on task.h are launcher types and contiguous_box_set, consider moving those
 #include "types.h"
-#include "utils.h"
-
-#include <unordered_map>
 
 #include <matchbox.hh>
 
@@ -154,7 +151,7 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
 };
 
 struct access_allocation {
-	allocation_id allocation_id;
+	allocation_id allocation_id = null_allocation_id;
 	box<3> allocated_box_in_buffer;
 	box<3> accessed_box_in_buffer;
 };
@@ -164,30 +161,34 @@ using access_allocation_map = std::vector<access_allocation>;
 // TODO is a common base class for host and device "kernels" the right thing to do? On the host these are not called kernels but "host tasks" everywhere else.
 class launch_instruction : public instruction {
   public:
-	explicit launch_instruction(const instruction_id iid, const subrange<3>& execution_range, access_allocation_map allocation_map)
-	    : instruction(iid), m_execution_range(execution_range), m_allocation_map(std::move(allocation_map)) {}
+	explicit launch_instruction(const instruction_id iid, const subrange<3>& execution_range, access_allocation_map access_allocations)
+	    : instruction(iid), m_execution_range(execution_range), m_access_allocations(std::move(access_allocations)) {}
 
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
-	const access_allocation_map& get_allocation_map() const { return m_allocation_map; }
+	const access_allocation_map& get_access_allocations() const { return m_access_allocations; }
 
   private:
 	subrange<3> m_execution_range;
-	access_allocation_map m_allocation_map;
+	access_allocation_map m_access_allocations;
 };
 
 class sycl_kernel_instruction final : public matchbox::implement_acceptor<launch_instruction, sycl_kernel_instruction> {
   public:
-	explicit sycl_kernel_instruction(
-	    const instruction_id iid, const device_id did, sycl_kernel_launcher launcher, const subrange<3>& execution_range, access_allocation_map allocation_map)
-	    : acceptor_base(iid, execution_range, std::move(allocation_map)), m_device_id(did), m_launcher(std::move(launcher)) {}
+	explicit sycl_kernel_instruction(const instruction_id iid, const device_id did, sycl_kernel_launcher launcher, const subrange<3>& execution_range,
+	    access_allocation_map access_allocations, access_allocation_map reduction_allocations, const bool initialize_reductions)
+	    : acceptor_base(iid, execution_range, std::move(access_allocations)), m_device_id(did), m_launcher(std::move(launcher)),
+	      m_reduction_allocations(std::move(reduction_allocations)), m_initialize_reductions(initialize_reductions) {}
 
 	device_id get_device_id() const { return m_device_id; }
-
 	const sycl_kernel_launcher& get_launcher() const { return m_launcher; }
+	const access_allocation_map& get_reduction_allocations() const { return m_reduction_allocations; }
+	bool is_reduction_initializer() const { return m_initialize_reductions; }
 
   private:
 	device_id m_device_id;
 	sycl_kernel_launcher m_launcher;
+	access_allocation_map m_reduction_allocations;
+	bool m_initialize_reductions;
 };
 
 class host_task_instruction final : public matchbox::implement_acceptor<launch_instruction, host_task_instruction> {

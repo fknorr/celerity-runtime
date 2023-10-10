@@ -13,6 +13,7 @@
 #include "intrusive_graph.h"
 #include "launcher.h"
 #include "range_mapper.h"
+#include "reduction.h"
 #include "types.h"
 #include "utils.h"
 

@@ -202,6 +202,8 @@ class instruction_graph_generator {
 		subrange<3> subrange;
 	};
 
+	inline static const box<3> scalar_reduction_box{zeros, ones};
+
 	instruction_graph m_idag;
 	std::vector<outbound_pilot> m_pending_pilots;
 	instruction_id m_next_iid = 0;
@@ -271,6 +273,11 @@ class instruction_graph_generator {
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
 	void locally_satisfy_read_requirements(buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads);
 
+	void satisfy_buffer_requirements_for_regular_access(
+	    buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks);
+
+	void satisfy_buffer_requirements_as_reduction_output(buffer_id bid, reduction_id rid, const std::vector<localized_chunk>& local_chunks);
+
 	void satisfy_buffer_requirements(buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks);
 
 	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction& ainstr);
@@ -282,6 +289,8 @@ class instruction_graph_generator {
 	void compile_push_command(const push_command& pcmd);
 
 	void compile_await_push_command(const await_push_command& apcmd);
+
+	void compile_reduction_command(const reduction_command& rcmd);
 
 	void compile_fence_command(const fence_command& fcmd);
 };

@@ -192,7 +192,8 @@ copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr,
       box(box) {}
 
 launch_instruction_record::launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid,
-    const std::string& kernel_debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map)
+    const std::string& kernel_debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
+    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map)
     : instruction_record_base(linstr), target(utils::isa<host_task_instruction>(&linstr) ? execution_target::host : execution_target::device),
       device_id(matchbox::match<std::optional<detail::device_id>>(
           linstr, [](const sycl_kernel_instruction& skinstr) { return skinstr.get_device_id(); }, [](const auto&) { return std::nullopt; })),
@@ -201,10 +202,17 @@ launch_instruction_record::launch_instruction_record(const launch_instruction& l
       execution_range(linstr.get_execution_range()), command_group_task_id(cg_tid), execution_command_id(execution_cid),
       kernel_debug_name(utils::simplify_task_name(kernel_debug_name)) //
 {
-	assert(linstr.get_allocation_map().size() == buffer_memory_allocation_map.size());
-	allocation_map.reserve(linstr.get_allocation_map().size());
-	for(size_t i = 0; i < linstr.get_allocation_map().size(); ++i) {
-		allocation_map.emplace_back(linstr.get_allocation_map()[i], buffer_memory_allocation_map[i]);
+	assert(linstr.get_access_allocations().size() == buffer_memory_allocation_map.size());
+	access_map.reserve(linstr.get_access_allocations().size());
+	for(size_t i = 0; i < linstr.get_access_allocations().size(); ++i) {
+		access_map.emplace_back(linstr.get_access_allocations()[i], buffer_memory_allocation_map[i]);
+	}
+	if(const auto skinstr = dynamic_cast<const sycl_kernel_instruction*>(&linstr)) {
+		assert(skinstr->get_reduction_allocations().size() == buffer_memory_reduction_map.size());
+		reduction_map.reserve(skinstr->get_reduction_allocations().size());
+		for(size_t i = 0; i < skinstr->get_reduction_allocations().size(); ++i) {
+			reduction_map.emplace_back(skinstr->get_reduction_allocations()[i], buffer_memory_reduction_map[i]);
+		}
 	}
 }
 

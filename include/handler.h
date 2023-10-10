@@ -1,7 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <regex>
 #include <type_traits>
 #include <typeinfo>
 #include <utility>
@@ -12,12 +11,10 @@
 #include "buffer.h"
 #include "cgf_diagnostics.h"
 #include "closure_hydrator.h"
-#include "device_queue.h"
 #include "host_queue.h"
 #include "item.h"
 #include "range_mapper.h"
 #include "ranges.h"
-#include "reduction_manager.h"
 #include "task.h"
 #include "types.h"
 #include "workaround.h"
@@ -58,7 +55,6 @@ void constrain_split(handler& cgh, const range<Dims>& constraint);
 namespace celerity {
 
 namespace detail {
-	class device_queue;
 	class task_manager;
 
 	handler make_command_group_handler(const task_id tid, const size_t num_collective_nodes);
@@ -294,7 +290,7 @@ namespace detail {
 		const auto bid = detail::get_buffer_id(vars);
 		const auto include_current_buffer_value = !prop_list.has_property<celerity::property::reduction::initialize_to_identity>();
 
-		const auto rid = detail::runtime::get_instance().get_reduction_manager().create_reduction<DataT, Dims>(bid, op, identity);
+		const auto rid = detail::runtime::get_instance().create_reduction(make_reduction_interface(op, identity));
 		add_reduction(cgh, reduction_info{rid, bid, include_current_buffer_value});
 
 		return detail::reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>{bid, op, identity, include_current_buffer_value};

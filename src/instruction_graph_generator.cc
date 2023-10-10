@@ -432,6 +432,8 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 	for(auto& copy : pending_copies) {
 		assert(copy.dest_mid != copy.source_mid);
 		auto& buffer = m_buffers.at(bid);
+		// TODO iterating over boxes here could mean that we generate excess copy instructions if region normalization produces more boxes within the
+		// box_intersection below than is necessary. Instead try working on a region_intersection and resolving the matching allocation boxes afterwards.
 		for(const box<3>& box : copy.region.get_boxes()) {
 			for(auto& source : buffer.memories[copy.source_mid].allocations) {
 				const auto read_box = box_intersection(box, source.box);
@@ -476,8 +478,13 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 
 
 void instruction_graph_generator::satisfy_buffer_requirements(
-    const buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks) {
+    const buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks) //
+{
+	assert(!local_chunks.empty());
 	const auto& bam = tsk.get_buffer_access_map();
+
+	assert(std::count_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; }) <= 1
+	       && "task defines multiple reductions on the same buffer");
 
 	// collect all receives that we must apply before execution of this command
 	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
@@ -496,6 +503,18 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 		if(!access::mode_traits::is_consumer(mode)) { discarded = region_union(discarded, req); }
 	}
 
+	const auto reduction = std::find_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; });
+	if(reduction != tsk.get_reductions().end()) {
+		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const per_buffer_data::pending_receive& r) {
+			return region_intersection(r.received_region, scalar_reduction_box).empty();
+		}) && "buffer has an unprocessed await-push in a region that is going to be used as a reduction output");
+
+		discarded = region_union(discarded, scalar_reduction_box); // TODO this currently breaks reduction-initialization from buffer
+		for(const auto& chunk : local_chunks) {
+			contiguous_allocations[chunk.memory_id].insert(scalar_reduction_box);
+		}
+	}
+
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
 	    [&](const per_buffer_data::pending_receive& r) { return region_intersection(accessed, r.received_region).empty(); });
 	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
@@ -509,7 +528,8 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 		applied_receives.insert(applied_receives.end(), first_applied_receive, buffer.pending_receives.end());
 		buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
 	}
-	// data received / written by this task is not yet present anywhere locally
+
+	// do not preserve any received or overwritten region across receives
 	buffer.newest_data_location.update_region(discarded, data_location());
 
 	for(const auto& chunk : local_chunks) {
@@ -528,6 +548,7 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 			if(!req.empty()) { local_chunk_reads.emplace_back(chunk.memory_id, req); }
 		}
 	}
+	if(reduction != tsk.get_reductions().end() && reduction->init_from_buffer) { local_chunk_reads.emplace_back(host_memory_id, scalar_reduction_box); }
 
 	for(const auto& receive : applied_receives) {
 		commit_pending_receive(bid, receive, local_chunk_reads);
@@ -652,8 +673,8 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		device_id did = -1;
 		std::unordered_map<buffer_id, reads_writes> rw_map;
 		side_effect_map se_map;
+		bool initialize_reductions = false;
 		instruction* instruction = nullptr;
-		std::vector<buffer_memory_allocation_record> buffer_memory_access_map; // for kernel_instructions, if (m_recorder)
 	};
 	// TODO deduplicate these two structures
 	std::vector<partial_instruction> cmd_instrs;
@@ -668,6 +689,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			insn.subrange = subrange<3>(chunk.offset, chunk.range);
 			insn.did = did;
 			insn.memory_id = m_devices[did].native_memory;
+			insn.initialize_reductions = ecmd.is_reduction_initializer() && did == 0;
 		}
 	} else {
 		// TODO oversubscribe distributed host tasks (but not if they have side effects)
@@ -682,9 +704,14 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		} else {
 			insn.memory_id = host_memory_id;
 		}
+		insn.initialize_reductions = ecmd.is_reduction_initializer();
 	}
 
-	for(const auto bid : bam.get_accessed_buffers()) {
+	auto accessed_bids = bam.get_accessed_buffers();
+	for(const auto& rinfo : tsk.get_reductions()) {
+		accessed_bids.insert(rinfo.bid);
+	}
+	for(const auto bid : accessed_bids) {
 		satisfy_buffer_requirements(bid, tsk, ecmd.get_execution_range(), std::vector<localized_chunk>(cmd_instrs.begin(), cmd_instrs.end()));
 	}
 
@@ -699,6 +726,13 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			insn.rw_map.emplace(bid, std::move(rw));
 		}
 	}
+	for(const auto& rinfo : tsk.get_reductions()) {
+		for(auto& instr : cmd_instrs) {
+			auto& rw_map = instr.rw_map[rinfo.bid]; // allow default-insert
+			if(instr.initialize_reductions) { rw_map.reads = region_union(rw_map.reads, scalar_reduction_box); }
+			rw_map.writes = region_union(rw_map.writes, scalar_reduction_box);
+		}
+	}
 
 	if(!tsk.get_side_effect_map().empty()) {
 		assert(cmd_instrs.size() == 1); // split instructions for host tasks with side effects would race
@@ -710,7 +744,14 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 	for(auto& instr : cmd_instrs) {
 		access_allocation_map allocation_map(bam.get_num_accesses());
-		if(m_recorder != nullptr) { instr.buffer_memory_access_map.resize(bam.get_num_accesses()); }
+		access_allocation_map reduction_map(tsk.get_reductions().size());
+
+		std::vector<buffer_memory_allocation_record> buffer_memory_access_map;   // if (m_recorder)
+		std::vector<buffer_memory_reduction_record> buffer_memory_reduction_map; // if (m_recorder)
+		if(m_recorder != nullptr) {
+			buffer_memory_access_map.resize(bam.get_num_accesses());
+			buffer_memory_reduction_map.resize(tsk.get_reductions().size());
+		}
 
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
@@ -723,10 +764,25 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				assert(allocation_it != allocations.end());
 				const auto& alloc = *allocation_it;
 				allocation_map[i] = access_allocation{alloc.aid, alloc.box, accessed_box};
-				if(m_recorder != nullptr) { instr.buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, accessed_box}; }
+				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, accessed_box}; }
 			} else {
 				allocation_map[i] = access_allocation{null_allocation_id, {}, {}};
-				if(m_recorder != nullptr) { instr.buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, {}}; }
+				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, {}}; }
+			}
+		}
+
+		for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
+			const auto& rinfo = tsk.get_reductions()[i];
+			// TODO copy-pasted from directly above
+			const auto& buffer = m_buffers.at(rinfo.bid);
+			const auto& allocations = buffer.memories[instr.memory_id].allocations;
+			const auto allocation_it = std::find_if(
+			    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(scalar_reduction_box); });
+			assert(allocation_it != allocations.end());
+			const auto& alloc = *allocation_it;
+			reduction_map[i] = access_allocation{alloc.aid, alloc.box, scalar_reduction_box};
+			if(m_recorder != nullptr) {
+				buffer_memory_reduction_map[i] = buffer_memory_reduction_record{{rinfo.bid, instr.memory_id, scalar_reduction_box}, rinfo.rid};
 			}
 		}
 
@@ -735,16 +791,19 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			assert(instr.subrange.range.size() > 0);
 			assert(instr.memory_id != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			launch_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.subrange, std::move(allocation_map));
+			launch_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.subrange, std::move(allocation_map),
+			    std::move(reduction_map), instr.initialize_reductions);
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.memory_id == host_memory_id);
+			assert(reduction_map.empty());
 			launch_instr = &create<host_task_instruction>(
 			    tsk.get_launcher<host_task_launcher>(), instr.subrange, tsk.get_global_size(), std::move(allocation_map), tsk.get_collective_group_id());
 		}
 
 		if(m_recorder != nullptr) {
-			*m_recorder << launch_instruction_record(*launch_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), instr.buffer_memory_access_map);
+			*m_recorder << launch_instruction_record(
+			    *launch_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map, buffer_memory_reduction_map);
 		}
 
 		instr.instruction = launch_instr;
@@ -923,6 +982,11 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 }
 
 
+void instruction_graph_generator::compile_reduction_command(const reduction_command& rcmd) {
+	//
+}
+
+
 void instruction_graph_generator::compile_fence_command(const fence_command& fcmd) {
 	const auto& tsk = *m_tm.get_task(fcmd.get_tid());
 
@@ -1004,8 +1068,8 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 		    m_last_horizon = nullptr;
 		    if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*epoch, ecmd.get_cid()); }
 	    },
-	    [&](const reduction_command& rcmd) { utils::panic("unhandled command type"); }, //
-	    [&](const fence_command& fcmd) { compile_fence_command(fcmd); }                 //
+	    [&](const reduction_command& rcmd) { compile_reduction_command(rcmd); }, //
+	    [&](const fence_command& fcmd) { compile_fence_command(fcmd); }          //
 	);
 
 	if(m_recorder != nullptr) {

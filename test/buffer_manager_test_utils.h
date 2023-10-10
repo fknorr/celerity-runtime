@@ -1,5 +1,6 @@
 #pragma once
 
+#include "buffer_manager.h"
 #include "test_utils.h"
 
 namespace celerity {
