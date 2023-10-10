@@ -472,23 +472,24 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 	// to properly support chained reductions.
 	// If there is only one chunk/command, it already implicitly generates the final reduced value
 	// and the buffer does not need to be flagged as a pending reduction.
-	if(chunks.size() > 1) {
-		for(const auto& reduction : tsk.get_reductions()) {
-			m_buffer_states.at(reduction.bid).pending_reduction = reduction;
+	//
+	// We previously only marked the buffer as a pending reduction if the number of writer nodes was greater than 1. To signal the intra-node reduction to the
+	// instruction graph generator, we now set this state unconditionally, and always generate a reduction command on the next read.
+	for(const auto& reduction : tsk.get_reductions()) {
+		m_buffer_states.at(reduction.bid).pending_reduction = reduction;
 
-			// In some cases this node may not actually participate in the computation of the
-			// intermediate reduction result (because there was no chunk). If so, mark the
-			// reduction buffer as stale so we do not use it as input for the final reduction command.
-			if(per_buffer_local_writes.count(reduction.bid) == 0) {
-				[[maybe_unused]] size_t num_entries = 0;
-				m_buffer_states.at(reduction.bid).local_last_writer.apply_to_values([&num_entries](const write_command_state& wcs) {
-					num_entries++;
-					write_command_state stale_state{wcs};
-					stale_state.mark_as_stale();
-					return stale_state;
-				});
-				assert(num_entries == 1);
-			}
+		// In some cases this node may not actually participate in the computation of the
+		// intermediate reduction result (because there was no chunk). If so, mark the
+		// reduction buffer as stale so we do not use it as input for the final reduction command.
+		if(per_buffer_local_writes.count(reduction.bid) == 0) {
+			[[maybe_unused]] size_t num_entries = 0;
+			m_buffer_states.at(reduction.bid).local_last_writer.apply_to_values([&num_entries](const write_command_state& wcs) {
+				num_entries++;
+				write_command_state stale_state{wcs};
+				stale_state.mark_as_stale();
+				return stale_state;
+			});
+			assert(num_entries == 1);
 		}
 	}
 

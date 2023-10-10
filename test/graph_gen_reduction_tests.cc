@@ -37,7 +37,8 @@ TEST_CASE("distributed_graph_generator generates reduction command trees", "[dis
 	CHECK(dctx.query(command_type::reduction).have_successors(dctx.query(tid_consume), dependency_kind::true_dep));
 }
 
-TEST_CASE("single-node configurations do not generate reduction commands", "[distributed_graph_generator][command-graph][reductions]") {
+// We now generate reduction commands for all node configurations to always trigger an intra-node reduction on instruction graph generation.
+TEST_CASE("single-node configurations do not generate reduction commands", "[distributed_graph_generator][command-graph][reductions][!shouldfail]") {
 	dist_cdag_test_context dctx(1);
 
 	const range<1> test_range = {64};
