@@ -135,13 +135,13 @@ class instruction_graph_generator {
 	struct per_buffer_data {
 		/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
 		struct pending_receive {
-			transfer_id trid;
+			task_id consumer_tid;
 			reduction_id rid;
 			region<3> received_region;
 			box<3> bounding_box;
 
-			pending_receive(const transfer_id trid, const reduction_id rid, region<3>&& received_region, const box<3>& bounding_box)
-			    : trid(trid), rid(rid), received_region(std::move(received_region)), bounding_box(bounding_box) {}
+			pending_receive(const task_id consumer_tid, const reduction_id rid, region<3>&& received_region, const box<3>& bounding_box)
+			    : consumer_tid(consumer_tid), rid(rid), received_region(std::move(received_region)), bounding_box(bounding_box) {}
 		};
 
 		int dims;

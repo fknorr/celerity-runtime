@@ -299,7 +299,6 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 		}
 
 		// We use the task id, together with the "chunk id" and the buffer id (stored separately) to match pushes against their corresponding await pushes
-		const transfer_id trid = static_cast<transfer_id>((tsk.get_id() << 32) | i);
 		for(auto& [bid, reqs_by_mode] : requirements) {
 			auto& buffer_state = m_buffer_states.at(bid);
 			std::vector<access_mode> required_modes;
@@ -354,7 +353,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 						if(!missing_part_boxes.empty()) {
 							const region missing_parts(std::move(missing_part_boxes));
 							assert(m_num_nodes > 1);
-							auto* const ap_cmd = create_command<await_push_command>(receive_id(trid, bid, no_reduction_id), missing_parts);
+							auto* const ap_cmd = create_command<await_push_command>(receive_id(tsk.get_id(), bid, no_reduction_id), missing_parts);
 							m_cdag.add_dependency(cmd, ap_cmd, dependency_kind::true_dep, dependency_origin::dataflow);
 							generate_anti_dependencies(tsk.get_id(), bid, buffer_state.local_last_writer, missing_parts, ap_cmd);
 							generate_epoch_dependencies(ap_cmd);
@@ -374,7 +373,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 								// Generate separate push command for each last writer command for now,
 								// possibly even multiple for partially already-replicated data.
 								// TODO: Can and/or should we consolidate?
-								auto* const push_cmd = create_command<push_command>(nid, receive_id(trid, bid, no_reduction_id), replicated_box.get_subrange());
+								auto* const push_cmd = create_command<push_command>(nid, receive_id(tsk.get_id(), bid, no_reduction_id), replicated_box.get_subrange());
 								assert(!utils::isa<await_push_command>(m_cdag.get(wcs)) && "Attempting to push non-owned data?!");
 								m_cdag.add_dependency(push_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
 								generated_pushes.push_back(push_cmd);
@@ -414,7 +413,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 						m_cdag.add_dependency(reduce_cmd, m_cdag.get(local_last_writer[0].second), dependency_kind::true_dep, dependency_origin::dataflow);
 					}
 
-					auto* const ap_cmd = create_command<await_push_command>(receive_id(trid, bid, reduction.rid), scalar_reduction_box.get_subrange());
+					auto* const ap_cmd = create_command<await_push_command>(receive_id(tsk.get_id(), bid, reduction.rid), scalar_reduction_box.get_subrange());
 					m_cdag.add_dependency(reduce_cmd, ap_cmd, dependency_kind::true_dep, dependency_origin::dataflow);
 					generate_epoch_dependencies(ap_cmd);
 
@@ -427,7 +426,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 					const bool notification_only = !local_last_writer[0].second.is_fresh();
 					const auto push_box = notification_only ? empty_box : scalar_reduction_box;
 
-					auto* const push_cmd = create_command<push_command>(nid, receive_id(trid, bid, reduction.rid), push_box.get_subrange());
+					auto* const push_cmd = create_command<push_command>(nid, receive_id(tsk.get_id(), bid, reduction.rid), push_box.get_subrange());
 					generated_pushes.push_back(push_cmd);
 
 					if(notification_only) {

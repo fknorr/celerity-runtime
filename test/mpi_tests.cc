@@ -21,10 +21,11 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		const auto p2p_id = 1 + sender * comm.get_num_nodes() + receiver;
 		const int tag = static_cast<int>(p2p_id) * 13;
 		const buffer_id bid = p2p_id * 11;
-		const transfer_id trid = p2p_id * 17;
+		const task_id consumer_tid = p2p_id * 17;
 		const reduction_id rid = p2p_id * 19;
+		const receive_id rcvid(consumer_tid, bid, rid);
 		const box<3> box = {id{p2p_id, p2p_id * 2, p2p_id * 3}, id{p2p_id * 4, p2p_id * 5, p2p_id * 6}};
-		return outbound_pilot{receiver, pilot_message{tag, receive_id(trid, bid, rid), box}};
+		return outbound_pilot{receiver, pilot_message{tag, rcvid, box}};
 	};
 
 	for(node_id to = 0; to < comm.get_num_nodes(); ++to) {

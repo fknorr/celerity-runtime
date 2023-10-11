@@ -305,7 +305,7 @@ void instruction_graph_generator::commit_pending_receive(
 	const auto alloc = memory.find_contiguous_allocation(receive.bounding_box);
 	assert(alloc != nullptr);
 
-	const auto rcvid = receive_id(receive.trid, bid, receive.rid);
+	const auto rcvid = receive_id(receive.consumer_tid, bid, receive.rid);
 
 	const auto begin_recv_instr = &create<begin_receive_instruction>(rcvid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
 	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr, receive.received_region); }
@@ -957,7 +957,8 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 
 #ifndef NDEBUG
 	for(const auto& receive : buffer.pending_receives) {
-		assert(receive.trid != rcvid.trid && "received multiple await-pushes with the same transfer and buffer id");
+		assert(std::pair(receive.consumer_tid, receive.rid) != std::pair(rcvid.consumer_tid, rcvid.rid)
+		       && "received multiple await-pushes for the same consumer-task, buffer and reduction id");
 		assert(region_intersection(receive.received_region, apcmd.get_region()).empty()
 		       && "received an await-push command into a previously await-pushed region without an intermediate read");
 	}
@@ -979,7 +980,7 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 				connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
 				std::swap(*next_connected, *connected_end);
 			}
-			buffer.pending_receives.emplace_back(rcvid.trid, rcvid.rid, region(box_vector<3>(begin, connected_end)), connected_bounding_box);
+			buffer.pending_receives.emplace_back(rcvid.consumer_tid, rcvid.rid, region(box_vector<3>(begin, connected_end)), connected_bounding_box);
 			begin = connected_end;
 		}
 	}

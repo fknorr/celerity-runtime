@@ -81,14 +81,16 @@ inline constexpr reduction_id no_reduction_id = 0;
 
 // TODO rename to transfer_id
 struct receive_id {
-	transfer_id trid = -1;
+	task_id consumer_tid = -1;
 	buffer_id bid = -1;
 	reduction_id rid = no_reduction_id;
 
 	receive_id() = default;
-	receive_id(const transfer_id trid, const buffer_id bid, const reduction_id rid = no_reduction_id) : trid(trid), bid(bid), rid(rid) {}
+	receive_id(const task_id consumer_tid, const buffer_id bid, const reduction_id rid = no_reduction_id) : consumer_tid(consumer_tid), bid(bid), rid(rid) {}
 
-	friend bool operator==(const receive_id& lhs, const receive_id& rhs) { return lhs.trid == rhs.trid && lhs.bid == rhs.bid && lhs.rid == rhs.rid; }
+	friend bool operator==(const receive_id& lhs, const receive_id& rhs) {
+		return lhs.consumer_tid == rhs.consumer_tid && lhs.bid == rhs.bid && lhs.rid == rhs.rid;
+	}
 	friend bool operator!=(const receive_id& lhs, const receive_id& rhs) { return !(lhs == rhs); }
 };
 

@@ -47,7 +47,7 @@ std::string escape_for_dot_label(std::string str) {
 
 // implemented here because types.h must not depend on utils.h
 std::size_t std::hash<celerity::detail::receive_id>::operator()(const celerity::detail::receive_id& t) const noexcept {
-	auto hash = std::hash<celerity::detail::transfer_id>{}(t.trid);
+	auto hash = std::hash<celerity::detail::task_id>{}(t.consumer_tid);
 	celerity::detail::utils::hash_combine(hash, std::hash<celerity::detail::buffer_id>{}(t.bid));
 	celerity::detail::utils::hash_combine(hash, std::hash<celerity::detail::reduction_id>{}(t.rid));
 	return hash;

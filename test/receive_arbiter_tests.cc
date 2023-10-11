@@ -67,8 +67,7 @@ class mock_recv_communicator : public communicator {
 };
 
 TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]") {
-	const transfer_id trid = 1234567890;
-	const buffer_id bid = 420;
+	const receive_id rcvid(task_id(1), buffer_id(420), no_reduction_id);
 	const range<3> buffer_range = {40, 10, 12};
 	const box<3> alloc_box = {{2, 1, 0}, {39, 10, 10}};
 	const box<3> recv_box = {{4, 2, 1}, {37, 9, 8}};
@@ -89,7 +88,7 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	}
 	std::vector<inbound_pilot> pilots;
 	for(const auto& [from, tag, box] : fragments_meta) {
-		pilots.push_back(inbound_pilot{from, pilot_message{tag, bid, trid, box}});
+		pilots.push_back(inbound_pilot{from, pilot_message{tag, rcvid, box}});
 	}
 
 	mock_recv_communicator comm;
@@ -103,8 +102,8 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	ra.begin_receive(trid, bid, allocation.data(), alloc_box, elem_size);
-	const auto event = ra.await_receive(trid, bid, recv_box);
+	ra.begin_receive(rcvid, allocation.data(), alloc_box, elem_size);
+	const auto event = ra.await_receive(rcvid, recv_box);
 
 	for(size_t i = 0; i < num_pilots_pushed_before_recv; ++i) {
 		const auto& [from, tag, box] = fragments_meta[i];
@@ -125,7 +124,7 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 
 	CHECK(event.is_complete());
 
-	ra.end_receive(trid, bid);
+	ra.end_receive(rcvid);
 
 	std::vector<int> expected_allocation(alloc_box.get_range().size());
 	for(const auto& [from, tag, box] : fragments_meta) {
@@ -139,8 +138,7 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 }
 
 TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
-	const transfer_id trid = 1234567890;
-	const buffer_id bid = 420;
+	const receive_id rcvid(task_id(1), buffer_id(420), no_reduction_id);
 	const range<3> buffer_range = {20, 20, 1};
 	const box<3> alloc_box = {{2, 1, 0}, {19, 20, 1}};
 	const region<3> recv_regions[] = {
@@ -155,13 +153,13 @@ TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
 	mock_recv_communicator comm;
 	receive_arbiter ra(comm);
 
-	comm.push_inbound_pilot(inbound_pilot{from, pilot_message{tag, bid, trid, fragment_box}});
+	comm.push_inbound_pilot(inbound_pilot{from, pilot_message{tag, rcvid, fragment_box}});
 	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	ra.begin_receive(trid, bid, allocation.data(), alloc_box, elem_size);
-	const auto event_0 = ra.await_receive(trid, bid, recv_regions[0]);
-	const auto event_1 = ra.await_receive(trid, bid, recv_regions[1]);
+	ra.begin_receive(rcvid, allocation.data(), alloc_box, elem_size);
+	const auto event_0 = ra.await_receive(rcvid, recv_regions[0]);
+	const auto event_1 = ra.await_receive(rcvid, recv_regions[1]);
 	ra.poll_communicator();
 
 	CHECK(!event_0.is_complete());
@@ -174,7 +172,7 @@ TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
 	CHECK(event_0.is_complete());
 	CHECK(event_1.is_complete());
 
-	ra.end_receive(trid, bid);
+	ra.end_receive(rcvid);
 
 	std::vector<int> expected_allocation(alloc_box.get_range().size());
 	experimental::for_each_item(fragment_box.get_range(), [&](const item<3>& it) {

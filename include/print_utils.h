@@ -78,12 +78,12 @@ struct fmt::formatter<celerity::detail::receive_id> {
 	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }
 
 	format_context::iterator format(const celerity::detail::receive_id& rcvid, format_context& ctx) const {
-		const auto [trid, bid, rid] = rcvid;
+		const auto [tid, bid, rid] = rcvid;
 		auto out = ctx.out();
 		if(rid != celerity::detail::no_reduction_id) {
-			out = fmt::format_to(out, "TR{}.B{}.R{}", trid, bid, rid);
+			out = fmt::format_to(out, "T{}.B{}.R{}", tid, bid, rid);
 		} else {
-			out = fmt::format_to(out, "TR{}.B{}", trid, bid);
+			out = fmt::format_to(out, "T{}.B{}", tid, bid);
 		}
 		return ctx.out();
 	}
