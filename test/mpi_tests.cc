@@ -23,9 +23,9 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		const buffer_id bid = p2p_id * 11;
 		const task_id consumer_tid = p2p_id * 17;
 		const reduction_id rid = p2p_id * 19;
-		const receive_id rcvid(consumer_tid, bid, rid);
+		const transfer_id trid(consumer_tid, bid, rid);
 		const box<3> box = {id{p2p_id, p2p_id * 2, p2p_id * 3}, id{p2p_id * 4, p2p_id * 5, p2p_id * 6}};
-		return outbound_pilot{receiver, pilot_message{tag, rcvid, box}};
+		return outbound_pilot{receiver, pilot_message{tag, trid, box}};
 	};
 
 	for(node_id to = 0; to < comm.get_num_nodes(); ++to) {
@@ -39,7 +39,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 			CAPTURE(pilot.from, comm.get_local_node_id());
 			const auto expect = make_pilot_message(pilot.from, comm.get_local_node_id());
 			CHECK(pilot.message.tag == expect.message.tag);
-			CHECK(pilot.message.rcvid == expect.message.rcvid);
+			CHECK(pilot.message.trid == expect.message.trid);
 			CHECK(pilot.message.box == expect.message.box);
 			++num_pilots_received;
 		}

@@ -42,34 +42,34 @@ namespace detail {
 
 	class push_command final : public matchbox::implement_acceptor<abstract_command, push_command> {
 		friend class command_graph;
-		push_command(const command_id cid, const node_id target, const receive_id& rcvid, const subrange<3>& push_range)
-		    : acceptor_base(cid), m_target(target), m_rcvid(rcvid), m_push_range(push_range) {}
+		push_command(const command_id cid, const node_id target, const transfer_id& trid, const subrange<3>& push_range)
+		    : acceptor_base(cid), m_target(target), m_trid(trid), m_push_range(push_range) {}
 
 		command_type get_type() const override { return command_type::push; }
 
 	  public:
 		node_id get_target() const { return m_target; }
-		const receive_id& get_receive_id() const { return m_rcvid; }
+		const transfer_id& get_transfer_id() const { return m_trid; }
 		const subrange<3>& get_range() const { return m_push_range; }
 
 	  private:
 		node_id m_target;
-		receive_id m_rcvid;
+		transfer_id m_trid;
 		subrange<3> m_push_range;
 	};
 
 	class await_push_command final : public matchbox::implement_acceptor<abstract_command, await_push_command> {
 		friend class command_graph;
-		await_push_command(const command_id cid, const receive_id& rcvid, region<3> region) : acceptor_base(cid), m_rcvid(rcvid), m_region(std::move(region)) {}
+		await_push_command(const command_id cid, const transfer_id& trid, region<3> region) : acceptor_base(cid), m_trid(trid), m_region(std::move(region)) {}
 
 		command_type get_type() const override { return command_type::await_push; }
 
 	  public:
-		const receive_id& get_receive_id() const { return m_rcvid; }
+		const transfer_id& get_transfer_id() const { return m_trid; }
 		const region<3>& get_region() const { return m_region; }
 
 	  private:
-		receive_id m_rcvid;
+		transfer_id m_trid;
 		region<3> m_region;
 	};
 

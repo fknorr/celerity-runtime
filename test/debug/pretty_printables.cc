@@ -13,7 +13,6 @@ int main() {
 	[[maybe_unused]] celerity::detail::reduction_id rid = 15;
 	[[maybe_unused]] celerity::detail::host_object_id hoid = 16;
 	[[maybe_unused]] celerity::detail::hydration_id hyid = 17;
-	[[maybe_unused]] celerity::detail::transfer_id trid = 18;
 
 	[[maybe_unused]] celerity::id<3> id(1, 2, 3);
 	[[maybe_unused]] celerity::range<3> range(1, 2, 3);

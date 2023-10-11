@@ -74,11 +74,11 @@ struct fmt::formatter<celerity::chunk<Dims>> : fmt::formatter<celerity::subrange
 };
 
 template <>
-struct fmt::formatter<celerity::detail::receive_id> {
+struct fmt::formatter<celerity::detail::transfer_id> {
 	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }
 
-	format_context::iterator format(const celerity::detail::receive_id& rcvid, format_context& ctx) const {
-		const auto [tid, bid, rid] = rcvid;
+	format_context::iterator format(const celerity::detail::transfer_id& trid, format_context& ctx) const {
+		const auto [tid, bid, rid] = trid;
 		auto out = ctx.out();
 		if(rid != celerity::detail::no_reduction_id) {
 			out = fmt::format_to(out, "T{}.B{}.R{}", tid, bid, rid);

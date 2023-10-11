@@ -304,23 +304,23 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
 	    },
 	    [&](const begin_receive_instruction& brinstr) {
-		    CELERITY_DEBUG("[executor] I{}: begin receive {} {} into M{}.A{} ({}), x{} bytes", brinstr.get_id(), brinstr.get_receive_id(),
+		    CELERITY_DEBUG("[executor] I{}: begin receive {} {} into M{}.A{} ({}), x{} bytes", brinstr.get_id(), brinstr.get_transfer_id(),
 		        brinstr.get_allocated_bounding_box(), brinstr.get_dest_memory_id(), brinstr.get_dest_allocation_id(),
 		        brinstr.get_allocated_bounding_box().get_range(), brinstr.get_element_size());
 
 		    const auto allocation_base = m_allocations.at(brinstr.get_dest_allocation_id());
-		    m_recv_arbiter.begin_receive(brinstr.get_receive_id(), allocation_base, brinstr.get_allocated_bounding_box(), brinstr.get_element_size());
+		    m_recv_arbiter.begin_receive(brinstr.get_transfer_id(), allocation_base, brinstr.get_allocated_bounding_box(), brinstr.get_element_size());
 		    return completed_synchronous();
 	    },
 	    [&](const await_receive_instruction& arinstr) {
-		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_receive_id(), arinstr.get_received_region());
+		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
 
-		    return m_recv_arbiter.await_receive(arinstr.get_receive_id(), arinstr.get_received_region());
+		    return m_recv_arbiter.await_receive(arinstr.get_transfer_id(), arinstr.get_received_region());
 	    },
 	    [&](const end_receive_instruction& erinstr) {
-		    CELERITY_DEBUG("[executor] I{}: end receive {}", erinstr.get_id(), erinstr.get_receive_id());
+		    CELERITY_DEBUG("[executor] I{}: end receive {}", erinstr.get_id(), erinstr.get_transfer_id());
 
-		    m_recv_arbiter.end_receive(erinstr.get_receive_id());
+		    m_recv_arbiter.end_receive(erinstr.get_transfer_id());
 		    return completed_synchronous();
 	    },
 	    [&](const fence_instruction& finstr) {

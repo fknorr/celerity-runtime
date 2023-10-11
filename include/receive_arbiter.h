@@ -32,9 +32,9 @@ class receive_arbiter {
 	receive_arbiter& operator=(receive_arbiter&&) = default;
 	~receive_arbiter();
 
-	void begin_receive(const receive_id& rcvid, void* allocation, const box<3>& instance_box, size_t elem_size);
-	[[nodiscard]] event await_receive(const receive_id& rcvid, const region<3>& awaited_region);
-	void end_receive(const receive_id& rcvid);
+	void begin_receive(const transfer_id& trid, void* allocation, const box<3>& instance_box, size_t elem_size);
+	[[nodiscard]] event await_receive(const transfer_id& trid, const region<3>& awaited_region);
+	void end_receive(const transfer_id& trid);
 
 	void poll_communicator();
 
@@ -59,7 +59,7 @@ class receive_arbiter {
 	};
 
 	communicator* m_comm;
-	std::unordered_map<receive_id, buffer_transfer> m_transfers;
+	std::unordered_map<transfer_id, buffer_transfer> m_transfers;
 
 	void begin_receiving_fragment(region_transfer* region_tr, const inbound_pilot& pilot, size_t elem_size);
 };
