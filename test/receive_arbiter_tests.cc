@@ -10,15 +10,15 @@ using namespace celerity::detail;
 
 class mock_recv_communicator : public communicator {
   public:
-	mock_recv_communicator() = default;
+	explicit mock_recv_communicator(const size_t num_nodes, const node_id local_node_id) : m_num_nodes(num_nodes), m_local_nid(local_node_id) {}
 	mock_recv_communicator(mock_recv_communicator&&) = default;
 	mock_recv_communicator& operator=(mock_recv_communicator&&) = default;
 	mock_recv_communicator(const mock_recv_communicator&) = delete;
 	mock_recv_communicator& operator=(const mock_recv_communicator&) = delete;
 	~mock_recv_communicator() override { CHECK(m_pending_recvs.empty()); }
 
-	size_t get_num_nodes() const override { utils::panic("unimplemented"); }
-	node_id get_local_node_id() const override { utils::panic("unimplemented"); }
+	size_t get_num_nodes() const override { return m_num_nodes; }
+	node_id get_local_node_id() const override { return m_local_nid; }
 	void send_outbound_pilot(const outbound_pilot& /* pilot */) override { utils::panic("unimplemented"); }
 
 	[[nodiscard]] std::vector<inbound_pilot> poll_inbound_pilots() override { return std::move(m_inbound_pilots); }
@@ -62,6 +62,8 @@ class mock_recv_communicator : public communicator {
 		completion_flag m_flag;
 	};
 
+	size_t m_num_nodes;
+	node_id m_local_nid;
 	std::vector<inbound_pilot> m_inbound_pilots;
 	std::unordered_map<std::pair<node_id, int>, std::tuple<void*, stride, completion_flag>, utils::pair_hash> m_pending_recvs;
 };
@@ -91,32 +93,41 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 		pilots.push_back(inbound_pilot{from, pilot_message{tag, trid, box}});
 	}
 
-	mock_recv_communicator comm;
+	mock_recv_communicator comm(8, 0);
 	receive_arbiter ra(comm);
 
-	const size_t num_pilots_pushed_before_recv = GENERATE(values<size_t>({0, num_fragments / 2, num_fragments}));
-	CAPTURE(num_pilots_pushed_before_recv);
-	for(size_t i = 0; i < num_pilots_pushed_before_recv; ++i) {
+	const size_t num_pilots_pushed_before_begin = GENERATE(values<size_t>({0, num_fragments / 2, num_fragments}));
+	CAPTURE(num_pilots_pushed_before_begin);
+	for(size_t i = 0; i < num_pilots_pushed_before_begin; ++i) {
 		comm.push_inbound_pilot(pilots[i]);
 	}
 	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	ra.begin_receive(trid, allocation.data(), alloc_box, elem_size);
-	const auto event = ra.await_receive(trid, recv_box);
+	ra.begin_receive(trid, recv_box, allocation.data(), alloc_box, elem_size);
 
-	for(size_t i = 0; i < num_pilots_pushed_before_recv; ++i) {
+	const size_t num_pilots_completed_before_await = std::min(num_pilots_pushed_before_begin, GENERATE(values<size_t>({0, num_fragments / 2, num_fragments})));
+	CAPTURE(num_pilots_completed_before_await);
+	for(size_t i = 0; i < num_pilots_completed_before_await; ++i) {
 		const auto& [from, tag, box] = fragments_meta[i];
 		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
 	}
 	ra.poll_communicator();
 
-	for(size_t i = num_pilots_pushed_before_recv; i < num_fragments; ++i) {
+	const auto event = ra.await_receive(trid, recv_box);
+
+	for(size_t i = num_pilots_completed_before_await; i < num_pilots_pushed_before_begin; ++i) {
+		const auto& [from, tag, box] = fragments_meta[i];
+		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
+	}
+	ra.poll_communicator();
+
+	for(size_t i = num_pilots_pushed_before_begin; i < num_fragments; ++i) {
 		comm.push_inbound_pilot(pilots[i]);
 	}
 	ra.poll_communicator();
 
-	for(size_t i = num_pilots_pushed_before_recv; i < num_fragments; ++i) {
+	for(size_t i = num_pilots_pushed_before_begin; i < num_fragments; ++i) {
 		const auto& [from, tag, box] = fragments_meta[i];
 		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
 	}
@@ -146,18 +157,19 @@ TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
 	    box<3>{{4, 10, 0}, {14, 18, 1}},
 	};
 	const box<3> fragment_box = {{4, 1, 0}, {19, 18, 1}}; // union of recv_regions
+	const region<3> full_recv_region = fragment_box;
 	const size_t elem_size = sizeof(int);
 	const node_id from = 1;
 	const int tag = 15;
 
-	mock_recv_communicator comm;
+	mock_recv_communicator comm(2, 0);
 	receive_arbiter ra(comm);
 
 	comm.push_inbound_pilot(inbound_pilot{from, pilot_message{tag, trid, fragment_box}});
 	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	ra.begin_receive(trid, allocation.data(), alloc_box, elem_size);
+	ra.begin_receive(trid, full_recv_region, allocation.data(), alloc_box, elem_size);
 	const auto event_0 = ra.await_receive(trid, recv_regions[0]);
 	const auto event_1 = ra.await_receive(trid, recv_regions[1]);
 	ra.poll_communicator();

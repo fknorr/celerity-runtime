@@ -94,7 +94,7 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 		const inbound_pilot pilot{static_cast<node_id>(status.MPI_SOURCE), *m_inbound_pilot.message};
 		begin_receive_pilot(); // initiate next receive asap
 
-		CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, {}}, {})", pilot.from, pilot.message.tag, pilot.message.trid, pilot.message.box);
+		CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, {} {})", pilot.from, pilot.message.tag, pilot.message.trid, pilot.message.box);
 		received_pilots.push_back(pilot);
 	}
 }
@@ -127,8 +127,9 @@ void mpi_communicator::begin_receive_pilot() {
 MPI_Datatype mpi_communicator::get_scalar_type(const size_t bytes) {
 	if(const auto it = m_scalar_type_cache.find(bytes); it != m_scalar_type_cache.end()) { return it->second.get(); }
 
+	assert(bytes <= INT_MAX);
 	MPI_Datatype type = MPI_DATATYPE_NULL;
-	MPI_Type_contiguous(bytes, MPI_BYTE, &type);
+	MPI_Type_contiguous(static_cast<int>(bytes), MPI_BYTE, &type);
 	MPI_Type_commit(&type);
 	m_scalar_type_cache.emplace(bytes, unique_datatype(type));
 	return type;

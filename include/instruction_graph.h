@@ -258,12 +258,13 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 /// 2/4/8-connected component of the await_push region and passes it on to the receive_arbiter through a begin_receive_instruction.
 class begin_receive_instruction final : public matchbox::implement_acceptor<instruction, begin_receive_instruction> {
   public:
-	explicit begin_receive_instruction(const instruction_id iid, const transfer_id& trid, const memory_id dest_memory, const allocation_id dest_allocation,
-	    const box<3>& allocated_bounding_box, const size_t elem_size)
-	    : acceptor_base(iid), m_trid(trid), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_alloc_bbox(allocated_bounding_box),
-	      m_elem_size(elem_size) {}
+	explicit begin_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
+	    const allocation_id dest_allocation, const box<3>& allocation_box, const size_t elem_size)
+	    : acceptor_base(iid), m_trid(trid), m_request(std::move(request)), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation),
+	      m_alloc_bbox(allocation_box), m_elem_size(elem_size) {}
 
 	const transfer_id& get_transfer_id() const { return m_trid; }
+	const region<3>& get_requested_region() const { return m_request; }
 	memory_id get_dest_memory_id() const { return m_dest_memory; }
 	allocation_id get_dest_allocation_id() const { return m_dest_allocation; }
 	const box<3>& get_allocated_bounding_box() const { return m_alloc_bbox; }
@@ -271,6 +272,7 @@ class begin_receive_instruction final : public matchbox::implement_acceptor<inst
 
   private:
 	transfer_id m_trid;
+	region<3> m_request;
 	memory_id m_dest_memory;
 	allocation_id m_dest_allocation;
 	box<3> m_alloc_bbox;

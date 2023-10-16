@@ -223,10 +223,10 @@ send_instruction_record::send_instruction_record(
       offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
       transfer_id(trid), offset_in_buffer(offset_in_buffer) {}
 
-begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr, const region<3>& received_region)
-    : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), dest_memory_id(brinstr.get_dest_memory_id()),
-      dest_allocation_id(brinstr.get_dest_allocation_id()), allocated_bounding_box(brinstr.get_allocated_bounding_box()),
-      element_size(brinstr.get_element_size()), received_region(received_region) {}
+begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr)
+    : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), requested_region(brinstr.get_requested_region()),
+      dest_memory_id(brinstr.get_dest_memory_id()), dest_allocation_id(brinstr.get_dest_allocation_id()),
+      allocated_bounding_box(brinstr.get_allocated_bounding_box()), element_size(brinstr.get_element_size()) {}
 
 await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
     : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()) {}
@@ -263,8 +263,7 @@ void instruction_recorder::record_dependencies(const instruction& instr) {
 	assert(record != m_recorded_instructions.end());
 
 	const auto& graph_deps = instr.get_dependencies();
-	auto& record_deps = matchbox::match(
-	    *record, [](auto& r) -> auto& { return r.dependencies; });
+	auto& record_deps = matchbox::match(*record, [](auto& r) -> auto& { return r.dependencies; });
 	record_deps.reserve(graph_deps.size());
 	for(auto& d : graph_deps) {
 		record_deps.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});

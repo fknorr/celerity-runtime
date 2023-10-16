@@ -307,8 +307,8 @@ void instruction_graph_generator::commit_pending_receive(
 
 	const auto trid = transfer_id(receive.consumer_tid, bid, receive.rid);
 
-	const auto begin_recv_instr = &create<begin_receive_instruction>(trid, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
-	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr, receive.received_region); }
+	const auto begin_recv_instr = &create<begin_receive_instruction>(trid, receive.received_region, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
+	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
 
 	// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
 	// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure

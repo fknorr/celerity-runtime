@@ -90,4 +90,9 @@ template <typename... FmtArgs>
 	throw std::runtime_error(fmt::format(fmt_args...));
 }
 
+template <typename Variant, typename Alternative>
+Alternative& replace(Variant& variant, Alternative&& alternative) {
+	return std::get<Alternative>(variant = std::forward<Alternative>(alternative));
+}
+
 } // namespace celerity::detail::utils

@@ -305,11 +305,12 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const begin_receive_instruction& brinstr) {
 		    CELERITY_DEBUG("[executor] I{}: begin receive {} {} into M{}.A{} ({}), x{} bytes", brinstr.get_id(), brinstr.get_transfer_id(),
-		        brinstr.get_allocated_bounding_box(), brinstr.get_dest_memory_id(), brinstr.get_dest_allocation_id(),
-		        brinstr.get_allocated_bounding_box().get_range(), brinstr.get_element_size());
+		        brinstr.get_requested_region(), brinstr.get_dest_memory_id(), brinstr.get_dest_allocation_id(),
+		        brinstr.get_allocated_bounding_box(), brinstr.get_element_size());
 
 		    const auto allocation_base = m_allocations.at(brinstr.get_dest_allocation_id());
-		    m_recv_arbiter.begin_receive(brinstr.get_transfer_id(), allocation_base, brinstr.get_allocated_bounding_box(), brinstr.get_element_size());
+		    m_recv_arbiter.begin_receive(
+		        brinstr.get_transfer_id(), brinstr.get_requested_region(), allocation_base, brinstr.get_allocated_bounding_box(), brinstr.get_element_size());
 		    return completed_synchronous();
 	    },
 	    [&](const await_receive_instruction& arinstr) {
