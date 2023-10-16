@@ -389,10 +389,11 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(brinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", brinstr.id, irec.get_await_push_command_id(brinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>begin receive</b> {}", brinstr.transfer_id);
-			    fmt::format_to(back, "<br/>{} {}x{} bytes", get_buffer_label(brinstr.transfer_id.bid), brinstr.requested_region, brinstr.element_size);
+			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(brinstr.transfer_id.bid), brinstr.requested_region);
 			    for(auto& dest : brinstr.destinations) {
-				    fmt::format_to(back, "<br/>into M{}.A{} ({})", dest.memory, dest.allocation, dest.allocation_box);
+				    fmt::format_to(back, "<br/>into M{}.A{} (B{} {})", dest.memory, dest.allocation, brinstr.transfer_id.bid, dest.allocation_box);
 			    }
+			    fmt::format_to(back, "<br/>x{} bytes", brinstr.element_size);
 			    end_node();
 		    },
 		    [&](const await_receive_instruction_record& arinstr) {
@@ -400,6 +401,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", arinstr.id, irec.get_await_push_command_id(arinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>await receive</b> {}", arinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(arinstr.transfer_id.bid), arinstr.received_region);
+			    fmt::format_to(back, "<br/>into M{}.A{} (B{} {})", arinstr.dest_memory_id, arinstr.dest_allocation_id, arinstr.transfer_id.bid,
+			        arinstr.dest_allocation_box);
 			    end_node();
 		    },
 		    [&](const end_receive_instruction_record& erinstr) {

@@ -227,8 +227,10 @@ begin_receive_instruction_record::begin_receive_instruction_record(const begin_r
     : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), requested_region(brinstr.get_requested_region()),
       destinations(brinstr.get_destinations()), element_size(brinstr.get_element_size()) {}
 
-await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
-    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()) {}
+await_receive_instruction_record::await_receive_instruction_record(
+    const await_receive_instruction& arinstr, const memory_id dest_memory_id, const allocation_id dest_allocation_id, const box<3>& dest_allocation_box)
+    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()), dest_memory_id(dest_memory_id),
+      dest_allocation_id(dest_allocation_id), dest_allocation_box(dest_allocation_box) {}
 
 end_receive_instruction_record::end_receive_instruction_record(const end_receive_instruction& erinstr)
     : instruction_record_base(erinstr), transfer_id(erinstr.get_transfer_id()) {}

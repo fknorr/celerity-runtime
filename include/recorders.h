@@ -285,8 +285,12 @@ struct begin_receive_instruction_record : instruction_record_base {
 struct await_receive_instruction_record : instruction_record_base {
 	detail::transfer_id transfer_id;
 	region<3> received_region;
+	memory_id dest_memory_id;
+	allocation_id dest_allocation_id;
+	box<3> dest_allocation_box;
 
-	await_receive_instruction_record(const await_receive_instruction& arinstr);
+	await_receive_instruction_record(
+	    const await_receive_instruction& arinstr, memory_id dest_memory_id, allocation_id dest_allocation_id, const box<3>& dest_allocation_box);
 };
 
 struct end_receive_instruction_record : instruction_record_base {

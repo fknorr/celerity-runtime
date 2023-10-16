@@ -146,7 +146,7 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	CHECK(allocation == expected_allocation);
 }
 
-TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
+TEST_CASE("receive_arbiter can await supersets of incoming fragments", "[receive_arbiter]") {
 	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
 	const range<3> buffer_range = {20, 20, 1};
 	const box<3> alloc_box = {{2, 1, 0}, {19, 20, 1}};

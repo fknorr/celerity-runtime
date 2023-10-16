@@ -142,7 +142,7 @@ TEST_CASE("matmul pattern", "[instruction graph]") {
 	const auto my_nid = GENERATE(values<node_id>({0, 1}));
 	CAPTURE(my_nid);
 
-	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 1 /* devices */);
+	test_utils::idag_test_context ictx(4 /* nodes */, my_nid, 1 /* devices */);
 
 	const auto range = celerity::range<2>(mat_size, mat_size);
 	auto mat_a_buf = ictx.create_buffer(range);

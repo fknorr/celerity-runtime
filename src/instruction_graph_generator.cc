@@ -347,16 +347,21 @@ void instruction_graph_generator::commit_pending_receive(
 
 	std::vector<instruction*> await_receives;
 	for(const auto& await_region : independent_await_regions) {
-		const auto await_instr = &create<await_receive_instruction>(trid, await_region);
-		if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr); }
-		await_receives.push_back(await_instr);
-
-		add_dependency(*await_instr, *begin_recv_instr, dependency_kind::true_dep);
-
 		for(const auto alloc : allocations) {
-			alloc->record_write(await_region, await_instr);
+			const auto alloc_await_region = region_intersection(alloc->box, await_region);
+			if(alloc_await_region.empty()) continue;
+
+			const auto await_instr = &create<await_receive_instruction>(trid, alloc_await_region);
+			if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr, host_memory_id, alloc->aid, alloc->box); }
+			await_receives.push_back(await_instr);
+
+			add_dependency(*await_instr, *begin_recv_instr, dependency_kind::true_dep);
+
+			for(const auto alloc : allocations) {
+				alloc->record_write(alloc_await_region, await_instr);
+			}
+			buffer.original_writers.update_region(alloc_await_region, await_instr);
 		}
-		buffer.original_writers.update_region(await_region, await_instr);
 	}
 
 	const auto end_recv_instr = &create<end_receive_instruction>(trid);
