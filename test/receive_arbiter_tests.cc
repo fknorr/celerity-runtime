@@ -104,7 +104,7 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	ra.begin_receive(trid, recv_box, allocation.data(), alloc_box, elem_size);
+	ra.begin_receive(trid, recv_box, {receive_arbiter::tile(allocation.data(), alloc_box)}, elem_size);
 
 	const size_t num_pilots_completed_before_await = std::min(num_pilots_pushed_before_begin, GENERATE(values<size_t>({0, num_fragments / 2, num_fragments})));
 	CAPTURE(num_pilots_completed_before_await);
@@ -114,7 +114,7 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	}
 	ra.poll_communicator();
 
-	const auto event = ra.await_receive(trid, recv_box);
+	const auto event = ra.await_partial_receive(trid, recv_box);
 
 	for(size_t i = num_pilots_completed_before_await; i < num_pilots_pushed_before_begin; ++i) {
 		const auto& [from, tag, box] = fragments_meta[i];
@@ -134,8 +134,6 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	ra.poll_communicator();
 
 	CHECK(event.is_complete());
-
-	ra.end_receive(trid);
 
 	std::vector<int> expected_allocation(alloc_box.get_range().size());
 	for(const auto& [from, tag, box] : fragments_meta) {
@@ -169,9 +167,9 @@ TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
 	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	ra.begin_receive(trid, full_recv_region, allocation.data(), alloc_box, elem_size);
-	const auto event_0 = ra.await_receive(trid, recv_regions[0]);
-	const auto event_1 = ra.await_receive(trid, recv_regions[1]);
+	ra.begin_receive(trid, full_recv_region, {receive_arbiter::tile(allocation.data(), alloc_box)}, elem_size);
+	const auto event_0 = ra.await_partial_receive(trid, recv_regions[0]);
+	const auto event_1 = ra.await_partial_receive(trid, recv_regions[1]);
 	ra.poll_communicator();
 
 	CHECK(!event_0.is_complete());
@@ -183,8 +181,6 @@ TEST_CASE("receive_arbiter accepts superset receives", "[receive_arbiter]") {
 
 	CHECK(event_0.is_complete());
 	CHECK(event_1.is_complete());
-
-	ra.end_receive(trid);
 
 	std::vector<int> expected_allocation(alloc_box.get_range().size());
 	experimental::for_each_item(fragment_box.get_range(), [&](const item<3>& it) {

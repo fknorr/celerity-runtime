@@ -114,6 +114,16 @@ class instruction_graph_generator {
 		// TODO bound the number of allocations per buffer in order to avoid runaway tracking overhead (similar to horizons)
 		std::vector<buffer_memory_per_allocation_data> allocations; // disjoint
 
+		const buffer_memory_per_allocation_data& get_allocation(const allocation_id aid) const {
+			const auto it = std::find_if(allocations.begin(), allocations.end(), [=](const buffer_memory_per_allocation_data& a) { return a.aid == aid; });
+			assert(it != allocations.end());
+			return *it;
+		}
+
+		buffer_memory_per_allocation_data& get_allocation(const allocation_id aid) {
+			return const_cast<buffer_memory_per_allocation_data&>(std::as_const(*this).get_allocation(aid));
+		}
+
 		const buffer_memory_per_allocation_data* find_contiguous_allocation(const box<3>& box) const {
 			const auto it = std::find_if(allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& a) { return a.box.covers(box); });
 			return it != allocations.end() ? &*it : nullptr;
@@ -138,10 +148,11 @@ class instruction_graph_generator {
 			task_id consumer_tid;
 			reduction_id rid;
 			region<3> received_region;
-			box<3> bounding_box;
+			box_vector<3> required_contiguous_allocations;
 
-			pending_receive(const task_id consumer_tid, const reduction_id rid, region<3>&& received_region, const box<3>& bounding_box)
-			    : consumer_tid(consumer_tid), rid(rid), received_region(std::move(received_region)), bounding_box(bounding_box) {}
+			pending_receive(const task_id consumer_tid, const reduction_id rid, region<3> received_region, box_vector<3> required_contiguous_allocations)
+			    : consumer_tid(consumer_tid), rid(rid), received_region(std::move(received_region)),
+			      required_contiguous_allocations(std::move(required_contiguous_allocations)) {}
 		};
 
 		int dims;

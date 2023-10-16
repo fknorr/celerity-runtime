@@ -26,58 +26,42 @@ bool receive_arbiter::event::is_complete() const {
 	    });
 }
 
-void receive_arbiter::begin_receive(const transfer_id& trid, region<3> request, void* const allocation, const box<3>& allocated_box, const size_t elem_size) {
-	multi_region_transfer* mrt = nullptr;
+void receive_arbiter::begin_receive(const transfer_id& trid, const region<3>& request, const std::vector<tile>& tiles, const size_t elem_size) {
+	auto new_mrt = std::make_unique<multi_region_transfer>(elem_size);
+	const auto mrt = new_mrt.get();
+	std::vector<inbound_pilot> queued_pilots;
 	if(const auto entry = m_transfers.find(trid); entry != m_transfers.end()) {
-		matchbox::match(
-		    entry->second,
-		    [&](unassigned_transfer& ut) {
-			    entry->second = std::make_unique<multi_region_transfer>(elem_size, std::move(ut.pilots));
-			    mrt = std::get<stable_multi_region_transfer>(entry->second).get();
-		    },
-		    [&](stable_multi_region_transfer& existing_mrt) { mrt = existing_mrt.get(); },
-		    [](stable_gather_transfer&) { utils::panic("Calling begin_receive on an active gather transfer"); });
+		auto& ut = std::get<unassigned_transfer>(entry->second);
+		queued_pilots = std::move(ut.pilots);
+		entry->second = std::move(new_mrt);
 	} else {
-		auto new_mrt = std::make_unique<multi_region_transfer>(elem_size);
-		mrt = new_mrt.get();
 		m_transfers.emplace(trid, std::move(new_mrt));
 	}
-	assert(mrt != nullptr);
 
-	// There can be multiple begin_receives (i.e. disjoint allocations) for a single await_push, but allocations (currently) are not allowed to overlap.
-	assert(std::all_of(mrt->active_requests.begin(), mrt->active_requests.end(),
-	    [&](const stable_region_request& rr) { return box_intersection(rr->allocation_box, allocated_box).empty(); }));
+	mrt->active_requests.reserve(tiles.size());
+	for(auto& tile : tiles) {
+		mrt->active_requests.push_back(std::make_shared<region_request>(region_intersection(request, tile.allocated_box), tile.allocation, tile.allocated_box));
+	}
 
-	auto& rr = *mrt->active_requests.emplace_back(std::make_unique<region_request>(std::move(request), allocation, allocated_box));
-	const auto remaining_unassigned_pilots_end = std::remove_if(mrt->unassigned_pilots.begin(), mrt->unassigned_pilots.end(), [&](const inbound_pilot& pilot) {
-		assert(allocated_box.covers(pilot.message.box) == !box_intersection(allocated_box, pilot.message.box).empty());
-		const auto now_assigned = allocated_box.covers(pilot.message.box);
-		if(now_assigned) { begin_receiving_region_fragment(rr, pilot, elem_size); }
-		return now_assigned;
-	});
-	mrt->unassigned_pilots.erase(remaining_unassigned_pilots_end, mrt->unassigned_pilots.end());
+	for(auto& pilot : queued_pilots) {
+		const auto rr = std::find_if(mrt->active_requests.begin(), mrt->active_requests.end(),
+		    [&](const stable_region_request& rr) { return rr->allocation_box.covers(pilot.message.box); });
+		assert(rr != mrt->active_requests.end());
+		assert(region_intersection((*rr)->incomplete_region, pilot.message.box) == pilot.message.box);
+		begin_receiving_region_fragment(**rr, pilot, elem_size);
+	}
 }
 
-receive_arbiter::event receive_arbiter::await_receive(const transfer_id& trid, const region<3>& awaited_region) {
-	auto& transfer = *std::get<stable_multi_region_transfer>(m_transfers.at(trid));
-	const auto region_it = std::find_if(transfer.active_requests.begin(), transfer.active_requests.end(),
+receive_arbiter::event receive_arbiter::await_partial_receive(const transfer_id& trid, const region<3>& awaited_region) {
+	const auto transfer_it = m_transfers.find(trid);
+	if(transfer_it == m_transfers.end()) { return event(event::complete); }
+
+	auto& mrt = *std::get<stable_multi_region_transfer>(transfer_it->second);
+	const auto req_it = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
 	    [&](const stable_region_request& rr) { return rr->allocation_box.covers(bounding_box(awaited_region)); });
-	return region_it != transfer.active_requests.end() ? event(*region_it, awaited_region) : event(event::complete);
-}
+	if(req_it == mrt.active_requests.end()) { return event(event::complete); }
 
-void receive_arbiter::end_receive(const transfer_id& trid) {
-#if CELERITY_DETAIL_ENABLE_DEBUG
-	matchbox::match(
-	    m_transfers.at(trid), //
-	    [](unassigned_transfer& ut) { assert(!"calling end_receive before begin_receive"); },
-	    [](stable_multi_region_transfer& mrt) {
-		    assert(std::all_of(mrt->active_requests.begin(), mrt->active_requests.end(), //
-		        [](const stable_region_request& rr) { return rr->incoming_fragments.empty(); }));
-	    },
-	    [](stable_gather_transfer&) { utils::panic("calling end_receive on a gather transfer"); });
-#endif
-
-	m_transfers.erase(trid);
+	return event(*req_it, awaited_region);
 }
 
 receive_arbiter::event receive_arbiter::receive_gather(const transfer_id& trid, void* allocation, size_t node_chunk_size) {
@@ -114,11 +98,7 @@ void receive_arbiter::multi_region_transfer::commit_completed_requests() {
 	active_requests.erase(incomplete_requests_end, active_requests.end());
 }
 
-bool receive_arbiter::multi_region_transfer::is_complete() const {
-	// just because there is no incomplete request and unassigned pilots, we do not know if any will arrive in the future - hence a multi_region_transfer must
-	// be explicitly terminated by end_receive.
-	return false;
-}
+bool receive_arbiter::multi_region_transfer::is_complete() const { return active_requests.empty(); }
 
 void receive_arbiter::gather_transfer::commit_completed_chunks() {
 	const auto incomplete_chunks_end = std::remove_if(incoming_chunks.begin(), incoming_chunks.end(), [&](const incoming_gather_chunk& chunk) {
@@ -163,12 +143,9 @@ void receive_arbiter::poll_communicator() {
 			    [&](stable_multi_region_transfer& mrt) {
 				    const auto rr = std::find_if(mrt->active_requests.begin(), mrt->active_requests.end(),
 				        [&](const stable_region_request& rr) { return rr->allocation_box.covers(pilot.message.box); });
-				    if(rr != mrt->active_requests.end()) {
-					    assert(region_intersection((*rr)->incomplete_region, pilot.message.box) == pilot.message.box);
-					    begin_receiving_region_fragment(**rr, pilot, mrt->elem_size); // elem_size is set when transfer_region is inserted
-				    } else {
-					    mrt->unassigned_pilots.push_back(pilot);
-				    }
+				    assert(rr != mrt->active_requests.end());
+				    assert(region_intersection((*rr)->incomplete_region, pilot.message.box) == pilot.message.box);
+				    begin_receiving_region_fragment(**rr, pilot, mrt->elem_size); // elem_size is set when transfer_region is inserted
 			    },
 			    [&](stable_gather_transfer& gt) { begin_receiving_gather_chunk(*gt, pilot); });
 		} else {

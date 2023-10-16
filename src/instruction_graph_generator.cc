@@ -302,20 +302,31 @@ void instruction_graph_generator::commit_pending_receive(
     const buffer_id bid, const per_buffer_data::pending_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories.at(host_memory_id);
-	const auto alloc = memory.find_contiguous_allocation(receive.bounding_box);
-	assert(alloc != nullptr);
+
+	std::vector<begin_receive_instruction::destination> destinations;
+	std::vector<buffer_memory_per_allocation_data*> allocations;
+	for(const auto& min_contiguous_box : receive.required_contiguous_allocations) {
+		const auto alloc = memory.find_contiguous_allocation(min_contiguous_box);
+		assert(alloc != nullptr); // allocated explicitly in satisfy_buffer_requirements
+		if(std::find(allocations.begin(), allocations.end(), alloc) == allocations.end()) {
+			allocations.push_back(alloc);
+			destinations.push_back({host_memory_id, alloc->aid, alloc->box});
+		}
+	}
 
 	const auto trid = transfer_id(receive.consumer_tid, bid, receive.rid);
 
-	const auto begin_recv_instr = &create<begin_receive_instruction>(trid, receive.received_region, host_memory_id, alloc->aid, alloc->box, buffer.elem_size);
+	const auto begin_recv_instr = &create<begin_receive_instruction>(trid, receive.received_region, std::move(destinations), buffer.elem_size);
 	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
 
 	// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
 	// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
 	// that there are no pending transfers for the region they are trying to read or to access (TODO).
-	for(const auto& [_, front] : alloc->access_fronts.get_region_values(receive.received_region)) { // TODO copy-pasta
-		for(const auto dep_instr : front.front) {
-			add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
+	for(const auto alloc : allocations) {
+		for(const auto& [_, front] : alloc->access_fronts.get_region_values(receive.received_region)) { // TODO copy-pasta
+			for(const auto dep_instr : front.front) {
+				add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
+			}
 		}
 	}
 
@@ -342,7 +353,9 @@ void instruction_graph_generator::commit_pending_receive(
 
 		add_dependency(*await_instr, *begin_recv_instr, dependency_kind::true_dep);
 
-		alloc->record_write(await_region, await_instr);
+		for(const auto alloc : allocations) {
+			alloc->record_write(await_region, await_instr);
+		}
 		buffer.original_writers.update_region(await_region, await_instr);
 	}
 
@@ -360,11 +373,11 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 
 	std::unordered_map<memory_id, std::vector<region<3>>> unsatisfied_reads;
 	for(const auto& [mid, read_region] : reads) {
-		box_vector<3> unsatified_boxes;
+		box_vector<3> unsatisfied_boxes;
 		for(const auto& [box, location] : buffer.newest_data_location.get_region_values(read_region)) {
-			if(!location.test(mid)) { unsatified_boxes.push_back(box); }
+			if(!location.test(mid)) { unsatisfied_boxes.push_back(box); }
 		}
-		region<3> unsatisfied_region(std::move(unsatified_boxes));
+		region<3> unsatisfied_region(std::move(unsatisfied_boxes));
 		if(!unsatisfied_region.empty()) { unsatisfied_reads[mid].push_back(std::move(unsatisfied_region)); }
 	}
 
@@ -522,8 +535,8 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
 		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
 		discarded = region_union(discarded, it->received_region);
-		// begin_receive_instruction needs a contiguous allocation
-		contiguous_allocations[host_memory_id].insert(it->bounding_box);
+		// begin_receive_instruction needs contiguous allocations for the bounding boxes of potentially received fragments
+		contiguous_allocations[host_memory_id].insert(it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
 	}
 
 	if(first_applied_receive != buffer.pending_receives.end()) {
@@ -964,6 +977,7 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 	}
 #endif
 
+	box_vector<3> connected_subregion_bounding_boxes;
 	{
 		auto ap_boxes = apcmd.get_region().get_boxes();
 		auto begin = ap_boxes.begin();
@@ -980,10 +994,12 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 				connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
 				std::swap(*next_connected, *connected_end);
 			}
-			buffer.pending_receives.emplace_back(trid.consumer_tid, trid.rid, region(box_vector<3>(begin, connected_end)), connected_bounding_box);
+			connected_subregion_bounding_boxes.push_back(connected_bounding_box);
 			begin = connected_end;
 		}
 	}
+
+	buffer.pending_receives.emplace_back(trid.consumer_tid, trid.rid, apcmd.get_region(), std::move(connected_subregion_bounding_boxes));
 }
 
 

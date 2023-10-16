@@ -225,8 +225,7 @@ send_instruction_record::send_instruction_record(
 
 begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr)
     : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), requested_region(brinstr.get_requested_region()),
-      dest_memory_id(brinstr.get_dest_memory_id()), dest_allocation_id(brinstr.get_dest_allocation_id()),
-      allocated_bounding_box(brinstr.get_allocated_bounding_box()), element_size(brinstr.get_element_size()) {}
+      destinations(brinstr.get_destinations()), element_size(brinstr.get_element_size()) {}
 
 await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
     : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()) {}

@@ -40,6 +40,14 @@ class receive_arbiter {
 		explicit event(const std::shared_ptr<gather_transfer>& gather_transfer) : m_state(gather_transfer_state{gather_transfer}) {}
 	};
 
+	struct tile {
+		void *allocation = nullptr;
+		box<3> allocated_box;
+
+		tile() = default;
+		tile(void* allocation, box<3> allocated_box) : allocation(allocation), allocated_box(allocated_box) {}
+	};
+
 	explicit receive_arbiter(communicator& comm);
 	receive_arbiter(const receive_arbiter&) = delete;
 	receive_arbiter(receive_arbiter&&) = default;
@@ -47,10 +55,8 @@ class receive_arbiter {
 	receive_arbiter& operator=(receive_arbiter&&) = default;
 	~receive_arbiter();
 
-	// TODO should take a vector of allocations, then we can omit end_receive!
-	void begin_receive(const transfer_id& trid, region<3> request, void* allocation, const box<3>& allocated_box, size_t elem_size);
-	[[nodiscard]] event await_receive(const transfer_id& trid, const region<3>& awaited_region);
-	void end_receive(const transfer_id& trid);
+	void begin_receive(const transfer_id& trid, const region<3> &request, const std::vector<tile> &tiles, size_t elem_size);
+	[[nodiscard]] event await_partial_receive(const transfer_id& trid, const region<3>& awaited_region);
 
 	// This is a temporary solution until we implement inter-node reductions through MPI collectives.
 	[[nodiscard]] event receive_gather(const transfer_id& trid, void* allocation, size_t node_chunk_size);
@@ -80,11 +86,8 @@ class receive_arbiter {
 
 	struct multi_region_transfer {
 		size_t elem_size;
-		std::vector<inbound_pilot> unassigned_pilots;
 		std::vector<stable_region_request> active_requests;
 		explicit multi_region_transfer(const size_t elem_size) : elem_size(elem_size) {}
-		explicit multi_region_transfer(const size_t elem_size, std::vector<inbound_pilot>&& pilots)
-		    : elem_size(elem_size), unassigned_pilots(std::move(pilots)) {}
 		void commit_completed_requests();
 		bool is_complete() const;
 	};
