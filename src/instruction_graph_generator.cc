@@ -347,9 +347,9 @@ void instruction_graph_generator::commit_pending_receive(
 
 	std::vector<instruction*> await_receives;
 	for(const auto& await_region : independent_await_regions) {
-		for(const auto alloc : allocations) {
+		for (const auto alloc: allocations) {
 			const auto alloc_await_region = region_intersection(alloc->box, await_region);
-			if(alloc_await_region.empty()) continue;
+			if (alloc_await_region.empty()) continue;
 
 			const auto await_instr = &create<await_receive_instruction>(trid, alloc_await_region);
 			if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr, host_memory_id, alloc->aid, alloc->box); }
@@ -362,12 +362,6 @@ void instruction_graph_generator::commit_pending_receive(
 			}
 			buffer.original_writers.update_region(alloc_await_region, await_instr);
 		}
-	}
-
-	const auto end_recv_instr = &create<end_receive_instruction>(trid);
-	if(m_recorder != nullptr) { *m_recorder << end_receive_instruction_record(*end_recv_instr); }
-	for(auto await_recv_instr : await_receives) {
-		add_dependency(*end_recv_instr, *await_recv_instr, dependency_kind::true_dep);
 	}
 
 	buffer.newest_data_location.update_region(receive.received_region, data_location().set(host_memory_id));

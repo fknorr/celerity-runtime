@@ -232,9 +232,6 @@ await_receive_instruction_record::await_receive_instruction_record(
     : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()), dest_memory_id(dest_memory_id),
       dest_allocation_id(dest_allocation_id), dest_allocation_box(dest_allocation_box) {}
 
-end_receive_instruction_record::end_receive_instruction_record(const end_receive_instruction& erinstr)
-    : instruction_record_base(erinstr), transfer_id(erinstr.get_transfer_id()) {}
-
 fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, const command_id cid, const buffer_id bid, const box<3>& box)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(buffer_variant{bid, box}) {}
 

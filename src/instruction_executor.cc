@@ -329,12 +329,6 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 
 		    return m_recv_arbiter.await_partial_receive(arinstr.get_transfer_id(), arinstr.get_received_region());
 	    },
-	    [&](const end_receive_instruction& erinstr) {
-		    CELERITY_DEBUG("[executor] I{}: end receive {}", erinstr.get_id(), erinstr.get_transfer_id());
-
-		    // m_recv_arbiter.end_receive(erinstr.get_transfer_id());
-		    return completed_synchronous();
-	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
 		    finstr.get_promise()->fulfill();

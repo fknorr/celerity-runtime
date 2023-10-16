@@ -405,12 +405,6 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			        arinstr.dest_allocation_box);
 			    end_node();
 		    },
-		    [&](const end_receive_instruction_record& erinstr) {
-			    begin_node(erinstr, "box,margin=0.2", "deeppink2");
-			    fmt::format_to(back, "I{} (await-push C{})", erinstr.id, irec.get_await_push_command_id(erinstr.transfer_id));
-			    fmt::format_to(back, "<br/><b>end receive</b> {}<br/>", erinstr.transfer_id);
-			    end_node();
-		    },
 		    [&](const fence_instruction_record& finstr) {
 			    begin_node(finstr, "box,margin=0.2", "darkorange");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>fence</b><br/>", finstr.id, finstr.tid, finstr.cid);

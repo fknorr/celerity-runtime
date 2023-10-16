@@ -10,12 +10,11 @@
 
 namespace celerity::detail {
 
-class instruction
-    : public intrusive_graph_node<instruction>,
-      public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class init_buffer_instruction,
-          class export_instruction, class copy_instruction, class sycl_kernel_instruction, class host_task_instruction, class send_instruction,
-          class begin_receive_instruction, class await_receive_instruction, class end_receive_instruction, class fence_instruction,
-          class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+class instruction : public intrusive_graph_node<instruction>,
+                    public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction,
+                        class init_buffer_instruction, class export_instruction, class copy_instruction, class sycl_kernel_instruction,
+                        class host_task_instruction, class send_instruction, class begin_receive_instruction, class await_receive_instruction,
+                        class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -294,18 +293,6 @@ class await_receive_instruction final : public matchbox::implement_acceptor<inst
   private:
 	transfer_id m_trid;
 	region<3> m_recv_region;
-};
-
-/// Removes a receive from its tracking in the receive arbiter. The end of a receive can not be inferred from the begin_receive_instruction range and the
-/// await_receive_instruction subranges alone, since the actually received data can have the shape of an arbitrary connected region.
-class end_receive_instruction final : public matchbox::implement_acceptor<instruction, end_receive_instruction> {
-  public:
-	explicit end_receive_instruction(const instruction_id iid, const transfer_id& trid) : acceptor_base(iid), m_trid(trid) {}
-
-	transfer_id get_transfer_id() const { return m_trid; }
-
-  private:
-	transfer_id m_trid;
 };
 
 class fence_instruction final : public matchbox::implement_acceptor<instruction, fence_instruction> {

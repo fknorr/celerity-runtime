@@ -293,12 +293,6 @@ struct await_receive_instruction_record : instruction_record_base {
 	    const await_receive_instruction& arinstr, memory_id dest_memory_id, allocation_id dest_allocation_id, const box<3>& dest_allocation_box);
 };
 
-struct end_receive_instruction_record : instruction_record_base {
-	detail::transfer_id transfer_id;
-
-	end_receive_instruction_record(const end_receive_instruction& erinstr);
-};
-
 struct fence_instruction_record : instruction_record_base {
 	struct buffer_variant {
 		buffer_id bid;
@@ -339,8 +333,8 @@ struct epoch_instruction_record : instruction_record_base {
 
 using instruction_record = std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record,
     init_buffer_instruction_record, export_instruction_record, copy_instruction_record, launch_instruction_record, send_instruction_record,
-    begin_receive_instruction_record, await_receive_instruction_record, end_receive_instruction_record, fence_instruction_record,
-    destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+    begin_receive_instruction_record, await_receive_instruction_record, fence_instruction_record, destroy_host_object_instruction_record,
+    horizon_instruction_record, epoch_instruction_record>;
 
 class instruction_recorder {
   public:
