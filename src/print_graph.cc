@@ -395,14 +395,14 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/>x{} bytes", rinstr.element_size);
 			    end_node();
 		    },
-		    [&](const begin_receive_instruction_record& brinstr) {
-			    begin_node(brinstr, "box,margin=0.2", "deeppink2");
-			    fmt::format_to(back, "I{} (await-push C{})", brinstr.id, irec.get_await_push_command_id(brinstr.transfer_id));
-			    fmt::format_to(back, "<br/><b>begin receive</b> {}", brinstr.transfer_id);
-			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(brinstr.transfer_id.bid), brinstr.requested_region);
+		    [&](const spilt_receive_instruction_record& srinstr) {
+			    begin_node(srinstr, "box,margin=0.2", "deeppink2");
+			    fmt::format_to(back, "I{} (await-push C{})", srinstr.id, irec.get_await_push_command_id(srinstr.transfer_id));
+			    fmt::format_to(back, "<br/><b>split receive</b> {}", srinstr.transfer_id);
+			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(srinstr.transfer_id.bid), srinstr.requested_region);
 			    fmt::format_to(
-			        back, "<br/>into M{}.A{} (B{} {})", brinstr.dest_memory, brinstr.dest_allocation, brinstr.transfer_id.bid, brinstr.allocated_box);
-			    fmt::format_to(back, "<br/>x{} bytes", brinstr.element_size);
+			        back, "<br/>into M{}.A{} (B{} {})", srinstr.dest_memory, srinstr.dest_allocation, srinstr.transfer_id.bid, srinstr.allocated_box);
+			    fmt::format_to(back, "<br/>x{} bytes", srinstr.element_size);
 			    end_node();
 		    },
 		    [&](const await_receive_instruction_record& arinstr) {
@@ -410,8 +410,6 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", arinstr.id, irec.get_await_push_command_id(arinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>await receive</b> {}", arinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(arinstr.transfer_id.bid), arinstr.received_region);
-			    fmt::format_to(back, "<br/>into M{}.A{} (B{} {})", arinstr.dest_memory_id, arinstr.dest_allocation_id, arinstr.transfer_id.bid,
-			        arinstr.dest_allocation_box);
 			    end_node();
 		    },
 		    [&](const fence_instruction_record& finstr) {

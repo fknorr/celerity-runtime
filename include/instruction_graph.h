@@ -14,7 +14,7 @@ class instruction
     : public intrusive_graph_node<instruction>,
       public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class init_buffer_instruction,
           class export_instruction, class copy_instruction, class sycl_kernel_instruction, class host_task_instruction, class send_instruction,
-          class receive_instruction, class begin_receive_instruction, class await_receive_instruction, class fence_instruction,
+          class receive_instruction, class split_receive_instruction, class await_receive_instruction, class fence_instruction,
           class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
@@ -286,9 +286,9 @@ class receive_instruction final : public matchbox::implement_acceptor<instructio
 	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_memory, dest_allocation, allocated_box, elem_size) {}
 };
 
-class begin_receive_instruction final : public matchbox::implement_acceptor<instruction, begin_receive_instruction>, public receive_instruction_impl {
+class split_receive_instruction final : public matchbox::implement_acceptor<instruction, split_receive_instruction>, public receive_instruction_impl {
   public:
-	explicit begin_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
+	explicit split_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
 	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
 	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_memory, dest_allocation, allocated_box, elem_size) {}
 };

@@ -56,11 +56,11 @@ class receive_arbiter {
 
 	[[nodiscard]] event receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
 
-	void begin_receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
-	[[nodiscard]] event await_subregion_receive(const transfer_id& trid, const region<3>& awaited_region);
+	void begin_split_receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
+	[[nodiscard]] event await_split_receive_subregion(const transfer_id& trid, const region<3>& subregion);
 
 	// "gather receives" are a temporary solution until we implement inter-node reductions through MPI collectives.
-	[[nodiscard]] event receive_gather(const transfer_id& trid, void* allocation, size_t node_chunk_size);
+	[[nodiscard]] event gather_receive(const transfer_id& trid, void* allocation, size_t node_chunk_size);
 
 	void poll_communicator();
 

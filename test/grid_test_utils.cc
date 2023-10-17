@@ -1,6 +1,7 @@
 #include "grid_test_utils.h"
 
 #if CELERITY_DETAIL_HAVE_CAIRO
+#include <regex>
 #include <cairo/cairo.h>
 #endif
 

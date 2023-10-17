@@ -52,17 +52,17 @@ receive_arbiter::stable_region_request& receive_arbiter::begin_receive_region(
 	return rr;
 }
 
-void receive_arbiter::begin_receive(
+void receive_arbiter::begin_split_receive(
     const transfer_id& trid, const region<3>& request, void* const allocation, const box<3>& allocated_box, const size_t elem_size) {
 	begin_receive_region(trid, request, allocation, allocated_box, elem_size);
 }
 
-receive_arbiter::event receive_arbiter::await_subregion_receive(const transfer_id& trid, const region<3>& awaited_region) {
+receive_arbiter::event receive_arbiter::await_split_receive_subregion(const transfer_id& trid, const region<3>& subregion) {
 	const auto transfer_it = m_transfers.find(trid);
 	if(transfer_it == m_transfers.end()) { return event(event::complete); }
 
 	auto& mrt = std::get<multi_region_transfer>(transfer_it->second);
-	const auto awaited_bounds = bounding_box(awaited_region);
+	const auto awaited_bounds = bounding_box(subregion);
 	assert(std::all_of(mrt.active_requests.begin(), mrt.active_requests.end(), [&](const stable_region_request& rr) {
 		// all boxes from the awaited region must be contained in a single allocation
 		const auto overlap = box_intersection(rr->allocated_box, awaited_bounds);
@@ -70,10 +70,10 @@ receive_arbiter::event receive_arbiter::await_subregion_receive(const transfer_i
 	}));
 
 	const auto req_it = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
-	    [&](const stable_region_request& rr) { return rr->allocated_box.covers(bounding_box(awaited_region)); });
+	    [&](const stable_region_request& rr) { return rr->allocated_box.covers(bounding_box(subregion)); });
 	if(req_it == mrt.active_requests.end()) { return event(event::complete); }
 
-	return event(*req_it, awaited_region);
+	return event(*req_it, subregion);
 }
 
 receive_arbiter::event receive_arbiter::receive(
@@ -81,7 +81,7 @@ receive_arbiter::event receive_arbiter::receive(
 	return event(begin_receive_region(trid, request, allocation, allocated_box, elem_size));
 }
 
-receive_arbiter::event receive_arbiter::receive_gather(const transfer_id& trid, void* allocation, size_t node_chunk_size) {
+receive_arbiter::event receive_arbiter::gather_receive(const transfer_id& trid, void* allocation, size_t node_chunk_size) {
 	auto gr = std::make_shared<gather_request>(allocation, node_chunk_size, m_num_nodes);
 	auto event = receive_arbiter::event(gr);
 	if(const auto entry = m_transfers.find(trid); entry != m_transfers.end()) {

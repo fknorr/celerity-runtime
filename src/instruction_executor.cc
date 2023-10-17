@@ -312,20 +312,20 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return m_recv_arbiter.receive(
 		        rinstr.get_transfer_id(), rinstr.get_requested_region(), allocation, rinstr.get_allocated_box(), rinstr.get_element_size());
 	    },
-	    [&](const begin_receive_instruction& brinstr) {
-		    CELERITY_DEBUG("[executor] I{}: begin receive {} {} into M{}.A{} ({}), x{} bytes", brinstr.get_id(), brinstr.get_transfer_id(),
-		        brinstr.get_requested_region(), brinstr.get_dest_memory(), brinstr.get_dest_allocation(), brinstr.get_allocated_box(),
-		        brinstr.get_element_size());
+	    [&](const split_receive_instruction& srinstr) {
+		    CELERITY_DEBUG("[executor] I{}: split receive {} {} into M{}.A{} ({}), x{} bytes", srinstr.get_id(), srinstr.get_transfer_id(),
+		        srinstr.get_requested_region(), srinstr.get_dest_memory(), srinstr.get_dest_allocation(), srinstr.get_allocated_box(),
+		        srinstr.get_element_size());
 
-		    const auto allocation = m_allocations.at(brinstr.get_dest_allocation());
-		    m_recv_arbiter.begin_receive(
-		        brinstr.get_transfer_id(), brinstr.get_requested_region(), allocation, brinstr.get_allocated_box(), brinstr.get_element_size());
+		    const auto allocation = m_allocations.at(srinstr.get_dest_allocation());
+		    m_recv_arbiter.begin_split_receive(
+		        srinstr.get_transfer_id(), srinstr.get_requested_region(), allocation, srinstr.get_allocated_box(), srinstr.get_element_size());
 		    return completed_synchronous();
 	    },
 	    [&](const await_receive_instruction& arinstr) {
 		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
 
-		    return m_recv_arbiter.await_subregion_receive(arinstr.get_transfer_id(), arinstr.get_received_region());
+		    return m_recv_arbiter.await_split_receive_subregion(arinstr.get_transfer_id(), arinstr.get_received_region());
 	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());

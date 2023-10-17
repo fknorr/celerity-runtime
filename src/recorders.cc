@@ -230,13 +230,11 @@ receive_instruction_record_impl::receive_instruction_record_impl(const receive_i
 receive_instruction_record::receive_instruction_record(const receive_instruction& rinstr)
     : instruction_record_base(rinstr), receive_instruction_record_impl(rinstr) {}
 
-begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr)
-    : instruction_record_base(brinstr), receive_instruction_record_impl(brinstr) {}
+spilt_receive_instruction_record::spilt_receive_instruction_record(const split_receive_instruction& srinstr)
+    : instruction_record_base(srinstr), receive_instruction_record_impl(srinstr) {}
 
-await_receive_instruction_record::await_receive_instruction_record(
-    const await_receive_instruction& arinstr, const memory_id dest_memory_id, const allocation_id dest_allocation_id, const box<3>& dest_allocation_box)
-    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()), dest_memory_id(dest_memory_id),
-      dest_allocation_id(dest_allocation_id), dest_allocation_box(dest_allocation_box) {}
+await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
+    : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()) {}
 
 fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, const command_id cid, const buffer_id bid, const box<3>& box)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(buffer_variant{bid, box}) {}
