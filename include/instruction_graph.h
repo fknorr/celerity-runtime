@@ -257,25 +257,24 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 /// 2/4/8-connected component of the await_push region and passes it on to the receive_arbiter through a begin_receive_instruction.
 class begin_receive_instruction final : public matchbox::implement_acceptor<instruction, begin_receive_instruction> {
   public:
-	struct destination {
-		memory_id memory;
-		allocation_id allocation;
-		box<3> allocation_box;
-	};
-
-	explicit begin_receive_instruction(
-	    const instruction_id iid, const transfer_id& trid, region<3> request, std::vector<destination> destinations, const size_t elem_size)
-	    : acceptor_base(iid), m_trid(trid), m_request(std::move(request)), m_destinations(std::move(destinations)), m_elem_size(elem_size) {}
+	explicit begin_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
+	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
+	    : acceptor_base(iid), m_trid(trid), m_request(std::move(request)), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation),
+	      m_allocated_box(allocated_box), m_elem_size(elem_size) {}
 
 	const transfer_id& get_transfer_id() const { return m_trid; }
 	const region<3>& get_requested_region() const { return m_request; }
-	const std::vector<destination>& get_destinations() const { return m_destinations; }
+	memory_id get_dest_memory() const { return m_dest_memory; }
+	allocation_id get_dest_allocation() const { return m_dest_allocation; }
+	const box<3>& get_allocated_box() const { return m_allocated_box; }
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	transfer_id m_trid;
 	region<3> m_request;
-	std::vector<destination> m_destinations;
+	memory_id m_dest_memory;
+	allocation_id m_dest_allocation;
+	box<3> m_allocated_box;
 	size_t m_elem_size;
 };
 

@@ -276,7 +276,9 @@ struct send_instruction_record : instruction_record_base {
 struct begin_receive_instruction_record : instruction_record_base {
 	detail::transfer_id transfer_id;
 	region<3> requested_region;
-	std::vector<begin_receive_instruction::destination> destinations;
+	memory_id dest_memory;
+	allocation_id dest_allocation;
+	box<3> allocated_box;
 	size_t element_size;
 
 	begin_receive_instruction_record(const begin_receive_instruction& brinstr);

@@ -300,71 +300,69 @@ restart:
 
 void instruction_graph_generator::commit_pending_receive(
     const buffer_id bid, const per_buffer_data::pending_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
-	auto& buffer = m_buffers.at(bid);
-	auto& memory = buffer.memories.at(host_memory_id);
+	const auto trid = transfer_id(receive.consumer_tid, bid, receive.rid);
+	const auto mid = host_memory_id;
 
-	std::vector<begin_receive_instruction::destination> destinations;
+	auto& buffer = m_buffers.at(bid);
+	auto& memory = buffer.memories.at(mid);
+
 	std::vector<buffer_memory_per_allocation_data*> allocations;
 	for(const auto& min_contiguous_box : receive.required_contiguous_allocations) {
 		const auto alloc = memory.find_contiguous_allocation(min_contiguous_box);
 		assert(alloc != nullptr); // allocated explicitly in satisfy_buffer_requirements
-		if(std::find(allocations.begin(), allocations.end(), alloc) == allocations.end()) {
-			allocations.push_back(alloc);
-			destinations.push_back({host_memory_id, alloc->aid, alloc->box});
-		}
+		if(std::find(allocations.begin(), allocations.end(), alloc) == allocations.end()) { allocations.push_back(alloc); }
 	}
 
-	const auto trid = transfer_id(receive.consumer_tid, bid, receive.rid);
-
-	const auto begin_recv_instr = &create<begin_receive_instruction>(trid, receive.received_region, std::move(destinations), buffer.elem_size);
-	if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
-
-	// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
-	// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
-	// that there are no pending transfers for the region they are trying to read or to access (TODO).
 	for(const auto alloc : allocations) {
-		for(const auto& [_, front] : alloc->access_fronts.get_region_values(receive.received_region)) { // TODO copy-pasta
+		const auto alloc_recv_region = region_intersection(alloc->box, receive.received_region);
+		const auto begin_recv_instr = &create<begin_receive_instruction>(trid, alloc_recv_region, mid, alloc->aid, alloc->box, buffer.elem_size);
+		if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
+
+		// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
+		// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
+		// that there are no pending transfers for the region they are trying to read or to access (TODO).
+		for(const auto& [_, front] : alloc->access_fronts.get_region_values(alloc_recv_region)) { // TODO copy-pasta
 			for(const auto dep_instr : front.front) {
 				add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
 			}
 		}
-	}
 
-	std::vector<region<3>> independent_await_regions;
-	for(const auto& [_, read_region] : reads) {
-		const auto await_region = region_intersection(read_region, receive.received_region);
-		if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
-	}
-	symmetrically_split_overlapping_regions(independent_await_regions);
+		std::vector<region<3>> independent_await_regions;
+		for(const auto& [_, read_region] : reads) {
+			const auto await_region = region_intersection(read_region, alloc_recv_region);
+			if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
+		}
+		symmetrically_split_overlapping_regions(independent_await_regions);
 
 #if CELERITY_DETAIL_ENABLE_DEBUG
-	region<3> full_await_region;
-	for(const auto& await_region : independent_await_regions) {
-		full_await_region = region_union(full_await_region, await_region);
-	}
-	assert(full_await_region == receive.received_region);
+		region<3> full_await_region;
+		for(const auto& await_region : independent_await_regions) {
+			full_await_region = region_union(full_await_region, await_region);
+		}
+		assert(full_await_region == alloc_recv_region);
 #endif
 
-	std::vector<instruction*> await_receives;
-	for(const auto& await_region : independent_await_regions) {
-		for (const auto alloc: allocations) {
-			const auto alloc_await_region = region_intersection(alloc->box, await_region);
-			if (alloc_await_region.empty()) continue;
-
-			const auto await_instr = &create<await_receive_instruction>(trid, alloc_await_region);
-			if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr, host_memory_id, alloc->aid, alloc->box); }
-			await_receives.push_back(await_instr);
-
-			add_dependency(*await_instr, *begin_recv_instr, dependency_kind::true_dep);
-
+		std::vector<instruction*> await_receives;
+		for(const auto& await_region : independent_await_regions) {
 			for(const auto alloc : allocations) {
-				alloc->record_write(alloc_await_region, await_instr);
+				const auto alloc_await_region = region_intersection(alloc->box, await_region);
+				if(alloc_await_region.empty()) continue;
+
+				const auto await_instr = &create<await_receive_instruction>(trid, alloc_await_region);
+				if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr, mid, alloc->aid, alloc->box); }
+				await_receives.push_back(await_instr);
+
+				add_dependency(*await_instr, *begin_recv_instr, dependency_kind::true_dep);
+
+				for(const auto alloc : allocations) {
+					alloc->record_write(alloc_await_region, await_instr);
+				}
+				buffer.original_writers.update_region(alloc_await_region, await_instr);
 			}
-			buffer.original_writers.update_region(alloc_await_region, await_instr);
 		}
 	}
 
-	buffer.newest_data_location.update_region(receive.received_region, data_location().set(host_memory_id));
+	buffer.newest_data_location.update_region(receive.received_region, data_location().set(mid));
 }
 
 void instruction_graph_generator::locally_satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads) {

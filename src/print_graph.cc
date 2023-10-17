@@ -390,9 +390,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", brinstr.id, irec.get_await_push_command_id(brinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>begin receive</b> {}", brinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(brinstr.transfer_id.bid), brinstr.requested_region);
-			    for(auto& dest : brinstr.destinations) {
-				    fmt::format_to(back, "<br/>into M{}.A{} (B{} {})", dest.memory, dest.allocation, brinstr.transfer_id.bid, dest.allocation_box);
-			    }
+			    fmt::format_to(
+			        back, "<br/>into M{}.A{} (B{} {})", brinstr.dest_memory, brinstr.dest_allocation, brinstr.transfer_id.bid, brinstr.allocated_box);
 			    fmt::format_to(back, "<br/>x{} bytes", brinstr.element_size);
 			    end_node();
 		    },

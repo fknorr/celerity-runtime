@@ -304,24 +304,13 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
 	    },
 	    [&](const begin_receive_instruction& brinstr) {
-		    constexpr auto format_destinations = [](const std::vector<begin_receive_instruction::destination>& destinations) {
-			    std::string str;
-			    for(auto& dest : destinations) {
-					if(!str.empty()) str += ", ";
-				    fmt::format_to(std::back_inserter(str), "M{}.A{} ({})", dest.memory, dest.allocation, dest.allocation_box);
-			    }
-			    return str;
-		    };
-		    CELERITY_DEBUG("[executor] I{}: begin receive {} {} into {}, x{} bytes", brinstr.get_id(), brinstr.get_transfer_id(),
-		        brinstr.get_requested_region(), format_destinations(brinstr.get_destinations()), brinstr.get_element_size());
+		    CELERITY_DEBUG("[executor] I{}: begin receive {} {} into M{}.A{} ({}), x{} bytes", brinstr.get_id(), brinstr.get_transfer_id(),
+		        brinstr.get_requested_region(), brinstr.get_dest_memory(), brinstr.get_dest_allocation(), brinstr.get_allocated_box(),
+		        brinstr.get_element_size());
 
-		    std::vector<receive_arbiter::tile> tiles;
-			tiles.reserve(brinstr.get_destinations().size());
-		    for(const auto &dest: brinstr.get_destinations()) {
-			    tiles.emplace_back(m_allocations.at(dest.allocation), dest.allocation_box);
-		    }
-
-		    m_recv_arbiter.begin_receive(brinstr.get_transfer_id(), brinstr.get_requested_region(), tiles, brinstr.get_element_size());
+		    const auto allocation = m_allocations.at(brinstr.get_dest_allocation());
+		    m_recv_arbiter.begin_receive(
+		        brinstr.get_transfer_id(), brinstr.get_requested_region(), allocation, brinstr.get_allocated_box(), brinstr.get_element_size());
 		    return completed_synchronous();
 	    },
 	    [&](const await_receive_instruction& arinstr) {
