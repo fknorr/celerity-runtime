@@ -289,7 +289,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{}<br/>", ainstr.id);
 			    switch(ainstr.origin) {
 			    case alloc_instruction_record::alloc_origin::buffer: dot += "buffer "; break;
-			    case alloc_instruction_record::alloc_origin::reduction: dot += "reduction "; break;
+			    case alloc_instruction_record::alloc_origin::gather: dot += "gather "; break;
 			    }
 			    fmt::format_to(back, "<b>alloc</b> M{}.A{}", ainstr.memory_id, ainstr.allocation_id);
 			    if(ainstr.buffer_allocation.has_value()) {
@@ -333,6 +333,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case copy_instruction_record::copy_origin::linearize: dot += "linearizing "; break;
 			    case copy_instruction_record::copy_origin::resize: dot += "resize "; break;
 			    case copy_instruction_record::copy_origin::coherence: dot += "coherence "; break;
+			    case copy_instruction_record::copy_origin::gather: dot += "gather "; break;
 			    }
 			    fmt::format_to(back, "<b>copy</b><br/>on {} {}", get_buffer_label(cinstr.buffer), cinstr.box);
 			    fmt::format_to(back, "<br/>from M{}.A{} {}<br/>to M{}.A{} {}<br/>{}x{} bytes", cinstr.source_memory, cinstr.source_allocation,
@@ -422,10 +423,11 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const reduce_instruction_record& rinstr) {
-			    begin_node(rinstr, "box,margin=0.2", "blue");
-			    fmt::format_to(back, "I{} (reduction C{})", rinstr.id, rinstr.command_id);
-			    fmt::format_to(back, "<br/><b>reduce</b> B{}.R{} ({})", rinstr.buffer_id,
-			        rinstr.reduction_id, rinstr.scope == reduce_instruction_record::reduction_scope::global ? "global" : "local");
+			    begin_node(rinstr, rinstr.reduction_command_id.has_value() ? "box,margin=0.2" : "ellipse", "blue");
+			    fmt::format_to(back, "I{}", rinstr.id);
+			    if(rinstr.reduction_command_id.has_value()) { fmt::format_to(back, " (reduction C{})", *rinstr.reduction_command_id); }
+			    fmt::format_to(back, "<br/>{} <b>reduce</b> B{}.R{}", rinstr.scope == reduce_instruction_record::reduction_scope::global ? "global" : "local",
+			        rinstr.buffer_id, rinstr.reduction_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(rinstr.buffer_id), rinstr.box);
 			    fmt::format_to(back, "<br/>from M{}.A{} x{}", rinstr.memory_id, rinstr.source_allocation_id, rinstr.num_source_values);
 			    fmt::format_to(back, "<br/>to M{}.A{} x1", rinstr.memory_id, rinstr.dest_allocation_id);

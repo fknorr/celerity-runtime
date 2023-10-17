@@ -153,7 +153,7 @@ struct clone_collective_group_instruction_record : instruction_record_base {
 struct alloc_instruction_record : instruction_record_base {
 	enum class alloc_origin {
 		buffer,
-		reduction,
+		gather,
 	};
 
 	detail::allocation_id allocation_id;
@@ -203,6 +203,7 @@ struct copy_instruction_record : instruction_record_base {
 		linearize,
 		resize,
 		coherence,
+		gather,
 	};
 
 	memory_id source_memory;
@@ -323,12 +324,12 @@ struct reduce_instruction_record : instruction_record_base {
 	allocation_id source_allocation_id;
 	size_t num_source_values;
 	allocation_id dest_allocation_id;
-	command_id command_id;
+	std::optional<command_id> reduction_command_id;
 	buffer_id buffer_id;
 	box<3> box;
 	reduction_scope scope;
 
-	reduce_instruction_record(const reduce_instruction& rinstr, detail::command_id cid, detail::buffer_id bid, const detail::box<3>& box, reduction_scope scope);
+	reduce_instruction_record(const reduce_instruction& rinstr, std::optional<detail::command_id> reduction_cid, detail::buffer_id bid, const detail::box<3>& box, reduction_scope scope);
 };
 
 struct fence_instruction_record : instruction_record_base {

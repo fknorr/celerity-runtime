@@ -562,6 +562,7 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 		for(const auto& chunk : local_chunks) {
 			contiguous_allocations[chunk.memory_id].insert(scalar_reduction_box);
 		}
+		contiguous_allocations[host_memory_id].insert(scalar_reduction_box); // TODO only if we have more than 1 global device chunk!
 	}
 
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
@@ -778,7 +779,9 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	for(const auto& rinfo : tsk.get_reductions()) {
 		for(auto& instr : cmd_instrs) {
 			auto& rw_map = instr.rw_map[rinfo.bid]; // allow default-insert
-			if(instr.initialize_reductions) { rw_map.reads = region_union(rw_map.reads, scalar_reduction_box); }
+			if(instr.initialize_reductions) {
+				rw_map.reads = region_union(rw_map.reads, scalar_reduction_box);
+			} // TODO not really, initialization is handled outside
 			rw_map.writes = region_union(rw_map.writes, scalar_reduction_box);
 		}
 	}
@@ -932,6 +935,80 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	}
 
+	// 7) insert local reduction instructions and update tracking structures accordingly
+
+	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
+		const auto [rid, bid, include_buffer_value] = tsk.get_reductions()[i];
+		const auto num_chunks = cmd_instrs.size();
+
+		// TODO special case for single-GPU: do not generate reduce instructions, just update last-writers
+
+		auto& buffer = m_buffers.at(bid);
+		auto& host_memory = buffer.memories.at(host_memory_id);
+
+		// allocate local gather space
+
+		const auto gather_aid = m_next_aid++;
+		const auto chunk_size = scalar_reduction_box.get_area() * buffer.elem_size;
+		const auto alloc_instr = &create<alloc_instruction>(gather_aid, host_memory_id, num_chunks * chunk_size, buffer.elem_align);
+		if(m_recorder != nullptr) {
+			*m_recorder << alloc_instruction_record(
+			    *alloc_instr, alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, scalar_reduction_box}, num_chunks);
+		}
+		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
+
+		std::vector<copy_instruction*> copy_instrs;
+		copy_instrs.reserve(num_chunks);
+		for(size_t j = 0; j < num_chunks; ++j) {
+			const auto source_mid = cmd_instrs[j].memory_id;
+			auto source = buffer.memories.at(source_mid).find_contiguous_allocation(scalar_reduction_box);
+			assert(source != nullptr);
+
+			// copy to local gather space
+
+			const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source->aid, source->box.get_range(),
+			    scalar_reduction_box.get_offset() - source->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(num_chunks)),
+			    id_cast<3>(id<1>(j)), scalar_reduction_box.get_range(), buffer.elem_size);
+			if(m_recorder != nullptr) {
+				*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box);
+			}
+			add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
+			for(const auto& [_, dep_instr] : source->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
+				assert(dep_instr != nullptr);
+				add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
+			}
+			source->record_read(scalar_reduction_box, copy_instr);
+			copy_instrs.push_back(copy_instr);
+		}
+
+		const auto dest = host_memory.find_contiguous_allocation(scalar_reduction_box);
+		assert(dest != nullptr);
+
+		// reduce
+
+		const auto reduce_instr = &create<reduce_instruction>(rid, host_memory_id, gather_aid, cmd_instrs.size(), dest->aid);
+		if(m_recorder != nullptr) {
+			*m_recorder << reduce_instruction_record(*reduce_instr, std::nullopt, bid, scalar_reduction_box, reduce_instruction_record::reduction_scope::local);
+		}
+		for(auto& copy_instr : copy_instrs) {
+			add_dependency(*reduce_instr, *copy_instr, dependency_kind::true_dep);
+		}
+		for(const auto& [_, front] : dest->access_fronts.get_region_values(scalar_reduction_box)) {
+			for(const auto access_instr : front.front) {
+				add_dependency(*reduce_instr, *access_instr, dependency_kind::true_dep);
+			}
+		}
+		dest->record_write(scalar_reduction_box, reduce_instr);
+		buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
+		buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(host_memory_id));
+
+		// free local gather space
+
+		const auto free_instr = &create<free_instruction>(host_memory_id, gather_aid);
+		if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*free_instr, num_chunks * chunk_size, std::nullopt); }
+		add_dependency(*free_instr, *reduce_instr, dependency_kind::true_dep);
+	}
+
 	// 7) insert epoch and horizon dependencies, apply epochs, optionally record the instruction
 
 	for(auto& instr : cmd_instrs) {
@@ -1031,7 +1108,12 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 	const auto [rid, bid, init_from_buffer] = rcmd.get_reduction_info();
 	const auto mid = host_memory_id;
 
+	allocate_contiguously(bid, mid, bounding_box_set({reduction_box}));
+
 	auto& buffer = m_buffers.at(bid);
+	auto& memory = buffer.memories.at(mid);
+	auto alloc = memory.find_contiguous_allocation(reduction_box);
+	assert(alloc != nullptr);
 
 	// TODO buffer reduction-sends, generate local reduction_instruction, send results, then v--- this will be the second-stage global reduction
 
@@ -1040,40 +1122,56 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 	const auto& gather = buffer.pending_gathers.front();
 	assert(gather.gather_box == reduction_box);
 
+	// allocate gather space
+
 	const auto gather_aid = m_next_aid++;
 	const auto node_chunk_size = gather.gather_box.get_area() * buffer.elem_size;
 	const auto alloc_instr = &create<alloc_instruction>(gather_aid, mid, m_num_nodes * node_chunk_size, buffer.elem_align);
 	if(m_recorder != nullptr) {
 		*m_recorder << alloc_instruction_record(
-		    *alloc_instr, alloc_instruction_record::alloc_origin::reduction, buffer_allocation_record{bid, gather.gather_box}, m_num_nodes);
+		    *alloc_instr, alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, gather.gather_box}, m_num_nodes);
 	}
 	add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
+
+	// copy local partial reduction results to the appropriate position in gather space
+
+	// TODO what if the origin is not host_memory (because we only have one device chunk)?
+	const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, alloc->aid, alloc->box.get_range(),
+	    scalar_reduction_box.get_offset() - alloc->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(m_num_nodes)),
+	    id_cast<3>(id<1>(m_local_node_id)), scalar_reduction_box.get_range(), buffer.elem_size);
+	if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box); }
+	add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
+	for(const auto& [_, dep_instr] : alloc->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
+		assert(dep_instr != nullptr);
+		add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
+	}
+
+	// gather remote partial results
 
 	const transfer_id trid(gather.consumer_tid, bid, gather.rid);
 	const auto gather_instr = &create<gather_receive_instruction>(trid, mid, gather_aid, node_chunk_size);
 	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_instr, gather.gather_box, m_num_nodes); }
 	add_dependency(*gather_instr, *alloc_instr, dependency_kind::true_dep);
 
-	const auto free_instr = &create<free_instruction>(mid, gather_aid);
-	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
-	add_dependency(*free_instr, *gather_instr, dependency_kind::true_dep);
-
-	buffer.pending_gathers.clear();
-
-	allocate_contiguously(bid, mid, bounding_box_set({reduction_box}));
-
-	auto& memory = buffer.memories.at(mid);
-	auto alloc = memory.find_contiguous_allocation(reduction_box);
-	assert(alloc != nullptr);
+	// perform global reduction
 
 	const auto reduce_instr = &create<reduce_instruction>(rid, mid, gather_aid, m_num_nodes, alloc->aid);
 	if(m_recorder != nullptr) {
 		*m_recorder << reduce_instruction_record(*reduce_instr, rcmd.get_cid(), bid, reduction_box, reduce_instruction_record::reduction_scope::global);
 	}
 	add_dependency(*reduce_instr, *gather_instr, dependency_kind::true_dep);
+	add_dependency(*reduce_instr, *copy_instr, dependency_kind::true_dep);
 	alloc->record_write(reduction_box, reduce_instr);
 	buffer.original_writers.update_region(reduction_box, reduce_instr);
 	buffer.newest_data_location.update_region(reduction_box, data_location().set(mid));
+
+	// free gather space
+
+	const auto free_instr = &create<free_instruction>(mid, gather_aid);
+	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
+	add_dependency(*free_instr, *reduce_instr, dependency_kind::true_dep);
+
+	buffer.pending_gathers.clear();
 }
 
 
