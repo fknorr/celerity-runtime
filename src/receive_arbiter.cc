@@ -43,10 +43,7 @@ receive_arbiter::stable_region_request& receive_arbiter::begin_receive_region(
 	auto& rr = mrt->active_requests.emplace_back(std::make_shared<region_request>(request, allocation, allocated_box));
 
 	for(auto& pilot : mrt->unassigned_pilots) {
-		if(rr->allocated_box.covers(pilot.message.box)) {
-			assert(region_intersection(rr->incomplete_region, pilot.message.box) == pilot.message.box);
-			begin_receiving_region_fragment(*rr, pilot, elem_size);
-		}
+		if(rr->allocated_box.covers(pilot.message.box)) { begin_receiving_region_fragment_from_communicator(*rr, pilot, elem_size); }
 	}
 
 	return rr;
@@ -87,7 +84,7 @@ receive_arbiter::event receive_arbiter::gather_receive(const transfer_id& trid, 
 	if(const auto entry = m_transfers.find(trid); entry != m_transfers.end()) {
 		auto& ut = std::get<unassigned_transfer>(entry->second);
 		for(auto& pilot : ut.pilots) {
-			begin_receiving_gather_chunk(*gr, pilot);
+			begin_receiving_gather_chunk_from_communicator(*gr, pilot);
 		}
 		entry->second = gather_transfer{std::move(gr)};
 	} else {
@@ -147,17 +144,17 @@ void receive_arbiter::poll_communicator() {
 				    const auto rr = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
 				        [&](const stable_region_request& rr) { return rr->allocated_box.covers(pilot.message.box); });
 				    assert(rr != mrt.active_requests.end());
-				    assert(region_intersection((*rr)->incomplete_region, pilot.message.box) == pilot.message.box);
-				    begin_receiving_region_fragment(**rr, pilot, mrt.elem_size); // elem_size is set when transfer_region is inserted
+				    begin_receiving_region_fragment_from_communicator(**rr, pilot, mrt.elem_size); // elem_size is set when transfer_region is inserted
 			    },
-			    [&](gather_transfer& gt) { begin_receiving_gather_chunk(*gt.request, pilot); });
+			    [&](gather_transfer& gt) { begin_receiving_gather_chunk_from_communicator(*gt.request, pilot); });
 		} else {
 			m_transfers.emplace(pilot.message.trid, unassigned_transfer{{pilot}});
 		}
 	}
 }
 
-void receive_arbiter::begin_receiving_region_fragment(region_request& rr, const inbound_pilot& pilot, const size_t elem_size) {
+void receive_arbiter::begin_receiving_region_fragment_from_communicator(region_request& rr, const inbound_pilot& pilot, const size_t elem_size) {
+	assert(region_intersection(rr.incomplete_region, pilot.message.box) == pilot.message.box);
 	assert(rr.allocated_box.covers(pilot.message.box));
 	const auto offset_in_allocation = pilot.message.box.get_offset() - rr.allocated_box.get_offset();
 	const communicator::stride stride{
@@ -169,7 +166,7 @@ void receive_arbiter::begin_receiving_region_fragment(region_request& rr, const 
 	rr.incoming_fragments.push_back({pilot.message.box, std::move(event)});
 }
 
-void receive_arbiter::begin_receiving_gather_chunk(gather_request& gr, const inbound_pilot& pilot) {
+void receive_arbiter::begin_receiving_gather_chunk_from_communicator(gather_request& gr, const inbound_pilot& pilot) {
 	const communicator::stride stride{range_cast<3>(range(m_num_nodes)), subrange(id_cast<3>(id(pilot.from)), range_cast<3>(range(1))), gr.chunk_size};
 	auto event = m_comm->receive_payload(pilot.from, pilot.message.tag, gr.allocation, stride);
 	gr.incoming_chunks.push_back(incoming_gather_chunk{std::move(event)});
