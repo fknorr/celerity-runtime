@@ -303,6 +303,15 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    };
 		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
 	    },
+	    [&](const receive_instruction& rinstr) {
+		    CELERITY_DEBUG("[executor] I{}: receive {} {} into M{}.A{} ({}), x{} bytes", rinstr.get_id(), rinstr.get_transfer_id(),
+		        rinstr.get_requested_region(), rinstr.get_dest_memory(), rinstr.get_dest_allocation(), rinstr.get_allocated_box(),
+		        rinstr.get_element_size());
+
+		    const auto allocation = m_allocations.at(rinstr.get_dest_allocation());
+		    return m_recv_arbiter.receive(
+		        rinstr.get_transfer_id(), rinstr.get_requested_region(), allocation, rinstr.get_allocated_box(), rinstr.get_element_size());
+	    },
 	    [&](const begin_receive_instruction& brinstr) {
 		    CELERITY_DEBUG("[executor] I{}: begin receive {} {} into M{}.A{} ({}), x{} bytes", brinstr.get_id(), brinstr.get_transfer_id(),
 		        brinstr.get_requested_region(), brinstr.get_dest_memory(), brinstr.get_dest_allocation(), brinstr.get_allocated_box(),
@@ -316,7 +325,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const await_receive_instruction& arinstr) {
 		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
 
-		    return m_recv_arbiter.await_partial_receive(arinstr.get_transfer_id(), arinstr.get_received_region());
+		    return m_recv_arbiter.await_subregion_receive(arinstr.get_transfer_id(), arinstr.get_received_region());
 	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());

@@ -10,11 +10,12 @@
 
 namespace celerity::detail {
 
-class instruction : public intrusive_graph_node<instruction>,
-                    public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction,
-                        class init_buffer_instruction, class export_instruction, class copy_instruction, class sycl_kernel_instruction,
-                        class host_task_instruction, class send_instruction, class begin_receive_instruction, class await_receive_instruction,
-                        class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+class instruction
+    : public intrusive_graph_node<instruction>,
+      public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class init_buffer_instruction,
+          class export_instruction, class copy_instruction, class sycl_kernel_instruction, class host_task_instruction, class send_instruction,
+          class receive_instruction, class begin_receive_instruction, class await_receive_instruction, class fence_instruction,
+          class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -255,12 +256,12 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 /// coincide with await_receive_instructions - sends can fulfil subsets or supersets of receives, so the executor needs to be able to handle all send-patterns
 /// that cover the region of the original await_push command. To make this happen, the instruction_graph_generator allocates the bounding box of each
 /// 2/4/8-connected component of the await_push region and passes it on to the receive_arbiter through a begin_receive_instruction.
-class begin_receive_instruction final : public matchbox::implement_acceptor<instruction, begin_receive_instruction> {
+class receive_instruction_impl {
   public:
-	explicit begin_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
-	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
-	    : acceptor_base(iid), m_trid(trid), m_request(std::move(request)), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation),
-	      m_allocated_box(allocated_box), m_elem_size(elem_size) {}
+	explicit receive_instruction_impl(const transfer_id& trid, region<3> request, const memory_id dest_memory, const allocation_id dest_allocation,
+	    const box<3>& allocated_box, const size_t elem_size)
+	    : m_trid(trid), m_request(std::move(request)), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_allocated_box(allocated_box),
+	      m_elem_size(elem_size) {}
 
 	const transfer_id& get_transfer_id() const { return m_trid; }
 	const region<3>& get_requested_region() const { return m_request; }
@@ -276,6 +277,20 @@ class begin_receive_instruction final : public matchbox::implement_acceptor<inst
 	allocation_id m_dest_allocation;
 	box<3> m_allocated_box;
 	size_t m_elem_size;
+};
+
+class receive_instruction final : public matchbox::implement_acceptor<instruction, receive_instruction>, public receive_instruction_impl {
+  public:
+	explicit receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
+	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
+	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_memory, dest_allocation, allocated_box, elem_size) {}
+};
+
+class begin_receive_instruction final : public matchbox::implement_acceptor<instruction, begin_receive_instruction>, public receive_instruction_impl {
+  public:
+	explicit begin_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
+	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
+	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_memory, dest_allocation, allocated_box, elem_size) {}
 };
 
 /// Waits on the receive arbiter to complete part of the receive.

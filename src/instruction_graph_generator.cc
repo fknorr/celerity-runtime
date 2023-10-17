@@ -315,18 +315,6 @@ void instruction_graph_generator::commit_pending_receive(
 
 	for(const auto alloc : allocations) {
 		const auto alloc_recv_region = region_intersection(alloc->box, receive.received_region);
-		const auto begin_recv_instr = &create<begin_receive_instruction>(trid, alloc_recv_region, mid, alloc->aid, alloc->box, buffer.elem_size);
-		if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
-
-		// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
-		// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
-		// that there are no pending transfers for the region they are trying to read or to access (TODO).
-		for(const auto& [_, front] : alloc->access_fronts.get_region_values(alloc_recv_region)) { // TODO copy-pasta
-			for(const auto dep_instr : front.front) {
-				add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
-			}
-		}
-
 		std::vector<region<3>> independent_await_regions;
 		for(const auto& [_, read_region] : reads) {
 			const auto await_region = region_intersection(read_region, alloc_recv_region);
@@ -334,31 +322,50 @@ void instruction_graph_generator::commit_pending_receive(
 		}
 		symmetrically_split_overlapping_regions(independent_await_regions);
 
+		if(independent_await_regions.size() > 1) {
+			const auto begin_recv_instr = &create<begin_receive_instruction>(trid, alloc_recv_region, mid, alloc->aid, alloc->box, buffer.elem_size);
+			if(m_recorder != nullptr) { *m_recorder << begin_receive_instruction_record(*begin_recv_instr); }
+
+			// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
+			// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
+			// that there are no pending transfers for the region they are trying to read or to access (TODO).
+			for(const auto& [_, front] : alloc->access_fronts.get_region_values(alloc_recv_region)) { // TODO copy-pasta
+				for(const auto dep_instr : front.front) {
+					add_dependency(*begin_recv_instr, *dep_instr, dependency_kind::true_dep);
+				}
+			}
+
 #if CELERITY_DETAIL_ENABLE_DEBUG
-		region<3> full_await_region;
-		for(const auto& await_region : independent_await_regions) {
-			full_await_region = region_union(full_await_region, await_region);
-		}
-		assert(full_await_region == alloc_recv_region);
+			region<3> full_await_region;
+			for(const auto& await_region : independent_await_regions) {
+				full_await_region = region_union(full_await_region, await_region);
+			}
+			assert(full_await_region == alloc_recv_region);
 #endif
 
-		std::vector<instruction*> await_receives;
-		for(const auto& await_region : independent_await_regions) {
-			for(const auto alloc : allocations) {
-				const auto alloc_await_region = region_intersection(alloc->box, await_region);
-				if(alloc_await_region.empty()) continue;
-
-				const auto await_instr = &create<await_receive_instruction>(trid, alloc_await_region);
+			for(const auto& await_region : independent_await_regions) {
+				const auto await_instr = &create<await_receive_instruction>(trid, await_region);
 				if(m_recorder != nullptr) { *m_recorder << await_receive_instruction_record(*await_instr, mid, alloc->aid, alloc->box); }
-				await_receives.push_back(await_instr);
 
 				add_dependency(*await_instr, *begin_recv_instr, dependency_kind::true_dep);
 
-				for(const auto alloc : allocations) {
-					alloc->record_write(alloc_await_region, await_instr);
-				}
-				buffer.original_writers.update_region(alloc_await_region, await_instr);
+				alloc->record_write(await_region, await_instr);
+				buffer.original_writers.update_region(await_region, await_instr);
 			}
+		} else {
+			assert(independent_await_regions.size() == 1 && independent_await_regions[0] == alloc_recv_region);
+
+			auto& recv_instr = create<receive_instruction>(trid, alloc_recv_region, mid, alloc->aid, alloc->box, buffer.elem_size);
+			if(m_recorder != nullptr) { *m_recorder << receive_instruction_record(recv_instr); }
+
+			for(const auto& [_, front] : alloc->access_fronts.get_region_values(alloc_recv_region)) { // TODO copy-pasta
+				for(const auto dep_instr : front.front) {
+					add_dependency(recv_instr, *dep_instr, dependency_kind::true_dep);
+				}
+			}
+
+			alloc->record_write(alloc_recv_region, &recv_instr);
+			buffer.original_writers.update_region(alloc_recv_region, &recv_instr);
 		}
 	}
 

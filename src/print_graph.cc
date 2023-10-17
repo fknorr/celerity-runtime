@@ -385,6 +385,16 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    send_instructions_by_tag.emplace(sinstr.tag, sinstr.id);
 			    end_node();
 		    },
+		    [&](const receive_instruction_record& rinstr) {
+			    begin_node(rinstr, "box,margin=0.2", "deeppink2");
+			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, irec.get_await_push_command_id(rinstr.transfer_id));
+			    fmt::format_to(back, "<br/><b>receive</b> {}", rinstr.transfer_id);
+			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(rinstr.transfer_id.bid), rinstr.requested_region);
+			    fmt::format_to(
+			        back, "<br/>into M{}.A{} (B{} {})", rinstr.dest_memory, rinstr.dest_allocation, rinstr.transfer_id.bid, rinstr.allocated_box);
+			    fmt::format_to(back, "<br/>x{} bytes", rinstr.element_size);
+			    end_node();
+		    },
 		    [&](const begin_receive_instruction_record& brinstr) {
 			    begin_node(brinstr, "box,margin=0.2", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", brinstr.id, irec.get_await_push_command_id(brinstr.transfer_id));

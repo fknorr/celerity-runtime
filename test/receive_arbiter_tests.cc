@@ -114,7 +114,7 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	}
 	ra.poll_communicator();
 
-	const auto event = ra.await_partial_receive(trid, recv_box);
+	const auto event = ra.await_subregion_receive(trid, recv_box);
 
 	for(size_t i = num_pilots_completed_before_await; i < num_pilots_pushed_before_begin; ++i) {
 		const auto& [from, tag, box] = fragments_meta[i];
@@ -168,8 +168,8 @@ TEST_CASE("receive_arbiter can await supersets of incoming fragments", "[receive
 
 	std::vector<int> allocation(alloc_box.get_range().size());
 	ra.begin_receive(trid, full_recv_region, allocation.data(), alloc_box, elem_size);
-	const auto event_0 = ra.await_partial_receive(trid, recv_regions[0]);
-	const auto event_1 = ra.await_partial_receive(trid, recv_regions[1]);
+	const auto event_0 = ra.await_subregion_receive(trid, recv_regions[0]);
+	const auto event_1 = ra.await_subregion_receive(trid, recv_regions[1]);
 	ra.poll_communicator();
 
 	CHECK(!event_0.is_complete());
@@ -188,5 +188,52 @@ TEST_CASE("receive_arbiter can await supersets of incoming fragments", "[receive
 		const auto linear_index = get_linear_index(alloc_box.get_range(), id_in_allocation);
 		expected_allocation[linear_index] = static_cast<int>(from);
 	});
+	CHECK(allocation == expected_allocation);
+}
+
+TEST_CASE("receive_arbiter single-instruction receive works", "[receive_arbiter]") {
+	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
+	const range<3> buffer_range = {20, 20, 1};
+	const box<3> alloc_box = {{2, 1, 0}, {19, 20, 1}};
+	const region<3> recv_region{{{{4, 1, 0}, {14, 10, 1}}, {{14, 1, 0}, {19, 18, 1}}}};
+	const size_t num_fragments = recv_region.get_boxes().size();
+	const size_t elem_size = sizeof(int);
+	const node_id from = 1;
+
+	mock_recv_communicator comm(2, 0);
+	receive_arbiter ra(comm);
+
+	const auto num_pilots_before_receive = GENERATE(values<size_t>({0, 1, 2}));
+	for(size_t i = 0; i < num_pilots_before_receive; ++i) {
+		comm.push_inbound_pilot(inbound_pilot{from, pilot_message{static_cast<int>(i), trid, recv_region.get_boxes()[i]}});
+	}
+	ra.poll_communicator();
+
+	std::vector<int> allocation(alloc_box.get_range().size());
+	auto event = ra.receive(trid, recv_region, allocation.data(), alloc_box, elem_size);
+	CHECK(!event.is_complete());
+
+	for(size_t i = num_pilots_before_receive; i < num_fragments; ++i) {
+		comm.push_inbound_pilot(inbound_pilot{from, pilot_message{static_cast<int>(i), trid, recv_region.get_boxes()[i]}});
+	}
+	ra.poll_communicator();
+
+	for(size_t i = 0; i < num_fragments; ++i) {
+		CHECK(!event.is_complete());
+		const auto& fragment_box = recv_region.get_boxes()[i];
+		std::vector<int> fragment(fragment_box.get_range().size(), static_cast<int>(from));
+		comm.complete_receiving_payload(from, static_cast<int>(i), fragment.data(), fragment_box.get_range());
+		ra.poll_communicator();
+	}
+	CHECK(event.is_complete());
+
+	std::vector<int> expected_allocation(alloc_box.get_range().size());
+	for(const auto& fragment_box : recv_region.get_boxes()) {
+		experimental::for_each_item(fragment_box.get_range(), [&](const item<3>& it) {
+			const auto id_in_allocation = fragment_box.get_offset() - alloc_box.get_offset() + it.get_id();
+			const auto linear_index = get_linear_index(alloc_box.get_range(), id_in_allocation);
+			expected_allocation[linear_index] = static_cast<int>(from);
+		});
+	}
 	CHECK(allocation == expected_allocation);
 }

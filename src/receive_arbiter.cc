@@ -13,20 +13,17 @@ receive_arbiter::~receive_arbiter() { assert(std::uncaught_exceptions() > 0 || m
 
 bool receive_arbiter::event::is_complete() const {
 	return matchbox::match(
-	    m_state,
-	    [](const completed_state&) { //
-		    return true;
+	    m_state,                                     //
+	    [](const completed_state&) { return true; }, //
+	    [](const region_transfer_state& rts) { return rts.request.expired(); },
+	    [](const subregion_transfer_state& sts) {
+		    const auto rr = sts.request.lock();
+		    return rr == nullptr || region_intersection(rr->incomplete_region, sts.awaited_region).empty();
 	    },
-	    [](const region_transfer_state& rts) {
-		    const auto rr = rts.request.lock();
-		    return rr == nullptr || region_intersection(rr->incomplete_region, rts.awaited_region).empty();
-	    },
-	    [](const gather_transfer_state& gts) { //
-		    return gts.request.expired();
-	    });
+	    [](const gather_transfer_state& gts) { return gts.request.expired(); });
 }
 
-void receive_arbiter::begin_receive(
+receive_arbiter::stable_region_request& receive_arbiter::begin_receive_region(
     const transfer_id& trid, const region<3>& request, void* const allocation, const box<3>& allocated_box, const size_t elem_size) {
 	assert(allocated_box.covers(bounding_box(request)));
 
@@ -51,9 +48,16 @@ void receive_arbiter::begin_receive(
 			begin_receiving_region_fragment(*rr, pilot, elem_size);
 		}
 	}
+
+	return rr;
 }
 
-receive_arbiter::event receive_arbiter::await_partial_receive(const transfer_id& trid, const region<3>& awaited_region) {
+void receive_arbiter::begin_receive(
+    const transfer_id& trid, const region<3>& request, void* const allocation, const box<3>& allocated_box, const size_t elem_size) {
+	begin_receive_region(trid, request, allocation, allocated_box, elem_size);
+}
+
+receive_arbiter::event receive_arbiter::await_subregion_receive(const transfer_id& trid, const region<3>& awaited_region) {
 	const auto transfer_it = m_transfers.find(trid);
 	if(transfer_it == m_transfers.end()) { return event(event::complete); }
 
@@ -70,6 +74,11 @@ receive_arbiter::event receive_arbiter::await_partial_receive(const transfer_id&
 	if(req_it == mrt.active_requests.end()) { return event(event::complete); }
 
 	return event(*req_it, awaited_region);
+}
+
+receive_arbiter::event receive_arbiter::receive(
+    const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size) {
+	return event(begin_receive_region(trid, request, allocation, allocated_box, elem_size));
 }
 
 receive_arbiter::event receive_arbiter::receive_gather(const transfer_id& trid, void* allocation, size_t node_chunk_size) {

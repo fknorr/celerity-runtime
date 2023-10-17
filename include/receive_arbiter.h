@@ -29,17 +29,21 @@ class receive_arbiter {
 		struct completed_state {};
 		struct region_transfer_state {
 			const std::weak_ptr<region_request> request;
+		};
+		struct subregion_transfer_state {
+			const std::weak_ptr<region_request> request;
 			region<3> awaited_region;
 		};
 		struct gather_transfer_state {
 			const std::weak_ptr<gather_request> request;
 		};
-		using state = std::variant<completed_state, region_transfer_state, gather_transfer_state>;
+		using state = std::variant<completed_state, region_transfer_state, subregion_transfer_state, gather_transfer_state>;
 
 		state m_state;
 
 		explicit event(const complete_tag /* tag */) : m_state(completed_state{}) {}
-		explicit event(const stable_region_request& rr, const region<3>& awaited_region) : m_state(region_transfer_state{rr, awaited_region}) {}
+		explicit event(const stable_region_request& rr) : m_state(region_transfer_state{rr}) {}
+		explicit event(const stable_region_request& rr, const region<3>& awaited_subregion) : m_state(subregion_transfer_state{rr, awaited_subregion}) {}
 		explicit event(const stable_gather_request& gr) : m_state(gather_transfer_state{gr}) {}
 	};
 
@@ -50,10 +54,12 @@ class receive_arbiter {
 	receive_arbiter& operator=(receive_arbiter&&) = default;
 	~receive_arbiter();
 
-	void begin_receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
-	[[nodiscard]] event await_partial_receive(const transfer_id& trid, const region<3>& awaited_region);
+	[[nodiscard]] event receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
 
-	// This is a temporary solution until we implement inter-node reductions through MPI collectives.
+	void begin_receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
+	[[nodiscard]] event await_subregion_receive(const transfer_id& trid, const region<3>& awaited_region);
+
+	// "gather receives" are a temporary solution until we implement inter-node reductions through MPI collectives.
 	[[nodiscard]] event receive_gather(const transfer_id& trid, void* allocation, size_t node_chunk_size);
 
 	void poll_communicator();
@@ -116,6 +122,8 @@ class receive_arbiter {
 	size_t m_num_nodes;
 	std::unordered_map<transfer_id, transfer> m_transfers;
 
+	stable_region_request& begin_receive_region(
+	    const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
 	void begin_receiving_region_fragment(region_request& rr, const inbound_pilot& pilot, size_t elem_size);
 	void begin_receiving_gather_chunk(gather_request& gr, const inbound_pilot& pilot);
 };

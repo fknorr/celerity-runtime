@@ -223,10 +223,15 @@ send_instruction_record::send_instruction_record(
       offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
       transfer_id(trid), offset_in_buffer(offset_in_buffer) {}
 
+receive_instruction_record_impl::receive_instruction_record_impl(const receive_instruction_impl& rinstr)
+    : transfer_id(rinstr.get_transfer_id()), requested_region(rinstr.get_requested_region()), dest_memory(rinstr.get_dest_memory()),
+      dest_allocation(rinstr.get_dest_allocation()), allocated_box(rinstr.get_allocated_box()), element_size(rinstr.get_element_size()) {}
+
+receive_instruction_record::receive_instruction_record(const receive_instruction& rinstr)
+    : instruction_record_base(rinstr), receive_instruction_record_impl(rinstr) {}
+
 begin_receive_instruction_record::begin_receive_instruction_record(const begin_receive_instruction& brinstr)
-    : instruction_record_base(brinstr), transfer_id(brinstr.get_transfer_id()), requested_region(brinstr.get_requested_region()),
-      dest_memory(brinstr.get_dest_memory()), dest_allocation(brinstr.get_dest_allocation()), allocated_box(brinstr.get_allocated_box()),
-      element_size(brinstr.get_element_size()) {}
+    : instruction_record_base(brinstr), receive_instruction_record_impl(brinstr) {}
 
 await_receive_instruction_record::await_receive_instruction_record(
     const await_receive_instruction& arinstr, const memory_id dest_memory_id, const allocation_id dest_allocation_id, const box<3>& dest_allocation_box)
