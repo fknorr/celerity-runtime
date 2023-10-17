@@ -26,7 +26,8 @@ class instruction_graph_generator {
 	};
 
 	// TODO should take unordered_map<device_id, device_info> (runtime is responsible for device id allocation, not IGGEN)
-	explicit instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices, instruction_recorder* recorder);
+	explicit instruction_graph_generator(
+	    const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_recorder* recorder);
 
 	void create_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align, bool host_initialized);
 
@@ -144,15 +145,23 @@ class instruction_graph_generator {
 
 	struct per_buffer_data {
 		/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
-		struct pending_receive {
+		struct region_receive {
 			task_id consumer_tid;
-			reduction_id rid;
 			region<3> received_region;
 			box_vector<3> required_contiguous_allocations;
 
-			pending_receive(const task_id consumer_tid, const reduction_id rid, region<3> received_region, box_vector<3> required_contiguous_allocations)
-			    : consumer_tid(consumer_tid), rid(rid), received_region(std::move(received_region)),
+			region_receive(const task_id consumer_tid, region<3> received_region, box_vector<3> required_contiguous_allocations)
+			    : consumer_tid(consumer_tid), received_region(std::move(received_region)),
 			      required_contiguous_allocations(std::move(required_contiguous_allocations)) {}
+		};
+
+		struct gather_receive {
+			task_id consumer_tid;
+			reduction_id rid;
+			box<3> gather_box;
+
+			gather_receive(const task_id consumer_tid, const reduction_id rid, const box<3> gather_box)
+			    : consumer_tid(consumer_tid), rid(rid), gather_box(gather_box) {}
 		};
 
 		int dims;
@@ -165,7 +174,8 @@ class instruction_graph_generator {
 
 		// We store pending receives (await push regions) in a vector instead of a region map since we must process their entire regions en-bloc rather than on
 		// a per-element basis.
-		std::vector<pending_receive> pending_receives;
+		std::vector<region_receive> pending_receives;
+		std::vector<gather_receive> pending_gathers;
 
 		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
 		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), newest_data_location(range, dims),
@@ -187,6 +197,7 @@ class instruction_graph_generator {
 			// original_writers[*].await_receives potentially points to instructions before the new epoch, but when compiling a horizon or epoch command, all
 			// previous await-pushes should have been consumed by the task command they were generated for.
 			assert(pending_receives.empty());
+			assert(pending_gathers.empty());
 		}
 	};
 
@@ -222,6 +233,8 @@ class instruction_graph_generator {
 	allocation_id m_next_aid = null_allocation_id + 1;
 	int m_next_p2p_tag = 10; // TODO
 	const task_manager& m_tm;
+	size_t m_num_nodes;
+	node_id m_local_node_id;
 	std::vector<device_info> m_devices;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
@@ -279,7 +292,8 @@ class instruction_graph_generator {
 	// in any order of allocation requirements without generating additional dependencies.
 	void allocate_contiguously(buffer_id bid, memory_id mid, const bounding_box_set& boxes);
 
-	void commit_pending_receive(buffer_id bid, const per_buffer_data::pending_receive& receives, const std::vector<std::pair<memory_id, region<3>>>& reads);
+	void commit_pending_region_receive(
+	    buffer_id bid, const per_buffer_data::region_receive& receives, const std::vector<std::pair<memory_id, region<3>>>& reads);
 
 	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
@@ -297,13 +311,9 @@ class instruction_graph_generator {
 	int create_pilot_message(node_id target, const transfer_id& trid, const box<3>& box);
 
 	void compile_execution_command(const execution_command& ecmd);
-
 	void compile_push_command(const push_command& pcmd);
-
 	void compile_await_push_command(const await_push_command& apcmd);
-
 	void compile_reduction_command(const reduction_command& rcmd);
-
 	void compile_fence_command(const fence_command& fcmd);
 };
 

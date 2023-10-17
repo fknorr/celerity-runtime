@@ -59,8 +59,34 @@ std::pair<std::vector<region<Dims>>, box_vector<Dims>> edge_connected_subregions
 	return {std::move(subregions), std::move(bounding_boxes)};
 }
 
-instruction_graph_generator::instruction_graph_generator(const task_manager& tm, std::vector<device_info> devices, instruction_recorder* const recorder)
-    : m_tm(tm), m_devices(std::move(devices)), m_recorder(recorder) {
+// This is different from bounding_box_set merges, which work on box_intersections instead of boxes_edge_connected (TODO unit-test this)
+template <int Dims>
+box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) {
+	auto boxes = region.get_boxes();
+	auto begin = boxes.begin();
+	auto end = boxes.end();
+	box_vector<3> bounding_boxes;
+	while(begin != end) {
+		auto connected_end = std::next(begin);
+		auto connected_bounding_box = *begin; // optimization: skip connectivity checks if bounding box is disconnected
+		for(; connected_end != end; ++connected_end) {
+			const auto next_connected = std::find_if(connected_end, end, [&](const auto& candidate) {
+				return boxes_edge_connected(connected_bounding_box, candidate)
+				       && std::any_of(begin, connected_end, [&](const auto& box) { return boxes_edge_connected(candidate, box); });
+			});
+			if(next_connected == end) break;
+			connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
+			std::swap(*next_connected, *connected_end);
+		}
+		bounding_boxes.push_back(connected_bounding_box);
+		begin = connected_end;
+	}
+	return bounding_boxes;
+}
+
+instruction_graph_generator::instruction_graph_generator(
+    const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_recorder* const recorder)
+    : m_tm(tm), m_num_nodes(num_nodes), m_local_node_id(local_node_id), m_devices(std::move(devices)), m_recorder(recorder) {
 	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const device_info& info) { return info.native_memory < max_memories; }));
 	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */), epoch_action::none);
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
@@ -97,7 +123,8 @@ void instruction_graph_generator::create_buffer(
 		buffer.newest_data_location.update_region(entire_buffer, data_location().set(host_memory_id));
 
 		if(m_recorder != nullptr) {
-			*m_recorder << alloc_instruction_record(alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, entire_buffer});
+			*m_recorder << alloc_instruction_record(
+			    alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, entire_buffer}, std::nullopt);
 			*m_recorder << init_buffer_instruction_record(init_instr);
 		}
 
@@ -253,7 +280,8 @@ void instruction_graph_generator::allocate_contiguously(const buffer_id bid, con
 		}
 
 		if(m_recorder != nullptr) {
-			*m_recorder << alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, dest_box});
+			*m_recorder << alloc_instruction_record(
+			    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, dest_box}, std::nullopt);
 		}
 	}
 
@@ -298,9 +326,9 @@ restart:
 	}
 }
 
-void instruction_graph_generator::commit_pending_receive(
-    const buffer_id bid, const per_buffer_data::pending_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
-	const auto trid = transfer_id(receive.consumer_tid, bid, receive.rid);
+void instruction_graph_generator::commit_pending_region_receive(
+    const buffer_id bid, const per_buffer_data::region_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
+	const auto trid = transfer_id(receive.consumer_tid, bid, no_reduction_id);
 	const auto mid = host_memory_id;
 
 	auto& buffer = m_buffers.at(bid);
@@ -335,7 +363,7 @@ void instruction_graph_generator::commit_pending_receive(
 				}
 			}
 
-#if CELERITY_DETAIL_ENABLE_DEBUG
+#ifndef NDEBUG
 			region<3> full_await_region;
 			for(const auto& await_region : independent_await_regions) {
 				full_await_region = region_union(full_await_region, await_region);
@@ -512,7 +540,7 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 	auto& buffer = m_buffers.at(bid);
 
 	std::unordered_map<memory_id, bounding_box_set> contiguous_allocations;
-	std::vector<per_buffer_data::pending_receive> applied_receives;
+	std::vector<per_buffer_data::region_receive> applied_receives;
 
 	region<3> accessed;  // which elements have are accessed (to figure out applying receives)
 	region<3> discarded; // which elements are received with a non-consuming access or received (these don't need to be preserved)
@@ -524,8 +552,10 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 
 	const auto reduction = std::find_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; });
 	if(reduction != tsk.get_reductions().end()) {
-		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const per_buffer_data::pending_receive& r) {
+		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const per_buffer_data::region_receive& r) {
 			return region_intersection(r.received_region, scalar_reduction_box).empty();
+		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const per_buffer_data::gather_receive& r) {
+			return box_intersection(r.gather_box, scalar_reduction_box).empty();
 		}) && "buffer has an unprocessed await-push in a region that is going to be used as a reduction output");
 
 		discarded = region_union(discarded, scalar_reduction_box); // TODO this currently breaks reduction-initialization from buffer
@@ -535,7 +565,7 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 	}
 
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
-	    [&](const per_buffer_data::pending_receive& r) { return region_intersection(accessed, r.received_region).empty(); });
+	    [&](const per_buffer_data::region_receive& r) { return region_intersection(accessed, r.received_region).empty(); });
 	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
 		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
 		discarded = region_union(discarded, it->received_region);
@@ -570,7 +600,7 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 	if(reduction != tsk.get_reductions().end() && reduction->init_from_buffer) { local_chunk_reads.emplace_back(host_memory_id, scalar_reduction_box); }
 
 	for(const auto& receive : applied_receives) {
-		commit_pending_receive(bid, receive, local_chunk_reads);
+		commit_pending_region_receive(bid, receive, local_chunk_reads);
 	}
 
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
@@ -974,41 +1004,54 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 
 #ifndef NDEBUG
 	for(const auto& receive : buffer.pending_receives) {
-		assert(std::pair(receive.consumer_tid, receive.rid) != std::pair(trid.consumer_tid, trid.rid)
+		assert((trid.rid != no_reduction_id || receive.consumer_tid != trid.consumer_tid)
 		       && "received multiple await-pushes for the same consumer-task, buffer and reduction id");
 		assert(region_intersection(receive.received_region, apcmd.get_region()).empty()
 		       && "received an await-push command into a previously await-pushed region without an intermediate read");
 	}
+	for(const auto& gather : buffer.pending_gathers) {
+		assert(std::pair(gather.consumer_tid, gather.rid) != std::pair(trid.consumer_tid, gather.rid)
+		       && "received multiple await-pushes for the same consumer-task, buffer and reduction id");
+		assert(region_intersection(gather.gather_box, apcmd.get_region()).empty()
+		       && "received an await-push command into a previously await-pushed region without an intermediate read");
+	}
 #endif
 
-	box_vector<3> connected_subregion_bounding_boxes;
-	{
-		auto ap_boxes = apcmd.get_region().get_boxes();
-		auto begin = ap_boxes.begin();
-		auto end = ap_boxes.end();
-		while(begin != end) {
-			auto connected_end = std::next(begin);
-			auto connected_bounding_box = *begin; // optimization: skip connectivity checks if bounding box is disconnected
-			for(; connected_end != end; ++connected_end) {
-				const auto next_connected = std::find_if(connected_end, end, [&](const auto& candidate) {
-					return boxes_edge_connected(connected_bounding_box, candidate)
-					       && std::any_of(begin, connected_end, [&](const auto& box) { return boxes_edge_connected(candidate, box); });
-				});
-				if(next_connected == end) break;
-				connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
-				std::swap(*next_connected, *connected_end);
-			}
-			connected_subregion_bounding_boxes.push_back(connected_bounding_box);
-			begin = connected_end;
-		}
+	if(trid.rid == 0) {
+		buffer.pending_receives.emplace_back(trid.consumer_tid, apcmd.get_region(), connected_subregion_bounding_boxes(apcmd.get_region()));
+	} else {
+		assert(apcmd.get_region().get_boxes().size() == 1);
+		buffer.pending_gathers.emplace_back(trid.consumer_tid, trid.rid, apcmd.get_region().get_boxes().front());
 	}
-
-	buffer.pending_receives.emplace_back(trid.consumer_tid, trid.rid, apcmd.get_region(), std::move(connected_subregion_bounding_boxes));
 }
 
 
 void instruction_graph_generator::compile_reduction_command(const reduction_command& rcmd) {
-	//
+	auto& buffer = m_buffers.at(rcmd.get_reduction_info().bid);
+	assert(buffer.pending_gathers.size() == 1 && "received reduction command that is not preceded by an appropriate await-push");
+	const auto& gather = buffer.pending_gathers.front();
+	assert(gather.gather_box == box<3>({0, 0, 0}, {1, 1, 1}));
+
+	const auto mid = host_memory_id;
+	const auto aid = m_next_aid++;
+	const auto node_chunk_size = gather.gather_box.get_area() * buffer.elem_size;
+	const auto alloc_instr = &create<alloc_instruction>(aid, mid, m_num_nodes * node_chunk_size, buffer.elem_align);
+	if(m_recorder != nullptr) {
+		*m_recorder << alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::reduction,
+		    buffer_allocation_record{rcmd.get_reduction_info().bid, gather.gather_box}, m_num_nodes);
+	}
+	add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
+
+	const transfer_id trid(gather.consumer_tid, rcmd.get_reduction_info().bid, gather.rid);
+	const auto gather_instr = &create<gather_receive_instruction>(trid, mid, aid, node_chunk_size);
+	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_instr, gather.gather_box, m_num_nodes); }
+	add_dependency(*gather_instr, *alloc_instr, dependency_kind::true_dep);
+
+	const auto free_instr = &create<free_instruction>(mid, aid);
+	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
+	add_dependency(*free_instr, *gather_instr, dependency_kind::true_dep);
+
+	buffer.pending_gathers.clear();
 }
 
 

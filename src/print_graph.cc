@@ -288,12 +288,13 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(ainstr, "ellipse", "cyan3");
 			    fmt::format_to(back, "I{}<br/>", ainstr.id);
 			    switch(ainstr.origin) {
-			    case alloc_instruction_record::alloc_origin::send: dot += "send "; break;
 			    case alloc_instruction_record::alloc_origin::buffer: dot += "buffer "; break;
+			    case alloc_instruction_record::alloc_origin::reduction: dot += "reduction "; break;
 			    }
 			    fmt::format_to(back, "<b>alloc</b> M{}.A{}", ainstr.memory_id, ainstr.allocation_id);
 			    if(ainstr.buffer_allocation.has_value()) {
 				    fmt::format_to(back, "<br/>for {} {}", get_buffer_label(ainstr.buffer_allocation->buffer_id), ainstr.buffer_allocation->box);
+				    if(ainstr.num_chunks.has_value()) { fmt::format_to(back, " x{}", *ainstr.num_chunks); }
 			    }
 			    fmt::format_to(back, "<br/>{}%{} bytes", ainstr.size, ainstr.alignment);
 			    end_node();
@@ -390,8 +391,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, irec.get_await_push_command_id(rinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>receive</b> {}", rinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(rinstr.transfer_id.bid), rinstr.requested_region);
-			    fmt::format_to(
-			        back, "<br/>into M{}.A{} (B{} {})", rinstr.dest_memory, rinstr.dest_allocation, rinstr.transfer_id.bid, rinstr.allocated_box);
+			    fmt::format_to(back, "<br/>into M{}.A{} (B{} {})", rinstr.dest_memory, rinstr.dest_allocation, rinstr.transfer_id.bid, rinstr.allocated_box);
 			    fmt::format_to(back, "<br/>x{} bytes", rinstr.element_size);
 			    end_node();
 		    },
@@ -410,6 +410,15 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", arinstr.id, irec.get_await_push_command_id(arinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>await receive</b> {}", arinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(arinstr.transfer_id.bid), arinstr.received_region);
+			    end_node();
+		    },
+		    [&](const gather_receive_instruction_record& grinstr) {
+			    begin_node(grinstr, "box,margin=0.2", "deeppink2");
+			    fmt::format_to(back, "I{} (await-push C{})", grinstr.id, irec.get_await_push_command_id(grinstr.transfer_id));
+			    fmt::format_to(back, "<br/><b>gather receive</b> {}", grinstr.transfer_id);
+			    fmt::format_to(
+			        back, "<br/>{} ({} bytes) x{}", get_buffer_label(grinstr.transfer_id.bid), grinstr.gather_box, grinstr.node_chunk_size, grinstr.num_nodes);
+			    fmt::format_to(back, "<br/>into M{}.A{}", grinstr.memory_id, grinstr.allocation_id);
 			    end_node();
 		    },
 		    [&](const fence_instruction_record& finstr) {

@@ -305,8 +305,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const receive_instruction& rinstr) {
 		    CELERITY_DEBUG("[executor] I{}: receive {} {} into M{}.A{} ({}), x{} bytes", rinstr.get_id(), rinstr.get_transfer_id(),
-		        rinstr.get_requested_region(), rinstr.get_dest_memory(), rinstr.get_dest_allocation(), rinstr.get_allocated_box(),
-		        rinstr.get_element_size());
+		        rinstr.get_requested_region(), rinstr.get_dest_memory(), rinstr.get_dest_allocation(), rinstr.get_allocated_box(), rinstr.get_element_size());
 
 		    const auto allocation = m_allocations.at(rinstr.get_dest_allocation());
 		    return m_recv_arbiter.receive(
@@ -326,6 +325,13 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
 
 		    return m_recv_arbiter.await_split_receive_subregion(arinstr.get_transfer_id(), arinstr.get_received_region());
+	    },
+	    [&](const gather_receive_instruction& grinstr) {
+		    CELERITY_DEBUG("[executor] I{}: gather receive {} into M{}.A{}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
+		        grinstr.get_memory_id(), grinstr.get_allocation_id(), grinstr.get_node_chunk_size());
+
+		    const auto allocation = m_allocations.at(grinstr.get_allocation_id());
+		    return m_recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
 	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());

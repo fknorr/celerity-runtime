@@ -153,7 +153,7 @@ struct clone_collective_group_instruction_record : instruction_record_base {
 struct alloc_instruction_record : instruction_record_base {
 	enum class alloc_origin {
 		buffer,
-		send,
+		reduction,
 	};
 
 	detail::allocation_id allocation_id;
@@ -162,8 +162,10 @@ struct alloc_instruction_record : instruction_record_base {
 	size_t alignment;
 	alloc_origin origin;
 	std::optional<buffer_allocation_record> buffer_allocation;
+	std::optional<size_t> num_chunks;
 
-	alloc_instruction_record(const alloc_instruction& ainstr, alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation);
+	alloc_instruction_record(
+	    const alloc_instruction& ainstr, alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation, std::optional<size_t> num_chunks);
 };
 
 struct free_instruction_record : instruction_record_base {
@@ -299,6 +301,17 @@ struct await_receive_instruction_record : instruction_record_base {
 	await_receive_instruction_record(const await_receive_instruction& arinstr);
 };
 
+struct gather_receive_instruction_record : instruction_record_base {
+	transfer_id transfer_id;
+	memory_id memory_id;
+	allocation_id allocation_id;
+	size_t node_chunk_size;
+	box<3> gather_box;
+	size_t num_nodes;
+
+	gather_receive_instruction_record(const gather_receive_instruction& grinstr, const box<3>& gather_box, size_t num_nodes);
+};
+
 struct fence_instruction_record : instruction_record_base {
 	struct buffer_variant {
 		buffer_id bid;
@@ -339,7 +352,7 @@ struct epoch_instruction_record : instruction_record_base {
 
 using instruction_record = std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record,
     init_buffer_instruction_record, export_instruction_record, copy_instruction_record, launch_instruction_record, send_instruction_record,
-    receive_instruction_record, spilt_receive_instruction_record, await_receive_instruction_record, fence_instruction_record,
+    receive_instruction_record, spilt_receive_instruction_record, await_receive_instruction_record, gather_receive_instruction_record, fence_instruction_record,
     destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
 class instruction_recorder {

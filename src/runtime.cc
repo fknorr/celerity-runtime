@@ -170,7 +170,8 @@ namespace detail {
 		    static_cast<instruction_executor::delegate*>(this));
 
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
-		auto iggen = std::make_unique<instruction_graph_generator>(*m_task_mngr, std::move(iggen_devices), m_instruction_recorder.get());
+		auto iggen =
+		    std::make_unique<instruction_graph_generator>(*m_task_mngr, m_num_nodes, m_local_nid, std::move(iggen_devices), m_instruction_recorder.get());
 
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), m_exec.get());
 

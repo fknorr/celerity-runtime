@@ -14,8 +14,8 @@ class instruction
     : public intrusive_graph_node<instruction>,
       public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class init_buffer_instruction,
           class export_instruction, class copy_instruction, class sycl_kernel_instruction, class host_task_instruction, class send_instruction,
-          class receive_instruction, class split_receive_instruction, class await_receive_instruction, class fence_instruction,
-          class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+          class receive_instruction, class split_receive_instruction, class await_receive_instruction, class gather_receive_instruction,
+          class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -307,6 +307,23 @@ class await_receive_instruction final : public matchbox::implement_acceptor<inst
   private:
 	transfer_id m_trid;
 	region<3> m_recv_region;
+};
+
+class gather_receive_instruction final : public matchbox::implement_acceptor<instruction, gather_receive_instruction> {
+  public:
+	explicit gather_receive_instruction(const instruction_id iid, const transfer_id& trid, const memory_id mid, const allocation_id aid, size_t node_chunk_size)
+	    : acceptor_base(iid), m_trid(trid), m_mid(mid), m_aid(aid), m_node_chunk_size(node_chunk_size) {}
+
+	transfer_id get_transfer_id() const { return m_trid; }
+	memory_id get_memory_id() const { return m_mid; }
+	allocation_id get_allocation_id() const { return m_aid; }
+	size_t get_node_chunk_size() const { return m_node_chunk_size; }
+
+  private:
+	transfer_id m_trid;
+	memory_id m_mid;
+	allocation_id m_aid;
+	size_t m_node_chunk_size;
 };
 
 class fence_instruction final : public matchbox::implement_acceptor<instruction, fence_instruction> {

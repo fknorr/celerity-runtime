@@ -662,7 +662,7 @@ class idag_test_context {
 	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node)
 	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_rm(), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
 	      m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
-	      m_iggen(m_tm, make_device_map(num_devices_per_node), &m_instr_recorder) {}
+	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
 	~idag_test_context() {
 		for(auto obj : m_managed_objects) {

@@ -167,9 +167,9 @@ clone_collective_group_instruction_record::clone_collective_group_instruction_re
       new_collective_group_id(ccginstr.get_new_collective_group_id()) {}
 
 alloc_instruction_record::alloc_instruction_record(
-    const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation)
+    const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation, std::optional<size_t> num_chunks)
     : instruction_record_base(ainstr), allocation_id(ainstr.get_allocation_id()), memory_id(ainstr.get_memory_id()), size(ainstr.get_size()),
-      alignment(ainstr.get_alignment()), origin(origin), buffer_allocation(buffer_allocation) {}
+      alignment(ainstr.get_alignment()), origin(origin), buffer_allocation(buffer_allocation), num_chunks(num_chunks) {}
 
 free_instruction_record::free_instruction_record(
     const free_instruction& finstr, const size_t size, const std::optional<buffer_allocation_record>& buffer_allocation)
@@ -235,6 +235,10 @@ spilt_receive_instruction_record::spilt_receive_instruction_record(const split_r
 
 await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)
     : instruction_record_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()) {}
+
+gather_receive_instruction_record::gather_receive_instruction_record(const gather_receive_instruction& grinstr, const box<3>& gather_box, size_t num_nodes)
+    : instruction_record_base(grinstr), transfer_id(grinstr.get_transfer_id()), memory_id(grinstr.get_memory_id()), allocation_id(grinstr.get_allocation_id()),
+      node_chunk_size(grinstr.get_node_chunk_size()), gather_box(gather_box), num_nodes(num_nodes) {}
 
 fence_instruction_record::fence_instruction_record(const fence_instruction& finstr, task_id tid, const command_id cid, const buffer_id bid, const box<3>& box)
     : instruction_record_base(finstr), tid(tid), cid(cid), variant(buffer_variant{bid, box}) {}
