@@ -15,7 +15,7 @@ class instruction
       public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class init_buffer_instruction,
           class export_instruction, class copy_instruction, class sycl_kernel_instruction, class host_task_instruction, class send_instruction,
           class receive_instruction, class split_receive_instruction, class await_receive_instruction, class gather_receive_instruction,
-          class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+          class reduce_instruction, class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -324,6 +324,27 @@ class gather_receive_instruction final : public matchbox::implement_acceptor<ins
 	memory_id m_mid;
 	allocation_id m_aid;
 	size_t m_node_chunk_size;
+};
+
+class reduce_instruction final : public matchbox::implement_acceptor<instruction, reduce_instruction> {
+  public:
+	explicit reduce_instruction(const instruction_id iid, const reduction_id rid, const memory_id mid, const allocation_id source_allocation_id,
+	    const size_t num_source_values, const allocation_id dest_allocation_id)
+	    : acceptor_base(iid), m_rid(rid), m_mid(mid), m_source_aid(source_allocation_id), m_num_source_values(num_source_values),
+	      m_dest_aid(dest_allocation_id) {}
+
+	reduction_id get_reduction_id() const { return m_rid; }
+	memory_id get_memory_id() const { return m_mid; }
+	allocation_id get_source_allocation_id() const { return m_source_aid; }
+	size_t get_num_source_values() const { return m_num_source_values; }
+	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
+
+  private:
+	reduction_id m_rid;
+	memory_id m_mid;
+	allocation_id m_source_aid;
+	size_t m_num_source_values;
+	allocation_id m_dest_aid;
 };
 
 class fence_instruction final : public matchbox::implement_acceptor<instruction, fence_instruction> {

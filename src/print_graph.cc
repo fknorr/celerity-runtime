@@ -421,6 +421,16 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/>into M{}.A{}", grinstr.memory_id, grinstr.allocation_id);
 			    end_node();
 		    },
+		    [&](const reduce_instruction_record& rinstr) {
+			    begin_node(rinstr, "box,margin=0.2", "blue");
+			    fmt::format_to(back, "I{} (reduction C{})", rinstr.id, rinstr.command_id);
+			    fmt::format_to(back, "<br/><b>reduce</b> B{}.R{} ({})", rinstr.buffer_id,
+			        rinstr.reduction_id, rinstr.scope == reduce_instruction_record::reduction_scope::global ? "global" : "local");
+			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(rinstr.buffer_id), rinstr.box);
+			    fmt::format_to(back, "<br/>from M{}.A{} x{}", rinstr.memory_id, rinstr.source_allocation_id, rinstr.num_source_values);
+			    fmt::format_to(back, "<br/>to M{}.A{} x1", rinstr.memory_id, rinstr.dest_allocation_id);
+			    end_node();
+		    },
 		    [&](const fence_instruction_record& finstr) {
 			    begin_node(finstr, "box,margin=0.2", "darkorange");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>fence</b><br/>", finstr.id, finstr.tid, finstr.cid);

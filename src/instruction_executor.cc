@@ -333,6 +333,18 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto allocation = m_allocations.at(grinstr.get_allocation_id());
 		    return m_recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
 	    },
+	    [&](const reduce_instruction& rinstr) {
+		    CELERITY_DEBUG("[executor] I{}: reduce M{}.A{} x{} into M{}.A{} as R{}", rinstr.get_id(), rinstr.get_memory_id(), rinstr.get_source_allocation_id(),
+		        rinstr.get_num_source_values(), rinstr.get_memory_id(), rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
+
+		    const auto gather_allocation = m_allocations.at(rinstr.get_source_allocation_id());
+		    const auto dest_allocation = m_allocations.at(rinstr.get_dest_allocation_id());
+		    const auto reduction = m_reduction_interfaces.find(rinstr.get_reduction_id());
+		    assert(reduction != m_reduction_interfaces.end());
+		    // TODO actually do the reduction!
+		    m_reduction_interfaces.erase(reduction);
+			return completed_synchronous();
+	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
 		    finstr.get_promise()->fulfill();

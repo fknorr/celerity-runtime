@@ -312,6 +312,25 @@ struct gather_receive_instruction_record : instruction_record_base {
 	gather_receive_instruction_record(const gather_receive_instruction& grinstr, const box<3>& gather_box, size_t num_nodes);
 };
 
+struct reduce_instruction_record : instruction_record_base {
+	enum class reduction_scope {
+		global,
+		local,
+	};
+
+	reduction_id reduction_id;
+	memory_id memory_id;
+	allocation_id source_allocation_id;
+	size_t num_source_values;
+	allocation_id dest_allocation_id;
+	command_id command_id;
+	buffer_id buffer_id;
+	box<3> box;
+	reduction_scope scope;
+
+	reduce_instruction_record(const reduce_instruction& rinstr, detail::command_id cid, detail::buffer_id bid, const detail::box<3>& box, reduction_scope scope);
+};
+
 struct fence_instruction_record : instruction_record_base {
 	struct buffer_variant {
 		buffer_id bid;
@@ -352,8 +371,8 @@ struct epoch_instruction_record : instruction_record_base {
 
 using instruction_record = std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record,
     init_buffer_instruction_record, export_instruction_record, copy_instruction_record, launch_instruction_record, send_instruction_record,
-    receive_instruction_record, spilt_receive_instruction_record, await_receive_instruction_record, gather_receive_instruction_record, fence_instruction_record,
-    destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+    receive_instruction_record, spilt_receive_instruction_record, await_receive_instruction_record, gather_receive_instruction_record,
+    reduce_instruction_record, fence_instruction_record, destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
 class instruction_recorder {
   public:

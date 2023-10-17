@@ -1027,31 +1027,53 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 
 
 void instruction_graph_generator::compile_reduction_command(const reduction_command& rcmd) {
-	auto& buffer = m_buffers.at(rcmd.get_reduction_info().bid);
+	const auto reduction_box = box<3>({0, 0, 0}, {1, 1, 1});
+	const auto [rid, bid, init_from_buffer] = rcmd.get_reduction_info();
+	const auto mid = host_memory_id;
+
+	auto& buffer = m_buffers.at(bid);
+
+	// TODO buffer reduction-sends, generate local reduction_instruction, send results, then v--- this will be the second-stage global reduction
+
+	// TODO do not generate (and expect) await-push on single-node CDAGs
 	assert(buffer.pending_gathers.size() == 1 && "received reduction command that is not preceded by an appropriate await-push");
 	const auto& gather = buffer.pending_gathers.front();
-	assert(gather.gather_box == box<3>({0, 0, 0}, {1, 1, 1}));
+	assert(gather.gather_box == reduction_box);
 
-	const auto mid = host_memory_id;
-	const auto aid = m_next_aid++;
+	const auto gather_aid = m_next_aid++;
 	const auto node_chunk_size = gather.gather_box.get_area() * buffer.elem_size;
-	const auto alloc_instr = &create<alloc_instruction>(aid, mid, m_num_nodes * node_chunk_size, buffer.elem_align);
+	const auto alloc_instr = &create<alloc_instruction>(gather_aid, mid, m_num_nodes * node_chunk_size, buffer.elem_align);
 	if(m_recorder != nullptr) {
-		*m_recorder << alloc_instruction_record(*alloc_instr, alloc_instruction_record::alloc_origin::reduction,
-		    buffer_allocation_record{rcmd.get_reduction_info().bid, gather.gather_box}, m_num_nodes);
+		*m_recorder << alloc_instruction_record(
+		    *alloc_instr, alloc_instruction_record::alloc_origin::reduction, buffer_allocation_record{bid, gather.gather_box}, m_num_nodes);
 	}
 	add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 
-	const transfer_id trid(gather.consumer_tid, rcmd.get_reduction_info().bid, gather.rid);
-	const auto gather_instr = &create<gather_receive_instruction>(trid, mid, aid, node_chunk_size);
+	const transfer_id trid(gather.consumer_tid, bid, gather.rid);
+	const auto gather_instr = &create<gather_receive_instruction>(trid, mid, gather_aid, node_chunk_size);
 	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_instr, gather.gather_box, m_num_nodes); }
 	add_dependency(*gather_instr, *alloc_instr, dependency_kind::true_dep);
 
-	const auto free_instr = &create<free_instruction>(mid, aid);
+	const auto free_instr = &create<free_instruction>(mid, gather_aid);
 	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
 	add_dependency(*free_instr, *gather_instr, dependency_kind::true_dep);
 
 	buffer.pending_gathers.clear();
+
+	allocate_contiguously(bid, mid, bounding_box_set({reduction_box}));
+
+	auto& memory = buffer.memories.at(mid);
+	auto alloc = memory.find_contiguous_allocation(reduction_box);
+	assert(alloc != nullptr);
+
+	const auto reduce_instr = &create<reduce_instruction>(rid, mid, gather_aid, m_num_nodes, alloc->aid);
+	if(m_recorder != nullptr) {
+		*m_recorder << reduce_instruction_record(*reduce_instr, rcmd.get_cid(), bid, reduction_box, reduce_instruction_record::reduction_scope::global);
+	}
+	add_dependency(*reduce_instr, *gather_instr, dependency_kind::true_dep);
+	alloc->record_write(reduction_box, reduce_instr);
+	buffer.original_writers.update_region(reduction_box, reduce_instr);
+	buffer.newest_data_location.update_region(reduction_box, data_location().set(mid));
 }
 
 
