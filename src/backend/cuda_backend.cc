@@ -276,9 +276,9 @@ std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const m
 	return cuda_event::record(stream);
 }
 
-std::unique_ptr<event> cuda_queue::launch_kernel(device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range,
-    const std::vector<void*>& reduction_ptrs, bool is_reduction_initializer) {
-	return launch_sycl_kernel(m_impl->devices.at(did).sycl_queue, launcher, execution_range, reduction_ptrs, is_reduction_initializer);
+std::unique_ptr<event> cuda_queue::launch_kernel(
+    device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
+	return launch_sycl_kernel(m_impl->devices.at(did).sycl_queue, launcher, execution_range, reduction_ptrs);
 }
 
 } // namespace celerity::detail::backend

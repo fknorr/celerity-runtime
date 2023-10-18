@@ -3,7 +3,22 @@
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/generators/catch_generators_all.hpp>
 
-namespace celerity::detail {
+using namespace celerity;
+using namespace celerity::detail;
+
+class sycl_queue_fixture {
+  public:
+	sycl_queue_fixture() {
+		try {
+			m_queue = sycl::queue(sycl::gpu_selector_v);
+		} catch(sycl::exception&) { SKIP("no GPUs available"); }
+	}
+
+	sycl::queue& get_sycl_queue() { return m_queue; }
+
+  private:
+	sycl::queue m_queue;
+};
 
 template <int Dims>
 class dim_device_queue_fixture : public test_utils::device_queue_fixture {};
@@ -23,23 +38,27 @@ static auto make_device_accessor(sycl::buffer<int, 1>& buf, sycl::handler& cgh, 
 }
 
 // If this test fails, celerity can't reliably support reductions on the user's combination of backend and hardware
-TEST_CASE_METHOD(test_utils::device_queue_fixture, "SYCL has working simple scalar reductions", "[sycl][reductions]") {
-#if CELERITY_FEATURE_SCALAR_REDUCTIONS
+TEST_CASE_METHOD(sycl_queue_fixture, "SYCL has working simple scalar reductions", "[sycl][reductions]") {
 	const size_t N = GENERATE(64, 512, 1024, 4096);
 	CAPTURE(N);
 
-	sycl::buffer<int> buf{1};
+	const auto buf = sycl::malloc_host<int>(1, get_sycl_queue());
+	*buf = 99; // SYCL reduction must overwrite this, not include it in the reduction result
 
-	get_device_queue().get_sycl_queue().submit([&](sycl::handler& cgh) {
-		cgh.parallel_for(sycl::range<1>{N}, sycl::reduction(buf, cgh, sycl::plus<int>{}, sycl::property::reduction::initialize_to_identity{}),
-		    [](auto, auto& r) { r.combine(1); });
-	});
-
-	sycl::host_accessor acc{buf};
-	CHECK(static_cast<size_t>(acc[0]) == N);
-#else
-	SKIP_BECAUSE_NO_SCALAR_REDUCTIONS
+	get_sycl_queue()
+	    .submit([&](sycl::handler& cgh) {
+		    cgh.parallel_for(sycl::range<1>{N},
+		        sycl::reduction(buf, sycl::plus<int>{}
+#if !CELERITY_WORKAROUND(HIPSYCL)
+		            ,
+		            sycl::property::reduction::initialize_to_identity{}
 #endif
+		            ),
+		        [](auto, auto& r) { r.combine(1); });
+	    })
+	    .wait();
+
+	CHECK(static_cast<size_t>(*buf) == N);
 }
 
 TEST_CASE("SYCL implements by-value equality-comparison of device information", "[sycl][device-selection][!mayfail]") {
@@ -76,5 +95,3 @@ TEST_CASE("SYCL implements by-value equality-comparison of device information", 
 		CHECK(first == second);
 	}
 }
-
-} // namespace celerity::detail

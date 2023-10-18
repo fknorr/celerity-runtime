@@ -5,6 +5,9 @@
 
 #include "distributed_graph_generator.h"
 
+#include <set>
+
+
 using namespace celerity;
 using namespace celerity::detail;
 using namespace celerity::test_utils;

@@ -233,18 +233,17 @@ namespace detail {
 	class reduction_descriptor;
 
 	template <typename DataT, int Dims, typename BinaryOperation, bool WithExplicitIdentity>
-	auto make_sycl_reduction(const reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>& d, void* ptr, const bool is_initializer) {
-#if !CELERITY_FEATURE_SCALAR_REDUCTIONS
-		static_assert(detail::constexpr_false<BinaryOperation>, "Reductions are not supported by your SYCL implementation");
+	auto make_sycl_reduction(const reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>& d, void* ptr) {
+#if CELERITY_WORKAROUND(HIPSYCL)
+#define CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY
 #else
-		cl::sycl::property_list props;
-		if(!d.m_include_current_buffer_value || !is_initializer) { props = {cl::sycl::property::reduction::initialize_to_identity{}}; }
-		if constexpr(WithExplicitIdentity) {
-			return sycl::reduction(static_cast<DataT*>(ptr), d.m_identity, d.m_op, props);
-		} else {
-			return sycl::reduction(static_cast<DataT*>(ptr), d.m_op, props);
-		}
+#define CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY , sycl::property_list props{sycl::property::reduction::initialize_to_identity{}}
 #endif
+		if constexpr(WithExplicitIdentity) {
+			return sycl::reduction(static_cast<DataT*>(ptr), d.m_identity, d.m_op CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY);
+		} else {
+			return sycl::reduction(static_cast<DataT*>(ptr), d.m_op CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY);
+		}
 	}
 
 	template <typename DataT, int Dims, typename BinaryOperation>
@@ -254,7 +253,7 @@ namespace detail {
 		    : m_bid(bid), m_op(combiner), m_include_current_buffer_value(include_current_buffer_value) {}
 
 	  private:
-		friend auto make_sycl_reduction<DataT, Dims, BinaryOperation, false>(const reduction_descriptor&, void*, const bool);
+		friend auto make_sycl_reduction<DataT, Dims, BinaryOperation, false>(const reduction_descriptor&, void*);
 
 		buffer_id m_bid;
 		BinaryOperation m_op;
@@ -268,7 +267,7 @@ namespace detail {
 		    : m_bid(bid), m_op(combiner), m_identity(identity), m_include_current_buffer_value(include_current_buffer_value) {}
 
 	  private:
-		friend auto make_sycl_reduction<DataT, Dims, BinaryOperation, true>(const reduction_descriptor&, void*, const bool);
+		friend auto make_sycl_reduction<DataT, Dims, BinaryOperation, true>(const reduction_descriptor&, void*);
 
 		buffer_id m_bid;
 		BinaryOperation m_op;
@@ -278,9 +277,6 @@ namespace detail {
 
 	template <bool WithExplicitIdentity, typename DataT, int Dims, typename BinaryOperation>
 	auto make_reduction(const buffer<DataT, Dims>& vars, handler& cgh, BinaryOperation op, DataT identity, const cl::sycl::property_list& prop_list) {
-#if !CELERITY_FEATURE_SCALAR_REDUCTIONS
-		static_assert(detail::constexpr_false<BinaryOperation>, "Reductions are not supported by your SYCL implementation");
-#else
 		if(vars.get_range().size() != 1) {
 			// Like SYCL 2020, Celerity only supports reductions to unit-sized buffers. This allows us to avoid tracking different parts of the buffer
 			// as distributed_state and pending_reduction_state.
@@ -294,7 +290,6 @@ namespace detail {
 		add_reduction(cgh, reduction_info{rid, bid, include_current_buffer_value});
 
 		return detail::reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>{bid, op, identity, include_current_buffer_value};
-#endif
 	}
 
 } // namespace detail
@@ -426,10 +421,6 @@ class handler {
 	template <typename KernelFlavor, typename KernelName, int Dims, typename Kernel, typename... Reductions>
 	void parallel_for_kernel_and_reductions(range<Dims> global_range, id<Dims> global_offset,
 	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_range, Kernel&& kernel, Reductions&... reductions) {
-		if constexpr(!CELERITY_FEATURE_SCALAR_REDUCTIONS && sizeof...(reductions) > 0) {
-			static_assert(detail::constexpr_false<Kernel>, "Reductions are not supported by your SYCL implementation");
-		}
-
 		range<3> granularity = {1, 1, 1};
 		if constexpr(detail::kernel_flavor_traits<KernelFlavor, Dims>::has_local_size) {
 			for(int d = 0; d < Dims; ++d) {
@@ -533,20 +524,20 @@ class handler {
 		// Although the diagnostics should always be available, we currently disable them for some test cases.
 		if(detail::cgf_diagnostics::is_available()) { detail::cgf_diagnostics::get_instance().check<target::device>(kernel, m_access_map); }
 
-		return [=](sycl::handler& sycl_cgh, const subrange<3>& execution_sr, const std::vector<void*>& reduction_ptrs, const bool is_reduction_initializer) {
+		return [=](sycl::handler& sycl_cgh, const subrange<3>& execution_sr, const std::vector<void*>& reduction_ptrs) {
 			constexpr int sycl_dims = std::max(1, Dims);
 			// Copy once to hydrate accessors
 			auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate<target::device>(sycl_cgh, kernel);
 			if constexpr(std::is_same_v<KernelFlavor, detail::simple_kernel_flavor>) {
 				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
 				detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, sycl_global_range,
-				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices], is_reduction_initializer)...,
+				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices])...,
 				    detail::bind_simple_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset)));
 			} else if constexpr(std::is_same_v<KernelFlavor, detail::nd_range_kernel_flavor>) {
 				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
 				const auto sycl_local_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(local_range));
 				detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, cl::sycl::nd_range{sycl_global_range, sycl_local_range},
-				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices], is_reduction_initializer)...,
+				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices])...,
 				    detail::bind_nd_range_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset),
 				        global_range / local_range, detail::id_cast<Dims>(execution_sr.offset) / local_range));
 			} else {
@@ -623,25 +614,17 @@ namespace detail {
 	// TODO: The _impl functions in detail only exist during the grace period for deprecated reductions on const buffers; move outside again afterwards.
 	template <typename DataT, int Dims, typename BinaryOperation>
 	auto reduction_impl(const buffer<DataT, Dims>& vars, handler& cgh, BinaryOperation combiner, const cl::sycl::property_list& prop_list = {}) {
-#if !CELERITY_FEATURE_SCALAR_REDUCTIONS
-		static_assert(detail::constexpr_false<BinaryOperation>, "Reductions are not supported by your SYCL implementation");
-#else
 		static_assert(cl::sycl::has_known_identity_v<BinaryOperation, DataT>,
 		    "Celerity does not currently support reductions without an identity. Either specialize "
 		    "cl::sycl::known_identity or use the reduction() overload taking an identity at runtime");
 		return detail::make_reduction<false>(vars, cgh, combiner, cl::sycl::known_identity_v<BinaryOperation, DataT>, prop_list);
-#endif
 	}
 
 	template <typename DataT, int Dims, typename BinaryOperation>
 	auto reduction_impl(
 	    const buffer<DataT, Dims>& vars, handler& cgh, const DataT identity, BinaryOperation combiner, const cl::sycl::property_list& prop_list = {}) {
-#if !CELERITY_FEATURE_SCALAR_REDUCTIONS
-		static_assert(detail::constexpr_false<BinaryOperation>, "Reductions are not supported by your SYCL implementation");
-#else
 		static_assert(!cl::sycl::has_known_identity_v<BinaryOperation, DataT>, "Identity is known to SYCL, remove the identity parameter from reduction()");
 		return detail::make_reduction<true>(vars, cgh, combiner, identity, prop_list);
-#endif
 	}
 
 } // namespace detail

@@ -37,10 +37,8 @@ namespace detail {
 		});
 		q.submit([= /* capture by value */](handler& cgh) {
 			accessor acc{buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
-#if CELERITY_FEATURE_SCALAR_REDUCTIONS
-			auto red = reduction(reduction_buf, cgh, std::plus<size_t>{});
-#endif
-			cgh.parallel_for(range<1>{32}, [=](item<1>) { (void)acc; });
+			auto red = reduction(reduction_buf, cgh, sycl::plus<size_t>{});
+			cgh.parallel_for(range<1>{32}, red, [=](item<1>, auto&) { (void)acc; });
 		});
 		SUCCEED();
 	}

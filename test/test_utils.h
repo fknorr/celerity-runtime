@@ -1,9 +1,6 @@
 #pragma once
 
-#include <map>
 #include <memory>
-#include <ostream>
-#include <set>
 #include <string>
 #include <unordered_set>
 
@@ -44,8 +41,6 @@
  * NOTE: Since the checked expression will be evaluated twice, it must be idempotent!
  */
 #define REQUIRE_LOOP(...) CELERITY_DETAIL_REQUIRE_LOOP(__VA_ARGS__)
-
-#define SKIP_BECAUSE_NO_SCALAR_REDUCTIONS SKIP("CELERITY_FEATURE_SCALAR_REDUCTIONS == 0");
 
 namespace celerity {
 namespace detail {

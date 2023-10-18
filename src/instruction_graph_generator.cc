@@ -726,7 +726,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		device_id did = -1;
 		std::unordered_map<buffer_id, reads_writes> rw_map;
 		side_effect_map se_map;
-		bool initialize_reductions = false;
 		instruction* instruction = nullptr;
 	};
 	// TODO deduplicate these two structures
@@ -742,7 +741,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			insn.subrange = subrange<3>(chunk.offset, chunk.range);
 			insn.did = did;
 			insn.memory_id = m_devices[did].native_memory;
-			insn.initialize_reductions = ecmd.is_reduction_initializer() && did == 0;
 		}
 	} else {
 		// TODO oversubscribe distributed host tasks (but not if they have side effects)
@@ -757,7 +755,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		} else {
 			insn.memory_id = host_memory_id;
 		}
-		insn.initialize_reductions = ecmd.is_reduction_initializer();
 	}
 
 	auto accessed_bids = bam.get_accessed_buffers();
@@ -782,9 +779,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	for(const auto& rinfo : tsk.get_reductions()) {
 		for(auto& instr : cmd_instrs) {
 			auto& rw_map = instr.rw_map[rinfo.bid]; // allow default-insert
-			if(instr.initialize_reductions) {
-				rw_map.reads = region_union(rw_map.reads, scalar_reduction_box);
-			} // TODO not really, initialization is handled outside
 			rw_map.writes = region_union(rw_map.writes, scalar_reduction_box);
 		}
 	}
@@ -846,8 +840,8 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			assert(instr.subrange.range.size() > 0);
 			assert(instr.memory_id != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			launch_instr = &create<sycl_kernel_instruction>(instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.subrange, std::move(allocation_map),
-			    std::move(reduction_map), instr.initialize_reductions);
+			launch_instr = &create<sycl_kernel_instruction>(
+			    instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.subrange, std::move(allocation_map), std::move(reduction_map));
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.memory_id == host_memory_id);
@@ -983,7 +977,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 			// copy to local gather space
 
-			const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source->aid, source->box.get_range(),
+			const auto copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), source_mid, source->aid, source->box.get_range(),
 			    scalar_reduction_box.get_offset() - source->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(num_chunks)),
 			    id_cast<3>(id<1>(j)), scalar_reduction_box.get_range(), buffer.elem_size);
 			if(m_recorder != nullptr) {
@@ -1153,7 +1147,7 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 	// copy local partial reduction results to the appropriate position in gather space
 
 	// TODO what if the origin is not host_memory (because we only have one device chunk)?
-	const auto copy_instr = &create<copy_instruction>(buffer.dims, mid, alloc->aid, alloc->box.get_range(),
+	const auto copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), mid, alloc->aid, alloc->box.get_range(),
 	    scalar_reduction_box.get_offset() - alloc->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(m_num_nodes)),
 	    id_cast<3>(id<1>(m_local_node_id)), scalar_reduction_box.get_range(), buffer.elem_size);
 	if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box); }

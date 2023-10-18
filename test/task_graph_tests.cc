@@ -5,8 +5,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
-#include <celerity.h>
 #include <iterator>
+#include <set>
 
 #include "test_utils.h"
 

@@ -264,8 +264,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 
 		    closure_hydrator::get_instance().arm(target::device, std::move(accessor_infos));
 
-		    return m_backend_queue->launch_kernel(
-		        skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs, skinstr.is_reduction_initializer());
+		    return m_backend_queue->launch_kernel(skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs);
 	    },
 	    [&](const host_task_instruction& htinstr) {
 		    CELERITY_DEBUG(
