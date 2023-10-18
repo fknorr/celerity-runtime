@@ -224,5 +224,42 @@ TEST_CASE("allreduce", "[instruction-graph]") {
 	ictx.device_compute(range<1>(256)).read(buf, acc::all()).submit();
 }
 
+TEST_CASE("reduction example pattern", "[instruction-graph]") {
+	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
+	const auto num_devices = GENERATE(values<size_t>({1, 2}));
+	CAPTURE(num_nodes, num_devices);
+
+	test_utils::idag_test_context ictx(num_nodes, 0, num_devices);
+
+	const celerity::range image_size{256, 512};
+	auto srgb_255_buf = ictx.create_buffer<2>(image_size, true /* host initialized */);
+	auto rgb_buf = ictx.create_buffer<2>(image_size);
+	auto min_buf = ictx.create_buffer<0>({});
+	auto max_buf = ictx.create_buffer<0>({});
+
+	ictx.device_compute<class linearize_and_accumulate>(image_size)
+	    .read(srgb_255_buf, acc::one_to_one())
+	    .discard_write(rgb_buf, acc::one_to_one())
+	    .reduce(min_buf, false)
+	    .reduce(max_buf, false)
+	    .submit();
+
+	ictx.master_node_host_task() //
+	    .read(min_buf, acc::all())
+	    .read(max_buf, acc::all())
+	    .submit();
+
+	ictx.device_compute<class correct_and_compress>(image_size)
+	    .read(rgb_buf, acc::one_to_one())
+	    .read(min_buf, acc::all())
+	    .read(max_buf, acc::all())
+	    .discard_write(srgb_255_buf, acc::one_to_one())
+	    .submit();
+
+	ictx.master_node_host_task() //
+	    .read(srgb_255_buf, acc::all())
+	    .submit();
+}
+
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects
