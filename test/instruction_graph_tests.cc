@@ -212,8 +212,12 @@ TEST_CASE("syncing pattern", "[instruction-graph]") {
 	ictx.epoch(epoch_action::barrier);
 }
 
-TEST_CASE("local reduction", "[instruction-graph]") {
-	test_utils::idag_test_context ictx(1 /* nodes */, 0, 2 /* devices */);
+TEST_CASE("allreduce", "[instruction-graph]") {
+	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
+	const auto num_devices = GENERATE(values<size_t>({1, 2}));
+	CAPTURE(num_nodes, num_devices);
+
+	test_utils::idag_test_context ictx(num_nodes, 0, num_devices);
 
 	auto buf = ictx.create_buffer<1>(1);
 	ictx.device_compute(range<1>(256)).reduce(buf, false /* include_current_buffer_value */).submit();

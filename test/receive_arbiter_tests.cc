@@ -204,6 +204,7 @@ TEST_CASE("receive_arbiter single-instruction receive works", "[receive_arbiter]
 	receive_arbiter ra(comm);
 
 	const auto num_pilots_before_receive = GENERATE(values<size_t>({0, 1, 2}));
+	CAPTURE(num_pilots_before_receive);
 	for(size_t i = 0; i < num_pilots_before_receive; ++i) {
 		comm.push_inbound_pilot(inbound_pilot{from, pilot_message{static_cast<int>(i), trid, recv_region.get_boxes()[i]}});
 	}
@@ -247,7 +248,8 @@ TEST_CASE("receive_arbiter::gather_receive works", "[receive_arbiter]") {
 	receive_arbiter ra(comm);
 
 	const auto num_pilots_before_gather = GENERATE(values<size_t>({0, 1, 4}));
-	for (size_t i = 0; i < num_pilots_before_gather; ++i) {
+	CAPTURE(num_pilots_before_gather);
+	for(size_t i = 0; i < num_pilots_before_gather; ++i) {
 		comm.push_inbound_pilot(inbound_pilot{node_id(i), pilot_message{static_cast<int>(i), trid, unit_box}});
 	}
 
@@ -255,13 +257,13 @@ TEST_CASE("receive_arbiter::gather_receive works", "[receive_arbiter]") {
 	auto event = ra.gather_receive(trid, gather_allocation.data(), chunk_size);
 	CHECK(!event.is_complete());
 
-	for (size_t i = num_pilots_before_gather; i < comm.get_num_nodes(); ++i) {
+	for(size_t i = num_pilots_before_gather; i < comm.get_num_nodes(); ++i) {
 		comm.push_inbound_pilot(inbound_pilot{node_id(i), pilot_message{static_cast<int>(i), trid, unit_box}});
 	}
 	ra.poll_communicator();
 	CHECK(!event.is_complete());
 
-	for (size_t i = 0; i < comm.get_num_nodes(); ++i) {
+	for(size_t i = 0; i < comm.get_num_nodes(); ++i) {
 		std::vector<uint8_t> fragment(chunk_size, static_cast<uint8_t>(i));
 		comm.complete_receiving_payload(node_id(i), static_cast<int>(i), fragment.data(), unit_box.get_range());
 	}
@@ -269,8 +271,8 @@ TEST_CASE("receive_arbiter::gather_receive works", "[receive_arbiter]") {
 	CHECK(event.is_complete());
 
 	std::vector<uint8_t> expected_allocation(chunk_size * comm.get_num_nodes());
-	for (size_t i = 0; i < comm.get_num_nodes(); ++i) {
-		for (size_t j = 0; j < chunk_size; ++j) {
+	for(size_t i = 0; i < comm.get_num_nodes(); ++i) {
+		for(size_t j = 0; j < chunk_size; ++j) {
 			expected_allocation[i * chunk_size + j] = static_cast<uint8_t>(i);
 		}
 	}

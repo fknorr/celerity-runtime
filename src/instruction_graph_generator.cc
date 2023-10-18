@@ -942,6 +942,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		const auto num_chunks = cmd_instrs.size();
 
 		// TODO special case for single-GPU: do not generate reduce instructions, just update last-writers
+		// - even more special: handle initializers correctly even when skipping this step
 
 		auto& buffer = m_buffers.at(bid);
 		auto& host_memory = buffer.memories.at(host_memory_id);
@@ -986,7 +987,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 		// reduce
 
-		const auto reduce_instr = &create<reduce_instruction>(rid, host_memory_id, gather_aid, cmd_instrs.size(), dest->aid);
+		const auto reduce_instr = &create<reduce_instruction>(rid, host_memory_id, gather_aid, num_chunks, dest->aid);
 		if(m_recorder != nullptr) {
 			*m_recorder << reduce_instruction_record(*reduce_instr, std::nullopt, bid, scalar_reduction_box, reduce_instruction_record::reduction_scope::local);
 		}
