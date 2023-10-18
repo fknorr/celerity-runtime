@@ -63,13 +63,13 @@ int main(int argc, char* argv[]) {
 
 	celerity::range<2> image_size{static_cast<size_t>(image_height), static_cast<size_t>(image_width)};
 	celerity::buffer<sycl::uchar4, 2> srgb_255_buf{reinterpret_cast<const sycl::uchar4*>(srgb_255_data.get()), image_size};
-	celerity::buffer<sycl::float4, 2> lab_buf{image_size};
+	celerity::buffer<sycl::float4, 2> rgb_buf{image_size};
 	celerity::buffer<float, 0> min_buf;
 	celerity::buffer<float, 0> max_buf;
 
 	q.submit([&](celerity::handler& cgh) {
 		celerity::accessor srgb_255_acc{srgb_255_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
-		celerity::accessor rgb_acc{lab_buf, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
+		celerity::accessor rgb_acc{rgb_buf, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
 		const auto min_r = celerity::reduction(min_buf, cgh, sycl::minimum<float>(), celerity::property::reduction::initialize_to_identity{});
 		const auto max_r = celerity::reduction(max_buf, cgh, sycl::maximum<float>(), celerity::property::reduction::initialize_to_identity{});
 		cgh.parallel_for<class linearize_and_accumulate>(image_size, min_r, max_r, [=](celerity::item<2> item, auto& min, auto& max) {
@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
 	});
 
 	q.submit([&](celerity::handler& cgh) {
-		celerity::accessor rgb_acc{lab_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
+		celerity::accessor rgb_acc{rgb_buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
 		celerity::accessor min{min_buf, cgh, celerity::read_only};
 		celerity::accessor max{max_buf, cgh, celerity::read_only};
 		celerity::accessor srgb_255_acc{srgb_255_buf, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};

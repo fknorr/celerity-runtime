@@ -235,15 +235,19 @@ namespace detail {
 	template <typename DataT, int Dims, typename BinaryOperation, bool WithExplicitIdentity>
 	auto make_sycl_reduction(const reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>& d, void* ptr) {
 #if CELERITY_WORKAROUND(HIPSYCL)
-#define CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY
-#else
-#define CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY , sycl::property_list props{sycl::property::reduction::initialize_to_identity{}}
-#endif
+		// hipSYCL will always use identity = DataT(), which is incorrect, but it unconditionally accepts the explicit identity parameter.
 		if constexpr(WithExplicitIdentity) {
-			return sycl::reduction(static_cast<DataT*>(ptr), d.m_identity, d.m_op CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY);
+			return sycl::reduction(static_cast<DataT*>(ptr), d.m_identity, d.m_op);
 		} else {
-			return sycl::reduction(static_cast<DataT*>(ptr), d.m_op CELERITY_DETAIL_SYCL_REDUCTION_INIT_TO_IDENTITY);
+			return sycl::reduction(static_cast<DataT*>(ptr), sycl::known_identity_v<BinaryOperation, DataT>, d.m_op);
 		}
+#else
+		if constexpr(WithExplicitIdentity) {
+			return sycl::reduction(static_cast<DataT*>(ptr), d.m_identity, d.m_op, sycl::property_list{sycl::property::reduction::initialize_to_identity{}});
+		} else {
+			return sycl::reduction(static_cast<DataT*>(ptr), d.m_op, sycl::property_list{sycl::property::reduction::initialize_to_identity{}});
+		}
+#endif
 	}
 
 	template <typename DataT, int Dims, typename BinaryOperation>

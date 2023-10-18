@@ -172,6 +172,7 @@ class launch_instruction : public instruction {
 	access_allocation_map m_access_allocations;
 };
 
+// TODO naming? we don't have cuda_kernel_instruction yet
 class sycl_kernel_instruction final : public matchbox::implement_acceptor<launch_instruction, sycl_kernel_instruction> {
   public:
 	explicit sycl_kernel_instruction(const instruction_id iid, const device_id did, sycl_kernel_launcher launcher, const subrange<3>& execution_range,
