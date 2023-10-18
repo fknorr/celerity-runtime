@@ -562,7 +562,10 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 		for(const auto& chunk : local_chunks) {
 			contiguous_allocations[chunk.memory_id].insert(scalar_reduction_box);
 		}
-		contiguous_allocations[host_memory_id].insert(scalar_reduction_box); // TODO only if we have more than 1 global device chunk!
+		if(local_chunks.size() > 1) {
+			// we insert a host-side reduce-instruction in the multi-chunk scenario; its result will end up in the host buffer allocation
+			contiguous_allocations[host_memory_id].insert(scalar_reduction_box);
+		}
 	}
 
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
@@ -941,10 +944,23 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		const auto [rid, bid, include_buffer_value] = tsk.get_reductions()[i];
 		const auto num_chunks = cmd_instrs.size();
 
-		// TODO special case for single-GPU: do not generate reduce instructions, just update last-writers
-		// - even more special: handle initializers correctly even when skipping this step
-
 		auto& buffer = m_buffers.at(bid);
+
+		// TODO handle initializers correctly, **both** when generating a reduction command and when not!
+
+		// for a single-device configuration, just update last writers (reduction is already complete locally)
+		if(num_chunks == 1) {
+			const auto& instr = cmd_instrs.front();
+			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
+				// TODO copy-pasted from rw-map updates above
+				const auto write_box = box_intersection(alloc.box, scalar_reduction_box);
+				if(!write_box.empty()) { alloc.record_write(write_box, instr.instruction); }
+			}
+			buffer.original_writers.update_box(scalar_reduction_box, instr.instruction);
+			buffer.newest_data_location.update_box(scalar_reduction_box, data_location().set(instr.memory_id));
+			continue;
+		}
+
 		auto& host_memory = buffer.memories.at(host_memory_id);
 
 		// allocate local gather space
