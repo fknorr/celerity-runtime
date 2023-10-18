@@ -1105,15 +1105,15 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 
 
 void instruction_graph_generator::compile_reduction_command(const reduction_command& rcmd) {
-	const auto reduction_box = box<3>({0, 0, 0}, {1, 1, 1});
+	const auto scalar_reduction_box = box<3>({0, 0, 0}, {1, 1, 1});
 	const auto [rid, bid, init_from_buffer] = rcmd.get_reduction_info();
 	const auto mid = host_memory_id;
 
-	allocate_contiguously(bid, mid, bounding_box_set({reduction_box}));
+	allocate_contiguously(bid, mid, bounding_box_set({scalar_reduction_box}));
 
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories.at(mid);
-	auto alloc = memory.find_contiguous_allocation(reduction_box);
+	auto alloc = memory.find_contiguous_allocation(scalar_reduction_box);
 	assert(alloc != nullptr);
 
 	// TODO buffer reduction-sends, generate local reduction_instruction, send results, then v--- this will be the second-stage global reduction
@@ -1121,7 +1121,7 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 	// TODO do not generate (and expect) await-push on single-node CDAGs
 	assert(buffer.pending_gathers.size() == 1 && "received reduction command that is not preceded by an appropriate await-push");
 	const auto& gather = buffer.pending_gathers.front();
-	assert(gather.gather_box == reduction_box);
+	assert(gather.gather_box == scalar_reduction_box);
 
 	// allocate gather space
 
@@ -1158,13 +1158,18 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 
 	const auto reduce_instr = &create<reduce_instruction>(rid, mid, gather_aid, m_num_nodes, alloc->aid);
 	if(m_recorder != nullptr) {
-		*m_recorder << reduce_instruction_record(*reduce_instr, rcmd.get_cid(), bid, reduction_box, reduce_instruction_record::reduction_scope::global);
+		*m_recorder << reduce_instruction_record(*reduce_instr, rcmd.get_cid(), bid, scalar_reduction_box, reduce_instruction_record::reduction_scope::global);
 	}
 	add_dependency(*reduce_instr, *gather_instr, dependency_kind::true_dep);
 	add_dependency(*reduce_instr, *copy_instr, dependency_kind::true_dep);
-	alloc->record_write(reduction_box, reduce_instr);
-	buffer.original_writers.update_region(reduction_box, reduce_instr);
-	buffer.newest_data_location.update_region(reduction_box, data_location().set(mid));
+	for(const auto& [_, front] : alloc->access_fronts.get_region_values(scalar_reduction_box)) {
+		for(const auto access_instr : front.front) {
+			add_dependency(*reduce_instr, *access_instr, dependency_kind::true_dep);
+		}
+	}
+	alloc->record_write(scalar_reduction_box, reduce_instr);
+	buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
+	buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(mid));
 
 	// free gather space
 
