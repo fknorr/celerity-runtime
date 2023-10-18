@@ -7,7 +7,7 @@
 
 namespace celerity::detail {
 
-receive_arbiter::receive_arbiter(communicator& comm) : m_comm(&comm), m_num_nodes(comm.get_num_nodes()) {}
+receive_arbiter::receive_arbiter(communicator& comm) : m_comm(&comm), m_num_nodes(comm.get_num_nodes()) { assert(m_num_nodes > 0); }
 
 receive_arbiter::~receive_arbiter() { assert(std::uncaught_exceptions() > 0 || m_transfers.empty()); }
 
@@ -79,7 +79,7 @@ receive_arbiter::event receive_arbiter::receive(
 }
 
 receive_arbiter::event receive_arbiter::gather_receive(const transfer_id& trid, void* allocation, size_t node_chunk_size) {
-	auto gr = std::make_shared<gather_request>(allocation, node_chunk_size, m_num_nodes);
+	auto gr = std::make_shared<gather_request>(allocation, node_chunk_size, m_num_nodes - 1 /* number of peers */);
 	auto event = receive_arbiter::event(gr);
 	if(const auto entry = m_transfers.find(trid); entry != m_transfers.end()) {
 		auto& ut = std::get<unassigned_transfer>(entry->second);
