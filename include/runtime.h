@@ -24,7 +24,6 @@ namespace experimental::bench::detail {
 namespace detail {
 
 	class buffer_manager;
-	class reduction_manager;
 	class command_graph;
 	class scheduler;
 	class task_manager;
@@ -61,8 +60,6 @@ namespace detail {
 		device_queue& get_device_queue() const { return *m_d_queue; }
 
 		buffer_manager& get_buffer_manager() const { utils::panic("buffer_manager is history!"); }
-
-		reduction_manager& get_reduction_manager() const;
 
 		void create_queue();
 
@@ -114,7 +111,6 @@ namespace detail {
 		std::unique_ptr<command_graph> m_cdag;
 		std::unique_ptr<scheduler> m_schdlr;
 
-		std::unique_ptr<reduction_manager> m_reduction_mngr;
 		std::unique_ptr<task_manager> m_task_mngr;
 		std::unique_ptr<instruction_executor> m_exec;
 

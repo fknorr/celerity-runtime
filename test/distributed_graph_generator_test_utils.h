@@ -16,7 +16,6 @@
 #include "instruction_graph_generator.h"
 #include "print_graph.h"
 #include "recorders.h"
-#include "reduction_manager.h"
 #include "task_manager.h"
 #include "types.h"
 #include "utils.h"
@@ -601,7 +600,6 @@ class dist_cdag_test_context {
 	host_object_id m_next_host_object_id = 0;
 	reduction_id m_next_reduction_id = 1; // Start from 1 as rid 0 designates "no reduction" in push commands
 	std::optional<task_id> m_most_recently_built_horizon;
-	reduction_manager m_rm;
 	task_recorder m_task_recorder;
 	task_manager m_tm;
 	std::vector<std::unique_ptr<command_graph>> m_cdags;
@@ -660,7 +658,7 @@ class idag_test_context {
 
   public:
 	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node)
-	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_rm(), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
+	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
 	      m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
 	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
@@ -786,7 +784,6 @@ class idag_test_context {
 	reduction_id m_next_reduction_id = 1; // Start from 1 as rid 0 designates "no reduction" in push commands
 	std::vector<std::variant<buffer_id, host_object_id>> m_managed_objects;
 	std::optional<task_id> m_most_recently_built_horizon;
-	reduction_manager m_rm;
 	task_recorder m_task_recorder;
 	task_manager m_tm;
 	command_recorder m_cmd_recorder;

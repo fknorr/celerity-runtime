@@ -29,7 +29,6 @@
 #include "named_threads.h"
 #include "print_graph.h"
 #include "reduction.h"
-#include "reduction_manager.h"
 #include "scheduler.h"
 #include "task_manager.h"
 #include "user_bench.h"
@@ -138,7 +137,6 @@ namespace detail {
 
 		m_h_queue = std::make_unique<host_queue>();
 
-		m_reduction_mngr = std::make_unique<reduction_manager>();
 		if(m_cfg->is_recording()) m_task_recorder = std::make_unique<task_recorder>();
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
@@ -222,7 +220,6 @@ namespace detail {
 		// all buffers and host objects should have unregistered themselves by now.
 		assert(m_live_buffers.empty());
 		assert(m_live_host_objects.empty());
-		m_reduction_mngr.reset();
 		m_h_queue.reset();
 		m_command_recorder.reset();
 		m_task_recorder.reset();
@@ -240,8 +237,6 @@ namespace detail {
 	}
 
 	task_manager& runtime::get_task_manager() const { return *m_task_mngr; }
-
-	reduction_manager& runtime::get_reduction_manager() const { return *m_reduction_mngr; }
 
 	std::string runtime::gather_command_graph() const {
 		assert(m_command_recorder.get() != nullptr);
