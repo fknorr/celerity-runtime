@@ -1,5 +1,6 @@
 #include "runtime.h"
 
+#include <limits>
 #include <string>
 
 #ifdef _MSC_VER
@@ -26,7 +27,6 @@
 #include "log.h"
 #include "mpi_communicator.h"
 #include "mpi_support.h"
-#include "named_threads.h"
 #include "print_graph.h"
 #include "reduction.h"
 #include "scheduler.h"
