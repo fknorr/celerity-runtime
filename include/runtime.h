@@ -9,6 +9,7 @@
 #include "host_queue.h"
 #include "instruction_executor.h"
 #include "recorders.h"
+#include "reduction.h"
 #include "task.h"
 #include "types.h"
 
@@ -25,7 +26,6 @@ namespace detail {
 	class scheduler;
 	class task_manager;
 	struct host_object_instance;
-	class reduction_interface;
 
 	class runtime final : private instruction_executor::delegate {
 		friend struct runtime_testspy;
@@ -72,7 +72,7 @@ namespace detail {
 
 		void destroy_host_object(host_object_id hoid);
 
-		reduction_id create_reduction(std::unique_ptr<reduction_interface> interface);
+		reduction_id create_reduction(host_reduction_fn fn);
 
 		// returns the combined command graph of all nodes on node 0, an empty string on other nodes
 		std::string gather_command_graph() const;

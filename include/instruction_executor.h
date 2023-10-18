@@ -4,6 +4,7 @@
 #include "double_buffered_queue.h"
 #include "instruction_graph.h"
 #include "receive_arbiter.h"
+#include "reduction.h"
 #include "scheduler.h"
 
 #include <unordered_map>
@@ -11,7 +12,6 @@
 namespace celerity::detail {
 
 struct host_object_instance;
-class reduction_interface;
 
 class instruction_executor final : public abstract_scheduler::delegate {
   public:
@@ -41,7 +41,7 @@ class instruction_executor final : public abstract_scheduler::delegate {
 
 	void announce_buffer_user_pointer(buffer_id bid, const void* ptr);
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);
-	void announce_reduction(reduction_id rid, std::unique_ptr<reduction_interface> interface);
+	void announce_reduction(reduction_id rid, host_reduction_fn fn);
 
   private:
 	friend struct executor_testspy;
@@ -60,7 +60,7 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	};
 	struct reduction_announcement {
 		reduction_id rid;
-		std::unique_ptr<reduction_interface> interface;
+		host_reduction_fn fn;
 	};
 	using submission =
 	    std::variant<const instruction*, outbound_pilot, buffer_user_pointer_announcement, host_object_instance_announcement, reduction_announcement>;
@@ -79,7 +79,7 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	std::unordered_map<allocation_id, void*> m_allocations;
 	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> m_host_object_instances;
 	std::unordered_map<collective_group_id, communicator::collective_group*> m_collective_groups;
-	std::unordered_map<reduction_id, std::unique_ptr<reduction_interface>> m_reduction_interfaces;
+	std::unordered_map<reduction_id, host_reduction_fn> m_reduction_fns;
 	receive_arbiter m_recv_arbiter;
 	host_queue m_host_queue;
 

@@ -33,9 +33,9 @@ void instruction_executor::announce_host_object_instance(const host_object_id ho
 	m_submission_queue.push_back(host_object_instance_announcement{hoid, std::move(instance)});
 }
 
-void instruction_executor::announce_reduction(const reduction_id rid, std::unique_ptr<reduction_interface> interface) {
-	assert(interface != nullptr);
-	m_submission_queue.push_back(reduction_announcement{rid, std::move(interface)});
+void instruction_executor::announce_reduction(const reduction_id rid, host_reduction_fn fn) {
+	assert(fn);
+	m_submission_queue.push_back(reduction_announcement{rid, std::move(fn)});
 }
 
 void instruction_executor::loop() {
@@ -120,8 +120,8 @@ void instruction_executor::loop() {
 					    m_host_object_instances.emplace(ann.hoid, std::move(ann.instance));
 				    },
 				    [&](reduction_announcement& ann) {
-					    assert(m_reduction_interfaces.count(ann.rid) == 0);
-					    m_reduction_interfaces.emplace(ann.rid, std::move(ann.interface));
+					    assert(m_reduction_fns.count(ann.rid) == 0);
+					    m_reduction_fns.emplace(ann.rid, std::move(ann.fn));
 				    });
 			}
 			loop_submission_queue.clear();
@@ -339,10 +339,10 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 
 		    const auto gather_allocation = m_allocations.at(rinstr.get_source_allocation_id());
 		    const auto dest_allocation = m_allocations.at(rinstr.get_dest_allocation_id());
-		    const auto reduction = m_reduction_interfaces.find(rinstr.get_reduction_id());
-		    assert(reduction != m_reduction_interfaces.end());
-		    // TODO actually do the reduction!
-		    m_reduction_interfaces.erase(reduction);
+			const bool include_dest = false; // TODO
+			const auto &reduce = m_reduction_fns.at(rinstr.get_reduction_id());
+		    reduce(dest_allocation, gather_allocation, rinstr.get_num_source_values(), include_dest);
+			// TODO GC reduction fn at some point
 			return completed_synchronous();
 	    },
 	    [&](const fence_instruction& finstr) {

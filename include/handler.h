@@ -290,7 +290,7 @@ namespace detail {
 		const auto bid = detail::get_buffer_id(vars);
 		const auto include_current_buffer_value = !prop_list.has_property<celerity::property::reduction::initialize_to_identity>();
 
-		const auto rid = detail::runtime::get_instance().create_reduction(make_reduction_interface(op, identity));
+		const auto rid = detail::runtime::get_instance().create_reduction(make_host_reduction_fn(op, identity));
 		add_reduction(cgh, reduction_info{rid, bid, include_current_buffer_value});
 
 		return detail::reduction_descriptor<DataT, Dims, BinaryOperation, WithExplicitIdentity>{bid, op, identity, include_current_buffer_value};

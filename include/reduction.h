@@ -2,42 +2,20 @@
 
 #include "types.h"
 
-#include <memory>
+#include <functional>
+#include <numeric>
 
 namespace celerity::detail {
 
-class reduction_interface {
-  public:
-	virtual ~reduction_interface() = default;
-	virtual void reduce_scalar(void* acc, const void* val) const = 0;
-	virtual const void* get_scalar_identity() const = 0;
-
-  protected:
-	reduction_interface() = default;
-	reduction_interface(const reduction_interface&) = default;
-	reduction_interface(reduction_interface&&) = default;
-	reduction_interface& operator=(const reduction_interface&) = default;
-	reduction_interface& operator=(reduction_interface&&) = default;
-};
+using host_reduction_fn = std::function<void(void* dest, const void* src, size_t src_count, bool include_dest)>;
 
 template <typename Scalar, typename BinaryOp>
-class reduction_implementation : public reduction_interface {
-  public:
-	reduction_implementation(const BinaryOp op, const Scalar identity) : m_op(op), m_identity(identity) {}
-
-	void reduce_scalar(void* acc, const void* val) const override {
-		*static_cast<Scalar*>(acc) = m_op(*static_cast<const Scalar*>(acc), *static_cast<const Scalar*>(val));
-	}
-	const void* get_scalar_identity() const override { return &m_identity; }
-
-  private:
-	BinaryOp m_op;
-	Scalar m_identity;
-};
-
-template <typename Scalar, typename BinaryOp>
-std::unique_ptr<reduction_interface> make_reduction_interface(const BinaryOp op, const Scalar identity) {
-	return std::make_unique<reduction_implementation<Scalar, BinaryOp>>(op, identity);
+host_reduction_fn make_host_reduction_fn(const BinaryOp op, const Scalar identity) {
+	return [=](void* const dest, const void* const src, const size_t src_count, const bool include_dest) {
+		const auto v_dest = static_cast<Scalar*>(dest);
+		const auto v_src = static_cast<const Scalar*>(src);
+		*v_dest = std::reduce(v_src, v_src + src_count, include_dest ? *v_dest : identity, op);
+	};
 }
 
 struct reduction_info {
