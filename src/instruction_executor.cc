@@ -66,13 +66,18 @@ void instruction_executor::loop() {
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::vector<const instruction*> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
+	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp;
+	bool progress_warning_emitted = false;
 	while(m_expecting_more_submissions || !pending_instructions.empty() || !active_instructions.empty()) {
 		m_recv_arbiter.poll_communicator();
+
+		bool made_progress = false;
 
 		for(auto active_it = active_instructions.begin(); active_it != active_instructions.end();) {
 			auto& [active_instr, active_info] = *active_it;
 			if(active_info.is_complete()) {
 				CELERITY_DEBUG("[executor] completed I{}", active_instr->get_id());
+				made_progress = true;
 				for(const auto& dep : active_instr->get_dependents()) {
 					if(const auto pending_it = pending_instructions.find(dep.node); pending_it != pending_instructions.end()) {
 						auto& [pending_instr, pending_info] = *pending_it;
@@ -129,8 +134,29 @@ void instruction_executor::loop() {
 
 		for(const auto ready_instr : ready_instructions) {
 			active_instructions.emplace(ready_instr, active_instruction_info{begin_executing(*ready_instr)});
+			made_progress = true;
 		}
 		ready_instructions.clear();
+
+		// TODO consider rate-limiting this (e.g. with an overflow counter) if steady_clock::now() turns out to have measurable latency
+		if(made_progress) {
+			last_progress_timestamp = std::chrono::steady_clock::now();
+			progress_warning_emitted = false;
+		} else if(last_progress_timestamp.has_value()) {
+			const auto assume_stuck_after = std::chrono::seconds(3);
+			const auto elapsed_since_last_progress = std::chrono::steady_clock::now() - *last_progress_timestamp;
+			if(elapsed_since_last_progress > assume_stuck_after && !progress_warning_emitted) {
+				std::string instr_list;
+				for(auto& [instr, _] : active_instructions) {
+					if(!instr_list.empty()) instr_list += ", ";
+					fmt::format_to(std::back_inserter(instr_list), "I{}", instr->get_id());
+				}
+				CELERITY_WARN("[executor] no progress for {:.3f} seconds, potentially stuck. Active instructions: {}",
+				    std::chrono::duration_cast<std::chrono::duration<double>>(elapsed_since_last_progress).count(),
+				    active_instructions.empty() ? "none" : instr_list);
+				progress_warning_emitted = true;
+			}
+		}
 	}
 
 	assert(m_allocations.size() == 1); // null allocation
@@ -338,11 +364,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 
 		    const auto gather_allocation = m_allocations.at(rinstr.get_source_allocation_id());
 		    const auto dest_allocation = m_allocations.at(rinstr.get_dest_allocation_id());
-			const bool include_dest = false; // TODO
-			const auto &reduce = m_reduction_fns.at(rinstr.get_reduction_id());
+		    const bool include_dest = false; // TODO
+		    const auto& reduce = m_reduction_fns.at(rinstr.get_reduction_id());
 		    reduce(dest_allocation, gather_allocation, rinstr.get_num_source_values(), include_dest);
-			// TODO GC reduction fn at some point
-			return completed_synchronous();
+		    // TODO GC reduction fn at some point
+		    return completed_synchronous();
 	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
