@@ -1,7 +1,5 @@
 #pragma once
 
-#include <deque>
-#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -46,10 +44,11 @@ class task_builder {
 
 	class step {
 	  public:
-		step(TestContext& dctx, std::deque<action> actions) : m_tctx(dctx), m_actions(std::move(actions)) {}
+		step(TestContext& dctx, action command, std::vector<action> requirements = {})
+		    : m_tctx(dctx), m_command(std::move(command)), m_requirements(std::move(requirements)) {}
 
 		~step() noexcept(false) { // NOLINT(bugprone-exception-escape)
-			if(!m_actions.empty()) { throw std::runtime_error("Found incomplete task build. Did you forget to call submit()?"); }
+			if(m_command || !m_requirements.empty()) { throw std::runtime_error("Found incomplete task build. Did you forget to call submit()?"); }
 		}
 
 		step(const step&) = delete;
@@ -58,17 +57,17 @@ class task_builder {
 		step& operator=(step&&) = delete;
 
 		task_id submit() {
-			assert(!m_actions.empty());
+			assert(m_command);
 			const auto tid = m_tctx.get_task_manager().submit_command_group([this](handler& cgh) {
-				while(!m_actions.empty()) {
-					auto a = m_actions.front();
+				for (auto &a: m_requirements) {
 					a(cgh);
-					m_actions.pop_front();
 				}
+				m_command(cgh);
 			});
 			m_tctx.build_task(tid);
 			m_tctx.maybe_build_horizon();
-			m_actions.clear();
+			m_command = {};
+			m_requirements = {};
 			return tid;
 		}
 
@@ -110,48 +109,40 @@ class task_builder {
 
 	  private:
 		TestContext& m_tctx;
-		std::deque<action> m_actions;
+		action m_command;
+		std::vector<action> m_requirements;
 
 		template <typename StepT>
 		StepT chain(action a) {
 			static_assert(std::is_base_of_v<step, StepT>);
-			m_actions.push_front(std::move(a));
-			return StepT{m_tctx, std::move(m_actions)};
+			m_requirements.push_back(std::move(a));
+			return StepT{m_tctx, std::move(m_command), std::move(m_requirements)};
 		}
 	};
 
   public:
 	template <typename Name, int Dims>
 	step device_compute(const range<Dims>& global_size, const id<Dims>& global_offset) {
-		std::deque<action> actions;
-		actions.push_front([global_size, global_offset](handler& cgh) { cgh.parallel_for<Name>(global_size, global_offset, [](id<Dims>) {}); });
-		return step(m_dctx, std::move(actions));
+		return step(m_dctx, [global_size, global_offset](handler& cgh) { cgh.parallel_for<Name>(global_size, global_offset, [](id<Dims>) {}); });
 	}
 
 	template <typename Name, int Dims>
 	step device_compute(const nd_range<Dims>& execution_range) {
-		std::deque<action> actions;
-		actions.push_front([execution_range](handler& cgh) { cgh.parallel_for<Name>(execution_range, [](nd_item<Dims>) {}); });
-		return step(m_dctx, std::move(actions));
+		return step(m_dctx, [execution_range](handler& cgh) { cgh.parallel_for<Name>(execution_range, [](nd_item<Dims>) {}); });
 	}
 
 	template <int Dims>
 	step host_task(const range<Dims>& global_size) {
-		std::deque<action> actions;
-		actions.push_front([global_size](handler& cgh) { cgh.host_task(global_size, [](partition<Dims>) {}); });
-		return step(m_dctx, std::move(actions));
+		return step(m_dctx, [global_size](handler& cgh) { cgh.host_task(global_size, [](partition<Dims>) {}); });
 	}
 
 	step master_node_host_task() {
 		std::deque<action> actions;
-		actions.push_front([](handler& cgh) { cgh.host_task(on_master_node, [] {}); });
-		return step(m_dctx, std::move(actions));
+		return step(m_dctx, [](handler& cgh) { cgh.host_task(on_master_node, [] {}); });
 	}
 
 	step collective_host_task(experimental::collective_group group) {
-		std::deque<action> actions;
-		actions.push_front([group](handler& cgh) { cgh.host_task(experimental::collective(group), [](const experimental::collective_partition&) {}); });
-		return step(m_dctx, std::move(actions));
+		return step(m_dctx, [group](handler& cgh) { cgh.host_task(experimental::collective(group), [](const experimental::collective_partition&) {}); });
 	}
 
   private:
