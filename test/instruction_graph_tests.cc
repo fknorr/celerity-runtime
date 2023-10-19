@@ -233,11 +233,11 @@ TEST_CASE("reduction example pattern", "[instruction-graph]") {
 
 	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
 
-	const celerity::range image_size{256, 512};
-	auto srgb_255_buf = ictx.create_buffer<2>(image_size, true /* host initialized */);
-	auto rgb_buf = ictx.create_buffer<2>(image_size);
-	auto min_buf = ictx.create_buffer<0>({});
-	auto max_buf = ictx.create_buffer<0>({});
+	const celerity::range image_size{1536, 2048};
+	auto srgb_255_buf = ictx.create_buffer<sycl::uchar4, 2>(image_size, true /* host initialized */);
+	auto rgb_buf = ictx.create_buffer<sycl::float4, 2>(image_size);
+	auto min_buf = ictx.create_buffer<float, 0>({});
+	auto max_buf = ictx.create_buffer<float, 0>({});
 
 	ictx.device_compute<class linearize_and_accumulate>(image_size)
 	    .read(srgb_255_buf, acc::one_to_one())

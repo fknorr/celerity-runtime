@@ -673,9 +673,9 @@ class idag_test_context {
 	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
 	~idag_test_context() {
-		for(auto obj : m_managed_objects) {
+		for(auto iter = m_managed_objects.rbegin(); iter != m_managed_objects.rend(); ++iter) {
 			matchbox::match(
-			    obj,
+			    *iter,
 			    [&](const buffer_id bid) {
 				    m_iggen.destroy_buffer(bid);
 				    m_dggen.destroy_buffer(bid);
@@ -696,15 +696,20 @@ class idag_test_context {
 	idag_test_context& operator=(const idag_test_context&) = delete;
 	idag_test_context& operator=(idag_test_context&&) = delete;
 
-	template <int Dims>
+	template <typename DataT, int Dims>
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		m_dggen.create_buffer(bid, Dims, range_cast<3>(size));
-		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), 1 /* size */, 1 /* align */, mark_as_host_initialized);
+		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), sizeof(DataT), alignof(DataT), mark_as_host_initialized);
 		m_managed_objects.emplace_back(bid);
 		return buf;
+	}
+
+	template <int Dims>
+	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
+		return create_buffer<float, Dims>(size, mark_as_host_initialized);
 	}
 
 	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
@@ -780,8 +785,7 @@ class idag_test_context {
 		return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph"));
 	}
 	[[nodiscard]] std::string print_command_graph() {
-		return detail::print_command_graph(
-		    m_local_nid, m_cmd_recorder, make_test_graph_title("Command Graph", m_num_nodes, m_local_nid));
+		return detail::print_command_graph(m_local_nid, m_cmd_recorder, make_test_graph_title("Command Graph", m_num_nodes, m_local_nid));
 	}
 	[[nodiscard]] std::string print_instruction_graph() {
 		return detail::print_instruction_graph(
