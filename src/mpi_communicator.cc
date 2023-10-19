@@ -141,6 +141,8 @@ MPI_Datatype mpi_communicator::get_array_type(const stride& stride) {
 	const int dims = detail::get_effective_dims(stride.allocation);
 	assert(detail::get_effective_dims(stride.subrange) <= dims);
 
+	if(dims == 0) { return get_scalar_type(stride.element_size); }
+
 	int size_array[3];
 	int subsize_array[3];
 	int start_array[3];

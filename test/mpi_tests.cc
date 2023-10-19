@@ -6,7 +6,7 @@
 #include "types.h"
 
 #include <catch2/catch_test_macros.hpp>
-#include <spdlog/sinks/sink.h>
+#include <catch2/generators/catch_generators_range.hpp>
 
 
 using namespace celerity;
@@ -92,3 +92,90 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		++received;
 	}
 }
+
+
+TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator correctly transfers scalars between strides of different dimensionality", "[mpi]") {
+	mpi_communicator comm(MPI_COMM_WORLD);
+	if(comm.get_num_nodes() <= 1) { SKIP("test must be run on at least 2 ranks"); }
+	if(comm.get_local_node_id() >= 2) return; // needs exactly 2 nodes
+
+	const auto send_dims = GENERATE(values<size_t>({0, 1, 2, 3}));
+	const auto recv_dims = GENERATE(values<size_t>({0, 1, 2, 3}));
+	CAPTURE(send_dims, recv_dims);
+
+	constexpr communicator::stride dim_strides[] = {
+	    {{1, 1, 1}, {{0, 0, 0}, {1, 1, 1}}, 4}, // 0-dimensional
+	    {{2, 1, 1}, {{1, 0, 0}, {1, 1, 1}}, 4}, // 1-dimensional
+	    {{2, 3, 1}, {{1, 2, 0}, {1, 1, 1}}, 4}, // 2-dimensional
+	    {{2, 3, 5}, {{1, 2, 3}, {1, 1, 1}}, 4}, // 3-dimensional
+	};
+
+	const auto& send_stride = dim_strides[send_dims];
+	const auto& recv_stride = dim_strides[recv_dims];
+
+	std::vector<int> buf(dim_strides[3].allocation.size());
+	std::unique_ptr<communicator::event> evt;
+	if(comm.get_local_node_id() == 1) {
+		buf[get_linear_index(send_stride.allocation, send_stride.subrange.offset)] = 42;
+		evt = comm.send_payload(0, 99, buf.data(), send_stride);
+	} else {
+		evt = comm.receive_payload(1, 99, buf.data(), recv_stride);
+	}
+	while(!evt->is_complete()) {}
+
+	if(comm.get_local_node_id() == 0) {
+		std::vector<int> expected(dim_strides[3].allocation.size());
+		expected[get_linear_index(recv_stride.allocation, recv_stride.subrange.offset)] = 42;
+		CHECK(buf == expected);
+	}
+}
+
+
+TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator correctly transfers boxes that map to different subranges on sender and receiver", "[mpi]") {
+	mpi_communicator comm(MPI_COMM_WORLD);
+	if(comm.get_num_nodes() <= 1) { SKIP("test must be run on at least 2 ranks"); }
+	if(comm.get_local_node_id() >= 2) return; // needs exactly 2 nodes
+
+	const auto dims = GENERATE(values<int>({1, 2, 3}));
+	CAPTURE(dims);
+
+	range box_range{3, 4, 5};
+	range sender_allocation{10, 7, 11};
+	id sender_offset{1, 2, 3};
+	range receiver_allocation{8, 10, 13};
+	id receiver_offset{2, 0, 4};
+	// manually truncate to runtime value `dims`
+	for(int d = dims; d < 3; ++d) {
+		box_range[d] = 1;
+		sender_allocation[d] = 1;
+		sender_offset[d] = 0;
+		receiver_allocation[d] = 1;
+		receiver_offset[d] = 0;
+	}
+
+	std::vector<int> send_buf(sender_allocation.size());
+	std::vector<int> recv_buf(receiver_allocation.size());
+
+	std::iota(send_buf.begin(), send_buf.end(), 0);
+
+	std::unique_ptr<communicator::event> evt;
+	if(comm.get_local_node_id() == 1) {
+		evt = comm.send_payload(0, 99, send_buf.data(), communicator::stride{sender_allocation, subrange{sender_offset, box_range}, sizeof(int)});
+	} else {
+		evt = comm.receive_payload(1, 99, recv_buf.data(), communicator::stride{receiver_allocation, subrange{receiver_offset, box_range}, sizeof(int)});
+	}
+	while(!evt->is_complete()) {}
+
+	if(comm.get_local_node_id() == 0) {
+		std::vector<int> expected(receiver_allocation.size());
+		experimental::for_each_item(box_range, [&](const item<3>& item) {
+			const auto sender_idx = get_linear_index(sender_allocation, sender_offset + item.get_id());
+			const auto receiver_idx = get_linear_index(receiver_allocation, receiver_offset + item.get_id());
+			expected[receiver_idx] = send_buf[sender_idx];
+		});
+		CHECK(recv_buf == expected);
+	}
+}
+
+
+// TODO implement and test transfers > 2Gi elements
