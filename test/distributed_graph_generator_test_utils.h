@@ -11,6 +11,7 @@
 #include <catch2/catch_message.hpp>
 #include <spdlog/fmt/fmt.h>
 
+#include "catch2/internal/catch_context.hpp"
 #include "command_graph.h"
 #include "distributed_graph_generator.h"
 #include "instruction_graph_generator.h"
@@ -484,10 +485,18 @@ class command_query {
 	}
 };
 
-inline std::string make_test_graph_title(std::string title, std::optional<node_id> local_nid = std::nullopt) {
+inline std::string make_test_graph_title(const std::string& type) {
 	const auto test_name = Catch::getResultCapture().getCurrentTestName();
-	if(!test_name.empty()) { fmt::format_to(std::back_inserter(title), " - {}", test_name); }
-	if(local_nid.has_value()) { fmt::format_to(std::back_inserter(title), " (on N{})", *local_nid); }
+	auto title = fmt::format("<br/>{}", type);
+	if(!test_name.empty()) { fmt::format_to(std::back_inserter(title), "<br/><b>{}</b>", test_name); }
+	return title;
+}
+
+inline std::string make_test_graph_title(
+    const std::string& type, const size_t num_nodes, const node_id local_nid, const std::optional<size_t> num_devices_per_node = std::nullopt) {
+	auto title = make_test_graph_title(type);
+	fmt::format_to(std::back_inserter(title), "<br/>for N{} out of {} nodes", local_nid, num_nodes);
+	if(num_devices_per_node.has_value()) { fmt::format_to(std::back_inserter(title), ", with {} devices / node", *num_devices_per_node); }
 	return title;
 }
 
@@ -658,7 +667,8 @@ class idag_test_context {
 
   public:
 	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node)
-	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
+	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_num_devices_per_node(num_devices_per_node),
+	      m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
 	      m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
 	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
@@ -767,18 +777,21 @@ class idag_test_context {
 	distributed_graph_generator& get_graph_generator() { return m_dggen; }
 
 	[[nodiscard]] std::string print_task_graph() { //
-		return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph", m_local_nid));
+		return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph"));
 	}
 	[[nodiscard]] std::string print_command_graph() {
-		return detail::print_command_graph(m_local_nid, m_cmd_recorder, make_test_graph_title("Command Graph", m_local_nid));
+		return detail::print_command_graph(
+		    m_local_nid, m_cmd_recorder, make_test_graph_title("Command Graph", m_num_nodes, m_local_nid));
 	}
 	[[nodiscard]] std::string print_instruction_graph() {
-		return detail::print_instruction_graph(m_instr_recorder, m_cmd_recorder, m_task_recorder, make_test_graph_title("Instruction Graph", m_local_nid));
+		return detail::print_instruction_graph(
+		    m_instr_recorder, m_cmd_recorder, m_task_recorder, make_test_graph_title("Instruction Graph", m_num_nodes, m_local_nid, m_num_devices_per_node));
 	}
 
   private:
 	size_t m_num_nodes;
 	node_id m_local_nid;
+	size_t m_num_devices_per_node;
 	buffer_id m_next_buffer_id = 0;
 	host_object_id m_next_host_object_id = 0;
 	reduction_id m_next_reduction_id = 1; // Start from 1 as rid 0 designates "no reduction" in push commands

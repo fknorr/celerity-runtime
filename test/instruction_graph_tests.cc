@@ -226,10 +226,12 @@ TEST_CASE("allreduce", "[instruction-graph]") {
 
 TEST_CASE("reduction example pattern", "[instruction-graph]") {
 	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
+	const auto my_nid = GENERATE(values<node_id>({0, 1}));
 	const auto num_devices = GENERATE(values<size_t>({1, 2}));
-	CAPTURE(num_nodes, num_devices);
+	if (my_nid >= num_nodes) return;
+	CAPTURE(num_nodes, my_nid, num_devices);
 
-	test_utils::idag_test_context ictx(num_nodes, 0, num_devices);
+	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
 
 	const celerity::range image_size{256, 512};
 	auto srgb_255_buf = ictx.create_buffer<2>(image_size, true /* host initialized */);

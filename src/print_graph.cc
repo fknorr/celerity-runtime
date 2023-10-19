@@ -93,7 +93,7 @@ std::string get_task_label(const task_record& tsk) {
 	return label;
 }
 
-std::string make_graph_preamble(const std::string& title) { return fmt::format("digraph G{{label=\"{}\" ", title); }
+std::string make_graph_preamble(const std::string& title) { return fmt::format("digraph G{{label=<{}>;pad=0.2;", title); }
 
 std::string print_task_graph(const task_recorder& recorder, const std::string& title) {
 	std::string dot = make_graph_preamble(title);
@@ -342,7 +342,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const launch_instruction_record& linstr) {
-			    begin_node(linstr, "box,margin=0.2", "darkorange2");
+			    begin_node(linstr, "box,margin=0.2,style=rounded", "darkorange2");
 			    fmt::format_to(back, "I{}", linstr.id);
 			    // TODO does not correctly label master-node host tasks
 			    fmt::format_to(back, " ({} T{}, execution C{})",
@@ -376,7 +376,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const send_instruction_record& sinstr) {
-			    begin_node(sinstr, "box,margin=0.2", "deeppink2");
+			    begin_node(sinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
 			    fmt::format_to(back, "<br/><b>send</b> {}", sinstr.transfer_id);
 			    fmt::format_to(back, "<br/>to N{} tag {}", sinstr.dest_node_id, sinstr.tag);
@@ -388,7 +388,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const receive_instruction_record& rinstr) {
-			    begin_node(rinstr, "box,margin=0.2", "deeppink2");
+			    begin_node(rinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, irec.get_await_push_command_id(rinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>receive</b> {}", rinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(rinstr.transfer_id.bid), rinstr.requested_region);
@@ -397,7 +397,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const spilt_receive_instruction_record& srinstr) {
-			    begin_node(srinstr, "box,margin=0.2", "deeppink2");
+			    begin_node(srinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", srinstr.id, irec.get_await_push_command_id(srinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>split receive</b> {}", srinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(srinstr.transfer_id.bid), srinstr.requested_region);
@@ -407,14 +407,14 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const await_receive_instruction_record& arinstr) {
-			    begin_node(arinstr, "box,margin=0.2", "deeppink2");
+			    begin_node(arinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", arinstr.id, irec.get_await_push_command_id(arinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>await receive</b> {}", arinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(arinstr.transfer_id.bid), arinstr.received_region);
 			    end_node();
 		    },
 		    [&](const gather_receive_instruction_record& grinstr) {
-			    begin_node(grinstr, "box,margin=0.2", "deeppink2");
+			    begin_node(grinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", grinstr.id, irec.get_await_push_command_id(grinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>gather receive</b> {}", grinstr.transfer_id);
 			    fmt::format_to(
@@ -423,7 +423,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const reduce_instruction_record& rinstr) {
-			    begin_node(rinstr, rinstr.reduction_command_id.has_value() ? "box,margin=0.2" : "ellipse", "blue");
+			    begin_node(rinstr, rinstr.reduction_command_id.has_value() ? "box,margin=0.2,style=rounded" : "ellipse", "blue");
 			    fmt::format_to(back, "I{}", rinstr.id);
 			    if(rinstr.reduction_command_id.has_value()) { fmt::format_to(back, " (reduction C{})", *rinstr.reduction_command_id); }
 			    fmt::format_to(back, "<br/>{} <b>reduce</b> B{}.R{}", rinstr.scope == reduce_instruction_record::reduction_scope::global ? "global" : "local",
@@ -434,7 +434,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const fence_instruction_record& finstr) {
-			    begin_node(finstr, "box,margin=0.2", "darkorange");
+			    begin_node(finstr, "box,margin=0.2,style=rounded", "darkorange");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>fence</b><br/>", finstr.id, finstr.tid, finstr.cid);
 			    matchbox::match(
 			        finstr.variant, //
@@ -448,12 +448,12 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    end_node();
 		    },
 		    [&](const horizon_instruction_record& hinstr) {
-			    begin_node(hinstr, "box,margin=0.2", "black");
+			    begin_node(hinstr, "box,margin=0.2,style=rounded", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>horizon</b>", hinstr.id, hinstr.horizon_task_id, hinstr.horizon_command_id);
 			    end_node();
 		    },
 		    [&](const epoch_instruction_record& einstr) {
-			    begin_node(einstr, "box,margin=0.2", "black");
+			    begin_node(einstr, "box,margin=0.2,style=rounded", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/>{}", einstr.id, einstr.epoch_task_id, einstr.epoch_command_id, get_epoch_label(einstr.epoch_action));
 			    end_node();
 		    });
