@@ -99,6 +99,10 @@ class distr_queue {
 
 	void init(const detail::devices_or_selector& devices_or_selector) {
 		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr, devices_or_selector); }
+
+		// If this call initialized the runtime, we need to shut it down in case tracker construction throws (because then, ~tracker() is never executed) so we
+		// don't leak the runtime instance. We currently assume that the following call never throws if we were the ones to initialize the runtime, so no
+		// special handling is done. Might need to change in the future.
 		m_tracker = std::make_shared<tracker>();
 	}
 };

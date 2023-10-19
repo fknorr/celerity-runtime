@@ -167,6 +167,7 @@ namespace detail {
 		// Deletes the runtime instance, which happens only in tests. Called from runtime_fixture.
 		static void test_case_exit() {
 			assert(s_test_mode && s_test_active);
+			s_instance.reset(); // for when the test case explicitly initialized the runtime but did not successfully construct a queue / buffer / ...
 			s_test_active = false;
 		}
 

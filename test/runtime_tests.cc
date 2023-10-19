@@ -70,7 +70,7 @@ namespace detail {
 		SECTION("but not once the runtime has been initialized") {
 			REQUIRE_FALSE(runtime::has_instance());
 			runtime::init(nullptr, nullptr);
-			REQUIRE_THROWS_WITH(distr_queue{std::vector{device}}, "Passing explicit device not possible, runtime has already been initialized.");
+			REQUIRE_THROWS_WITH(distr_queue{std::vector{device}}, "Passing explicit device list not possible, runtime has already been initialized.");
 		}
 	}
 #pragma GCC diagnostic pop
