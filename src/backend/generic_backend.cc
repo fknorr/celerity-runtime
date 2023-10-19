@@ -83,11 +83,18 @@ generic_queue::generic_queue(const std::vector<device_config>& devices) {
 }
 
 std::pair<void*, std::unique_ptr<event>> generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+	auto& queue = m_memory_queues.at(host_memory_id);
 	void* ptr;
 	if(where == host_memory_id) {
-		ptr = sycl::aligned_alloc_host(alignment, size, m_memory_queues.at(host_memory_id));
+		ptr = sycl::aligned_alloc_host(alignment, size, queue);
+#if CELERITY_DETAIL_ENABLE_DEBUG
+		memset(ptr, static_cast<int>(uninitialized_memory_pattern), size);
+#endif
 	} else {
-		ptr = sycl::aligned_alloc_device(alignment, size, m_memory_queues.at(where));
+		ptr = sycl::aligned_alloc_device(alignment, size, queue);
+#if CELERITY_DETAIL_ENABLE_DEBUG
+		queue.memset(ptr, static_cast<int>(uninitialized_memory_pattern), size).wait();
+#endif
 	}
 	return {ptr, std::make_unique<sycl_event>()}; // synchronous
 }

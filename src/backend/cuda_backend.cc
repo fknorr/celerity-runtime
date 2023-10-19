@@ -215,6 +215,9 @@ std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id wher
 	void* ptr;
 	if(where == host_memory_id) {
 		CELERITY_CUDA_CHECK(cudaMallocHost, &ptr, size, cudaHostAllocDefault);
+#if CELERITY_DETAIL_ENABLE_DEBUG
+		memset(ptr, static_cast<int>(uninitialized_memory_pattern), size);
+#endif
 	} else {
 		const auto& mem = m_impl->memories.at(where);
 		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
@@ -223,7 +226,12 @@ std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id wher
 		// RDMA (although NVIDIA plans to support this at an unspecified time in the future).
 		// When we eventually switch to cudaMallocAsync, remember to call cudaMemPoolSetAccess to allow d2d copies (see the same article).
 		CELERITY_CUDA_CHECK(cudaMalloc, &ptr, size);
+#if CELERITY_DETAIL_ENABLE_DEBUG
+		CELERITY_CUDA_CHECK(cudaMemset, ptr, static_cast<int>(uninitialized_memory_pattern), size);
+		CELERITY_CUDA_CHECK(cudaDeviceSynchronize);
+#endif
 	}
+
 	assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
 	return {ptr, std::make_unique<cuda_host_event>()};
 }

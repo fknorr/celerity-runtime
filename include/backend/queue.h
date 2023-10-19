@@ -62,4 +62,8 @@ std::unique_ptr<event> launch_sycl_kernel(
 
 void handle_sycl_errors(const sycl::exception_list& errors);
 
+#if CELERITY_DETAIL_ENABLE_DEBUG
+inline constexpr std::byte uninitialized_memory_pattern = std::byte(0xff); // floats and doubles filled with this pattern show up as "-nan"
+#endif
+
 } // namespace celerity::detail::backend
