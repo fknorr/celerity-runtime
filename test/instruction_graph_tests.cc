@@ -212,7 +212,7 @@ TEST_CASE("syncing pattern", "[instruction-graph]") {
 	ictx.epoch(epoch_action::barrier);
 }
 
-TEST_CASE("allreduce", "[instruction-graph]") {
+TEST_CASE("allreduce from identity", "[instruction-graph]") {
 	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
 	const auto num_devices = GENERATE(values<size_t>({1, 2}));
 	CAPTURE(num_nodes, num_devices);
@@ -221,6 +221,20 @@ TEST_CASE("allreduce", "[instruction-graph]") {
 
 	auto buf = ictx.create_buffer<1>(1);
 	ictx.device_compute(range<1>(256)).reduce(buf, false /* include_current_buffer_value */).submit();
+	ictx.device_compute(range<1>(256)).read(buf, acc::all()).submit();
+}
+
+TEST_CASE("allreduce including current buffer value", "[instruction-graph]") {
+	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
+	const auto my_nid = GENERATE(values<node_id>({0, 1}));
+	const auto num_devices = GENERATE(values<size_t>({1, 2}));
+	if(my_nid >= num_nodes) return;
+	CAPTURE(num_nodes, my_nid, num_devices);
+
+	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
+
+	auto buf = ictx.create_buffer<1>(1, true /* host initialized */);
+	ictx.device_compute(range<1>(256)).reduce(buf, true /* include_current_buffer_value */).submit();
 	ictx.device_compute(range<1>(256)).read(buf, acc::all()).submit();
 }
 
@@ -273,7 +287,7 @@ TEST_CASE("local reduction can be initialized to a buffer value that is not pres
 	auto buf = ictx.create_buffer(range<1>(1));
 
 	ictx.device_compute(range<1>(num_nodes)) //
-	    .discard_write(buf, [](const chunk<1> ck) { return subrange(id(ck.offset[0] + 1), ck.range); })
+	    .discard_write(buf, [](const chunk<1> ck) { return subrange(id(0), range(ck.offset[0] + ck.range[0] > 1 ? 1 : 0)); })
 	    .submit();
 	ictx.device_compute(range<1>(1)) //
 	    .reduce(buf, true /* include_current_buffer_value */)
@@ -282,18 +296,18 @@ TEST_CASE("local reduction can be initialized to a buffer value that is not pres
 
 TEST_CASE("global reduction without a local contribution does not read a stale local value", "[instruction-graph]") {
 	const size_t num_nodes = 2;
-	const node_id my_nid = 0;
+	const node_id my_nid = 1;
 	const auto num_devices = 2;
 
 	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
 
 	auto buf = ictx.create_buffer(range<1>(1));
 
-	ictx.device_compute(range<1>(num_nodes)) //
-	    .discard_write(buf, [](const chunk<1> ck) { return subrange(id(ck.offset[0] + 1), ck.range); })
+	ictx.device_compute(range<1>(1)) //
+	    .reduce(buf, false /* include_current_buffer_value */)
 	    .submit();
 	ictx.device_compute(range<1>(num_nodes)) //
-	    .reduce(buf, false /* include_current_buffer_value */)
+	    .read(buf, acc::all())
 	    .submit();
 }
 

@@ -524,8 +524,8 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 }
 
 
-void instruction_graph_generator::satisfy_buffer_requirements(
-    const buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks) //
+void instruction_graph_generator::satisfy_buffer_requirements(const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
+    const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& local_chunks) //
 {
 	assert(!local_chunks.empty());
 	const auto& bam = tsk.get_buffer_access_map();
@@ -552,12 +552,6 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 
 	const auto reduction = std::find_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; });
 	if(reduction != tsk.get_reductions().end()) {
-		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const per_buffer_data::region_receive& r) {
-			return region_intersection(r.received_region, scalar_reduction_box).empty();
-		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const per_buffer_data::gather_receive& r) {
-			return box_intersection(r.gather_box, scalar_reduction_box).empty();
-		}) && "buffer has an unprocessed await-push in a region that is going to be used as a reduction output");
-
 		discarded = region_union(discarded, scalar_reduction_box); // TODO this currently breaks reduction-initialization from buffer
 		for(const auto& chunk : local_chunks) {
 			contiguous_allocations[chunk.memory_id].insert(scalar_reduction_box);
@@ -565,6 +559,11 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 		if(local_chunks.size() > 1) {
 			// we insert a host-side reduce-instruction in the multi-chunk scenario; its result will end up in the host buffer allocation
 			contiguous_allocations[host_memory_id].insert(scalar_reduction_box);
+		}
+		if(reduction->init_from_buffer && local_node_is_reduction_initializer) {
+			// scalar_reduction_box will be copied into the local-reduction gather buffer ahead of the kernel instruction
+			accessed = region_union(accessed, scalar_reduction_box);
+			discarded = region_difference(discarded, scalar_reduction_box);
 		}
 	}
 
@@ -580,6 +579,14 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 	if(first_applied_receive != buffer.pending_receives.end()) {
 		applied_receives.insert(applied_receives.end(), first_applied_receive, buffer.pending_receives.end());
 		buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
+	}
+
+	if(reduction != tsk.get_reductions().end()) {
+		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const per_buffer_data::region_receive& r) {
+			return region_intersection(r.received_region, scalar_reduction_box).empty();
+		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const per_buffer_data::gather_receive& r) {
+			return box_intersection(r.gather_box, scalar_reduction_box).empty();
+		}) && "buffer has an unprocessed await-push in a region that is going to be used as a reduction output");
 	}
 
 	// do not preserve any received or overwritten region across receives
@@ -601,7 +608,9 @@ void instruction_graph_generator::satisfy_buffer_requirements(
 			if(!req.empty()) { local_chunk_reads.emplace_back(chunk.memory_id, req); }
 		}
 	}
-	if(reduction != tsk.get_reductions().end() && reduction->init_from_buffer) { local_chunk_reads.emplace_back(host_memory_id, scalar_reduction_box); }
+	if(local_node_is_reduction_initializer && reduction != tsk.get_reductions().end() && reduction->init_from_buffer) {
+		local_chunk_reads.emplace_back(host_memory_id, scalar_reduction_box);
+	}
 
 	for(const auto& receive : applied_receives) {
 		commit_pending_region_receive(bid, receive, local_chunk_reads);
@@ -762,8 +771,62 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		accessed_bids.insert(rinfo.bid);
 	}
 	for(const auto bid : accessed_bids) {
-		satisfy_buffer_requirements(bid, tsk, ecmd.get_execution_range(), std::vector<localized_chunk>(cmd_instrs.begin(), cmd_instrs.end()));
+		satisfy_buffer_requirements(
+		    bid, tsk, ecmd.get_execution_range(), ecmd.is_reduction_initializer(), std::vector<localized_chunk>(cmd_instrs.begin(), cmd_instrs.end()));
 	}
+
+	struct partial_local_reduction {
+		bool include_current_value = false;
+		size_t current_value_offset = 0;
+		size_t num_chunks = 1;
+		size_t chunk_size = 0;
+		allocation_id gather_aid = null_allocation_id;
+		alloc_instruction* gather_alloc_instr = nullptr;
+	};
+	std::vector<partial_local_reduction> local_reductions(tsk.get_reductions().size());
+
+	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
+		auto& red = local_reductions[i];
+		const auto [rid, bid, reduction_task_includes_buffer_value] = tsk.get_reductions()[i];
+		auto& buffer = m_buffers.at(bid);
+
+		red.include_current_value = reduction_task_includes_buffer_value && ecmd.is_reduction_initializer();
+		red.current_value_offset = red.include_current_value ? 1 : 0;
+		red.num_chunks = red.current_value_offset + cmd_instrs.size();
+		red.chunk_size = scalar_reduction_box.get_area() * buffer.elem_size;
+
+		if(red.num_chunks <= 1) continue;
+
+		red.gather_aid = m_next_aid++;
+		red.gather_alloc_instr = &create<alloc_instruction>(red.gather_aid, host_memory_id, red.num_chunks * red.chunk_size, buffer.elem_align);
+		if(m_recorder != nullptr) {
+			*m_recorder << alloc_instruction_record(
+			    *red.gather_alloc_instr, alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, scalar_reduction_box}, red.num_chunks);
+		}
+		add_dependency(*red.gather_alloc_instr, *m_last_epoch, dependency_kind::true_dep);
+
+		if(red.include_current_value) {
+			auto source = buffer.memories.at(host_memory_id).find_contiguous_allocation(scalar_reduction_box); // provided by satisfy_buffer_requirements
+			assert(source != nullptr);
+
+			// copy to local gather space
+
+			const auto current_value_copy_instr = &create<copy_instruction>(buffer.dims, host_memory_id, source->aid, source->box.get_range(),
+			    scalar_reduction_box.get_offset() - source->box.get_offset(), host_memory_id, red.gather_aid, range_cast<3>(range<1>(red.num_chunks)), id<3>(),
+			    scalar_reduction_box.get_range(), buffer.elem_size);
+			if(m_recorder != nullptr) {
+				*m_recorder << copy_instruction_record(*current_value_copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box);
+			}
+			add_dependency(*current_value_copy_instr, *red.gather_alloc_instr, dependency_kind::true_dep);
+			for(const auto& [_, dep_instr] : source->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
+				assert(dep_instr != nullptr);
+				add_dependency(*current_value_copy_instr, *dep_instr, dependency_kind::true_dep);
+			}
+			source->record_read(scalar_reduction_box, current_value_copy_instr);
+		}
+	}
+
+	// collect updated regions
 
 	for(const auto bid : bam.get_accessed_buffers()) {
 		for(auto& insn : cmd_instrs) {
@@ -935,15 +998,12 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 	// 7) insert local reduction instructions and update tracking structures accordingly
 
 	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
-		const auto [rid, bid, include_buffer_value] = tsk.get_reductions()[i];
-		const auto num_chunks = cmd_instrs.size();
-
+		const auto [rid, bid, reduction_task_includes_buffer_value] = tsk.get_reductions()[i];
 		auto& buffer = m_buffers.at(bid);
+		const auto& red = local_reductions[i];
 
-		// TODO handle initializers correctly, **both** when generating a reduction command and when not!
-
-		// for a single-device configuration, just update last writers (reduction is already complete locally)
-		if(num_chunks == 1) {
+		// for a single-device configuration that doesn't include the current value, just update last writers (reduction is already complete locally)
+		if(red.num_chunks == 1) {
 			const auto& instr = cmd_instrs.front();
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
 				// TODO copy-pasted from rw-map updates above
@@ -957,20 +1017,10 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 		auto& host_memory = buffer.memories.at(host_memory_id);
 
-		// allocate local gather space
-
-		const auto gather_aid = m_next_aid++;
-		const auto chunk_size = scalar_reduction_box.get_area() * buffer.elem_size;
-		const auto alloc_instr = &create<alloc_instruction>(gather_aid, host_memory_id, num_chunks * chunk_size, buffer.elem_align);
-		if(m_recorder != nullptr) {
-			*m_recorder << alloc_instruction_record(
-			    *alloc_instr, alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, scalar_reduction_box}, num_chunks);
-		}
-		add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
-
-		std::vector<copy_instruction*> copy_instrs;
-		copy_instrs.reserve(num_chunks);
-		for(size_t j = 0; j < num_chunks; ++j) {
+		// gather space has been allocated before in order to preserve the current buffer value where necessary
+		std::vector<copy_instruction*> gather_copy_instrs;
+		gather_copy_instrs.reserve(cmd_instrs.size());
+		for(size_t j = 0; j < cmd_instrs.size(); ++j) {
 			const auto source_mid = cmd_instrs[j].memory_id;
 			auto source = buffer.memories.at(source_mid).find_contiguous_allocation(scalar_reduction_box);
 			assert(source != nullptr);
@@ -978,18 +1028,18 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			// copy to local gather space
 
 			const auto copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), source_mid, source->aid, source->box.get_range(),
-			    scalar_reduction_box.get_offset() - source->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(num_chunks)),
-			    id_cast<3>(id<1>(j)), scalar_reduction_box.get_range(), buffer.elem_size);
+			    scalar_reduction_box.get_offset() - source->box.get_offset(), host_memory_id, red.gather_aid, range_cast<3>(range<1>(red.num_chunks)),
+			    id_cast<3>(id<1>(red.current_value_offset + j)), scalar_reduction_box.get_range(), buffer.elem_size);
 			if(m_recorder != nullptr) {
 				*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box);
 			}
-			add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
+			add_dependency(*copy_instr, *red.gather_alloc_instr, dependency_kind::true_dep);
 			for(const auto& [_, dep_instr] : source->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
-				assert(dep_instr != nullptr);
+				assert(dep_instr != nullptr);                                                                // TODO isn't this necessarily the cmd_instr?
 				add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 			}
 			source->record_read(scalar_reduction_box, copy_instr);
-			copy_instrs.push_back(copy_instr);
+			gather_copy_instrs.push_back(copy_instr);
 		}
 
 		const auto dest = host_memory.find_contiguous_allocation(scalar_reduction_box);
@@ -997,11 +1047,11 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 		// reduce
 
-		const auto reduce_instr = &create<reduce_instruction>(rid, host_memory_id, gather_aid, num_chunks, dest->aid);
+		const auto reduce_instr = &create<reduce_instruction>(rid, host_memory_id, red.gather_aid, red.num_chunks, dest->aid);
 		if(m_recorder != nullptr) {
 			*m_recorder << reduce_instruction_record(*reduce_instr, std::nullopt, bid, scalar_reduction_box, reduce_instruction_record::reduction_scope::local);
 		}
-		for(auto& copy_instr : copy_instrs) {
+		for(auto& copy_instr : gather_copy_instrs) {
 			add_dependency(*reduce_instr, *copy_instr, dependency_kind::true_dep);
 		}
 		for(const auto& [_, front] : dest->access_fronts.get_region_values(scalar_reduction_box)) {
@@ -1015,9 +1065,9 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 
 		// free local gather space
 
-		const auto free_instr = &create<free_instruction>(host_memory_id, gather_aid);
-		if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*free_instr, num_chunks * chunk_size, std::nullopt); }
-		add_dependency(*free_instr, *reduce_instr, dependency_kind::true_dep);
+		const auto gather_free_instr = &create<free_instruction>(host_memory_id, red.gather_aid);
+		if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, red.num_chunks * red.chunk_size, std::nullopt); }
+		add_dependency(*gather_free_instr, *reduce_instr, dependency_kind::true_dep);
 	}
 
 	// 7) insert epoch and horizon dependencies, apply epochs, optionally record the instruction
@@ -1202,7 +1252,8 @@ void instruction_graph_generator::compile_fence_command(const fence_command& fcm
 		// fences encode their buffer requirements through buffer_access_map with a fixed range mapper (this is rather ugly)
 		const subrange<3> local_sr{};
 		const std::vector chunks{localized_chunk{host_memory_id, local_sr}};
-		satisfy_buffer_requirements(bid, tsk, local_sr, chunks);
+		assert(tsk.get_reductions().empty()); // it doesn't matter what we pass to is_reduction_initializer next
+		satisfy_buffer_requirements(bid, tsk, local_sr, false /* is_reduction_initializer */, chunks);
 
 		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros);
 		assert(region.get_boxes().size() == 1);

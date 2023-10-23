@@ -304,7 +304,7 @@ class instruction_graph_generator {
 
 	void satisfy_buffer_requirements_as_reduction_output(buffer_id bid, reduction_id rid, const std::vector<localized_chunk>& local_chunks);
 
-	void satisfy_buffer_requirements(buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks);
+	void satisfy_buffer_requirements(buffer_id bid, const task& tsk, const subrange<3>& local_sr, bool is_reduction_initializer, const std::vector<localized_chunk>& local_chunks);
 
 	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction& ainstr);
 
