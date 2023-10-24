@@ -325,9 +325,9 @@ namespace detail {
 	}
 
 
-	reduction_id runtime::create_reduction(host_reduction_fn fn) {
+	reduction_id runtime::create_reduction(std::unique_ptr<runtime_reduction> reduction) {
 		const auto rid = m_next_reduction_id++;
-		m_exec->announce_reduction(rid, std::move(fn));
+		m_exec->announce_reduction(rid, std::move(reduction));
 		return rid;
 	}
 

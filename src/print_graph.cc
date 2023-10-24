@@ -417,9 +417,15 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(grinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", grinstr.id, irec.get_await_push_command_id(grinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>gather receive</b> {}", grinstr.transfer_id);
-			    fmt::format_to(
-			        back, "<br/>{} ({} bytes) x{}", get_buffer_label(grinstr.transfer_id.bid), grinstr.gather_box, grinstr.node_chunk_size, grinstr.num_nodes);
+			    fmt::format_to(back, "<br/>{} {} x{}", get_buffer_label(grinstr.transfer_id.bid), grinstr.gather_box, grinstr.num_nodes);
 			    fmt::format_to(back, "<br/>into M{}.A{}", grinstr.memory_id, grinstr.allocation_id);
+			    end_node();
+		    },
+		    [&](const fill_identity_instruction_record& fiinstr) {
+			    begin_node(fiinstr, "ellipse", "blue");
+			    fmt::format_to(back, "I{}", fiinstr.id);
+			    fmt::format_to(back, "<br/><b>fill identity</b> for R{}", fiinstr.reduction_id);
+			    fmt::format_to(back, "<br/>M{}.A{} x{}", fiinstr.memory_id, fiinstr.allocation_id, fiinstr.num_values);
 			    end_node();
 		    },
 		    [&](const reduce_instruction_record& rinstr) {

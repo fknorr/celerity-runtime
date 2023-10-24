@@ -310,7 +310,7 @@ TEST_CASE("local reductions only include values from participating devices", "[i
 
 TEST_CASE("global reduction without a local contribution does not read a stale local value", "[instruction-graph]") {
 	const size_t num_nodes = 3;
-	const node_id my_nid = 2;
+	const node_id my_nid = GENERATE(values<node_id>({0, 1, 2}));
 	const auto num_devices = 1;
 
 	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);

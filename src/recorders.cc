@@ -240,6 +240,10 @@ gather_receive_instruction_record::gather_receive_instruction_record(const gathe
     : instruction_record_base(grinstr), transfer_id(grinstr.get_transfer_id()), memory_id(grinstr.get_memory_id()), allocation_id(grinstr.get_allocation_id()),
       node_chunk_size(grinstr.get_node_chunk_size()), gather_box(gather_box), num_nodes(num_nodes) {}
 
+fill_identity_instruction_record::fill_identity_instruction_record(const fill_identity_instruction& fiinstr)
+    : instruction_record_base(fiinstr), reduction_id(fiinstr.get_reduction_id()), memory_id(fiinstr.get_memory_id()),
+      allocation_id(fiinstr.get_allocation_id()), num_values(fiinstr.get_num_values()) {}
+
 reduce_instruction_record::reduce_instruction_record(const reduce_instruction& rinstr, const std::optional<detail::command_id> reduction_cid,
     const detail::buffer_id bid, const detail::box<3>& box, const reduction_scope scope)
     : instruction_record_base(rinstr), reduction_id(rinstr.get_reduction_id()), memory_id(rinstr.get_memory_id()),

@@ -313,6 +313,15 @@ struct gather_receive_instruction_record : instruction_record_base {
 	gather_receive_instruction_record(const gather_receive_instruction& grinstr, const box<3>& gather_box, size_t num_nodes);
 };
 
+struct fill_identity_instruction_record : instruction_record_base {
+	reduction_id reduction_id;
+	memory_id memory_id;
+	allocation_id allocation_id;
+	size_t num_values;
+
+	fill_identity_instruction_record(const fill_identity_instruction& fiinstr);
+};
+
 struct reduce_instruction_record : instruction_record_base {
 	enum class reduction_scope {
 		global,
@@ -329,7 +338,8 @@ struct reduce_instruction_record : instruction_record_base {
 	box<3> box;
 	reduction_scope scope;
 
-	reduce_instruction_record(const reduce_instruction& rinstr, std::optional<detail::command_id> reduction_cid, detail::buffer_id bid, const detail::box<3>& box, reduction_scope scope);
+	reduce_instruction_record(const reduce_instruction& rinstr, std::optional<detail::command_id> reduction_cid, detail::buffer_id bid,
+	    const detail::box<3>& box, reduction_scope scope);
 };
 
 struct fence_instruction_record : instruction_record_base {
@@ -370,10 +380,11 @@ struct epoch_instruction_record : instruction_record_base {
 	epoch_instruction_record(const epoch_instruction& einstr, command_id epoch_cid);
 };
 
-using instruction_record = std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record,
-    init_buffer_instruction_record, export_instruction_record, copy_instruction_record, launch_instruction_record, send_instruction_record,
-    receive_instruction_record, spilt_receive_instruction_record, await_receive_instruction_record, gather_receive_instruction_record,
-    reduce_instruction_record, fence_instruction_record, destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
+using instruction_record =
+    std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record, init_buffer_instruction_record,
+        export_instruction_record, copy_instruction_record, launch_instruction_record, send_instruction_record, receive_instruction_record,
+        spilt_receive_instruction_record, await_receive_instruction_record, gather_receive_instruction_record, fill_identity_instruction_record,
+        reduce_instruction_record, fence_instruction_record, destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
 
 class instruction_recorder {
   public:

@@ -9,7 +9,6 @@
 #include "host_queue.h"
 #include "instruction_executor.h"
 #include "recorders.h"
-#include "reduction.h"
 #include "task.h"
 #include "types.h"
 
@@ -23,6 +22,7 @@ namespace detail {
 
 	class buffer_manager;
 	class command_graph;
+	class runtime_reduction;
 	class scheduler;
 	class task_manager;
 	struct host_object_instance;
@@ -72,7 +72,7 @@ namespace detail {
 
 		void destroy_host_object(host_object_id hoid);
 
-		reduction_id create_reduction(host_reduction_fn fn);
+		reduction_id create_reduction(std::unique_ptr<runtime_reduction> reduction);
 
 		// returns the combined command graph of all nodes on node 0, an empty string on other nodes
 		std::string gather_command_graph() const;

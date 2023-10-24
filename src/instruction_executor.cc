@@ -33,9 +33,9 @@ void instruction_executor::announce_host_object_instance(const host_object_id ho
 	m_submission_queue.push_back(host_object_instance_announcement{hoid, std::move(instance)});
 }
 
-void instruction_executor::announce_reduction(const reduction_id rid, host_reduction_fn fn) {
-	assert(fn);
-	m_submission_queue.push_back(reduction_announcement{rid, std::move(fn)});
+void instruction_executor::announce_reduction(const reduction_id rid, std::unique_ptr<runtime_reduction> reduction) {
+	assert(reduction != nullptr);
+	m_submission_queue.push_back(reduction_announcement{rid, std::move(reduction)});
 }
 
 void instruction_executor::loop() {
@@ -125,8 +125,8 @@ void instruction_executor::loop() {
 					    m_host_object_instances.emplace(ann.hoid, std::move(ann.instance));
 				    },
 				    [&](reduction_announcement& ann) {
-					    assert(m_reduction_fns.count(ann.rid) == 0);
-					    m_reduction_fns.emplace(ann.rid, std::move(ann.fn));
+					    assert(m_reductions.count(ann.rid) == 0);
+					    m_reductions.emplace(ann.rid, std::move(ann.reduction));
 				    });
 			}
 			loop_submission_queue.clear();
@@ -358,6 +358,15 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto allocation = m_allocations.at(grinstr.get_allocation_id());
 		    return m_recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
 	    },
+	    [&](const fill_identity_instruction& fiinstr) {
+		    CELERITY_DEBUG("[executor] I{}: fill identity M{}.A{} x{} for R{}", fiinstr.get_id(), fiinstr.get_memory_id(), fiinstr.get_allocation_id(),
+		        fiinstr.get_num_values(), fiinstr.get_reduction_id());
+
+		    const auto allocation = m_allocations.at(fiinstr.get_allocation_id());
+		    const auto& reduction = *m_reductions.at(fiinstr.get_reduction_id());
+		    reduction.fill_identity(allocation, fiinstr.get_num_values());
+		    return completed_synchronous();
+	    },
 	    [&](const reduce_instruction& rinstr) {
 		    CELERITY_DEBUG("[executor] I{}: reduce M{}.A{} x{} into M{}.A{} as R{}", rinstr.get_id(), rinstr.get_memory_id(), rinstr.get_source_allocation_id(),
 		        rinstr.get_num_source_values(), rinstr.get_memory_id(), rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
@@ -365,9 +374,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto gather_allocation = m_allocations.at(rinstr.get_source_allocation_id());
 		    const auto dest_allocation = m_allocations.at(rinstr.get_dest_allocation_id());
 		    const bool include_dest = false; // TODO
-		    const auto& reduce = m_reduction_fns.at(rinstr.get_reduction_id());
-		    reduce(dest_allocation, gather_allocation, rinstr.get_num_source_values(), include_dest);
-		    // TODO GC reduction fn at some point
+		    const auto& reduction = *m_reductions.at(rinstr.get_reduction_id());
+		    reduction.reduce(dest_allocation, gather_allocation, rinstr.get_num_source_values(), include_dest);
+		    // TODO GC runtime_reduction at some point
 		    return completed_synchronous();
 	    },
 	    [&](const fence_instruction& finstr) {

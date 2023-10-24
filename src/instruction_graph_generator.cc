@@ -1195,24 +1195,33 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 
 	const auto gather_aid = m_next_aid++;
 	const auto node_chunk_size = gather.gather_box.get_area() * buffer.elem_size;
-	const auto alloc_instr = &create<alloc_instruction>(gather_aid, mid, m_num_nodes * node_chunk_size, buffer.elem_align);
+	const auto gather_alloc_instr = &create<alloc_instruction>(gather_aid, mid, m_num_nodes * node_chunk_size, buffer.elem_align);
 	if(m_recorder != nullptr) {
 		*m_recorder << alloc_instruction_record(
-		    *alloc_instr, alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, gather.gather_box}, m_num_nodes);
+		    *gather_alloc_instr, alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, gather.gather_box}, m_num_nodes);
 	}
-	add_dependency(*alloc_instr, *m_last_epoch, dependency_kind::true_dep);
+	add_dependency(*gather_alloc_instr, *m_last_epoch, dependency_kind::true_dep);
+
+	const auto fill_identity_instr = &create<fill_identity_instruction>(rid, mid, gather_aid, m_num_nodes);
+	if(m_recorder != nullptr) { *m_recorder << fill_identity_instruction_record(*fill_identity_instr); }
+	add_dependency(*fill_identity_instr, *gather_alloc_instr, dependency_kind::true_dep);
 
 	// copy local partial reduction results to the appropriate position in gather space
-
-	// TODO what if the origin is not host_memory (because we only have one device chunk)?
-	const auto copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), mid, alloc->aid, alloc->box.get_range(),
-	    scalar_reduction_box.get_offset() - alloc->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(m_num_nodes)),
-	    id_cast<3>(id<1>(m_local_node_id)), scalar_reduction_box.get_range(), buffer.elem_size);
-	if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box); }
-	add_dependency(*copy_instr, *alloc_instr, dependency_kind::true_dep);
-	for(const auto& [_, dep_instr] : alloc->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
-		assert(dep_instr != nullptr);
-		add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
+	copy_instruction* local_gather_copy_instr = nullptr;
+	const auto local_contribution_at = buffer.newest_data_location.get_region_values(scalar_reduction_box).front().second;
+	if(local_contribution_at.any()) {
+		assert(local_contribution_at.test(host_memory_id));
+		local_gather_copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), mid, alloc->aid, alloc->box.get_range(),
+		    scalar_reduction_box.get_offset() - alloc->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(m_num_nodes)),
+		    id_cast<3>(id<1>(m_local_node_id)), scalar_reduction_box.get_range(), buffer.elem_size);
+		if(m_recorder != nullptr) {
+			*m_recorder << copy_instruction_record(*local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box);
+		}
+		add_dependency(*local_gather_copy_instr, *fill_identity_instr, dependency_kind::true_dep);
+		for(const auto& [_, dep_instr] : alloc->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
+			assert(dep_instr != nullptr);
+			add_dependency(*local_gather_copy_instr, *dep_instr, dependency_kind::true_dep);
+		}
 	}
 
 	// gather remote partial results
@@ -1220,7 +1229,7 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 	const transfer_id trid(gather.consumer_tid, bid, gather.rid);
 	const auto gather_instr = &create<gather_receive_instruction>(trid, mid, gather_aid, node_chunk_size);
 	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_instr, gather.gather_box, m_num_nodes); }
-	add_dependency(*gather_instr, *alloc_instr, dependency_kind::true_dep);
+	add_dependency(*gather_instr, *fill_identity_instr, dependency_kind::true_dep);
 
 	// perform global reduction
 
@@ -1229,7 +1238,7 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 		*m_recorder << reduce_instruction_record(*reduce_instr, rcmd.get_cid(), bid, scalar_reduction_box, reduce_instruction_record::reduction_scope::global);
 	}
 	add_dependency(*reduce_instr, *gather_instr, dependency_kind::true_dep);
-	add_dependency(*reduce_instr, *copy_instr, dependency_kind::true_dep);
+	if(local_gather_copy_instr != nullptr) { add_dependency(*reduce_instr, *local_gather_copy_instr, dependency_kind::true_dep); }
 	for(const auto& [_, front] : alloc->access_fronts.get_region_values(scalar_reduction_box)) {
 		for(const auto access_instr : front.front) {
 			add_dependency(*reduce_instr, *access_instr, dependency_kind::true_dep);
@@ -1241,9 +1250,9 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 
 	// free gather space
 
-	const auto free_instr = &create<free_instruction>(mid, gather_aid);
-	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
-	add_dependency(*free_instr, *reduce_instr, dependency_kind::true_dep);
+	const auto gather_free_instr = &create<free_instruction>(mid, gather_aid);
+	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
+	add_dependency(*gather_free_instr, *reduce_instr, dependency_kind::true_dep);
 
 	buffer.pending_gathers.clear();
 }
