@@ -294,16 +294,30 @@ TEST_CASE("local reduction can be initialized to a buffer value that is not pres
 	    .submit();
 }
 
-TEST_CASE("global reduction without a local contribution does not read a stale local value", "[instruction-graph]") {
-	const size_t num_nodes = 2;
-	const node_id my_nid = 1;
-	const auto num_devices = 2;
+TEST_CASE("local reductions only include values from participating devices", "[instruction-graph]") {
+	const size_t num_nodes = 1;
+	const node_id my_nid = 0;
+	const auto num_devices = 4;
 
 	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
 
 	auto buf = ictx.create_buffer(range<1>(1));
 
-	ictx.device_compute(range<1>(1)) //
+	ictx.device_compute(range<1>(num_devices / 2)) //
+	    .reduce(buf, false /* include_current_buffer_value */)
+	    .submit();
+}
+
+TEST_CASE("global reduction without a local contribution does not read a stale local value", "[instruction-graph]") {
+	const size_t num_nodes = 3;
+	const node_id my_nid = 2;
+	const auto num_devices = 1;
+
+	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
+
+	auto buf = ictx.create_buffer(range<1>(1));
+
+	ictx.device_compute(range<1>(2)) //
 	    .reduce(buf, false /* include_current_buffer_value */)
 	    .submit();
 	ictx.device_compute(range<1>(num_nodes)) //

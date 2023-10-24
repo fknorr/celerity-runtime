@@ -1127,6 +1127,14 @@ void instruction_graph_generator::compile_push_command(const push_command& pcmd)
 			allocation->record_read(box, send_instr);
 		}
 	}
+
+	// If not all nodes contribute partial results to a global reductions, the remaining ones need to notify their peers that they should not expect any data.
+	// This is done by announcing an empty box through the pilot message.
+	assert(push_box.empty() == writer_regions.empty());
+	if(writer_regions.empty()) {
+		assert(trid.rid != no_reduction_id);
+		create_pilot_message(pcmd.get_target(), trid, box<3>());
+	}
 }
 
 
