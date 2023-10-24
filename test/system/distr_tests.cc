@@ -125,6 +125,7 @@ namespace detail {
 		// init runtime early so the distr_queue ctor doesn't override the log level set by log_capture
 		runtime::init(nullptr, nullptr);
 
+		const bool is_node_0 = runtime::get_instance().get_local_nid() == 0; // runtime instance is gone after queue destruction
 		test_utils::log_capture log_capture;
 
 		{
@@ -141,10 +142,10 @@ namespace detail {
 			});
 		} // shutdown runtime and print graph
 
-		if(runtime::get_instance().get_local_nid() == 0) { // We log graphs only on node 0
+		if(is_node_0) { // We log graphs only on node 0
 			using Catch::Matchers::ContainsSubstring;
 			const auto log = log_capture.get_log();
-			CHECK_THAT(log, ContainsSubstring("digraph G{label=\"Command Graph\""));
+			CHECK_THAT(log, ContainsSubstring("digraph G{label=<Command Graph>"));
 			CHECK_THAT(log, ContainsSubstring("(R1) <b>await push</b>"));
 			CHECK_THAT(log, ContainsSubstring("<b>reduction</b> R1<br/> B0 {[0,0,0] - [1,1,1]}"));
 		}
@@ -368,12 +369,15 @@ namespace detail {
 		auto& tm = celerity::detail::runtime::get_instance().get_task_manager();
 		tm.set_horizon_step(1);
 
-		for(int i = 0; i < 2; ++i) {
-			q.submit([&](handler& cgh) {
-				celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::read_write};
-				cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
-			});
-		}
+		q.submit([&](handler& cgh) {
+			celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
+			cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
+		});
+
+		q.submit([&](handler& cgh) {
+			celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::read_write};
+			cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
+		});
 
 		q.slow_full_sync();
 
@@ -386,29 +390,29 @@ namespace detail {
 			// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graphs are
 			// sane and complete, and if so, replace the `expected` values with the new dot graph.
 			const std::string expected =
-			    "digraph G{label=\"Command Graph\" subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_0_0[label=<C0 "
-			    "on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font color=\"#606060\">T1 \"unnamed_kernel\" "
-			    "(device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - "
-			    "[8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font color=\"#606060\">T2 "
-			    "(horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_3{label=<<font "
-			    "color=\"#606060\">T3 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on N0<br/><b>execution</b> [0,0,0] + "
-			    "[8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font "
-			    "color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph "
-			    "cluster_id_0_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>epoch</b> (barrier)> "
-			    "fontcolor=black "
-			    "shape=box];}id_0_0->id_0_1[];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color=orange];id_0_4->"
-			    "id_0_5[color=orange];subgraph cluster_id_1_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_1_0[label=<C0 on "
-			    "N1<br/><b>epoch</b>> fontcolor=crimson shape=box];}subgraph cluster_id_1_1{label=<<font color=\"#606060\">T1 \"unnamed_kernel\" "
-			    "(device-compute)</font>>;color=darkgray;id_1_1[label=<C1 on N1<br/><b>execution</b> [8,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[8,0,0] "
-			    "- [16,16,1]}> fontcolor=crimson shape=box];}subgraph cluster_id_1_2{label=<<font color=\"#606060\">T2 "
-			    "(horizon)</font>>;color=darkgray;id_1_2[label=<C2 on N1<br/><b>horizon</b>> fontcolor=crimson shape=box];}subgraph "
+			    "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 "
+			    "(epoch)</font>>;color=darkgray;id_0_0[label=<C0 on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font "
+			    "color=\"#606060\">T1 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + "
+			    "[8,16,1]<br/><i>discard_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font "
+			    "color=\"#606060\">T2 (horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph "
+			    "cluster_id_0_3{label=<<font color=\"#606060\">T3 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on "
+			    "N0<br/><b>execution</b> [0,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph "
+			    "cluster_id_0_4{label=<<font color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black "
+			    "shape=box];}subgraph cluster_id_0_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>epoch</b> "
+			    "(barrier)> fontcolor=black "
+			    "shape=box];}id_0_0->id_0_1[color=orchid];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color="
+			    "orange];id_0_4->id_0_5[color=orange];subgraph cluster_id_1_0{label=<<font color=\"#606060\">T0 "
+			    "(epoch)</font>>;color=darkgray;id_1_0[label=<C0 on N1<br/><b>epoch</b>> fontcolor=crimson shape=box];}subgraph cluster_id_1_1{label=<<font "
+			    "color=\"#606060\">T1 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_1_1[label=<C1 on N1<br/><b>execution</b> [8,0,0] + "
+			    "[8,16,1]<br/><i>discard_write</i> B0 {[8,0,0] - [16,16,1]}> fontcolor=crimson shape=box];}subgraph cluster_id_1_2{label=<<font "
+			    "color=\"#606060\">T2 (horizon)</font>>;color=darkgray;id_1_2[label=<C2 on N1<br/><b>horizon</b>> fontcolor=crimson shape=box];}subgraph "
 			    "cluster_id_1_3{label=<<font color=\"#606060\">T3 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_1_3[label=<C3 on "
 			    "N1<br/><b>execution</b> [8,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[8,0,0] - [16,16,1]}> fontcolor=crimson shape=box];}subgraph "
 			    "cluster_id_1_4{label=<<font color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_1_4[label=<C4 on N1<br/><b>horizon</b>> "
 			    "fontcolor=crimson shape=box];}subgraph cluster_id_1_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_1_5[label=<C5 on "
 			    "N1<br/><b>epoch</b> (barrier)> fontcolor=crimson "
-			    "shape=box];}id_1_0->id_1_1[];id_1_1->id_1_2[color=orange];id_1_1->id_1_3[];id_1_3->id_1_4[color=orange];id_1_2->id_1_4[color=orange];id_1_4->"
-			    "id_1_5[color=orange];}";
+			    "shape=box];}id_1_0->id_1_1[color=orchid];id_1_1->id_1_2[color=orange];id_1_1->id_1_3[];id_1_3->id_1_4[color=orange];id_1_2->id_1_4[color="
+			    "orange];id_1_4->id_1_5[color=orange];}";
 
 			CHECK(graph == expected);
 
