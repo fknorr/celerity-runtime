@@ -1175,82 +1175,87 @@ void instruction_graph_generator::compile_await_push_command(const await_push_co
 void instruction_graph_generator::compile_reduction_command(const reduction_command& rcmd) {
 	const auto scalar_reduction_box = box<3>({0, 0, 0}, {1, 1, 1});
 	const auto [rid, bid, init_from_buffer] = rcmd.get_reduction_info();
-	const auto mid = host_memory_id;
-
-	allocate_contiguously(bid, mid, bounding_box_set({scalar_reduction_box}));
 
 	auto& buffer = m_buffers.at(bid);
-	auto& memory = buffer.memories.at(mid);
-	auto alloc = memory.find_contiguous_allocation(scalar_reduction_box);
-	assert(alloc != nullptr);
 
-	// TODO buffer reduction-sends, generate local reduction_instruction, send results, then v--- this will be the second-stage global reduction
-
-	// TODO do not generate (and expect) await-push on single-node CDAGs
 	assert(buffer.pending_gathers.size() == 1 && "received reduction command that is not preceded by an appropriate await-push");
 	const auto& gather = buffer.pending_gathers.front();
 	assert(gather.gather_box == scalar_reduction_box);
 
-	// allocate gather space
+	// allocate the gather space
 
 	const auto gather_aid = m_next_aid++;
 	const auto node_chunk_size = gather.gather_box.get_area() * buffer.elem_size;
-	const auto gather_alloc_instr = &create<alloc_instruction>(gather_aid, mid, m_num_nodes * node_chunk_size, buffer.elem_align);
+	const auto gather_alloc_instr = &create<alloc_instruction>(gather_aid, host_memory_id, m_num_nodes * node_chunk_size, buffer.elem_align);
 	if(m_recorder != nullptr) {
 		*m_recorder << alloc_instruction_record(
 		    *gather_alloc_instr, alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, gather.gather_box}, m_num_nodes);
 	}
 	add_dependency(*gather_alloc_instr, *m_last_epoch, dependency_kind::true_dep);
 
-	const auto fill_identity_instr = &create<fill_identity_instruction>(rid, mid, gather_aid, m_num_nodes);
+	// fill the gather space with the reduction identity, so that the gather_receive_command can simply ignore empty boxes sent by peers that do not contribute
+	// to the reduction, and we can skip the gather-copy instruction if we ourselves do not contribute a partial result.
+
+	const auto fill_identity_instr = &create<fill_identity_instruction>(rid, host_memory_id, gather_aid, m_num_nodes);
 	if(m_recorder != nullptr) { *m_recorder << fill_identity_instruction_record(*fill_identity_instr); }
 	add_dependency(*fill_identity_instr, *gather_alloc_instr, dependency_kind::true_dep);
 
-	// copy local partial reduction results to the appropriate position in gather space
+	// if the local node contributes to the reduction, copy the contribution to the appropriate position in the gather space
+
 	copy_instruction* local_gather_copy_instr = nullptr;
-	const auto local_contribution_at = buffer.newest_data_location.get_region_values(scalar_reduction_box).front().second;
-	if(local_contribution_at.any()) {
-		assert(local_contribution_at.test(host_memory_id));
-		local_gather_copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), mid, alloc->aid, alloc->box.get_range(),
-		    scalar_reduction_box.get_offset() - alloc->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(m_num_nodes)),
+	const auto contribution_location = buffer.newest_data_location.get_region_values(scalar_reduction_box).front().second;
+	if(contribution_location.any()) {
+		const auto source_mid = next_location(contribution_location, host_memory_id);
+		const auto source_alloc = buffer.memories.at(source_mid).find_contiguous_allocation(scalar_reduction_box);
+		assert(source_alloc != nullptr); // if scalar_box is up to date in that memory, it (the single element) must also be contiguous
+
+		local_gather_copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), source_mid, source_alloc->aid, source_alloc->box.get_range(),
+		    scalar_reduction_box.get_offset() - source_alloc->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(m_num_nodes)),
 		    id_cast<3>(id<1>(m_local_node_id)), scalar_reduction_box.get_range(), buffer.elem_size);
 		if(m_recorder != nullptr) {
 			*m_recorder << copy_instruction_record(*local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, scalar_reduction_box);
 		}
 		add_dependency(*local_gather_copy_instr, *fill_identity_instr, dependency_kind::true_dep);
-		for(const auto& [_, dep_instr] : alloc->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
+		for(const auto& [_, dep_instr] : source_alloc->last_writers.get_region_values(scalar_reduction_box)) { // TODO copy-pasta
 			assert(dep_instr != nullptr);
 			add_dependency(*local_gather_copy_instr, *dep_instr, dependency_kind::true_dep);
 		}
+		source_alloc->record_read(scalar_reduction_box, local_gather_copy_instr);
 	}
 
-	// gather remote partial results
+	// gather remote contributions
 
 	const transfer_id trid(gather.consumer_tid, bid, gather.rid);
-	const auto gather_instr = &create<gather_receive_instruction>(trid, mid, gather_aid, node_chunk_size);
+	const auto gather_instr = &create<gather_receive_instruction>(trid, host_memory_id, gather_aid, node_chunk_size);
 	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_instr, gather.gather_box, m_num_nodes); }
 	add_dependency(*gather_instr, *fill_identity_instr, dependency_kind::true_dep);
 
-	// perform global reduction
+	// perform the global reduction
 
-	const auto reduce_instr = &create<reduce_instruction>(rid, mid, gather_aid, m_num_nodes, alloc->aid);
+	allocate_contiguously(bid, host_memory_id, bounding_box_set({scalar_reduction_box}));
+
+	auto& host_memory = buffer.memories.at(host_memory_id);
+	auto dest_alloc = host_memory.find_contiguous_allocation(scalar_reduction_box);
+	assert(dest_alloc != nullptr);
+
+	const auto reduce_instr = &create<reduce_instruction>(rid, host_memory_id, gather_aid, m_num_nodes, dest_alloc->aid);
 	if(m_recorder != nullptr) {
 		*m_recorder << reduce_instruction_record(*reduce_instr, rcmd.get_cid(), bid, scalar_reduction_box, reduce_instruction_record::reduction_scope::global);
 	}
 	add_dependency(*reduce_instr, *gather_instr, dependency_kind::true_dep);
 	if(local_gather_copy_instr != nullptr) { add_dependency(*reduce_instr, *local_gather_copy_instr, dependency_kind::true_dep); }
-	for(const auto& [_, front] : alloc->access_fronts.get_region_values(scalar_reduction_box)) {
+	for(const auto& [_, front] : dest_alloc->access_fronts.get_region_values(scalar_reduction_box)) {
 		for(const auto access_instr : front.front) {
 			add_dependency(*reduce_instr, *access_instr, dependency_kind::true_dep);
 		}
 	}
-	alloc->record_write(scalar_reduction_box, reduce_instr);
+	dest_alloc->record_write(scalar_reduction_box, reduce_instr);
 	buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
-	buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(mid));
+	buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(host_memory_id));
 
-	// free gather space
+	// free the gather space
 
-	const auto gather_free_instr = &create<free_instruction>(mid, gather_aid);
+	const auto gather_free_instr = &create<free_instruction>(host_memory_id, gather_aid);
 	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
 	add_dependency(*gather_free_instr, *reduce_instr, dependency_kind::true_dep);
 
