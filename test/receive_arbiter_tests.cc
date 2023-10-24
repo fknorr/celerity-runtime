@@ -280,3 +280,46 @@ TEST_CASE("receive_arbiter::gather_receive works", "[receive_arbiter]") {
 	}
 	CHECK(gather_allocation == expected_allocation);
 }
+
+// peers will send a pilot with an empty box to signal that they don't contribute to a reduction
+TEST_CASE("receive_arbiter knows how to handle empty pilot boxes in gathers", "[receive_arbiter]") {
+	const transfer_id trid(task_id(2), buffer_id(0), reduction_id(1));
+	const size_t chunk_size = 4;
+	const box<3> empty_box;
+	const box<3> unit_box{{0, 0, 0}, {1, 1, 1}};
+
+	mock_recv_communicator comm(3, 0);
+	receive_arbiter ra(comm);
+
+	// Catch2 does not support values<bool>() because of the std::vector<bool> specialization
+	const auto empty_pilot_first = static_cast<bool>(GENERATE(values<int>({false, true})));
+	const auto num_pilots_before_gather = GENERATE(values<size_t>({0, 1, 2}));
+	CAPTURE(empty_pilot_first, num_pilots_before_gather);
+
+	std::vector<inbound_pilot> pilots{
+	    inbound_pilot{node_id(1), pilot_message{1, trid, empty_box}},
+	    inbound_pilot{node_id(2), pilot_message{2, trid, unit_box}},
+	};
+	if(!empty_pilot_first) { std::swap(pilots[0], pilots[1]); }
+
+	for(size_t i = 0; i < num_pilots_before_gather; ++i) {
+		comm.push_inbound_pilot(pilots[i]);
+	}
+
+	std::vector<uint8_t> gather_allocation(chunk_size * comm.get_num_nodes());
+	auto event = ra.gather_receive(trid, gather_allocation.data(), chunk_size);
+	ra.poll_communicator();
+	CHECK(!event.is_complete());
+
+	for(size_t i = num_pilots_before_gather; i < 2; ++i) {
+		comm.push_inbound_pilot(pilots[i]);
+	}
+	ra.poll_communicator();
+	CHECK(!event.is_complete());
+
+	int fragment = 42;
+	comm.complete_receiving_payload(node_id(2), static_cast<int>(2), &fragment, unit_box.get_range());
+	ra.poll_communicator();
+
+	CHECK(event.is_complete());
+}

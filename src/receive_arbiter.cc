@@ -43,7 +43,7 @@ receive_arbiter::stable_region_request& receive_arbiter::begin_receive_region(
 	auto& rr = mrt->active_requests.emplace_back(std::make_shared<region_request>(request, allocation, allocated_box));
 
 	for(auto& pilot : mrt->unassigned_pilots) {
-		if(rr->allocated_box.covers(pilot.message.box)) { begin_receiving_region_fragment_from_communicator(*rr, pilot, elem_size); }
+		if(rr->allocated_box.covers(pilot.message.box)) { handle_region_request_pilot(*rr, pilot, elem_size); }
 	}
 
 	return rr;
@@ -84,7 +84,7 @@ receive_arbiter::event receive_arbiter::gather_receive(const transfer_id& trid, 
 	if(const auto entry = m_transfers.find(trid); entry != m_transfers.end()) {
 		auto& ut = std::get<unassigned_transfer>(entry->second);
 		for(auto& pilot : ut.pilots) {
-			begin_receiving_gather_chunk_from_communicator(*gr, pilot);
+			handle_gather_request_pilot(*gr, pilot);
 		}
 		entry->second = gather_transfer{std::move(gr)};
 	} else {
@@ -112,7 +112,10 @@ bool receive_arbiter::multi_region_transfer::complete() {
 bool receive_arbiter::gather_request::complete() {
 	const auto incomplete_chunks_end = std::remove_if(incoming_chunks.begin(), incoming_chunks.end(), [&](const incoming_gather_chunk& chunk) {
 		const bool is_complete = chunk.done->is_complete();
-		if(is_complete) { num_incomplete_chunks -= 1; }
+		if(is_complete) {
+			assert(num_incomplete_chunks > 0);
+			num_incomplete_chunks -= 1;
+		}
 		return is_complete;
 	});
 	incoming_chunks.erase(incomplete_chunks_end, incoming_chunks.end());
@@ -144,16 +147,16 @@ void receive_arbiter::poll_communicator() {
 				    const auto rr = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
 				        [&](const stable_region_request& rr) { return rr->allocated_box.covers(pilot.message.box); });
 				    assert(rr != mrt.active_requests.end());
-				    begin_receiving_region_fragment_from_communicator(**rr, pilot, mrt.elem_size); // elem_size is set when transfer_region is inserted
+				    handle_region_request_pilot(**rr, pilot, mrt.elem_size); // elem_size is set when transfer_region is inserted
 			    },
-			    [&](gather_transfer& gt) { begin_receiving_gather_chunk_from_communicator(*gt.request, pilot); });
+			    [&](gather_transfer& gt) { handle_gather_request_pilot(*gt.request, pilot); });
 		} else {
 			m_transfers.emplace(pilot.message.trid, unassigned_transfer{{pilot}});
 		}
 	}
 }
 
-void receive_arbiter::begin_receiving_region_fragment_from_communicator(region_request& rr, const inbound_pilot& pilot, const size_t elem_size) {
+void receive_arbiter::handle_region_request_pilot(region_request& rr, const inbound_pilot& pilot, const size_t elem_size) {
 	assert(region_intersection(rr.incomplete_region, pilot.message.box) == pilot.message.box);
 	assert(rr.allocated_box.covers(pilot.message.box));
 	const auto offset_in_allocation = pilot.message.box.get_offset() - rr.allocated_box.get_offset();
@@ -166,10 +169,16 @@ void receive_arbiter::begin_receiving_region_fragment_from_communicator(region_r
 	rr.incoming_fragments.push_back({pilot.message.box, std::move(event)});
 }
 
-void receive_arbiter::begin_receiving_gather_chunk_from_communicator(gather_request& gr, const inbound_pilot& pilot) {
-	const communicator::stride stride{range_cast<3>(range(m_num_nodes)), subrange(id_cast<3>(id(pilot.from)), range_cast<3>(range(1))), gr.chunk_size};
-	auto event = m_comm->receive_payload(pilot.from, pilot.message.tag, gr.allocation, stride);
-	gr.incoming_chunks.push_back(incoming_gather_chunk{std::move(event)});
+void receive_arbiter::handle_gather_request_pilot(gather_request& gr, const inbound_pilot& pilot) {
+	if(pilot.message.box.empty()) {
+		// peers will send a pilot with an empty box to signal that they don't contribute to a reduction.
+		assert(gr.num_incomplete_chunks > 0);
+		gr.num_incomplete_chunks -= 1;
+	} else {
+		const communicator::stride stride{range_cast<3>(range(m_num_nodes)), subrange(id_cast<3>(id(pilot.from)), range_cast<3>(range(1))), gr.chunk_size};
+		auto event = m_comm->receive_payload(pilot.from, pilot.message.tag, gr.allocation, stride);
+		gr.incoming_chunks.push_back(incoming_gather_chunk{std::move(event)});
+	}
 }
 
 } // namespace celerity::detail

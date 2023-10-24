@@ -125,8 +125,8 @@ class receive_arbiter {
 	stable_region_request& begin_receive_region(
 	    const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
 
-	void begin_receiving_region_fragment_from_communicator(region_request& rr, const inbound_pilot& pilot, size_t elem_size);
-	void begin_receiving_gather_chunk_from_communicator(gather_request& gr, const inbound_pilot& pilot);
+	void handle_region_request_pilot(region_request& rr, const inbound_pilot& pilot, size_t elem_size);
+	void handle_gather_request_pilot(gather_request& gr, const inbound_pilot& pilot);
 };
 
 } // namespace celerity::detail
