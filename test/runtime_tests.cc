@@ -89,10 +89,12 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "get_access can be called on const buffer", "[buffer]") {
-		buffer<float, 2> buf_a{range<2>{32, 64}};
+		const range<2> range{32, 64};
+		std::vector<float> init(range.size());
+		buffer<float, 2> buf_a{init.data(), range};
 		auto& tm = runtime::get_instance().get_task_manager();
 		const auto tid = test_utils::add_compute_task<class get_access_const>(
-		    tm, [&](handler& cgh) { buf_a.get_access<cl::sycl::access::mode::read>(cgh, one_to_one{}); }, buf_a.get_range());
+		    tm, [&](handler& cgh) { buf_a.get_access<cl::sycl::access::mode::read>(cgh, one_to_one{}); }, range);
 		const auto tsk = tm.get_task(tid);
 		const auto bufs = tsk->get_buffer_access_map().get_accessed_buffers();
 		REQUIRE(bufs.size() == 1);
@@ -418,9 +420,11 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "collective host_task produces one item per rank", "[task]") {
-		distr_queue{}.submit([=](handler& cgh) {
+		distr_queue q;
+		const auto num_nodes = runtime::get_instance().get_num_nodes(); // capture here since runtime destructor will run before the host_task
+		q.submit([=](handler& cgh) {
 			cgh.host_task(experimental::collective, [=](experimental::collective_partition part) {
-				CHECK(part.get_global_size().size() == runtime::get_instance().get_num_nodes());
+				CHECK(part.get_global_size().size() == num_nodes);
 				CHECK_NOTHROW(part.get_collective_mpi_comm());
 			});
 		});
@@ -557,31 +561,31 @@ namespace detail {
 		buffer<int, 2> buf{{10, 10}};
 
 		CHECK_THROWS_WITH(q.submit([&](handler& cgh) {
-			auto acc = buf.get_access<cl::sycl::access::mode::read>(cgh, one_to_one{});
+			auto acc = buf.get_access<cl::sycl::access::mode::discard_write>(cgh, one_to_one{});
 			cgh.parallel_for<class UKN(kernel)>(range<1>{10}, [=](celerity::item<1>) { (void)acc; });
 		}),
 		    "Invalid range mapper dimensionality: 1-dimensional kernel submitted with a requirement whose range mapper is neither invocable for chunk<1> nor "
 		    "(chunk<1>, range<2>) to produce subrange<2>");
 
 		CHECK_NOTHROW(q.submit([&](handler& cgh) {
-			auto acc = buf.get_access<cl::sycl::access::mode::read>(cgh, one_to_one{});
+			auto acc = buf.get_access<cl::sycl::access::mode::discard_write>(cgh, one_to_one{});
 			cgh.parallel_for<class UKN(kernel)>(range<2>{10, 10}, [=](celerity::item<2>) { (void)acc; });
 		}));
 
 		CHECK_THROWS_WITH(q.submit([&](handler& cgh) {
-			auto acc = buf.get_access<cl::sycl::access::mode::read>(cgh, one_to_one{});
+			auto acc = buf.get_access<cl::sycl::access::mode::discard_write>(cgh, one_to_one{});
 			cgh.parallel_for<class UKN(kernel)>(range<3>{10, 10, 10}, [=](celerity::item<3>) { (void)acc; });
 		}),
 		    "Invalid range mapper dimensionality: 3-dimensional kernel submitted with a requirement whose range mapper is neither invocable for chunk<3> nor "
 		    "(chunk<3>, range<2>) to produce subrange<2>");
 
 		CHECK_NOTHROW(q.submit([&](handler& cgh) {
-			auto acc = buf.get_access<cl::sycl::access::mode::read>(cgh, all{});
+			auto acc = buf.get_access<cl::sycl::access::mode::discard_write>(cgh, all{});
 			cgh.parallel_for<class UKN(kernel)>(range<3>{10, 10, 10}, [=](celerity::item<3>) { (void)acc; });
 		}));
 
 		CHECK_NOTHROW(q.submit([&](handler& cgh) {
-			auto acc = buf.get_access<cl::sycl::access::mode::read>(cgh, all{});
+			auto acc = buf.get_access<cl::sycl::access::mode::discard_write>(cgh, all{});
 			cgh.parallel_for<class UKN(kernel)>(range<3>{10, 10, 10}, [=](celerity::item<3>) { (void)acc; });
 		}));
 	}
@@ -630,32 +634,38 @@ namespace detail {
 
 		buffer<float, 1> buf_1{range<1>{2}};
 		CHECK_THROWS(tm.submit_command_group([&](handler& cgh) { //
-			cgh.parallel_for<class UKN(wrong_size_1)>(range<1>{1}, reduction(buf_1, cgh, cl::sycl::plus<float>{}), [=](celerity::item<1>, auto&) {});
+			cgh.parallel_for<class UKN(wrong_size_1)>(
+			    range<1>{1}, reduction(buf_1, cgh, cl::sycl::plus<float>{}, property::reduction::initialize_to_identity()), [=](celerity::item<1>, auto&) {});
 		}));
 
 		buffer<float, 1> buf_4{range<1>{1}};
 		CHECK_NOTHROW(tm.submit_command_group([&](handler& cgh) { //
-			cgh.parallel_for<class UKN(ok_size_1)>(range<1>{1}, reduction(buf_4, cgh, cl::sycl::plus<float>{}), [=](celerity::item<1>, auto&) {});
+			cgh.parallel_for<class UKN(ok_size_1)>(
+			    range<1>{1}, reduction(buf_4, cgh, cl::sycl::plus<float>{}, property::reduction::initialize_to_identity()), [=](celerity::item<1>, auto&) {});
 		}));
 
 		buffer<float, 2> buf_2{range<2>{1, 2}};
 		CHECK_THROWS(tm.submit_command_group([&](handler& cgh) { //
-			cgh.parallel_for<class UKN(wrong_size_2)>(range<2>{1, 1}, reduction(buf_2, cgh, cl::sycl::plus<float>{}), [=](celerity::item<2>, auto&) {});
+			cgh.parallel_for<class UKN(wrong_size_2)>(range<2>{1, 1},
+			    reduction(buf_2, cgh, cl::sycl::plus<float>{}, property::reduction::initialize_to_identity()), [=](celerity::item<2>, auto&) {});
 		}));
 
 		buffer<float, 3> buf_3{range<3>{1, 2, 1}};
 		CHECK_THROWS(tm.submit_command_group([&](handler& cgh) { //
-			cgh.parallel_for<class UKN(wrong_size_3)>(range<3>{1, 1, 1}, reduction(buf_3, cgh, cl::sycl::plus<float>{}), [=](celerity::item<3>, auto&) {});
+			cgh.parallel_for<class UKN(wrong_size_3)>(range<3>{1, 1, 1},
+			    reduction(buf_3, cgh, cl::sycl::plus<float>{}, property::reduction::initialize_to_identity()), [=](celerity::item<3>, auto&) {});
 		}));
 
 		buffer<float, 2> buf_5{range<2>{1, 1}};
 		CHECK_NOTHROW(tm.submit_command_group([&](handler& cgh) { //
-			cgh.parallel_for<class UKN(ok_size_2)>(range<2>{1, 1}, reduction(buf_5, cgh, cl::sycl::plus<float>{}), [=](celerity::item<2>, auto&) {});
+			cgh.parallel_for<class UKN(ok_size_2)>(range<2>{1, 1},
+			    reduction(buf_5, cgh, cl::sycl::plus<float>{}, property::reduction::initialize_to_identity()), [=](celerity::item<2>, auto&) {});
 		}));
 
 		buffer<float, 3> buf_6{range<3>{1, 1, 1}};
 		CHECK_NOTHROW(tm.submit_command_group([&](handler& cgh) { //
-			cgh.parallel_for<class UKN(ok_size_3)>(range<3>{1, 1, 1}, reduction(buf_6, cgh, cl::sycl::plus<float>{}), [=](celerity::item<3>, auto&) {});
+			cgh.parallel_for<class UKN(ok_size_3)>(range<3>{1, 1, 1},
+			    reduction(buf_6, cgh, cl::sycl::plus<float>{}, property::reduction::initialize_to_identity()), [=](celerity::item<3>, auto&) {});
 		}));
 	}
 
@@ -703,7 +713,7 @@ namespace detail {
 
 		q.submit([&](handler& cgh) {
 			local_accessor<int> la{32, cgh};
-			accessor ga{out, cgh, celerity::access::one_to_one{}, write_only};
+			accessor ga{out, cgh, celerity::access::one_to_one{}, write_only, no_init};
 			cgh.parallel_for<class UKN(device_kernel)>(celerity::nd_range<1>{64, 32}, [=](nd_item<1> item) {
 				la[item.get_local_id()] = static_cast<int>(item.get_global_linear_id());
 				group_barrier(item.get_group());
@@ -726,7 +736,8 @@ namespace detail {
 
 		buffer<int, 1> b{range<1>{1}};
 		distr_queue{}.submit([&](handler& cgh) {
-			cgh.parallel_for<class UKN(kernel)>(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}}, reduction(b, cgh, sycl::plus<int>{}),
+			cgh.parallel_for<class UKN(kernel)>(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}},
+			    reduction(b, cgh, sycl::plus<int>{}, property::reduction::initialize_to_identity()),
 			    [](nd_item<2> item, auto& sum) { sum += item.get_global_linear_id(); });
 		});
 	}
@@ -743,8 +754,8 @@ namespace detail {
 		q.submit([=](handler& cgh) { cgh.parallel_for(celerity::nd_range<1>{64, 32}, [](nd_item<1> item) {}); });
 		buffer<int> b{{1}};
 		q.submit([&](handler& cgh) {
-			cgh.parallel_for(
-			    range<1>{64}, reduction(b, cgh, cl::sycl::plus<int>{}), [=](item<1> item, auto& r) { r += static_cast<int>(item.get_linear_id()); });
+			cgh.parallel_for(range<1>{64}, reduction(b, cgh, cl::sycl::plus<int>{}, property::reduction::initialize_to_identity()),
+			    [=](item<1> item, auto& r) { r += static_cast<int>(item.get_linear_id()); });
 		});
 		q.submit([&](handler& cgh) {
 			cgh.parallel_for(celerity::nd_range<1>{64, 32}, reduction(b, cgh, cl::sycl::plus<int>{}),
@@ -1214,7 +1225,6 @@ namespace detail {
 	TEST_CASE_METHOD(test_utils::mpi_fixture, "Config reads environment variables correctly", "[env-vars][config]") {
 		const std::unordered_map<std::string, std::string> env_map{
 		    {"CELERITY_LOG_LEVEL", "debug"},
-		    {"CELERITY_DEVICES", "1 1"},
 		    {"CELERITY_PROFILE_KERNEL", "1"},
 		    {"CELERITY_DRY_RUN_NODES", "4"},
 		    {"CELERITY_RECORDING", "true"},
