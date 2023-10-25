@@ -402,8 +402,8 @@ namespace detail {
 		});
 		q.submit([&](handler& cgh) {
 			accessor acc_1(buf_1, cgh, all(), read_only_host_task);
-			cgh.host_task(on_master_node, [=] {
-				for(size_t i = 0; i < buf_1.get_range().size(); ++i) {
+			cgh.host_task(on_master_node, [=, range = buf_1.get_range()] {
+				for(size_t i = 0; i < range.size(); ++i) {
 					REQUIRE_LOOP(acc_1[i] == value_b);
 				}
 			});
@@ -495,8 +495,8 @@ namespace detail {
 		});
 		q.submit([&](handler& cgh) {
 			accessor acc_1(buf_1, cgh, all(), read_only_host_task);
-			cgh.host_task(on_master_node, [=] {
-				for(size_t i = 0; i < buf_1.get_range().size(); ++i) {
+			cgh.host_task(on_master_node, [=, range = buf_1.get_range()] {
+				for(size_t i = 0; i < range.size(); ++i) {
 					REQUIRE_LOOP(acc_1[i] == value_b);
 				}
 			});
