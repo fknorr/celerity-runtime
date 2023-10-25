@@ -38,6 +38,15 @@ void instruction_executor::announce_reduction(const reduction_id rid, std::uniqu
 	m_submission_queue.push_back(reduction_announcement{rid, std::move(reduction)});
 }
 
+void instruction_executor::thread_main() {
+	try {
+		loop();
+	} catch(const std::exception& e) {
+		CELERITY_CRITICAL("[executor] {}", e.what());
+		std::abort();
+	}
+}
+
 void instruction_executor::loop() {
 	closure_hydrator::make_available();
 

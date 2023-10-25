@@ -826,8 +826,10 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	}
 
-	// collect updated regions
+	// collect updated regions, check for overlapping writes
 
+	std::unordered_map<buffer_id, region<3>> buffer_write_accumulators;
+	std::unordered_map<buffer_id, region<3>> overlapping_writes;
 	for(const auto bid : bam.get_accessed_buffers()) {
 		for(auto& insn : cmd_instrs) {
 			reads_writes rw;
@@ -836,15 +838,45 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				if(access::mode_traits::is_consumer(mode)) { rw.reads = region_union(rw.reads, req); }
 				if(access::mode_traits::is_producer(mode)) { rw.writes = region_union(rw.writes, req); }
 			}
+
+			if(!rw.writes.empty()) {
+				auto& write_accumulator = buffer_write_accumulators[bid]; // allow default-insert
+				if(const auto overlap = region_intersection(write_accumulator, rw.writes); !overlap.empty()) {
+					auto& full_overlap = overlapping_writes[bid]; // allow default-insert
+					full_overlap = region_union(full_overlap, overlap);
+				}
+				write_accumulator = region_union(write_accumulator, rw.writes);
+			}
+
 			insn.rw_map.emplace(bid, std::move(rw));
 		}
 	}
+
 	for(const auto& rinfo : tsk.get_reductions()) {
 		for(auto& instr : cmd_instrs) {
 			auto& rw_map = instr.rw_map[rinfo.bid]; // allow default-insert
 			rw_map.writes = region_union(rw_map.writes, scalar_reduction_box);
 		}
+
+		auto& write_accumulator = buffer_write_accumulators[rinfo.bid]; // allow default-insert
+		if(const auto overlap = region_intersection(write_accumulator, scalar_reduction_box); !overlap.empty()) {
+			auto& full_overlap = overlapping_writes[rinfo.bid]; // allow default-insert
+			full_overlap = region_union(full_overlap, overlap);
+		}
+		write_accumulator = region_union(write_accumulator, scalar_reduction_box);
 	}
+
+	if(!overlapping_writes.empty()) {
+		auto error = fmt::format("Command group T{}", tsk.get_id());
+		if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
+		fmt::format_to(std::back_inserter(error), " has overlapping writes on N{}:", tsk.get_id(), m_local_node_id);
+		for(const auto& [bid, overlap] : overlapping_writes) {
+			fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
+		}
+		throw std::runtime_error(error);
+	}
+
+	// collect side effects
 
 	if(!tsk.get_side_effect_map().empty()) {
 		assert(cmd_instrs.size() == 1); // split instructions for host tasks with side effects would race

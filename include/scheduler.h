@@ -131,6 +131,8 @@ namespace detail {
 
 	  private:
 		std::thread m_thread;
+
+		void thread_main();
 	};
 
 } // namespace detail

@@ -86,7 +86,6 @@ std::string escape_for_dot_label(std::string str);
 
 template <typename... FmtArgs>
 [[noreturn]] void panic(const FmtArgs&... fmt_args) {
-	CELERITY_CRITICAL(fmt_args...);
 	throw std::runtime_error(fmt::format(fmt_args...));
 }
 

@@ -86,6 +86,7 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	std::thread m_thread;
 
 	void loop();
+	void thread_main();
 
 	[[nodiscard]] event begin_executing(const instruction& instr);
 };

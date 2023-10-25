@@ -580,12 +580,12 @@ namespace detail {
 		    "(chunk<3>, range<2>) to produce subrange<2>");
 
 		CHECK_NOTHROW(q.submit([&](handler& cgh) {
-			auto acc = buf.get_access<cl::sycl::access::mode::discard_write>(cgh, all{});
+			auto acc = buf.get_access<cl::sycl::access::mode::read>(cgh, all{});
 			cgh.parallel_for<class UKN(kernel)>(range<3>{10, 10, 10}, [=](celerity::item<3>) { (void)acc; });
 		}));
 
 		CHECK_NOTHROW(q.submit([&](handler& cgh) {
-			auto acc = buf.get_access<cl::sycl::access::mode::discard_write>(cgh, all{});
+			auto acc = buf.get_access<cl::sycl::access::mode::read>(cgh, all{});
 			cgh.parallel_for<class UKN(kernel)>(range<3>{10, 10, 10}, [=](celerity::item<3>) { (void)acc; });
 		}));
 	}
@@ -1309,7 +1309,7 @@ namespace detail {
 		distr_queue q;
 
 		q.submit([&](handler& cgh) {
-			accessor acc(buf, cgh, all{}, write_only, no_init);
+			accessor acc(buf, cgh, one_to_one(), write_only, no_init);
 			cgh.parallel_for<class UKN(init)>(buf.get_range(), [=](celerity::item<2> item) { acc[item] = static_cast<int>(item.get_linear_id()); });
 		});
 

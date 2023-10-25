@@ -4,7 +4,6 @@
 #include "instruction_graph_generator.h"
 #include "named_threads.h"
 #include "task.h"
-#include "utils.h"
 
 namespace celerity {
 namespace detail {
@@ -90,13 +89,22 @@ namespace detail {
 
 	scheduler::scheduler(
 	    const bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen, delegate* const delegate)
-	    : abstract_scheduler(is_dry_run, std::move(dggen), std::move(iggen), delegate), m_thread(&scheduler::schedule, this) {
+	    : abstract_scheduler(is_dry_run, std::move(dggen), std::move(iggen), delegate), m_thread(&scheduler::thread_main, this) {
 		set_thread_name(m_thread.native_handle(), "cy-scheduler");
 	}
 
 	scheduler::~scheduler() {
 		// schedule() will exit as soon as it has processed the shutdown epoch
 		m_thread.join();
+	}
+
+	void scheduler::thread_main() {
+		try {
+			schedule();
+		} catch(const std::exception& e) {
+			CELERITY_CRITICAL("[scheduler] {}", e.what());
+			std::abort();
+		}
 	}
 
 } // namespace detail
