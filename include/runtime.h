@@ -9,6 +9,7 @@
 #include "host_queue.h"
 #include "instruction_executor.h"
 #include "recorders.h"
+#include "scheduler.h"
 #include "task.h"
 #include "types.h"
 
@@ -27,7 +28,7 @@ namespace detail {
 	class task_manager;
 	struct host_object_instance;
 
-	class runtime final : private instruction_executor::delegate {
+	class runtime final : private abstract_scheduler::delegate, private instruction_executor::delegate {
 		friend struct runtime_testspy;
 
 	  public:
@@ -119,6 +120,11 @@ namespace detail {
 		runtime(const runtime&) = delete;
 		runtime(runtime&&) = delete;
 
+		// scheduler::delegate
+		void submit_instruction(const instruction& instr) override;
+		void submit_pilot(const outbound_pilot& pilot) override;
+
+		// instruction_executor::delegate
 		void horizon_reached(task_id horizon_tid) override;
 		void epoch_reached(task_id epoch_tid) override;
 

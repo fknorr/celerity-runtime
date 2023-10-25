@@ -5,7 +5,6 @@
 #include "instruction_graph.h"
 #include "receive_arbiter.h"
 #include "reduction.h"
-#include "scheduler.h"
 
 #include <unordered_map>
 
@@ -13,7 +12,7 @@ namespace celerity::detail {
 
 struct host_object_instance;
 
-class instruction_executor final : public abstract_scheduler::delegate {
+class instruction_executor {
   public:
 	class delegate {
 	  protected:
@@ -36,8 +35,10 @@ class instruction_executor final : public abstract_scheduler::delegate {
 	instruction_executor& operator=(instruction_executor&&) = delete;
 	~instruction_executor();
 
-	void submit_instruction(const instruction& instr) override;
-	void submit_pilot(const outbound_pilot& pilot) override;
+	void wait();
+
+	void submit_instruction(const instruction& instr);
+	void submit_pilot(const outbound_pilot& pilot);
 
 	void announce_buffer_user_pointer(buffer_id bid, const void* ptr);
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);

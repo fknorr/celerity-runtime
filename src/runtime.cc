@@ -171,7 +171,7 @@ namespace detail {
 		auto iggen =
 		    std::make_unique<instruction_graph_generator>(*m_task_mngr, m_num_nodes, m_local_nid, std::move(iggen_devices), m_instruction_recorder.get());
 
-		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), m_exec.get());
+		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), static_cast<abstract_scheduler::delegate*>(this));
 
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
@@ -183,15 +183,17 @@ namespace detail {
 		// create a shutdown epoch and pass it to the scheduler via callback
 		const auto shutdown_epoch = m_task_mngr->generate_epoch_task(epoch_action::shutdown);
 
-		// Destroy the executor as soon as it has processed the shutdown-epoch instruction.
-		// The scheduler thread is guaranteed to exit at this point as well, so it will not touch its delegate (which *is* the now-dangling executor) anymore.
+		// Wait for the executor to exit its thread after processing the shutdown-epoch instruction.
+		m_exec->wait();
+
+		// The scheduler will have exited by now as well after processing the shutdown epoch. Destroy it *after* the executor because it owns the CDAG and IDAG.
+		m_schdlr.reset();
+
+		// with the scheduler gone, nobody will submit instructions and pilots to the runtime anymore and we can get rid of the executor.
 		m_exec.reset();
 
 		// when the executor is gone, the host queue is guaranteed to not have any work left to do
 		m_h_queue.reset();
-
-		// The scheduler will have exited by now as well after processing the shutdown epoch. Destroy it *after* the executor because it owns the CDAG and IDAG.
-		m_schdlr.reset();
 
 		// TODO does this actually do anything? Once the executor has exited we are guaranteed to arrived at this epoch anyway
 		m_task_mngr->await_epoch(shutdown_epoch);
@@ -265,6 +267,18 @@ namespace detail {
 			}
 		}
 		return combine_command_graphs(graphs);
+	}
+
+	void runtime::submit_instruction(const instruction& instr) {
+		assert(m_exec != nullptr);
+		if(!is_dry_run() || utils::isa<epoch_instruction>(&instr) || utils::isa<horizon_instruction>(&instr) || utils::isa<fence_instruction>(&instr)) {
+			m_exec->submit_instruction(instr);
+		}
+	}
+
+	void runtime::submit_pilot(const outbound_pilot& pilot) {
+		assert(m_exec != nullptr);
+		if(!is_dry_run()) { m_exec->submit_pilot(pilot); }
 	}
 
 	void runtime::horizon_reached(const task_id horizon_tid) { m_task_mngr->notify_horizon_reached(horizon_tid); }

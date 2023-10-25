@@ -64,6 +64,9 @@ node_id mpi_communicator::get_local_node_id() const {
 void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
 	CELERITY_DEBUG("[mpi] pilot -> N{} (tag {}, {}, {})", pilot.to, pilot.message.tag, pilot.message.trid, pilot.message.box);
 
+	assert(pilot.to < get_num_nodes());
+	assert(pilot.to != get_local_node_id());
+
 	// initiate Isend as early as possible
 	in_flight_pilot newly_in_flight;
 	*newly_in_flight.message = pilot.message;
@@ -102,6 +105,9 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_id to, const int tag, const void* const base, const stride& stride) {
 	CELERITY_DEBUG("[mpi] payload -> N{} (tag {}) from {} ({}) {}x{}", to, tag, base, stride.allocation, stride.subrange, stride.element_size);
 
+	assert(to < get_num_nodes());
+	assert(to != get_local_node_id());
+
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
 	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_root_comm, &req);
@@ -110,6 +116,9 @@ std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_i
 
 std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const node_id from, const int tag, void* const base, const stride& stride) {
 	CELERITY_DEBUG("[mpi] payload <- N{} (tag {}) into {} ({}) {}x{}", from, tag, base, stride.allocation, stride.subrange, stride.element_size);
+
+	assert(from < get_num_nodes());
+	assert(from != get_local_node_id());
 
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes

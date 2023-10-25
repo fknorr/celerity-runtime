@@ -18,7 +18,11 @@ instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backe
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
 
-instruction_executor::~instruction_executor() { m_thread.join(); }
+instruction_executor::~instruction_executor() { wait(); }
+
+void instruction_executor::wait() {
+	if(m_thread.joinable()) { m_thread.join(); }
+}
 
 void instruction_executor::submit_instruction(const instruction& instr) { m_submission_queue.push_back(&instr); }
 
