@@ -26,6 +26,19 @@ class PhantomTypePrinter:
         return self.prefix + str(self.value)
 
 
+class TransferIdPrinter:
+    def __init__(self, val: gdb.Value):
+        self.consumer_tid = val['consumer_tid']
+        self.bid = val['bid']
+        self.rid = val['rid']
+
+    def to_string(self) -> str:
+        s = '{}.{}'.format(self.consumer_tid, self.bid)
+        if self.rid['m_value'] != 0:
+            s += '.{}'.format(self.rid)
+        return s
+
+
 class CoordinatePrinter:
     def __init__(self, val: gdb.Value):
         self.values = val['m_values']['values']
@@ -142,7 +155,7 @@ def build_pretty_printer():
     add_phantom_type_printer(pp, 'reduction_id', 'R')
     add_phantom_type_printer(pp, 'host_object_id', 'H')
     add_phantom_type_printer(pp, 'hydration_id', 'HY')
-    add_phantom_type_printer(pp, 'transfer_id', 'TR')
+    pp.add_printer('transfer_id', '^celerity::detail::transfer_id$', TransferIdPrinter)
     pp.add_printer('id', '^celerity::id<.*>$', CoordinatePrinter)
     pp.add_printer('range', '^celerity::range<.*>$', CoordinatePrinter)
     pp.add_printer('subrange', '^celerity::subrange<.*>$', SubrangePrinter)
