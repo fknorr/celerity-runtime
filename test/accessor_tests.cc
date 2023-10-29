@@ -139,7 +139,7 @@ namespace detail {
 	}
 
 	template <int>
-	class accessor_fixture : public test_utils::buffer_manager_fixture {};
+	class accessor_fixture : public test_utils::runtime_fixture {};
 
 	template <int>
 	class kernel_multi_dim_accessor_write_;
@@ -162,55 +162,57 @@ namespace detail {
 		// #if __SYCL_DEVICE_ONLY__ did get rid of the segfault, but caused the test to fail with a heap corruption at runtime. Instead, replacing id
 		// with size_t seems to resolve the problem.
 
+		distr_queue q;
+
 		const auto range = test_utils::truncate_range<Dims>({2, 3, 4});
-		auto& bm = accessor_fixture<Dims>::get_buffer_manager();
-		auto bid = bm.template register_buffer<size_t, Dims>(range_cast<3>(range));
+		buffer<size_t, Dims> buf_in(range);
+		buffer<size_t, Dims> buf_out(range);
 
-		auto& q = accessor_fixture<Dims>::get_device_queue();
-		auto sr = subrange<3>({}, range_cast<3>(range));
+		q.submit([&](handler& cgh) {
+			accessor acc_write(buf_in, cgh, one_to_one(), write_only, no_init);
+			cgh.parallel_for(range, [=](celerity::item<Dims> item) { acc_write[item] = item.get_linear_id(); });
+		});
 
-		// this kernel initializes the buffer what will be read after.
-		auto acc_write = accessor_fixture<Dims>::template get_device_accessor<size_t, Dims, access_mode::discard_write>(bid, range, {});
-		test_utils::run_parallel_for<class kernel_multi_dim_accessor_write_<Dims>>(
-		    accessor_fixture<Dims>::get_device_queue().get_sycl_queue(), range, {}, [=](celerity::item<Dims> item) { acc_write[item] = item.get_linear_id(); });
-
-		SECTION("for device buffers") {
-			auto acc_read = accessor_fixture<Dims>::template get_device_accessor<size_t, Dims, access_mode::read>(bid, range, {});
-			auto acc = accessor_fixture<Dims>::template get_device_accessor<size_t, Dims, access_mode::discard_write>(bid, range, {});
-			test_utils::run_parallel_for<class kernel_multi_dim_accessor_read_<Dims>>(
-			    accessor_fixture<Dims>::get_device_queue().get_sycl_queue(), range, {}, [=](celerity::item<Dims> item) {
-				    size_t i = item[0];
-				    size_t j = item[1];
-				    if constexpr(Dims == 2) {
-					    acc[i][j] = acc_read[i][j];
-				    } else {
-					    size_t k = item[2];
-					    acc[i][j][k] = acc_read[i][j][k];
-				    }
-			    });
-		}
-
-		SECTION("for host buffers") {
-			auto acc_read = accessor_fixture<Dims>::template get_host_accessor<size_t, Dims, access_mode::read>(bid, range, {});
-			auto acc = accessor_fixture<Dims>::template get_host_accessor<size_t, Dims, access_mode::discard_write>(bid, range, {});
-			for(size_t i = 0; i < range[0]; i++) {
-				for(size_t j = 0; j < range[1]; j++) {
-					for(size_t k = 0; k < (Dims == 2 ? 1 : range[2]); k++) {
-						if constexpr(Dims == 2) {
-							acc[i][j] = acc_read[i][j];
-						} else {
-							acc[i][j][k] = acc_read[i][j][k];
-						}
+		SECTION("for device accessors") {
+			q.submit([&](handler& cgh) {
+				accessor acc_read(buf_in, cgh, one_to_one(), read_only);
+				accessor acc_write(buf_out, cgh, one_to_one(), write_only, no_init);
+				cgh.parallel_for(range, [=](celerity::item<Dims> item) {
+					size_t i = item[0];
+					size_t j = item[1];
+					if constexpr(Dims == 2) {
+						acc_write[i][j] = acc_read[i][j];
+					} else {
+						size_t k = item[2];
+						acc_write[i][j][k] = acc_read[i][j][k];
 					}
-				}
-			}
+				});
+			});
 		}
 
-		typename accessor_fixture<Dims>::access_target tgt = accessor_fixture<Dims>::access_target::host;
-		bool acc_check = accessor_fixture<Dims>::template buffer_reduce<size_t, Dims, class check_multi_dim_accessor<Dims>>(
-		    bid, tgt, range, {}, true, [range = range](id<Dims> idx, bool current, size_t value) { return current && value == get_linear_index(range, idx); });
+		SECTION("for host accessors") {
+			q.submit([&](handler& cgh) {
+				accessor acc_read(buf_in, cgh, one_to_one(), read_only_host_task);
+				accessor acc_write(buf_out, cgh, one_to_one(), write_only_host_task, no_init);
+				cgh.host_task(range, [=](celerity::partition<Dims> part) {
+					experimental::for_each_item(range, [&](celerity::item<Dims> item) {
+						size_t i = item[0];
+						size_t j = item[1];
+						if constexpr(Dims == 2) {
+							acc_write[i][j] = acc_read[i][j];
+						} else {
+							size_t k = item[2];
+							acc_write[i][j][k] = acc_read[i][j][k];
+						}
+					});
+				});
+			});
+		}
 
-		REQUIRE(acc_check);
+		const auto result = experimental::fence(q, buf_out).get();
+		for (size_t i = 0; i < range.size(); ++i) {
+			REQUIRE_LOOP(result.get_data()[i] == i);
+		}
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "conflicts between producer-accessors and reductions are reported", "[task-manager]") {
@@ -750,5 +752,6 @@ namespace detail {
 		    buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
+
 } // namespace detail
 } // namespace celerity
