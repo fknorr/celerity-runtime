@@ -1377,5 +1377,30 @@ namespace detail {
 		});
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime types throw when used from the wrong thread", "[runtime]") {
+		distr_queue q;
+		buffer<int, 1> buf(range<1>(1));
+		experimental::host_object<int> ho(42);
+
+		constexpr auto what = "Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destructed from the "
+		                      "application thread. Make sure that you did not accidentally capture one of these types in a host_task.";
+		std::thread([&] {
+			CHECK_THROWS_WITH((distr_queue{}), what);
+			CHECK_THROWS_WITH((buffer<int, 1>{range<1>{1}}), what);
+			CHECK_THROWS_WITH((experimental::host_object<int>{}), what);
+
+			CHECK_THROWS_WITH(q.submit([&](handler& cgh) { (void)cgh; }), what);
+			CHECK_THROWS_WITH(q.slow_full_sync(), what);
+			CHECK_THROWS_WITH(experimental::fence(q, buf), what);
+			CHECK_THROWS_WITH(experimental::fence(q, ho), what);
+
+			// We can't easily test whether `~distr_queue()` et al. throw, because that would require marking the entire stack of destructors noexcept(false)
+			// including the ~shared_ptr we use internally for reference semantics. Instead we verify that the runtime operations their trackers call throw.
+			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_queue(), what);
+			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_buffer(get_buffer_id(buf)), what);
+			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_host_object(get_host_object_id(ho)), what);
+		}).join();
+	}
+
 } // namespace detail
 } // namespace celerity

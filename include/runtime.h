@@ -89,6 +89,13 @@ namespace detail {
 
 		static std::unique_ptr<runtime> s_instance;
 
+		// `runtime` is not thread safe except for its delegate implementations, so we store the id of the thread where it was instantiated (the application
+		// thread) in order to throw if the user attempts to issue a runtime operation from any other thread. One case where this may happen unintentionally
+		// is capturing a buffer into a host-task by value, where this capture is the last reference to the buffer: The runtime would attempt to destroy itself
+		// from a thread that it also needs to await, which would at least cause a deadlock. This variable is immutable, so reading it from a different thread
+		// for the purpose of the check is safe.
+		std::thread::id m_application_thread;
+
 		std::unique_ptr<config> m_cfg;
 		std::unique_ptr<experimental::bench::detail::user_benchmarker> m_user_bench;
 		std::unique_ptr<host_queue> m_h_queue;
@@ -119,6 +126,10 @@ namespace detail {
 		runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector);
 		runtime(const runtime&) = delete;
 		runtime(runtime&&) = delete;
+
+		// Throw if not called from m_application_thread (see that variable for more info on the matter). Since there are thread-safe and non thread-safe member
+		// functions, we call this check at the beginning of all the non-safe ones.
+		void require_call_from_application_thread() const;
 
 		// scheduler::delegate
 		void submit_instruction(const instruction& instr) override;

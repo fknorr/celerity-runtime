@@ -104,6 +104,8 @@ namespace detail {
 	}
 
 	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
+		m_application_thread = std::this_thread::get_id();
+
 		if(s_test_mode) {
 			assert(s_test_active && "initializing the runtime from a test without a runtime_fixture");
 			s_test_runtime_was_instantiated = true;
@@ -179,7 +181,16 @@ namespace detail {
 		    get_build_type(), get_mimalloc_string());
 	}
 
+	void runtime::require_call_from_application_thread() const {
+		if(std::this_thread::get_id() != m_application_thread) {
+			throw std::runtime_error("Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destructed from "
+			                         "the application thread. Make sure that you did not accidentally capture one of these types in a host_task.");
+		}
+	}
+
 	runtime::~runtime() {
+		require_call_from_application_thread();
+
 		// create a shutdown epoch and pass it to the scheduler via callback
 		const auto shutdown_epoch = m_task_mngr->generate_epoch_task(epoch_action::shutdown);
 
@@ -234,13 +245,19 @@ namespace detail {
 	}
 
 	void runtime::sync(epoch_action action) {
+		require_call_from_application_thread();
 		const auto epoch = m_task_mngr->generate_epoch_task(action);
 		m_task_mngr->await_epoch(epoch);
 	}
 
-	task_manager& runtime::get_task_manager() const { return *m_task_mngr; }
+	task_manager& runtime::get_task_manager() const {
+		require_call_from_application_thread();
+		return *m_task_mngr;
+	}
 
 	std::string runtime::gather_command_graph() const {
+		require_call_from_application_thread();
+
 		assert(m_command_recorder.get() != nullptr);
 		const auto graph_str = print_command_graph(m_local_nid, *m_command_recorder);
 
@@ -270,6 +287,7 @@ namespace detail {
 	}
 
 	void runtime::submit_instruction(const instruction& instr) {
+		// thread-safe
 		assert(m_exec != nullptr);
 		if(!is_dry_run() || utils::isa<epoch_instruction>(&instr) || utils::isa<horizon_instruction>(&instr) || utils::isa<fence_instruction>(&instr)) {
 			m_exec->submit_instruction(instr);
@@ -277,26 +295,39 @@ namespace detail {
 	}
 
 	void runtime::submit_pilot(const outbound_pilot& pilot) {
+		// thread-safe
 		assert(m_exec != nullptr);
 		if(!is_dry_run()) { m_exec->submit_pilot(pilot); }
 	}
 
-	void runtime::horizon_reached(const task_id horizon_tid) { m_task_mngr->notify_horizon_reached(horizon_tid); }
+	void runtime::horizon_reached(const task_id horizon_tid) {
+		// thread-safe
+		m_task_mngr->notify_horizon_reached(horizon_tid);
+	}
 
-	void runtime::epoch_reached(const task_id epoch_tid) { m_task_mngr->notify_epoch_reached(epoch_tid); }
+	void runtime::epoch_reached(const task_id epoch_tid) {
+		// thread-safe
+		m_task_mngr->notify_epoch_reached(epoch_tid);
+	}
 
 	void runtime::create_queue() {
+		require_call_from_application_thread();
+
 		if(m_has_live_queue) { throw std::runtime_error("Only one celerity::distr_queue can be created per process (but it can be copied!)"); }
 		m_has_live_queue = true;
 	}
 
 	void runtime::destroy_queue() {
+		require_call_from_application_thread();
+
 		assert(m_has_live_queue);
 		m_has_live_queue = false;
 		destroy_instance_if_unreferenced();
 	}
 
 	buffer_id runtime::create_buffer(const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const void* const host_init_ptr) {
+		require_call_from_application_thread();
+
 		const auto bid = m_next_buffer_id++;
 		m_live_buffers.emplace(bid);
 		const auto is_host_initialized = host_init_ptr != nullptr;
@@ -307,12 +338,16 @@ namespace detail {
 	}
 
 	void runtime::set_buffer_debug_name(const buffer_id bid, const std::string& debug_name) {
+		require_call_from_application_thread();
+
 		assert(m_live_buffers.count(bid) != 0);
 		m_task_mngr->set_buffer_debug_name(bid, debug_name);
 		m_schdlr->set_buffer_debug_name(bid, debug_name);
 	}
 
 	void runtime::destroy_buffer(const buffer_id bid) {
+		require_call_from_application_thread();
+
 		assert(m_live_buffers.count(bid) != 0);
 		m_schdlr->notify_buffer_destroyed(bid);
 		m_task_mngr->destroy_buffer(bid);
@@ -321,6 +356,8 @@ namespace detail {
 	}
 
 	host_object_id runtime::create_host_object(std::unique_ptr<host_object_instance> instance) {
+		require_call_from_application_thread();
+
 		const auto hoid = m_next_host_object_id++;
 		m_live_host_objects.emplace(hoid);
 		const bool owns_instance = instance != nullptr;
@@ -331,6 +368,8 @@ namespace detail {
 	}
 
 	void runtime::destroy_host_object(const host_object_id hoid) {
+		require_call_from_application_thread();
+
 		assert(m_live_host_objects.count(hoid) != 0);
 		m_schdlr->notify_host_object_destroyed(hoid);
 		m_task_mngr->destroy_host_object(hoid);
@@ -340,6 +379,8 @@ namespace detail {
 
 
 	reduction_id runtime::create_reduction(std::unique_ptr<runtime_reduction> reduction) {
+		require_call_from_application_thread();
+
 		const auto rid = m_next_reduction_id++;
 		m_exec->announce_reduction(rid, std::move(reduction));
 		return rid;

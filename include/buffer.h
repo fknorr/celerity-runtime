@@ -4,7 +4,6 @@
 
 #include <CL/sycl.hpp>
 
-#include "range_mapper.h"
 #include "ranges.h"
 #include "runtime.h"
 #include "sycl_wrappers.h"
