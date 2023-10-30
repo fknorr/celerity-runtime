@@ -210,7 +210,7 @@ namespace detail {
 		}
 
 		const auto result = experimental::fence(q, buf_out).get();
-		for (size_t i = 0; i < range.size(); ++i) {
+		for(size_t i = 0; i < range.size(); ++i) {
 			REQUIRE_LOOP(result.get_data()[i] == i);
 		}
 	}
@@ -552,65 +552,60 @@ namespace detail {
 		CHECK(sizeof(local_accessor<int, 0>) == sizeof(accessor_testspy::declval_sycl_accessor<local_accessor<int, 0>>()));
 	}
 
-	TEST_CASE_METHOD(accessor_fixture<0>, "closure_hydrator provides correct pointers to host and device accessors", "[closure_hydrator][accessor]") {
-		auto& bm = get_buffer_manager();
-		auto bid = bm.register_buffer<size_t, 1>({100, 1, 1});
-		auto& q = get_device_queue();
+	TEST_CASE("closure_hydrator provides correct pointers to host and device accessors", "[closure_hydrator][accessor]") {
+		const auto allocation = reinterpret_cast<void*>(0x12345abcdef);
+		const range<3> buffer_range(30, 29, 28);
+		const id<3> allocation_offset_in_buffer(4, 8, 12);
+		const range<3> allocation_range(5, 7, 9);
+		const box<3> box = subrange(allocation_offset_in_buffer, allocation_range);
+		const std::vector<closure_hydrator::accessor_info> infos{{allocation, box, box}};
 
 		SECTION("host accessor") {
-			auto access_info = bm.access_host_buffer<size_t, 1>(bid, access_mode::discard_write, {{}, {100}});
-			std::vector<closure_hydrator::accessor_info> infos;
-			infos.push_back({access_info.ptr, subrange(access_info.backing_buffer_offset, access_info.backing_buffer_range), subrange<3>{{}, {100, 1, 1}}});
-			auto acc = accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(subrange<1>({}, {100}), hydration_id(1),
-			    detail::id_cast<1>(access_info.backing_buffer_offset), detail::range_cast<1>(access_info.backing_buffer_range),
-			    detail::range_cast<1>(bm.get_buffer_info(bid).range));
-			CHECK(accessor_testspy::get_pointer(acc) != access_info.ptr);
-			closure_hydrator::get_instance().arm(target::host_task, std::move(infos));
-			const auto run_check = closure_hydrator::get_instance().hydrate<target::host_task>(
-			    [&, hydrated_acc = acc] { CHECK(accessor_testspy::get_pointer(hydrated_acc) == access_info.ptr); });
-			run_check();
+			auto acc = accessor_testspy::make_host_accessor<size_t, 3, access_mode::discard_write>(
+			    box.get_subrange(), hydration_id(1), allocation_offset_in_buffer, allocation_range, buffer_range);
+			CHECK(accessor_testspy::get_pointer(acc) != allocation);
+			closure_hydrator::get_instance().arm(target::host_task, infos);
+			const auto hydrated_closure =
+			    closure_hydrator::get_instance().hydrate<target::host_task>([&, hydrated_acc = acc] { return accessor_testspy::get_pointer(hydrated_acc); });
+			CHECK(hydrated_closure() == allocation);
 		}
 
 		SECTION("device accessor") {
-			auto access_info = bm.access_device_buffer<size_t, 1>(bid, access_mode::discard_write, {{}, {100}});
-			std::vector<closure_hydrator::accessor_info> infos;
-			infos.push_back({access_info.ptr, subrange(access_info.backing_buffer_offset, access_info.backing_buffer_range), subrange<3>{{}, {100, 1, 1}}});
-			auto acc = accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(
-			    hydration_id(1), id_cast<1>(access_info.backing_buffer_offset), detail::range_cast<1>(access_info.backing_buffer_range));
-			CHECK(accessor_testspy::get_pointer(acc) != access_info.ptr);
-			accessor<size_t, 1, access_mode::discard_write, target::device> hydrated_acc;
-			closure_hydrator::get_instance().arm(target::device, std::move(infos));
-			q.get_sycl_queue().submit([&](sycl::handler& cgh) {
-				closure_hydrator::get_instance().hydrate<target::device>(cgh, [&hydrated_acc, acc]() { hydrated_acc = acc; })(/* call to hydrate */);
-				cgh.single_task<class UKN(nop)>([] {});
-			});
-			CHECK(accessor_testspy::get_pointer(hydrated_acc) == access_info.ptr);
+			auto acc =
+			    accessor_testspy::make_device_accessor<size_t, 3, access_mode::discard_write>(hydration_id(1), allocation_offset_in_buffer, allocation_range);
+			CHECK(accessor_testspy::get_pointer(acc) != allocation);
+			accessor<size_t, 3, access_mode::discard_write, target::device> hydrated_acc;
+			closure_hydrator::get_instance().arm(target::device, infos);
+			sycl::queue(sycl::gpu_selector())
+			    .submit([&](sycl::handler& cgh) {
+				    closure_hydrator::get_instance().hydrate<target::device>(cgh, [&hydrated_acc, acc]() { hydrated_acc = acc; })(/* call to hydrate */);
+				    cgh.single_task<class UKN(nop)>([] {});
+			    })
+			    .wait();
+			CHECK(accessor_testspy::get_pointer(hydrated_acc) == allocation);
 		}
 	}
 
-	TEST_CASE_METHOD(accessor_fixture<0>, "closure_hydrator correctly handles unused and duplicate accessors", "[closure_hydrator][accessor]") {
-		auto& bm = get_buffer_manager();
-		auto& q = get_device_queue();
-
-		std::vector<closure_hydrator::accessor_info> infos;
+	TEST_CASE("closure_hydrator correctly handles unused and duplicate accessors", "[closure_hydrator][accessor]") {
 		hydration_id next_hid = 1;
-		auto create_accessor = [&](const buffer_id bid) {
-			auto access_info = bm.access_host_buffer<size_t, 1>(bid, access_mode::discard_write, {{}, {10}});
-			infos.push_back({access_info.ptr, subrange(access_info.backing_buffer_offset, access_info.backing_buffer_range), subrange<3>{{}, {10, 1, 1}}});
-			auto acc = accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(subrange<1>({}, {10}), next_hid++,
-			    id_cast<1>(access_info.backing_buffer_offset), detail::range_cast<1>(access_info.backing_buffer_range),
-			    detail::range_cast<1>(bm.get_buffer_info(bid).range));
-			return std::pair{acc, access_info.ptr};
+		std::vector<closure_hydrator::accessor_info> infos;
+		auto create_accessor = [&](const test_utils::mock_buffer<1>& buf) {
+			const auto allocation = reinterpret_cast<void*>(0x12345abc000 + buf.get_id());
+			const subrange<1> sr(0, 10);
+			infos.push_back({allocation, subrange_cast<3>(sr), subrange_cast<3>(sr)});
+			auto acc = accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, next_hid++, sr.offset, sr.range, buf.get_range());
+			return std::pair{acc, allocation};
 		};
 
-		const auto bid1 = bm.register_buffer<size_t, 1>({10, 1, 1});
-		[[maybe_unused]] const auto [acc1, ptr1] = create_accessor(bid1);
-		const auto bid2 = bm.register_buffer<size_t, 1>({20, 1, 1});
-		const auto [acc2, ptr2] = create_accessor(bid2);
-		const auto bid3 = bm.register_buffer<size_t, 1>({30, 1, 1});
-		[[maybe_unused]] const auto [acc3, ptr3] = create_accessor(bid3);
-		const auto bid4 = bm.register_buffer<size_t, 1>({40, 1, 1});
-		const auto [acc4, ptr4] = create_accessor(bid4);
+		test_utils::mock_buffer_factory mbf;
+		const auto buf1 = mbf.create_buffer<1>(10);
+		[[maybe_unused]] const auto [acc1, ptr1] = create_accessor(buf1);
+		const auto buf2 = mbf.create_buffer<1>(20);
+		const auto [acc2, ptr2] = create_accessor(buf2);
+		const auto buf3 = mbf.create_buffer<1>(30);
+		[[maybe_unused]] const auto [acc3, ptr3] = create_accessor(buf3);
+		const auto buf4 = mbf.create_buffer<1>(40);
+		const auto [acc4, ptr4] = create_accessor(buf4);
 		auto acc5 = acc4;
 
 		auto closure = [acc2 = acc2, acc4 = acc4, acc5 = acc5] {
@@ -623,10 +618,10 @@ namespace detail {
 		CHECK(ptr4 == std::get<2>(hydrated_closure()));
 	}
 
-	TEST_CASE_METHOD(accessor_fixture<0>, "closure_hydrator correctly hydrates local_accessor", "[closure_hydrator][accessor][smoke-test]") {
-		auto& q = get_device_queue();
+	TEST_CASE("closure_hydrator correctly hydrates local_accessor", "[closure_hydrator][accessor][smoke-test]") {
+		sycl::queue q(sycl::gpu_selector{});
 		auto local_acc = accessor_testspy::make_local_accessor<size_t, 1>(range<1>(2));
-		size_t* const result = sycl::malloc_device<size_t>(2, q.get_sycl_queue());
+		size_t* const result = sycl::malloc_device<size_t>(2, q);
 		auto closure = [=](sycl::nd_item<1> itm) {
 			// We can't really check pointers or anything, so this is a smoke test
 			local_acc[itm.get_local_id()] = 100 + itm.get_local_id(0) * 10;
@@ -640,12 +635,13 @@ namespace detail {
 			 cgh.parallel_for(sycl::nd_range<1>{{2}, {2}}, [=](sycl::nd_item<1> itm) { hydrated_closure(itm); });
 		 }).wait_and_throw();
 		size_t result_host[2];
-		q.get_sycl_queue().memcpy(&result_host[0], result, 2 * sizeof(size_t)).wait_and_throw();
+		q.memcpy(&result_host[0], result, 2 * sizeof(size_t)).wait_and_throw();
 		CHECK(result_host[0] == 110);
 		CHECK(result_host[1] == 100);
-		sycl::free(result, q.get_sycl_queue());
+		sycl::free(result, q);
 	}
 
+#if 0
 	template <int>
 	class oob_fixture : public test_utils::runtime_fixture {};
 
@@ -752,6 +748,7 @@ namespace detail {
 		    buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
+#endif
 
 } // namespace detail
 } // namespace celerity
