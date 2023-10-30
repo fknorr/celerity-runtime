@@ -45,7 +45,7 @@ namespace test_utils {
 	template <typename KernelName = detail::unnamed_kernel, int Dims, typename KernelFn>
 	void run_parallel_for(sycl::queue& q, const range<Dims>& global_range, const id<Dims>& global_offset, KernelFn fn) {
 		q.submit([=](sycl::handler& cgh) {
-			cgh.parallel_for<KernelName>(sycl::range<Dims>{global_range}, detail::bind_simple_kernel(fn, global_range, global_offset, global_offset));
+			cgh.parallel_for(sycl::range<Dims>{global_range}, detail::bind_simple_kernel(fn, global_range, global_offset, global_offset));
 		});
 		q.wait_and_throw();
 	}
