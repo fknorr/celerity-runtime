@@ -138,7 +138,8 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 
 	distr_queue q;
 	celerity::range<1> range(16);
-	celerity::buffer<int, 1> buff_a(range);
+	std::vector<int> init(range.size());
+	celerity::buffer<int, 1> buff_a(init.data(), range);
 
 	// set small horizon step size so that we do not need to generate a very large graph to test this functionality
 	auto& tm = celerity::detail::runtime::get_instance().get_task_manager();

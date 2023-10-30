@@ -1382,7 +1382,7 @@ namespace detail {
 		buffer<int, 1> buf(range<1>(1));
 		experimental::host_object<int> ho(42);
 
-		constexpr auto what = "Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destructed from the "
+		constexpr auto what = "Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destroyed from the "
 		                      "application thread. Make sure that you did not accidentally capture one of these types in a host_task.";
 		std::thread([&] {
 			CHECK_THROWS_WITH((distr_queue{}), what);

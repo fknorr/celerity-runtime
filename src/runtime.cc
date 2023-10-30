@@ -183,7 +183,7 @@ namespace detail {
 
 	void runtime::require_call_from_application_thread() const {
 		if(std::this_thread::get_id() != m_application_thread) {
-			throw std::runtime_error("Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destructed from "
+			throw std::runtime_error("Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destroyed from "
 			                         "the application thread. Make sure that you did not accidentally capture one of these types in a host_task.");
 		}
 	}

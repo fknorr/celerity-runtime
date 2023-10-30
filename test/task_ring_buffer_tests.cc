@@ -15,13 +15,15 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "freeing task ring buffer capacity
 
 	std::atomic<bool> reached_ringbuffer_capacity = false;
 
+	auto& tm = runtime::get_instance().get_task_manager(); // we promise using task_manager in a thread safe manner
 	auto observer = std::thread([&] {
-		while(runtime::get_instance().get_task_manager().get_total_task_count() < task_ringbuffer_size)
+		while(tm.get_total_task_count() < task_ringbuffer_size)
 			;
 		reached_ringbuffer_capacity = true;
 	});
 
-	celerity::buffer<int, 1> dependency{1};
+	int init = 0;
+	celerity::buffer<int, 1> dependency(&init, 1);
 
 	for(size_t i = 0; i < task_ringbuffer_size + 10; ++i) {
 		q.submit([&](celerity::handler& cgh) {

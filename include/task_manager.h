@@ -189,6 +189,7 @@ namespace detail {
 	  private:
 		struct per_buffer_data {
 			std::string debug_name;
+
 			// We store a map of which task last wrote to a certain region of a buffer.
 			// NOTE: This represents the state after the latest task created.
 			// TODO turn into non-null task pointer - the last writer should start out with the last epoch
