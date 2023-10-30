@@ -2,7 +2,6 @@
 
 #include "ranges.h"
 #include "types.h"
-#include <hipSYCL/sycl/usm.hpp>
 
 namespace celerity::detail::backend_detail {
 
@@ -82,7 +81,7 @@ generic_queue::generic_queue(const std::vector<device_config>& devices) {
 	}
 }
 
-std::pair<void*, std::unique_ptr<event>> generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
 	auto& queue = m_memory_queues.at(host_memory_id);
 	void* ptr;
 	if(where == host_memory_id) {
@@ -96,12 +95,11 @@ std::pair<void*, std::unique_ptr<event>> generic_queue::malloc(const memory_id w
 		queue.memset(ptr, static_cast<int>(uninitialized_memory_pattern), size).wait();
 #endif
 	}
-	return {ptr, std::make_unique<sycl_event>()}; // synchronous
+	return ptr;
 }
 
-std::unique_ptr<event> generic_queue::free(const memory_id where, void* const allocation) {
+void generic_queue::free(const memory_id where, void* const allocation) {
 	sycl::free(allocation, m_memory_queues.at(where));
-	return std::make_unique<sycl_event>(); // synchronous
 }
 
 std::unique_ptr<event> generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id target, const void* const source_base_ptr,

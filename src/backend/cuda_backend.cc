@@ -182,18 +182,11 @@ struct cuda_queue::impl {
 		std::unordered_map<memory_id, backend_detail::unique_cuda_stream> copy_from_peer_stream;
 	};
 
-	sycl::context context;
 	std::unordered_map<device_id, device> devices;
 	std::unordered_map<memory_id, memory> memories;
 };
 
 cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::make_unique<impl>()) {
-	std::vector<sycl::device> sycl_devices(devices.size());
-	for(size_t i = 0; i < sycl_devices.size(); ++i) {
-		sycl_devices[i] = devices[i].sycl_device;
-	}
-	m_impl->context = sycl::context(sycl_devices, backend::handle_sycl_errors);
-
 	for(const auto& config : devices) {
 		assert(m_impl->devices.count(config.device_id) == 0);
 		assert(m_impl->memories.count(config.native_memory) == 0); // TODO handle devices that share memory
@@ -201,7 +194,7 @@ cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::
 		const cuda_device_id cuda_id = config.sycl_device.hipSYCL_device_id().get_id();
 		backend_detail::cuda_set_device_guard set_device(cuda_id);
 
-		impl::device dev{cuda_id, sycl::queue(m_impl->context, config.sycl_device, backend::handle_sycl_errors)};
+		impl::device dev{cuda_id, sycl::queue(config.sycl_device, backend::handle_sycl_errors)};
 		m_impl->devices.emplace(config.device_id, std::move(dev));
 
 		impl::memory mem;
@@ -218,7 +211,7 @@ cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::
 
 cuda_queue::~cuda_queue() = default;
 
-std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+void* cuda_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
 	void* ptr;
 	if(where == host_memory_id) {
 		CELERITY_CUDA_CHECK(cudaMallocHost, &ptr, size, cudaHostAllocDefault);
@@ -240,10 +233,10 @@ std::pair<void*, std::unique_ptr<event>> cuda_queue::malloc(const memory_id wher
 	}
 
 	assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
-	return {ptr, std::make_unique<cuda_host_event>()};
+	return ptr;
 }
 
-std::unique_ptr<event> cuda_queue::free(const memory_id where, void* const allocation) {
+void cuda_queue::free(const memory_id where, void* const allocation) {
 	if(where == host_memory_id) {
 		CELERITY_CUDA_CHECK(cudaFreeHost, allocation);
 	} else {
@@ -251,7 +244,6 @@ std::unique_ptr<event> cuda_queue::free(const memory_id where, void* const alloc
 		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
 		CELERITY_CUDA_CHECK(cudaFree, allocation);
 	}
-	return std::make_unique<cuda_host_event>();
 }
 
 std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,

@@ -38,9 +38,9 @@ class cuda_queue final : public queue {
 	explicit cuda_queue(const std::vector<device_config>& devices);
 	~cuda_queue() override;
 
-	std::pair<void*, std::unique_ptr<event>> malloc(memory_id where, size_t size, size_t alignment) override;
+	void* malloc(memory_id where, size_t size, size_t alignment) override;
 
-	std::unique_ptr<event> free(memory_id where, void* allocation) override;
+	void free(memory_id where, void* allocation) override;
 
 	std::unique_ptr<event> memcpy_strided_device(int dims, memory_id source, memory_id dest, const void* source_base_ptr, void* target_base_ptr,
 	    size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset,

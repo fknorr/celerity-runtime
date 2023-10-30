@@ -64,6 +64,7 @@ void instruction_executor::loop() {
 			return matchbox::match(
 			    completion_event, //
 			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
+			    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK([](const boundary_checked_event& e) { return e.is_complete(); }),
 			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); },
 			    [](const receive_arbiter::event& evt) { return evt.is_complete(); },
 			    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; },
@@ -176,6 +177,61 @@ void instruction_executor::loop() {
 	assert(m_host_object_instances.empty());
 }
 
+instruction_executor::accessor_aux_info instruction_executor::prepare_accessor_hydration(target target, const access_allocation_map& amap) {
+	accessor_aux_info aux_info;
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	if(!amap.empty()) {
+		aux_info.out_of_bounds_box_per_accessor =
+		    static_cast<oob_bounding_box*>(m_backend_queue->malloc(host_memory_id, amap.size() * sizeof(oob_bounding_box), alignof(oob_bounding_box)));
+		std::uninitialized_default_construct_n(aux_info.out_of_bounds_box_per_accessor, amap.size());
+	}
+#endif
+
+	std::vector<closure_hydrator::accessor_info> accessor_infos;
+	accessor_infos.reserve(amap.size());
+	for(size_t i = 0; i < amap.size(); ++i) {
+		const auto ptr = m_allocations.at(amap[i].allocation_id);
+
+		accessor_infos.push_back(closure_hydrator::accessor_info{ptr, amap[i].allocated_box_in_buffer,
+		    amap[i].accessed_box_in_buffer CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, &aux_info.out_of_bounds_box_per_accessor[i])});
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+		aux_info.declared_box_per_accessor.push_back(amap[i].accessed_box_in_buffer);
+#endif
+	}
+
+	closure_hydrator::get_instance().arm(target, std::move(accessor_infos));
+
+	return aux_info;
+}
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+bool instruction_executor::boundary_checked_event::is_complete() const {
+	if(!state.has_value()) return true; // we clear `state` completion to make is_complete() idempotent
+
+	const bool is_complete = matchbox::match(
+	    state->event, //
+	    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
+	    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
+	if(!is_complete) return false;
+
+	for(size_t i = 0; i < state->aux_info.declared_box_per_accessor.size(); ++i) {
+		if(const auto oob_box = state->aux_info.out_of_bounds_box_per_accessor[i].into_box(); !oob_box.empty()) {
+			// This does not print task and buffer debug names as we used to prior to the IDAG transition. Including this info would require us to conditionally
+			// integrate debug info into kernel / host task instructions. TODO
+			CELERITY_ERROR("Out-of-bounds access detected: accessor {} attempted to access indices between {} which are outside of the mapped range {}", i,
+			    oob_box, state->aux_info.declared_box_per_accessor[i]);
+		}
+	}
+
+	if(state->aux_info.out_of_bounds_box_per_accessor != nullptr /* i.e. there is at least one accessor */) {
+		state->executor->m_backend_queue->free(host_memory_id, state->aux_info.out_of_bounds_box_per_accessor);
+	}
+
+	state = {}; // make is_complete() idempotent
+	return true;
+}
+#endif
+
 instruction_executor::event instruction_executor::begin_executing(const instruction& instr) {
 	static constexpr auto log_accesses = [](const access_allocation_map& map) {
 		std::string acc_log;
@@ -206,11 +262,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(), ainstr.get_size(),
 		        ainstr.get_alignment());
 
-		    auto [ptr, event] = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
+		    auto ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
 		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
 
 		    CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
-		    return std::move(event);
+		    return completed_synchronous();
 	    },
 	    [&](const free_instruction& finstr) {
 		    const auto it = m_allocations.find(finstr.get_allocation_id());
@@ -220,7 +276,8 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: free M{}.A{}", finstr.get_id(), finstr.get_memory_id(), finstr.get_allocation_id());
 
 		    m_allocations.erase(it);
-		    return m_backend_queue->free(finstr.get_memory_id(), ptr);
+		    m_backend_queue->free(finstr.get_memory_id(), ptr);
+		    return completed_synchronous();
 	    },
 	    [&](const init_buffer_instruction& ibinstr) {
 		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
@@ -284,16 +341,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: launch SYCL kernel on D{}, {}{}", skinstr.get_id(), skinstr.get_device_id(), skinstr.get_execution_range(),
 		        log_accesses(skinstr.get_access_allocations()));
 
-		    std::vector<closure_hydrator::accessor_info> accessor_infos;
-		    accessor_infos.reserve(skinstr.get_access_allocations().size());
-		    for(const auto& aa : skinstr.get_access_allocations()) {
-			    const auto ptr = m_allocations.at(aa.allocation_id);
-#if CELERITY_ACCESSOR_BOUNDARY_CHECK
-			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer, nullptr /* TODO */});
-#else
-			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer, aa.buffer_subrange});
-#endif
-		    }
+		    auto aux_info = prepare_accessor_hydration(target::device, skinstr.get_access_allocations());
 
 		    std::vector<void*> reduction_ptrs;
 		    reduction_ptrs.reserve(skinstr.get_reduction_allocations().size());
@@ -301,22 +349,19 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 			    reduction_ptrs.push_back(m_allocations.at(ra.allocation_id));
 		    }
 
-		    closure_hydrator::get_instance().arm(target::device, std::move(accessor_infos));
+		    auto evt = m_backend_queue->launch_kernel(skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs);
 
-		    return m_backend_queue->launch_kernel(skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs);
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(aux_info)}};
+#else
+		    return evt;
+#endif
 	    },
 	    [&](const host_task_instruction& htinstr) {
 		    CELERITY_DEBUG(
 		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_access_allocations()));
 
-		    std::vector<closure_hydrator::accessor_info> accessor_infos;
-		    accessor_infos.reserve(htinstr.get_access_allocations().size());
-		    for(const auto& aa : htinstr.get_access_allocations()) {
-			    const auto ptr = m_allocations.at(aa.allocation_id);
-			    accessor_infos.push_back(closure_hydrator::accessor_info{ptr, aa.allocated_box_in_buffer, aa.accessed_box_in_buffer});
-		    }
-
-		    closure_hydrator::get_instance().arm(target::host_task, std::move(accessor_infos));
+		    auto aux_info = prepare_accessor_hydration(target::host_task, htinstr.get_access_allocations());
 
 		    // TODO executor must not have any direct dependency on MPI!
 		    MPI_Comm mpi_comm = MPI_COMM_NULL;
@@ -326,7 +371,13 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    }
 
 		    const auto& launch = htinstr.get_launcher();
-		    return launch(m_host_queue, htinstr.get_execution_range(), mpi_comm);
+		    auto evt = launch(m_host_queue, htinstr.get_execution_range(), mpi_comm);
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(aux_info)}};
+#else
+		    return evt;
+#endif
 	    },
 	    [&](const send_instruction& sinstr) {
 		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), host_memory_id /* TODO RDMA */,

@@ -576,7 +576,8 @@ namespace detail {
 			CHECK(accessor_testspy::get_pointer(acc) != allocation);
 			accessor<size_t, 3, access_mode::discard_write, target::device> hydrated_acc;
 			closure_hydrator::get_instance().arm(target::device, infos);
-			sycl::queue(sycl::gpu_selector())
+			test_utils::sycl_queue_fixture()
+			    .get_sycl_queue()
 			    .submit([&](sycl::handler& cgh) {
 				    closure_hydrator::get_instance().hydrate<target::device>(cgh, [&hydrated_acc, acc]() { hydrated_acc = acc; })(/* call to hydrate */);
 				    cgh.single_task<class UKN(nop)>([] {});
@@ -618,10 +619,9 @@ namespace detail {
 		CHECK(ptr4 == std::get<2>(hydrated_closure()));
 	}
 
-	TEST_CASE("closure_hydrator correctly hydrates local_accessor", "[closure_hydrator][accessor][smoke-test]") {
-		sycl::queue q(sycl::gpu_selector{});
+	TEST_CASE_METHOD(test_utils::sycl_queue_fixture, "closure_hydrator correctly hydrates local_accessor", "[closure_hydrator][accessor][smoke-test]") {
 		auto local_acc = accessor_testspy::make_local_accessor<size_t, 1>(range<1>(2));
-		size_t* const result = sycl::malloc_device<size_t>(2, q);
+		size_t* const result = sycl::malloc_device<size_t>(2, get_sycl_queue());
 		auto closure = [=](sycl::nd_item<1> itm) {
 			// We can't really check pointers or anything, so this is a smoke test
 			local_acc[itm.get_local_id()] = 100 + itm.get_local_id(0) * 10;
@@ -630,25 +630,20 @@ namespace detail {
 			result[itm.get_local_id(0)] = local_acc[1 - itm.get_local_id()];
 		};
 		closure_hydrator::get_instance().arm(target::device, {});
-		q.submit([&](sycl::handler& cgh) {
-			 auto hydrated_closure = closure_hydrator::get_instance().hydrate<target::device>(cgh, closure);
-			 cgh.parallel_for(sycl::nd_range<1>{{2}, {2}}, [=](sycl::nd_item<1> itm) { hydrated_closure(itm); });
-		 }).wait_and_throw();
+		get_sycl_queue()
+		    .submit([&](sycl::handler& cgh) {
+			    auto hydrated_closure = closure_hydrator::get_instance().hydrate<target::device>(cgh, closure);
+			    cgh.parallel_for(sycl::nd_range<1>{{2}, {2}}, [=](sycl::nd_item<1> itm) { hydrated_closure(itm); });
+		    })
+		    .wait_and_throw();
 		size_t result_host[2];
-		q.memcpy(&result_host[0], result, 2 * sizeof(size_t)).wait_and_throw();
+		get_sycl_queue().memcpy(&result_host[0], result, 2 * sizeof(size_t)).wait_and_throw();
 		CHECK(result_host[0] == 110);
 		CHECK(result_host[1] == 100);
-		sycl::free(result, q);
+		sycl::free(result, get_sycl_queue());
 	}
 
-#if 0
-	template <int>
-	class oob_fixture : public test_utils::runtime_fixture {};
-
-	template <int>
-	class acc_out_of_bounds_kernel {};
-
-	TEMPLATE_TEST_CASE_METHOD_SIG(oob_fixture, "device accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(accessor_fixture, "device accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif
@@ -673,7 +668,7 @@ namespace detail {
 				accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
 				accessor named_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
 
-				cgh.parallel_for<acc_out_of_bounds_kernel<Dims>>(range<Dims>(ones), [=](item<Dims>) {
+				cgh.parallel_for(range<Dims>(ones), [=](item<Dims>) {
 					unnamed_acc[oob_idx_lo] = 0;
 					unnamed_acc[oob_idx_hi] = 0;
 
@@ -684,22 +679,21 @@ namespace detail {
 			q.slow_full_sync();
 		}
 
-		const auto attempted_sr =
-		    subrange<3>{id_cast<3>(oob_idx_lo), range_cast<3>(oob_idx_hi - oob_idx_lo + id_cast<Dims>(range<Dims>(ones))) - range_cast<3>(range<Dims>(zeros))};
+		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
 		const auto unnamed_error_message =
-		    fmt::format("Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 0 for buffer 0 attempted to "
-		                "access indices between {} which are outside of mapped subrange {}",
-		        Dims, attempted_sr, subrange_cast<3>(accessible_sr));
+		    fmt::format("Out-of-bounds access detected: accessor 0 attempted to access indices between {} which are outside of the mapped range {}",
+		        attempted_box, box_cast<3>(box(accessible_sr)));
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
 
-		const auto named_error_message =
-		    fmt::format("Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 1 for buffer {} attempted to "
-		                "access indices between {} which are outside of mapped subrange {}",
-		        Dims, buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
+		// TODO
+		// const auto named_error_message =
+		//     fmt::format("Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 1 for buffer {} attempted to "
+		//                 "access indices between {} which are outside of mapped subrange {}",
+		//         Dims, buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
+		// CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
 
-	TEMPLATE_TEST_CASE_METHOD_SIG(oob_fixture, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(accessor_fixture, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif
@@ -736,19 +730,18 @@ namespace detail {
 			q.slow_full_sync();
 		}
 
-		const auto attempted_sr =
-		    subrange<3>{id_cast<3>(oob_idx_lo), range_cast<3>(oob_idx_hi - oob_idx_lo + id_cast<Dims>(range<Dims>(ones))) - range_cast<3>(range<Dims>(zeros))};
-		const auto unnamed_error_message = fmt::format("Out-of-bounds access in host task detected: Accessor 0 for buffer 0 attempted to "
-		                                               "access indices between {} which are outside of mapped subrange {}",
-		    attempted_sr, subrange_cast<3>(accessible_sr));
+		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
+		const auto unnamed_error_message =
+		    fmt::format("Out-of-bounds access detected: accessor 0 attempted to access indices between {} which are outside of the mapped range {}",
+		        attempted_box, box_cast<3>(box(accessible_sr)));
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
 
-		const auto named_error_message = fmt::format("Out-of-bounds access in host task detected: Accessor 1 for buffer {} attempted to "
-		                                             "access indices between {} which are outside of mapped subrange {}",
-		    buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
+		// TODO
+		// const auto named_error_message = fmt::format("Out-of-bounds access detected: accessor 1 attempted to access indices between {} which are outside of
+		// the mapped range {}",
+		//     buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
+		// CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
-#endif
 
 } // namespace detail
 } // namespace celerity

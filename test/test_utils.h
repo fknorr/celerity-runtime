@@ -332,6 +332,20 @@ namespace test_utils {
 		detail::device_queue& get_device_queue() { detail::utils::panic("to be removed"); }
 	};
 
+	class sycl_queue_fixture {
+	  public:
+		sycl_queue_fixture() {
+			try {
+				m_queue = sycl::queue(sycl::gpu_selector_v);
+			} catch(sycl::exception&) { SKIP("no GPUs available"); }
+		}
+
+		sycl::queue& get_sycl_queue() { return m_queue; }
+
+	  private:
+		sycl::queue m_queue;
+	};
+
 	// Printing of graphs can be enabled using the "--print-graphs" command line flag
 	inline bool print_graphs = false;
 
