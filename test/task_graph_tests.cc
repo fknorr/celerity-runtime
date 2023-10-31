@@ -94,16 +94,18 @@ namespace detail {
 		using namespace cl::sycl::access;
 
 		auto tt = test_utils::task_test_context{};
-		auto buf = tt.mbf.create_buffer(range<1>(128));
+		auto buf = tt.mbf.create_buffer(range<1>(128), true /* mark_as_host_initialized */);
 
 		const auto tid_a = test_utils::add_compute_task<class UKN(task_a)>(tt.tm, [&](handler& cgh) {
 			buf.get_access<mode::discard_write>(cgh, fixed<1>{{0, 64}});
 		});
 		const auto tid_b = test_utils::add_compute_task<class UKN(task_b)>(tt.tm, [&](handler& cgh) { buf.get_access<mode::read>(cgh, fixed<1>{{0, 128}}); });
-		REQUIRE(has_dependency(tt.tm, tid_b, tid_a));
+		CHECK(has_dependency(tt.tm, tid_b, tid_a));
+		CHECK(has_dependency(tt.tm, tid_b, task_manager::initial_epoch_task)); // for read of the host-initialized part
 
 		const auto tid_c = test_utils::add_compute_task<class UKN(task_c)>(tt.tm, [&](handler& cgh) { buf.get_access<mode::read>(cgh, fixed<1>{{64, 128}}); });
-		REQUIRE_FALSE(has_dependency(tt.tm, tid_c, tid_a));
+		CHECK_FALSE(has_dependency(tt.tm, tid_c, tid_a));
+		CHECK(has_dependency(tt.tm, tid_c, task_manager::initial_epoch_task)); // for read of the host-initialized part
 	}
 
 	TEST_CASE("task_manager correctly generates anti-dependencies", "[task_manager][task-graph]") {
@@ -137,9 +139,10 @@ namespace detail {
 		using namespace cl::sycl::access;
 
 		auto tt = test_utils::task_test_context{};
-		auto host_init_buf = tt.mbf.create_buffer(range<1>(128), true);
-		auto non_host_init_buf = tt.mbf.create_buffer(range<1>(128), false);
-		auto artificial_dependency_buf = tt.mbf.create_buffer(range<1>(1), false);
+		// TODO policy
+		auto host_init_buf = tt.mbf.create_buffer(range<1>(128), true /* mark_as_host_initialized */);
+		auto non_host_init_buf = tt.mbf.create_buffer(range<1>(128), false /* mark_as_host_initialized */);
+		auto artificial_dependency_buf = tt.mbf.create_buffer(range<1>(1), false /* mark_as_host_initialized */);
 
 		const auto tid_a = test_utils::add_compute_task<class UKN(task_a)>(tt.tm, [&](handler& cgh) {
 			host_init_buf.get_access<mode::read>(cgh, fixed<1>{{0, 128}});
@@ -206,25 +209,25 @@ namespace detail {
 			for(const auto& producer_mode : detail::access::producer_modes) {
 				CAPTURE(consumer_mode);
 				CAPTURE(producer_mode);
+				const bool pure_consumer = consumer_mode == mode::read;
+				const bool pure_producer = producer_mode == mode::discard_read_write || producer_mode == mode::discard_write;
 
 				auto tt = test_utils::task_test_context{};
-				auto buf = tt.mbf.create_buffer(range<1>(128), false);
+				auto buf = tt.mbf.create_buffer(range<1>(128), true /* mark_as_host_initialized */);
 
 				const task_id tid_a = test_utils::add_compute_task<class UKN(task_a)>(tt.tm, [&](handler& cgh) {
-					dispatch_get_access(buf, cgh, producer_mode, fixed<1>{{0, 128}});
+					dispatch_get_access(buf, cgh, producer_mode, all());
 				});
 
 				const task_id tid_b = test_utils::add_compute_task<class UKN(task_b)>(tt.tm, [&](handler& cgh) {
-					dispatch_get_access(buf, cgh, consumer_mode, fixed<1>{{0, 128}});
+					dispatch_get_access(buf, cgh, consumer_mode, all());
 				});
-				REQUIRE(has_dependency(tt.tm, tid_b, tid_a));
+				CHECK(has_dependency(tt.tm, tid_b, tid_a));
 
 				const task_id tid_c = test_utils::add_compute_task<class UKN(task_c)>(tt.tm, [&](handler& cgh) {
-					dispatch_get_access(buf, cgh, producer_mode, fixed<1>{{0, 128}});
+					dispatch_get_access(buf, cgh, producer_mode, all());
 				});
-				const bool pure_consumer = consumer_mode == mode::read;
-				const bool pure_producer = producer_mode == mode::discard_read_write || producer_mode == mode::discard_write;
-				REQUIRE(has_dependency(tt.tm, tid_c, tid_b, pure_consumer || pure_producer ? dependency_kind::anti_dep : dependency_kind::true_dep));
+				CHECK(has_dependency(tt.tm, tid_c, tid_b, pure_consumer || pure_producer ? dependency_kind::anti_dep : dependency_kind::true_dep));
 			}
 		}
 	}
@@ -305,7 +308,7 @@ namespace detail {
 		auto tt = test_utils::task_test_context{};
 
 		tt.tm.set_horizon_step(2);
-		auto buf_a = tt.mbf.create_buffer(range<1>(128));
+		auto buf_a = tt.mbf.create_buffer(range<1>(128), true /* mark_as_host_initialized */);
 
 		test_utils::add_host_task(tt.tm, on_master_node, [&](handler& cgh) { buf_a.get_access<access_mode::discard_write>(cgh, fixed<1>({0, 128})); });
 
@@ -368,7 +371,7 @@ namespace detail {
 		const auto buff_size = 128;
 		const auto num_tasks = 9;
 		const auto buff_elem_per_task = buff_size / num_tasks;
-		auto buf_a = tt.mbf.create_buffer(range<1>(buff_size));
+		auto buf_a = tt.mbf.create_buffer(range<1>(buff_size), true /* mark_as_host_initialized */);
 
 		auto current_horizon = task_manager_testspy::get_current_horizon(tt.tm);
 		CHECK_FALSE(current_horizon.has_value());
@@ -538,7 +541,7 @@ namespace detail {
 
 	TEST_CASE("buffer accesses with empty ranges do not generate data-flow dependencies", "[task_manager][task-graph]") {
 		auto tt = test_utils::task_test_context{};
-		auto buf = tt.mbf.create_buffer(range<2>(32, 32));
+		auto buf = tt.mbf.create_buffer(range<2>(32, 32), true /* mark_as_host_initialized */);
 
 		const auto write_sr = GENERATE(values({subrange<2>{{16, 16}, {0, 0}}, subrange<2>{{16, 16}, {8, 8}}}));
 		const auto read_sr = GENERATE(values({subrange<2>{{1, 1}, {0, 0}}, subrange<2>{{8, 8}, {16, 16}}}));
