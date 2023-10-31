@@ -9,8 +9,6 @@
 #include "log_test_utils.h"
 #include "test_utils.h"
 
-// NOTE: There are some additional accessor tests in buffer_manager_tests.cc
-
 namespace celerity {
 namespace detail {
 
@@ -181,17 +179,6 @@ namespace detail {
 	class check_multi_dim_accessor;
 
 	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "accessor supports multi-dimensional subscript operator", "[accessor]", ((int Dims), Dims), 2, 3) {
-		// This test *used* to fill a buffer<sycl::id<Dims>> and check that the correct indices have been written. However, this caused the ComputeCpp 2.6.0
-		// compiler to segfault on a device-code recursion detection step while traversing the following call path:
-		//
-		// 0. buffer_manager_fixture::get_device_accessor()
-		// 1. buffer_manager::get_device_buffer()
-		// 2. new device_buffer_storage<DataT, Dims>::device_buffer_storage()
-		//
-		// Stripping the device_buffer_storage constructor call in device code (where it is never actually called, this is all pure host code) through
-		// #if __SYCL_DEVICE_ONLY__ did get rid of the segfault, but caused the test to fail with a heap corruption at runtime. Instead, replacing id
-		// with size_t seems to resolve the problem.
-
 		distr_queue q;
 
 		const auto range = test_utils::truncate_range<Dims>({2, 3, 4});

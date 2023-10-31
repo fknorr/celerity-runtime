@@ -1,7 +1,5 @@
 #include "sycl_wrappers.h"
 
-#include <random>
-
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -20,6 +18,7 @@
 #include <celerity.h>
 
 #include "affinity.h"
+#include "buffer_storage.h"
 #include "instruction_executor.h"
 #include "named_threads.h"
 #include "ranges.h"

@@ -14,7 +14,6 @@
 namespace celerity {
 namespace detail {
 
-	class buffer_manager;
 	class task_manager;
 
 	// TODO: Could be extended (using SFINAE) to support additional iterator types (e.g. random access)

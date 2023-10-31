@@ -6,7 +6,6 @@
 
 #include "access_modes.h"
 #include "buffer.h"
-#include "buffer_storage.h"
 #include "cgf_diagnostics.h"
 #include "closure_hydrator.h"
 #include "handler.h"

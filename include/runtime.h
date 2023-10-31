@@ -21,7 +21,6 @@ namespace experimental::bench::detail {
 
 namespace detail {
 
-	class buffer_manager;
 	class command_graph;
 	class runtime_reduction;
 	class scheduler;
@@ -56,8 +55,6 @@ namespace detail {
 		host_queue& get_host_queue() const { return *m_h_queue; }
 
 		device_queue& get_device_queue() const { return *m_d_queue; }
-
-		buffer_manager& get_buffer_manager() const { utils::panic("buffer_manager is history!"); }
 
 		void create_queue();
 
