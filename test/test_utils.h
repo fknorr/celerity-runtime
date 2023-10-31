@@ -342,6 +342,15 @@ namespace test_utils {
 
 		sycl::queue& get_sycl_queue() { return m_queue; }
 
+		// Convenience function for submitting parallel_for with global offset without having to create a CGF
+		template <int Dims, typename KernelFn>
+		void parallel_for(const range<Dims>& global_range, const id<Dims>& global_offset, KernelFn fn) {
+			m_queue.submit([=](sycl::handler& cgh) {
+				cgh.parallel_for(sycl::range<Dims>{global_range}, detail::bind_simple_kernel(fn, global_range, global_offset, global_offset));
+			});
+			m_queue.wait_and_throw();
+		}
+
 	  private:
 		sycl::queue m_queue;
 	};

@@ -6,15 +6,45 @@
 
 #include <celerity.h>
 
-#include "ranges.h"
-
-#include "buffer_manager_test_utils.h"
 #include "log_test_utils.h"
+#include "test_utils.h"
 
 // NOTE: There are some additional accessor tests in buffer_manager_tests.cc
 
 namespace celerity {
 namespace detail {
+
+	struct accessor_testspy {
+		template <typename DataT, int Dims, access_mode Mode, typename... Args>
+		static accessor<DataT, Dims, Mode, target::device> make_device_accessor(Args&&... args) {
+			return {std::forward<Args>(args)...};
+		}
+
+		template <typename DataT, int Dims, access_mode Mode, typename... Args>
+		static accessor<DataT, Dims, Mode, target::host_task> make_host_accessor(Args&&... args) {
+			return {std::forward<Args>(args)...};
+		}
+
+		// It appears to be impossible to make a private member type visible through a typedef here, so we opt for a declval-like function declaration instead
+		template <typename LocalAccessor>
+		static typename LocalAccessor::sycl_accessor declval_sycl_accessor() {
+			static_assert(constexpr_false<LocalAccessor>, "declval_sycl_accessor cannot be used in an evaluated context");
+		}
+
+		template <typename DataT, int Dims, typename... Args>
+		static local_accessor<DataT, Dims> make_local_accessor(Args&&... args) {
+			return local_accessor<DataT, Dims>{std::forward<Args>(args)...};
+		}
+
+		template <typename DataT, int Dims, access_mode Mode, target Tgt>
+		static DataT* get_pointer(const accessor<DataT, Dims, Mode, Tgt>& acc) {
+			if constexpr(Tgt == target::device) {
+				return acc.m_device_ptr;
+			} else {
+				return acc.m_host_ptr;
+			}
+		}
+	};
 
 	using celerity::access::all;
 	using celerity::access::fixed;
@@ -755,7 +785,7 @@ namespace detail {
 			const auto acc =
 			    detail::accessor_testspy::make_device_accessor<size_t, 2, access_mode::discard_write>(ptr, allocation.get_offset(), allocation.get_range());
 
-			test_utils::run_parallel_for(get_sycl_queue(), kernel_range, kernel_offset, [=](id<2> id) { acc[id] = id[0] + id[1]; });
+			parallel_for(kernel_range, kernel_offset, [=](id<2> id) { acc[id] = id[0] + id[1]; });
 
 			for(size_t i = 32; i < 64; ++i) {
 				for(size_t j = 0; j < 32; ++j) {
@@ -825,7 +855,7 @@ namespace detail {
 			REQUIRE(device_acc_a == device_acc_a1);
 			REQUIRE(device_acc_a1 != device_acc_b1);
 
-			test_utils::run_parallel_for(get_sycl_queue(), range, offset, [=](id<1> id) {
+			parallel_for(range, offset, [=](id<1> id) {
 				// Copy ctor
 				decltype(device_acc_a1) device_acc_a2(device_acc_a1);
 				device_acc_a2[id] = 1 * id[0];

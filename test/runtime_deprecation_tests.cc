@@ -1,19 +1,10 @@
 // This diagnostic must be disabled here, because ComputeCpp appears to override it when specified on the command line.
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
-#include "sycl_wrappers.h"
-
-#include <algorithm>
-#include <memory>
-#include <random>
+#include "ranges.h"
+#include "test_utils.h"
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <celerity.h>
-
-#include "ranges.h"
-
-#include "buffer_manager_test_utils.h"
 
 namespace celerity {
 namespace detail {
