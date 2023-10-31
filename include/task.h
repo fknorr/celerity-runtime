@@ -7,15 +7,13 @@
 #include <vector>
 
 #include "bounding_box_set.h"
-#include "device_queue.h"
 #include "grid.h"
-#include "host_queue.h"
 #include "intrusive_graph.h"
 #include "launcher.h"
 #include "range_mapper.h"
 #include "reduction.h"
 #include "types.h"
-#include "utils.h"
+
 
 namespace celerity {
 
@@ -43,47 +41,6 @@ namespace detail {
 		none,
 		barrier,
 		shutdown,
-	};
-
-	class command_launcher_storage_base {
-	  public:
-		command_launcher_storage_base() = default;
-		command_launcher_storage_base(const command_launcher_storage_base&) = delete;
-		command_launcher_storage_base(command_launcher_storage_base&&) = default;
-		command_launcher_storage_base& operator=(const command_launcher_storage_base&) = delete;
-		command_launcher_storage_base& operator=(command_launcher_storage_base&&) = default;
-		virtual ~command_launcher_storage_base() = default;
-
-		virtual sycl::event operator()(
-		    device_queue& q, const subrange<3> execution_sr, const std::vector<void*>& reduction_ptrs, const bool is_reduction_initializer) const = 0;
-		virtual std::future<host_queue::execution_info> operator()(host_queue& q, const subrange<3>& execution_sr) const = 0;
-	};
-
-	template <typename Functor>
-	class command_launcher_storage : public command_launcher_storage_base {
-	  public:
-		command_launcher_storage(Functor&& fun) : m_fun(std::move(fun)) {}
-
-		sycl::event operator()(
-		    device_queue& q, const subrange<3> execution_sr, const std::vector<void*>& reduction_ptrs, const bool is_reduction_initializer) const override {
-			return invoke<sycl::event>(q, execution_sr, reduction_ptrs, is_reduction_initializer);
-		}
-
-		std::future<host_queue::execution_info> operator()(host_queue& q, const subrange<3>& execution_sr) const override {
-			return invoke<std::future<host_queue::execution_info>>(q, execution_sr);
-		}
-
-	  private:
-		Functor m_fun;
-
-		template <typename Ret, typename... Args>
-		Ret invoke(Args&&... args) const {
-			if constexpr(std::is_invocable_v<Functor, Args...>) {
-				return m_fun(args...);
-			} else {
-				throw std::runtime_error("Cannot launch command function with provided arguments");
-			}
-		}
 	};
 
 	class buffer_access_map {
@@ -211,14 +168,6 @@ namespace detail {
 		epoch_action get_epoch_action() const { return m_epoch_action; }
 
 		fence_promise* get_fence_promise() const { return m_fence_promise.get(); }
-
-
-		sycl::event launch(
-		    device_queue& q, const subrange<3> execution_sr, const std::vector<void*>& reduction_ptrs, const bool is_reduction_initializer) const {
-			utils::panic("legacy launch");
-		}
-
-		std::future<host_queue::execution_info> launch(host_queue& q, const subrange<3>& execution_sr) const { utils::panic("legacy launch"); }
 
 		template <typename Launcher>
 		Launcher get_launcher() const {

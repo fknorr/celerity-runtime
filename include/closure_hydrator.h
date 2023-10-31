@@ -3,6 +3,7 @@
 #include <optional>
 #include <vector>
 
+#include "grid.h"
 #include "ranges.h"
 #include "sycl_wrappers.h"
 #include "types.h"

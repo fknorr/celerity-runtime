@@ -2,8 +2,6 @@
 
 #include <cstddef>
 #include <optional>
-#include <string_view>
-#include <vector>
 
 namespace celerity {
 namespace detail {

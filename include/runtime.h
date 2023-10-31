@@ -5,7 +5,7 @@
 
 #include "command.h"
 #include "config.h"
-#include "device_queue.h"
+#include "device_selection.h"
 #include "host_queue.h"
 #include "instruction_executor.h"
 #include "recorders.h"
@@ -54,8 +54,6 @@ namespace detail {
 
 		host_queue& get_host_queue() const { return *m_h_queue; }
 
-		device_queue& get_device_queue() const { return *m_d_queue; }
-
 		void create_queue();
 
 		void destroy_queue();
@@ -96,7 +94,6 @@ namespace detail {
 		std::unique_ptr<config> m_cfg;
 		std::unique_ptr<experimental::bench::detail::user_benchmarker> m_user_bench;
 		std::unique_ptr<host_queue> m_h_queue;
-		std::unique_ptr<device_queue> m_d_queue;
 		size_t m_num_nodes;
 		node_id m_local_nid;
 

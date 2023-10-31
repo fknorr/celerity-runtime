@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backend/queue.h"
 #include "communicator.h"
 #include "double_buffered_queue.h"
 #include "instruction_graph.h"

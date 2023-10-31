@@ -6,9 +6,6 @@
 using namespace celerity;
 using namespace celerity::detail;
 
-template <int Dims>
-class dim_device_queue_fixture : public test_utils::device_queue_fixture {};
-
 template <access_mode, bool>
 class access_test_kernel;
 

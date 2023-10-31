@@ -16,7 +16,6 @@
 
 #include "command.h"
 #include "command_graph.h"
-#include "device_queue.h"
 #include "distributed_graph_generator.h"
 #include "print_graph.h"
 #include "range_mapper.h"
@@ -325,11 +324,6 @@ namespace test_utils {
 			if(!detail::runtime::test_runtime_was_instantiated()) { WARN("Test specified a runtime_fixture, but did not end up instantiating the runtime"); }
 			detail::runtime::test_case_exit();
 		}
-	};
-
-	class device_queue_fixture : public mpi_fixture { // mpi_fixture for config
-	  public:
-		detail::device_queue& get_device_queue() { detail::utils::panic("to be removed"); }
 	};
 
 	class sycl_queue_fixture {

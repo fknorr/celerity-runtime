@@ -158,7 +158,6 @@ set(SOURCES
   src/buffer_storage.cc
   src/command_graph.cc
   src/config.cc
-  src/device_queue.cc
   src/distributed_graph_generator.cc
   src/grid.cc
   src/instruction_executor.cc

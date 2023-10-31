@@ -3,7 +3,6 @@
 #include <memory>
 #include <type_traits>
 
-#include "device_queue.h"
 #include "runtime.h"
 #include "task_manager.h"
 
