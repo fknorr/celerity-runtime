@@ -556,11 +556,12 @@ void instruction_graph_generator::satisfy_buffer_requirements(const buffer_id bi
 		for(const auto& chunk : local_chunks) {
 			contiguous_allocations[chunk.memory_id].insert(scalar_reduction_box);
 		}
-		if(local_chunks.size() > 1) {
+		const auto include_current_value = local_node_is_reduction_initializer && reduction->init_from_buffer;
+		if(local_chunks.size() > 1 || include_current_value) {
 			// we insert a host-side reduce-instruction in the multi-chunk scenario; its result will end up in the host buffer allocation
 			contiguous_allocations[host_memory_id].insert(scalar_reduction_box);
 		}
-		if(reduction->init_from_buffer && local_node_is_reduction_initializer) {
+		if(include_current_value) {
 			// scalar_reduction_box will be copied into the local-reduction gather buffer ahead of the kernel instruction
 			accessed = region_union(accessed, scalar_reduction_box);
 			discarded = region_difference(discarded, scalar_reduction_box);
