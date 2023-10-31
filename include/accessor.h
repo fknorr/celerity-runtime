@@ -481,7 +481,7 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 	 */
 	DataT* get_pointer() const {
 		bool illegal_access = false;
-		if(m_allocation_offset != detail::id_cast<Dims>(id<3>{0, 0, 0})) { illegal_access = true; }
+		if(m_allocation_offset != id<Dims>(detail::zeros)) { illegal_access = true; }
 		// We can be a bit more lenient for 1D buffers, in that the backing buffer doesn't have to have the full size.
 		// (Dereferencing the pointer outside of the requested range is UB anyways).
 		if(Dims > 1 && m_allocation_range != m_buffer_range) { illegal_access = true; }

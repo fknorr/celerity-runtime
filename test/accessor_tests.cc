@@ -139,7 +139,7 @@ namespace detail {
 	}
 
 	template <int>
-	struct accessor_fixture : test_utils::runtime_fixture {};
+	struct runtime_fixture_dims : test_utils::runtime_fixture {};
 
 	template <int>
 	class kernel_multi_dim_accessor_write_;
@@ -150,7 +150,7 @@ namespace detail {
 	template <int>
 	class check_multi_dim_accessor;
 
-	TEMPLATE_TEST_CASE_METHOD_SIG(accessor_fixture, "accessor supports multi-dimensional subscript operator", "[accessor]", ((int Dims), Dims), 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "accessor supports multi-dimensional subscript operator", "[accessor]", ((int Dims), Dims), 2, 3) {
 		// This test *used* to fill a buffer<sycl::id<Dims>> and check that the correct indices have been written. However, this caused the ComputeCpp 2.6.0
 		// compiler to segfault on a device-code recursion detection step while traversing the following call path:
 		//
@@ -643,7 +643,7 @@ namespace detail {
 		sycl::free(result, get_sycl_queue());
 	}
 
-	TEMPLATE_TEST_CASE_METHOD_SIG(accessor_fixture, "device accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "device accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif
@@ -693,7 +693,7 @@ namespace detail {
 		// CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
 
-	TEMPLATE_TEST_CASE_METHOD_SIG(accessor_fixture, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif
@@ -783,9 +783,16 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::sycl_queue_fixture, "accessor supports SYCL special member and hidden friend functions", "[accessor]") {
-		const range<1> range(32);
-		const id<1> offset(0);
-		const subrange sr(offset, range);
+		constexpr static range<1> range(32);
+		constexpr static id<1> offset(0);
+		constexpr static subrange sr(offset, range);
+
+		constexpr auto make_all_device_accessor = [](size_t* ptr) {
+			return detail::accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(ptr, offset, range);
+		};
+		constexpr auto make_all_host_accessor = [](size_t* ptr) {
+			return detail::accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, ptr, offset, range, range);
+		};
 
 		test_utils::mock_buffer_factory mbf;
 		auto [buf_a, ptr_a] = std::pair{mbf.create_buffer<1>(range), sycl::malloc_host<size_t>(32, get_sycl_queue())};
@@ -797,21 +804,21 @@ namespace detail {
 			// For device accessors we test this both on host and device
 
 			// Copy ctor
-			auto device_acc_a = detail::accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(ptr_a, offset, range);
+			auto device_acc_a = make_all_device_accessor(ptr_a);
 			decltype(device_acc_a) device_acc_a1(device_acc_a);
 
 			// Move ctor
-			auto device_acc_b = detail::accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(ptr_b, offset, range);
+			auto device_acc_b = make_all_device_accessor(ptr_b);
 			decltype(device_acc_b) device_acc_b1(std::move(device_acc_b));
 
 			// Copy assignment
-			auto device_acc_c = detail::accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(ptr_c, offset, range);
-			auto device_acc_c1 = detail::accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(ptr_a, offset, range);
+			auto device_acc_c = make_all_device_accessor(ptr_c);
+			auto device_acc_c1 = make_all_device_accessor(ptr_a);
 			device_acc_c1 = device_acc_c;
 
 			// Move assignment
-			auto device_acc_d = detail::accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(ptr_d, offset, range);
-			auto device_acc_d1 = detail::accessor_testspy::make_device_accessor<size_t, 1, access_mode::discard_write>(ptr_a, offset, range);
+			auto device_acc_d = make_all_device_accessor(ptr_d);
+			auto device_acc_d1 = make_all_device_accessor(ptr_a);
 			device_acc_d1 = std::move(device_acc_d);
 
 			// Hidden friends (equality operators)
@@ -844,21 +851,21 @@ namespace detail {
 		SECTION("when using host buffers") {
 			{
 				// Copy ctor
-				auto acc_a = detail::accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, ptr_a, offset, range, range);
+				auto acc_a = make_all_host_accessor(ptr_a);
 				decltype(acc_a) acc_a1(acc_a);
 
 				// Move ctor
-				auto acc_b = detail::accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, ptr_b, offset, range, range);
+				auto acc_b = make_all_host_accessor(ptr_b);
 				decltype(acc_b) acc_b1(std::move(acc_b));
 
 				// Copy assignment
-				auto acc_c = detail::accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, ptr_c, offset, range, range);
-				auto acc_c1 = detail::accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, ptr_a, offset, range, range);
+				auto acc_c = make_all_host_accessor(ptr_c);
+				auto acc_c1 = make_all_host_accessor(ptr_a);
 				acc_c1 = acc_c;
 
 				// Move assignment
-				auto acc_d = detail::accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, ptr_d, offset, range, range);
-				auto acc_d1 = detail::accessor_testspy::make_host_accessor<size_t, 1, access_mode::discard_write>(sr, ptr_a, offset, range, range);
+				auto acc_d = make_all_host_accessor(ptr_d);
+				auto acc_d1 = make_all_host_accessor(ptr_a);
 				acc_d1 = std::move(acc_d);
 
 				// Hidden friends (equality operators)
@@ -887,89 +894,51 @@ namespace detail {
 		sycl::free(ptr_d, get_sycl_queue());
 	}
 
-#if 0
+	TEMPLATE_TEST_CASE_SIG("host accessor supports get_pointer", "[accessor]", ((int Dims), Dims), 0, 1, 2, 3) {
+		const auto ptr = reinterpret_cast<size_t*>(0x1234567890);
+		const auto buffer_range = test_utils::truncate_range<Dims>({8, 8, 8});
+		const auto alloc_box = box(subrange<Dims>(zeros, buffer_range));
+		const auto accessed_box = alloc_box;
 
-	TEST_CASE_METHOD(test_utils::buffer_manager_fixture, "host accessor supports get_pointer", "[accessor]") {
-		auto& bm = get_buffer_manager();
-
-		auto check_values = [&](const id<3>* ptr, range<3> range) {
-			for(size_t i = 0; i < range[0]; ++i) {
-				for(size_t j = 0; j < range[1]; ++j) {
-					for(size_t k = 0; k < range[2]; ++k) {
-						const auto offset = i * range[1] * range[2] + j * range[2] + k;
-						REQUIRE_LOOP(ptr[offset] == id<3>(i, j, k));
-					}
-				}
-			}
-		};
-
-		SECTION("for 1D buffers") {
-			auto bid = bm.register_buffer<id<3>, 1>(range<3>(8, 1, 1));
-			buffer_for_each<id<3>, 1, access_mode::discard_write, class UKN(init)>(
-			    bid, access_target::device, {8}, {0}, [](id<1> idx, id<3>& value) { value = id_cast<3>(idx); });
-			auto acc = get_host_accessor<id<3>, 1, access_mode::read>(bid, {8}, {0});
-			check_values(acc.get_pointer(), {8, 1, 1});
-		}
-
-		SECTION("for 2D buffers") {
-			auto bid = bm.register_buffer<id<3>, 2>(range<3>(8, 8, 1));
-			buffer_for_each<id<3>, 2, access_mode::discard_write, class UKN(init)>(
-			    bid, access_target::device, {8, 8}, {0, 0}, [](id<2> idx, id<3>& value) { value = id_cast<3>(idx); });
-			auto acc = get_host_accessor<id<3>, 2, access_mode::read>(bid, {8, 8}, {0, 0});
-			check_values(acc.get_pointer(), {8, 8, 1});
-		}
-
-		SECTION("for 3D buffers") {
-			auto bid = bm.register_buffer<id<3>, 3>(range<3>(8, 8, 8));
-			buffer_for_each<id<3>, 3, access_mode::discard_write, class UKN(init)>(
-			    bid, access_target::device, {8, 8, 8}, {0, 0, 0}, [](id<3> idx, id<3>& value) { value = id_cast<3>(idx); });
-			auto acc = get_host_accessor<id<3>, 3, access_mode::read>(bid, {8, 8, 8}, {0, 0, 0});
-			check_values(acc.get_pointer(), {8, 8, 8});
-		}
+		const auto acc = detail::accessor_testspy::make_host_accessor<size_t, Dims, access_mode::discard_write>(
+		    accessed_box.get_subrange(), ptr, alloc_box.get_offset(), alloc_box.get_range(), buffer_range);
+		CHECK(acc.get_pointer() == ptr);
 	}
 
-	TEST_CASE_METHOD(test_utils::buffer_manager_fixture,
-	    "host accessor throws when calling get_pointer for a backing buffer with different stride or nonzero offset", "[accessor]") {
-		auto& bm = get_buffer_manager();
-		auto bid_a = bm.register_buffer<size_t, 1>(range<3>(128, 1, 1));
-		auto bid_b = bm.register_buffer<size_t, 2>(range<3>(128, 128, 1));
+	TEST_CASE("host accessor throws when calling get_pointer for a backing buffer with different stride or nonzero offset", "[accessor]") {
+		constexpr auto get_pointer = [](const auto& buffer_range, const auto& alloc_box, const auto& accessed_box) {
+			constexpr auto dims = std::remove_reference_t<decltype(buffer_range)>::dimensions;
+			const auto ptr = reinterpret_cast<size_t*>(0x1234567890);
+			const auto acc = detail::accessor_testspy::make_host_accessor<size_t, dims, access_mode::discard_write>(
+			    accessed_box.get_subrange(), ptr, alloc_box.get_offset(), alloc_box.get_range(), buffer_range);
+			return acc.get_pointer();
+		};
 
 		const std::string error_msg = "Buffer cannot be accessed with expected stride";
 
-		// TODO: Use single lambda once https://github.com/KhronosGroup/SYCL-Docs/pull/351 is merged and implemented
-		auto get_pointer_1d = [this](const buffer_id bid, const range<1>& range, const id<1>& offset) {
-			get_host_accessor<size_t, 1, access_mode::discard_write>(bid, range, offset).get_pointer();
-		};
-
-		auto get_pointer_2d = [this](const buffer_id bid, const range<2>& range, const id<2>& offset) {
-			get_host_accessor<size_t, 2, access_mode::discard_write>(bid, range, offset).get_pointer();
-		};
-
 		// This is not allowed, as the backing buffer hasn't been allocated from offset 0, which means the pointer would point to offset 32.
-		REQUIRE_THROWS_WITH(get_pointer_1d(bid_a, {32}, {32}), error_msg);
+		CHECK_THROWS_WITH(get_pointer(range(128), box<1>(32, 64), box<1>(32, 64)), error_msg);
 
 		// This is fine, as the backing buffer has been resized to start from 0 now.
-		REQUIRE_NOTHROW(get_pointer_1d(bid_a, {64}, {0}));
+		CHECK_NOTHROW(get_pointer(range(128), box<1>(0, 64), box<1>(0, 64)));
 
 		// This is now also okay, as the backing buffer starts at 0, and the pointer points to offset 0.
 		// (Same semantics as SYCL accessor with offset, i.e., UB outside of requested range).
-		REQUIRE_NOTHROW(get_pointer_1d(bid_a, {32}, {32}));
+		CHECK_NOTHROW(get_pointer(range(128), box<1>(0, 64), box<1>(32, 64)));
 
 		// In 2D (and 3D) it's trickier, as the stride of the backing buffer must also match what the user expects.
 		// This is not allowed, even though the offset is 0.
-		REQUIRE_THROWS_WITH(get_pointer_2d(bid_b, {64, 64}, {0, 0}), error_msg);
+		CHECK_THROWS_WITH(get_pointer(range(128, 128), box<2>({0, 0}, {64, 64}), box<2>({0, 0}, {64, 64})), error_msg);
 
 		// This is allowed, as we request the full buffer.
-		REQUIRE_NOTHROW(get_pointer_2d(bid_b, {128, 128}, {0, 0}));
+		CHECK_NOTHROW(get_pointer(range(128, 128), box<2>({0, 0}, {128, 128}), box<2>({0, 0}, {128, 128})));
 
 		// This is now allowed, as the backing buffer has the expected stride.
-		REQUIRE_NOTHROW(get_pointer_2d(bid_b, {64, 64}, {0, 0}));
+		CHECK_NOTHROW(get_pointer(range(128, 128), box<2>({0, 0}, {128, 128}), box<2>({0, 0}, {64, 64})));
 
 		// Passing an offset is now also possible.
-		REQUIRE_NOTHROW(get_pointer_2d(bid_b, {64, 64}, {32, 32}));
+		CHECK_NOTHROW(get_pointer(range(128, 128), box<2>({0, 0}, {128, 128}), box<2>({32, 32}, {96, 96})));
 	}
-
-#endif
 
 } // namespace detail
 } // namespace celerity
