@@ -63,6 +63,8 @@ namespace detail {
 
 		virtual ~task_manager() = default;
 
+		void set_uninitialized_read_policy(const error_policy policy) { m_uninitialized_read_policy = policy; }
+
 		template <typename CGF, typename... Hints>
 		task_id submit_command_group(CGF cgf, Hints... hints) {
 			auto reservation = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
@@ -205,6 +207,8 @@ namespace detail {
 
 		const size_t m_num_collective_nodes;
 		host_queue* m_queue;
+
+		error_policy m_uninitialized_read_policy = error_policy::throw_exception;
 
 		task_ring_buffer m_task_buffer;
 

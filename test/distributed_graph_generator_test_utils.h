@@ -59,7 +59,7 @@ class task_builder {
 		task_id submit() {
 			assert(m_command);
 			const auto tid = m_tctx.get_task_manager().submit_command_group([this](handler& cgh) {
-				for (auto &a: m_requirements) {
+				for(auto& a : m_requirements) {
 					a(cgh);
 				}
 				m_command(cgh);

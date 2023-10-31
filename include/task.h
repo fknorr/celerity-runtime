@@ -184,8 +184,8 @@ namespace detail {
 			    std::move(side_effect_map), std::move(reductions), {}, nullptr));
 		}
 
-		static std::unique_ptr<task> make_device_compute(task_id tid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map,
-		    reduction_set reductions) {
+		static std::unique_ptr<task> make_device_compute(
+		    task_id tid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map, reduction_set reductions) {
 			return std::unique_ptr<task>(new task(tid, task_type::device_compute, collective_group_id{}, geometry, std::move(launcher), std::move(access_map),
 			    {}, std::move(reductions), {}, nullptr));
 		}
@@ -228,9 +228,8 @@ namespace detail {
 		// abstract DAG building. For user-initialized buffers we already notify the runtime -> executor of this state directly. Maybe also do that for these.
 		std::unique_ptr<fence_promise> m_fence_promise;
 
-		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, command_group_launcher launcher,
-		    buffer_access_map access_map, detail::side_effect_map side_effects, reduction_set reductions, detail::epoch_action epoch_action,
-		    std::unique_ptr<fence_promise> fence_promise)
+		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map,
+		    detail::side_effect_map side_effects, reduction_set reductions, detail::epoch_action epoch_action, std::unique_ptr<fence_promise> fence_promise)
 		    : m_tid(tid), m_type(type), m_cgid(cgid), m_geometry(geometry), m_launcher(std::move(launcher)), m_access_map(std::move(access_map)),
 		      m_side_effects(std::move(side_effects)), m_reductions(std::move(reductions)), m_epoch_action(epoch_action),
 		      m_fence_promise(std::move(fence_promise)) {

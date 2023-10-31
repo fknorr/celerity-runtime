@@ -98,9 +98,7 @@ void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_un
 	return ptr;
 }
 
-void generic_queue::free(const memory_id where, void* const allocation) {
-	sycl::free(allocation, m_memory_queues.at(where));
-}
+void generic_queue::free(const memory_id where, void* const allocation) { sycl::free(allocation, m_memory_queues.at(where)); }
 
 std::unique_ptr<event> generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id target, const void* const source_base_ptr,
     void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,

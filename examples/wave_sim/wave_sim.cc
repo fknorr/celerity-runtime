@@ -68,7 +68,9 @@ void stream_open(celerity::distr_queue& queue, size_t N, size_t num_samples, cel
 		celerity::experimental::side_effect os_eff{os, cgh};
 		cgh.host_task(celerity::on_master_node, [=] {
 			os_eff->open("wave_sim_result.bin", std::ios_base::out | std::ios_base::binary);
-			const struct { uint64_t n, t; } header{N, num_samples};
+			const struct {
+				uint64_t n, t;
+			} header{N, num_samples};
 			os_eff->write(reinterpret_cast<const char*>(&header), sizeof(header));
 		});
 	});

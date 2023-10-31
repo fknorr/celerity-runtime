@@ -143,6 +143,11 @@ namespace detail {
 		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
+		// Merely _declaring_ an uninitialized read is legitimate as long as the kernel does not actually perform the read at runtime - this might happen in the
+		// first iteration of a submit-loop. We could get rid of this case by making access-modes a runtime property of accessors (cf
+		// https://github.com/celerity/meta/issues/74).
+		m_task_mngr->set_uninitialized_read_policy(error_policy::log_warning);
+
 		m_cdag = std::make_unique<command_graph>();
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());

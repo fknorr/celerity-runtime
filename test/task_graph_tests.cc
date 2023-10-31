@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include <iterator>
 #include <set>
@@ -139,7 +140,7 @@ namespace detail {
 		using namespace cl::sycl::access;
 
 		auto tt = test_utils::task_test_context{};
-		// TODO policy
+		tt.tm.set_uninitialized_read_policy(error_policy::ignore); // we explicitly test reading from non_host_init_buf
 		auto host_init_buf = tt.mbf.create_buffer(range<1>(128), true /* mark_as_host_initialized */);
 		auto non_host_init_buf = tt.mbf.create_buffer(range<1>(128), false /* mark_as_host_initialized */);
 		auto artificial_dependency_buf = tt.mbf.create_buffer(range<1>(1), false /* mark_as_host_initialized */);
@@ -215,18 +216,15 @@ namespace detail {
 				auto tt = test_utils::task_test_context{};
 				auto buf = tt.mbf.create_buffer(range<1>(128), true /* mark_as_host_initialized */);
 
-				const task_id tid_a = test_utils::add_compute_task<class UKN(task_a)>(tt.tm, [&](handler& cgh) {
-					dispatch_get_access(buf, cgh, producer_mode, all());
-				});
+				const task_id tid_a =
+				    test_utils::add_compute_task<class UKN(task_a)>(tt.tm, [&](handler& cgh) { dispatch_get_access(buf, cgh, producer_mode, all()); });
 
-				const task_id tid_b = test_utils::add_compute_task<class UKN(task_b)>(tt.tm, [&](handler& cgh) {
-					dispatch_get_access(buf, cgh, consumer_mode, all());
-				});
+				const task_id tid_b =
+				    test_utils::add_compute_task<class UKN(task_b)>(tt.tm, [&](handler& cgh) { dispatch_get_access(buf, cgh, consumer_mode, all()); });
 				CHECK(has_dependency(tt.tm, tid_b, tid_a));
 
-				const task_id tid_c = test_utils::add_compute_task<class UKN(task_c)>(tt.tm, [&](handler& cgh) {
-					dispatch_get_access(buf, cgh, producer_mode, all());
-				});
+				const task_id tid_c =
+				    test_utils::add_compute_task<class UKN(task_c)>(tt.tm, [&](handler& cgh) { dispatch_get_access(buf, cgh, producer_mode, all()); });
 				CHECK(has_dependency(tt.tm, tid_c, tid_b, pure_consumer || pure_producer ? dependency_kind::anti_dep : dependency_kind::true_dep));
 			}
 		}
@@ -714,6 +712,28 @@ namespace detail {
 
 		CHECK(has_dependency(tt.tm, tid_fence, tid_a));
 		CHECK(has_dependency(tt.tm, tid_b, tid_fence, dependency_kind::anti_dep));
+	}
+
+	TEST_CASE("task_manager throws in tests if it detects an uninitialized read", "[task_manager]") {
+		auto tt_1 = test_utils::task_test_context{};
+		auto buf_1 = tt_1.mbf.create_buffer<1>({1});
+		auto tt_2 = test_utils::task_test_context{}; // do not reuse tt_1 since task_manager is in an indeterminate state after throwing
+		auto buf_2 = tt_2.mbf.create_buffer<2>({64, 64});
+
+		CHECK_THROWS_WITH(
+		    (test_utils::add_compute_task<class UKN(uninit_read)>(tt_1.tm, [&](handler& cgh) { buf_1.get_access<access_mode::read>(cgh, all{}); })),
+		    "Task declares a reading access on uninitialized buffer 0 region {[0,0,0] - [1,1,1]}. Make sure to construct the accessor with no_init if "
+		    "possible.");
+
+		// initialize part of the buffer
+		test_utils::add_compute_task<class UKN(uninit_read)>(tt_2.tm, [&](handler& cgh) {
+			buf_2.get_access<access_mode::discard_write>(cgh, fixed<2>({{0, 0}, {32, 32}}));
+		});
+
+		CHECK_THROWS_WITH(
+		    (test_utils::add_compute_task<class UKN(uninit_read)>(tt_2.tm, [&](handler& cgh) { buf_2.get_access<access_mode::read>(cgh, all{}); })),
+		    "Task declares a reading access on uninitialized buffer 0 region {[0,32,0] - [32,64,1], [32,0,0] - [64,64,1]}. Make sure to construct the accessor "
+		    "with no_init if possible.");
 	}
 
 } // namespace detail

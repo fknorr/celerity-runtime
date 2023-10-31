@@ -19,4 +19,5 @@ namespace detail {
 
 	void linearize_subrange(const void* source_base_ptr, void* target_ptr, size_t elem_size, const range<3>& source_range, const subrange<3>& copy_sr);
 
-}}
+} // namespace detail
+} // namespace celerity

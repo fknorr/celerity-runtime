@@ -98,3 +98,14 @@ template <>
 struct std::hash<celerity::detail::transfer_id> {
 	std::size_t operator()(const celerity::detail::transfer_id& t) const noexcept; // defined in utils.cc
 };
+
+namespace celerity::detail {
+
+enum class error_policy {
+	ignore,
+	log_warning,
+	log_error,
+	throw_exception,
+};
+
+}

@@ -94,4 +94,14 @@ Alternative& replace(Variant& variant, Alternative&& alternative) {
 	return std::get<Alternative>(variant = std::forward<Alternative>(alternative));
 }
 
+template <typename... FmtParams>
+void report_error(const error_policy policy, FmtParams&&... fmt_args) {
+	switch(policy) {
+	case error_policy::ignore: break;
+	case error_policy::log_warning: CELERITY_WARN(std::forward<FmtParams>(fmt_args)...); break;
+	case error_policy::log_error: CELERITY_ERROR(std::forward<FmtParams>(fmt_args)...); break;
+	case error_policy::throw_exception: throw std::runtime_error(fmt::format(std::forward<FmtParams>(fmt_args)...));
+	}
+}
+
 } // namespace celerity::detail::utils
