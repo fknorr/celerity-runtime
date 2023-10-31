@@ -29,6 +29,8 @@ class instruction_graph_generator {
 	explicit instruction_graph_generator(
 	    const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_recorder* recorder);
 
+	void set_uninitialized_read_policy(const error_policy policy) { m_uninitialized_read_policy = policy; }
+
 	void create_buffer(buffer_id bid, int dims, range<3> range, size_t elem_size, size_t elem_align, bool host_initialized);
 
 	void set_buffer_debug_name(buffer_id bid, const std::string& name);
@@ -236,6 +238,7 @@ class instruction_graph_generator {
 	size_t m_num_nodes;
 	node_id m_local_node_id;
 	std::vector<device_info> m_devices;
+	error_policy m_uninitialized_read_policy = error_policy::throw_exception;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
 	std::unordered_set<instruction*> m_execution_front;

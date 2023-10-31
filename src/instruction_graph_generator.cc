@@ -432,14 +432,17 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 		auto& buffer = m_buffers.at(bid);
 		for(auto& region : disjoint_regions) {
 			const auto region_sources = buffer.newest_data_location.get_region_values(region);
-#ifndef NDEBUG
+
+			box_vector<3> uninitialized_reads;
 			for(const auto& [box, sources] : region_sources) {
-				// TODO for convenience, we want to accept read-write access by the first kernel that ever touches a given buffer range (think a read-write
-				//  kernel in a loop). However we still want to be able to detect the error condition of not having received a buffer region that was
-				//  produced by some other kernel in the past.
-				assert(sources.any() && "trying to read data that is neither found locally nor has been await-pushed before");
+				if(!sources.any()) { uninitialized_reads.push_back(box); }
 			}
-#endif
+			if(!uninitialized_reads.empty()) {
+				// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
+				utils::report_error(m_uninitialized_read_policy,
+				    "Instruction is to read B{} {}, which is neither found locally nor has been await-pushed before", bid,
+				    detail::region(std::move(uninitialized_reads)));
+			}
 
 			// try finding a common source for the entire region first to minimize instruction / synchronization complexity down the line
 			const auto common_sources = std::accumulate(region_sources.begin(), region_sources.end(), data_location(),
@@ -461,6 +464,8 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 			// or the host as a fallback.
 			std::unordered_map<memory_id, detail::region<3>> combined_source_regions;
 			for(const auto& [box, sources] : region_sources) {
+				if(!sources.any()) { continue; /* an uninitialized read was detected and reported above */ }
+
 				memory_id copy_from;
 				if(const auto device_sources = data_location(sources).reset(host_memory_id); device_sources.any()) {
 					copy_from = next_location(device_sources, dest_mid + 1);

@@ -23,6 +23,7 @@
 #include "named_threads.h"
 #include "ranges.h"
 
+#include "log_test_utils.h"
 #include "test_utils.h"
 
 namespace celerity {
@@ -1400,6 +1401,37 @@ namespace detail {
 			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_host_object(get_host_object_id(ho)), what);
 		}).join();
 	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime warns on uninitialized reads", "[runtime]") {
+		buffer<int, 1> buf(1);
+
+		std::unique_ptr<celerity::test_utils::log_capture> lc;
+		{
+			distr_queue q;
+			lc = std::make_unique<celerity::test_utils::log_capture>();
+
+			SECTION("in device kernels") {
+				q.submit([&](handler& cgh) {
+					accessor acc(buf, cgh, celerity::access::all(), celerity::read_only);
+					cgh.parallel_for(range(1), [=](item<1>) { (void)acc; });
+				});
+			}
+
+			SECTION("in host tasks") {
+				q.submit([&](handler& cgh) {
+					accessor acc(buf, cgh, celerity::access::all(), celerity::read_only_host_task);
+					cgh.host_task(on_master_node, [=] { (void)acc; });
+				});
+			}
+
+			q.slow_full_sync();
+		}
+
+		const auto error_message = "Task declares a reading access on uninitialized buffer 0 region {[0,0,0] - [1,1,1]}. Make sure to construct the accessor "
+		                           "with no_init if possible.";
+		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+	}
+
 
 } // namespace detail
 } // namespace celerity

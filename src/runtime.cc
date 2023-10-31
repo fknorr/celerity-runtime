@@ -177,6 +177,8 @@ namespace detail {
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
 		auto iggen =
 		    std::make_unique<instruction_graph_generator>(*m_task_mngr, m_num_nodes, m_local_nid, std::move(iggen_devices), m_instruction_recorder.get());
+		// Any uninitialized read that is observed on IDAG generation was already logged on task generation, unless we have a bug.
+		iggen->set_uninitialized_read_policy(error_policy::ignore);
 
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), static_cast<abstract_scheduler::delegate*>(this));
 
