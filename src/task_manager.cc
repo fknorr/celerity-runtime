@@ -114,12 +114,14 @@ namespace detail {
 				if(reduction.has_value()) { read_requirements = region_union(read_requirements, scalar_box); }
 				const auto last_writers = buffer.last_writers.get_region_values(read_requirements);
 
-				for(auto& p : last_writers) {
-					// This indicates that the buffer is being used for the first time by this task, or all previous tasks also only read from it.
-					// A valid use case (i.e., not reading garbage) for this is when the buffer has been initialized using a host pointer.
-					if(p.second == std::nullopt) continue;
-					const task_id last_writer = *p.second;
-					add_dependency(tsk, *m_task_buffer.get_task(last_writer), dependency_kind::true_dep, dependency_origin::dataflow);
+				for(const auto& [box, writer] : last_writers) {
+					if(writer.has_value()) {
+						add_dependency(tsk, *m_task_buffer.get_task(*writer), dependency_kind::true_dep, dependency_origin::dataflow);
+					} else {
+						// This indicates that the buffer is being used for the first time by this task, or all previous tasks also only read from it.
+						// A valid use case (i.e., not reading garbage) for this is when the buffer has been initialized using a host pointer.
+						utils::panic("read uninitialized");
+					}
 				}
 			}
 
