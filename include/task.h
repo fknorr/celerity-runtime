@@ -240,5 +240,7 @@ namespace detail {
 		}
 	};
 
+	std::unordered_map<buffer_id, region<3>> detect_overlapping_writes(const task& tsk, const std::vector<chunk<3>>& chunks);
+
 } // namespace detail
 } // namespace celerity

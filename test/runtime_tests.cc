@@ -1432,6 +1432,5 @@ namespace detail {
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
 	}
 
-
 } // namespace detail
 } // namespace celerity

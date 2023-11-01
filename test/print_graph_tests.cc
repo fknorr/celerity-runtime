@@ -71,7 +71,11 @@ TEST_CASE("command graph printing is unchanged", "[print_graph][command-graph]")
 	auto buf_0 = dctx.create_buffer(range<1>{1});
 
 	dctx.device_compute<class UKN(reduce)>(range<1>(num_nodes)).reduce(buf_0, false).submit();
-	dctx.device_compute<class UKN(consume)>(range<1>(num_nodes)).read(buf_0, acc::all{}).read_write(buf_0, acc::all{}).write(buf_0, acc::all{}).submit();
+	dctx.device_compute<class UKN(consume)>(range<1>(num_nodes))
+	    .read(buf_0, acc::all{})
+	    .read_write(buf_0, acc::one_to_one{})
+	    .write(buf_0, acc::one_to_one{})
+	    .submit();
 
 	// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graph is sane and
 	// replace the `expected` value with the new dot graph.

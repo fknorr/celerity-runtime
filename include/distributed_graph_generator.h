@@ -86,6 +86,7 @@ class distributed_graph_generator {
 	    const size_t num_nodes, const node_id local_nid, command_graph& cdag, const task_manager& tm, detail::command_recorder* recorder);
 
 	void set_uninitialized_read_policy(const error_policy policy) { m_uninitialized_read_policy = policy; }
+	void set_overlapping_write_policy(const error_policy policy) { m_overlapping_write_policy = policy; }
 
 	void create_buffer(buffer_id bid, int dims, const range<3>& range, bool host_initialized);
 
@@ -143,6 +144,7 @@ class distributed_graph_generator {
 	command_graph& m_cdag;
 	const task_manager& m_task_mngr;
 	error_policy m_uninitialized_read_policy = error_policy::throw_exception;
+	error_policy m_overlapping_write_policy = error_policy::throw_exception;
 	std::unordered_map<buffer_id, buffer_state> m_buffer_states;
 	std::unordered_map<host_object_id, host_object_state> m_host_objects;
 	command_id m_epoch_for_new_commands = 0;

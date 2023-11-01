@@ -153,6 +153,7 @@ namespace detail {
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
 		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
 		dggen->set_uninitialized_read_policy(error_policy::ignore);
+		dggen->set_overlapping_write_policy(error_policy::log_error);
 
 		const auto devices =
 		    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });
