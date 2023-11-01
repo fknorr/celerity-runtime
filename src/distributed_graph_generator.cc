@@ -389,10 +389,10 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 							}
 						}
 					}
-				}
 
-				if(is_local_chunk && m_uninitialized_read_policy != error_policy::ignore) {
-					uninitialized_reads = region_union(uninitialized_reads, region_difference(req, buffer_state.initialized_region));
+					if(is_local_chunk && m_uninitialized_read_policy != error_policy::ignore) {
+						uninitialized_reads = region_union(uninitialized_reads, region_difference(req, buffer_state.initialized_region));
+					}
 				}
 
 				if(is_local_chunk && detail::access::mode_traits::is_producer(mode)) {
@@ -407,11 +407,13 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 			}
 
 			if(!uninitialized_reads.empty()) {
-				utils::report_error(m_uninitialized_read_policy, "Command C{} on N{} reads B{} {}, which has not been written by any node", cmd->get_cid(),
+				utils::report_error(m_uninitialized_read_policy, "Command C{} on N{} reads B{} {}, which has not been written by any node.", cmd->get_cid(),
 				    m_local_nid, bid, detail::region(std::move(uninitialized_reads)));
 			}
 
 			if(generate_reduction) {
+				post_reduction_buffer_states.at(bid).initialized_region = scalar_reduction_box;
+
 				const auto& reduction = *buffer_state.pending_reduction;
 
 				const auto local_last_writer = buffer_state.local_last_writer.get_region_values(scalar_reduction_box);
