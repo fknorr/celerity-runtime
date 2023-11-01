@@ -45,10 +45,12 @@ class task_builder {
 	class step {
 	  public:
 		step(TestContext& dctx, action command, std::vector<action> requirements = {})
-		    : m_tctx(dctx), m_command(std::move(command)), m_requirements(std::move(requirements)) {}
+		    : m_tctx(dctx), m_command(std::move(command)), m_requirements(std::move(requirements)), m_uncaught_exceptions_before(std::uncaught_exceptions()) {}
 
 		~step() noexcept(false) { // NOLINT(bugprone-exception-escape)
-			if(m_command || !m_requirements.empty()) { throw std::runtime_error("Found incomplete task build. Did you forget to call submit()?"); }
+			if(std::uncaught_exceptions() == m_uncaught_exceptions_before && (m_command || !m_requirements.empty())) {
+				throw std::runtime_error("Found incomplete task build. Did you forget to call submit()?");
+			}
 		}
 
 		step(const step&) = delete;
@@ -111,6 +113,7 @@ class task_builder {
 		TestContext& m_tctx;
 		action m_command;
 		std::vector<action> m_requirements;
+		int m_uncaught_exceptions_before;
 
 		template <typename StepT>
 		StepT chain(action a) {
@@ -516,7 +519,7 @@ class dist_cdag_test_context {
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		for(auto& dggen : m_dggens) {
-			dggen->create_buffer(bid, Dims, range_cast<3>(size));
+			dggen->create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		}
 		return buf;
 	}
@@ -692,7 +695,7 @@ class idag_test_context {
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
-		m_dggen.create_buffer(bid, Dims, range_cast<3>(size));
+		m_dggen.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), sizeof(DataT), alignof(DataT), mark_as_host_initialized);
 		m_managed_objects.emplace_back(bid);
 		return buf;

@@ -56,7 +56,7 @@ namespace detail {
 					    }
 				    },
 				    [&](const event_buffer_created& e) {
-					    m_dggen->create_buffer(e.bid, e.dims, e.range);
+					    m_dggen->create_buffer(e.bid, e.dims, e.range, e.host_initialized);
 					    m_iggen->create_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.host_initialized);
 				    },
 				    [&](const event_set_buffer_debug_name& e) {

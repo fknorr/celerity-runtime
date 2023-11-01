@@ -151,6 +151,8 @@ namespace detail {
 		m_cdag = std::make_unique<command_graph>();
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
 		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
+		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
+		dggen->set_uninitialized_read_policy(error_policy::ignore);
 
 		const auto devices =
 		    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });

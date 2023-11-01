@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include "distributed_graph_generator_test_utils.h"
 
@@ -500,5 +501,31 @@ TEST_CASE("fences introduce dependencies on buffers", "[distributed_graph_genera
 		}
 		CHECK(dctx.query(tid_b, nid).count() == 1);
 		CHECK(dctx.query(tid_fence, nid).have_successors(dctx.query(tid_b, nid)));
+	}
+}
+
+TEST_CASE("distributed_graph_generator throws in tests if it detects an uninitialized read", "[distributed_graph_generator]") {
+	const size_t num_nodes = 2;
+	const range<1> node_range{num_nodes};
+	dist_cdag_test_context dctx(num_nodes);
+
+	SECTION("on a fully uninitialized buffer") {
+		auto buf = dctx.create_buffer<1>({1});
+		CHECK_THROWS_WITH((dctx.device_compute(node_range).read(buf, acc::all()).submit()),
+		    "Command C1 on N0 reads B0 [0,0,0] - [1,1,1], which has not been written by any node.");
+	}
+
+	SECTION("on a partially, locally initialized buffer") {
+		auto buf = dctx.create_buffer<1>(node_range);
+		dctx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
+		CHECK_THROWS_WITH((dctx.device_compute(node_range).read(buf, acc::all()).submit()),
+		    "Command C1 on N0 reads B0 [1,0,0] - [2,1,1], which has not been written by any node.");
+	}
+
+	SECTION("on a partially, remotely initialized buffer") {
+		auto buf = dctx.create_buffer<1>(node_range);
+		dctx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
+		CHECK_THROWS_WITH((dctx.device_compute(node_range).read(buf, acc::one_to_one()).submit()),
+		    "Command C1 on N1 reads B0 [1,0,0] - [2,1,1], which has not been written by any node.");
 	}
 }

@@ -64,6 +64,7 @@ class distributed_graph_generator {
 		buffer_state(region_map<write_command_state> lw, region_map<std::bitset<max_num_nodes>> rr)
 		    : local_last_writer(std::move(lw)), replicated_regions(std::move(rr)), pending_reduction(std::nullopt) {}
 
+		region<3> initialized_region; // for detecting uninitialized reads
 		region_map<write_command_state> local_last_writer;
 		region_map<node_bitset> replicated_regions;
 
@@ -84,7 +85,9 @@ class distributed_graph_generator {
 	distributed_graph_generator(
 	    const size_t num_nodes, const node_id local_nid, command_graph& cdag, const task_manager& tm, detail::command_recorder* recorder);
 
-	void create_buffer(buffer_id bid, int dims, const range<3>& range);
+	void set_uninitialized_read_policy(const error_policy policy) { m_uninitialized_read_policy = policy; }
+
+	void create_buffer(buffer_id bid, int dims, const range<3>& range, bool host_initialized);
 
 	void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
 
@@ -139,6 +142,7 @@ class distributed_graph_generator {
 	node_id m_local_nid;
 	command_graph& m_cdag;
 	const task_manager& m_task_mngr;
+	error_policy m_uninitialized_read_policy = error_policy::throw_exception;
 	std::unordered_map<buffer_id, buffer_state> m_buffer_states;
 	std::unordered_map<host_object_id, host_object_state> m_host_objects;
 	command_id m_epoch_for_new_commands = 0;

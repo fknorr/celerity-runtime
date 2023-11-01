@@ -25,9 +25,10 @@ distributed_graph_generator::distributed_graph_generator(
 	m_epoch_for_new_commands = epoch_cmd->get_cid();
 }
 
-void distributed_graph_generator::create_buffer(const buffer_id bid, const int dims, const range<3>& range) {
+void distributed_graph_generator::create_buffer(const buffer_id bid, const int dims, const range<3>& range, const bool host_initialized) {
 	m_buffer_states.emplace(
 	    std::piecewise_construct, std::tuple{bid}, std::tuple{region_map<write_command_state>{range, dims}, region_map<node_bitset>{range, dims}});
+	if(host_initialized) { m_buffer_states.at(bid).initialized_region = box(subrange({}, range)); }
 	// Mark contents as available locally (= don't generate await push commands) and fully replicated (= don't generate push commands).
 	// This is required when tasks access host-initialized or uninitialized buffers.
 	m_buffer_states.at(bid).local_last_writer.update_region(subrange<3>({}, range), m_epoch_for_new_commands);
@@ -329,6 +330,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 				// TODO the per-node reduction result is discarded - warn user about dead store
 			}
 
+			region<3> uninitialized_reads;
 			for(const auto mode : required_modes) {
 				const auto& req = reqs_by_mode.at(mode);
 				if(detail::access::mode_traits::is_consumer(mode)) {
@@ -389,6 +391,10 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 					}
 				}
 
+				if(is_local_chunk && m_uninitialized_read_policy != error_policy::ignore) {
+					uninitialized_reads = region_union(uninitialized_reads, region_difference(req, buffer_state.initialized_region));
+				}
+
 				if(is_local_chunk && detail::access::mode_traits::is_producer(mode)) {
 					// If we are going to insert a reduction command, we will also create a true-dependency chain to the last writer. The new last writer
 					// cid however is not known at this point because the the reduction command has not been generated yet. Instead, we simply skip
@@ -398,6 +404,11 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 					per_buffer_local_writes[bid] = region_union(per_buffer_local_writes[bid], req);
 					per_buffer_last_writer_update_list[bid].push_back({req, cmd->get_cid()});
 				}
+			}
+
+			if(!uninitialized_reads.empty()) {
+				utils::report_error(m_uninitialized_read_policy, "Command C{} on N{} reads B{} {}, which has not been written by any node", cmd->get_cid(),
+				    m_local_nid, bid, detail::region(std::move(uninitialized_reads)));
 			}
 
 			if(generate_reduction) {
@@ -548,6 +559,8 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 		assert(region_difference(local_writes, global_writes).empty()); // Local writes have to be a subset of global writes
 		const auto remote_writes = region_difference(global_writes, local_writes);
 		auto& buffer_state = m_buffer_states.at(bid);
+
+		buffer_state.initialized_region = region_union(buffer_state.initialized_region, global_writes);
 
 		// TODO: We need a way of updating regions in place! E.g. apply_to_values(box, callback)
 		auto boxes_and_cids = buffer_state.local_last_writer.get_region_values(remote_writes);

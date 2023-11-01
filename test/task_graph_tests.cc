@@ -715,25 +715,28 @@ namespace detail {
 	}
 
 	TEST_CASE("task_manager throws in tests if it detects an uninitialized read", "[task_manager]") {
-		auto tt_1 = test_utils::task_test_context{};
-		auto buf_1 = tt_1.mbf.create_buffer<1>({1});
-		auto tt_2 = test_utils::task_test_context{}; // do not reuse tt_1 since task_manager is in an indeterminate state after throwing
-		auto buf_2 = tt_2.mbf.create_buffer<2>({64, 64});
+		test_utils::task_test_context tt;
 
-		CHECK_THROWS_WITH(
-		    (test_utils::add_compute_task<class UKN(uninit_read)>(tt_1.tm, [&](handler& cgh) { buf_1.get_access<access_mode::read>(cgh, all{}); })),
-		    "Task declares a reading access on uninitialized buffer 0 region {[0,0,0] - [1,1,1]}. Make sure to construct the accessor with no_init if "
-		    "possible.");
+		SECTION("on a fully uninitialized buffer") {
+			auto buf = tt.mbf.create_buffer<1>({1});
 
-		// initialize part of the buffer
-		test_utils::add_compute_task<class UKN(uninit_read)>(tt_2.tm, [&](handler& cgh) {
-			buf_2.get_access<access_mode::discard_write>(cgh, fixed<2>({{0, 0}, {32, 32}}));
-		});
+			CHECK_THROWS_WITH(
+			    (test_utils::add_compute_task<class UKN(uninit_read)>(tt.tm, [&](handler& cgh) { buf.get_access<access_mode::read>(cgh, all{}); })),
+			    "Task declares a reading access on uninitialized buffer 0 region {[0,0,0] - [1,1,1]}. Make sure to construct the accessor with no_init if "
+			    "possible.");
+		}
 
-		CHECK_THROWS_WITH(
-		    (test_utils::add_compute_task<class UKN(uninit_read)>(tt_2.tm, [&](handler& cgh) { buf_2.get_access<access_mode::read>(cgh, all{}); })),
-		    "Task declares a reading access on uninitialized buffer 0 region {[0,32,0] - [32,64,1], [32,0,0] - [64,64,1]}. Make sure to construct the accessor "
-		    "with no_init if possible.");
+		SECTION("on a partially initialized buffer") {
+			auto buf = tt.mbf.create_buffer<2>({64, 64});
+			test_utils::add_compute_task<class UKN(uninit_read)>(tt.tm, [&](handler& cgh) {
+				buf.get_access<access_mode::discard_write>(cgh, fixed<2>({{0, 0}, {32, 32}}));
+			});
+
+			CHECK_THROWS_WITH(
+			    (test_utils::add_compute_task<class UKN(uninit_read)>(tt.tm, [&](handler& cgh) { buf.get_access<access_mode::read>(cgh, all{}); })),
+			    "Task declares a reading access on uninitialized buffer 0 region {[0,32,0] - [32,64,1], [32,0,0] - [64,64,1]}. Make sure to construct the "
+			    "accessor with no_init if possible.");
+		}
 	}
 
 } // namespace detail
