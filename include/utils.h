@@ -2,9 +2,15 @@
 
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <variant>
+
+#include "spdlog/fmt/fmt.h"
+
+#include "types.h"
+
 
 namespace celerity::detail::utils {
 
@@ -89,5 +95,20 @@ std::string simplify_task_name(const std::string& demangled_type_name);
 
 // escapes "<", ">", and "&" with their corresponding HTML escape sequences
 std::string escape_for_dot_label(std::string str);
+
+template <typename... FmtParams>
+[[noreturn]] void throw_error(FmtParams&&... fmt_args) {
+	throw std::runtime_error(fmt::format(std::forward<FmtParams>(fmt_args)...));
+}
+
+template <typename... FmtParams>
+void report_error(const error_policy policy, FmtParams&&... fmt_args) {
+	switch(policy) {
+	case error_policy::ignore: break;
+	case error_policy::log_warning: CELERITY_WARN(std::forward<FmtParams>(fmt_args)...); break;
+	case error_policy::log_error: CELERITY_ERROR(std::forward<FmtParams>(fmt_args)...); break;
+	case error_policy::throw_exception: throw_error(std::forward<FmtParams>(fmt_args)...); break;
+	}
+}
 
 } // namespace celerity::detail::utils

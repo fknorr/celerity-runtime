@@ -388,12 +388,15 @@ namespace detail {
 		auto& tm = celerity::detail::runtime::get_instance().get_task_manager();
 		tm.set_horizon_step(1);
 
-		for(int i = 0; i < 2; ++i) {
-			q.submit([&](handler& cgh) {
-				celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::read_write};
-				cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
-			});
-		}
+		q.submit([&](handler& cgh) {
+			celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
+			cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
+		});
+
+		q.submit([&](handler& cgh) {
+			celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::read_write};
+			cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
+		});
 
 		q.slow_full_sync();
 
@@ -408,32 +411,70 @@ namespace detail {
 			const std::string expected =
 			    "digraph G{label=\"Command Graph\" subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_0_0[label=<C0 "
 			    "on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font color=\"#606060\">T1 \"unnamed_kernel\" "
-			    "(device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - "
+			    "(device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [8,16,1]<br/><i>discard_write</i> B0 {[0,0,0] - "
 			    "[8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font color=\"#606060\">T2 "
 			    "(horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_3{label=<<font "
 			    "color=\"#606060\">T3 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on N0<br/><b>execution</b> [0,0,0] + "
-			    "[8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font "
-			    "color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph "
-			    "cluster_id_0_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>epoch</b> (barrier)> "
-			    "fontcolor=black "
-			    "shape=box];}id_0_0->id_0_1[];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color=orange];id_0_4->"
-			    "id_0_5[color=orange];subgraph cluster_id_1_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_1_0[label=<C0 on "
-			    "N1<br/><b>epoch</b>> fontcolor=crimson shape=box];}subgraph cluster_id_1_1{label=<<font color=\"#606060\">T1 \"unnamed_kernel\" "
-			    "(device-compute)</font>>;color=darkgray;id_1_1[label=<C1 on N1<br/><b>execution</b> [8,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[8,0,0] "
-			    "- [16,16,1]}> fontcolor=crimson shape=box];}subgraph cluster_id_1_2{label=<<font color=\"#606060\">T2 "
-			    "(horizon)</font>>;color=darkgray;id_1_2[label=<C2 on N1<br/><b>horizon</b>> fontcolor=crimson shape=box];}subgraph "
+			    "[8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font color=\"#606060\">T4 "
+			    "(horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_5{label=<<font "
+			    "color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>epoch</b> (barrier)> fontcolor=black "
+			    "shape=box];}id_0_0->id_0_1[color=orchid];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color="
+			    "orange];id_0_4->id_0_5[color=orange];subgraph cluster_id_1_0{label=<<font color=\"#606060\">T0 "
+			    "(epoch)</font>>;color=darkgray;id_1_0[label=<C0 on N1<br/><b>epoch</b>> fontcolor=crimson shape=box];}subgraph cluster_id_1_1{label=<<font "
+			    "color=\"#606060\">T1 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_1_1[label=<C1 on N1<br/><b>execution</b> [8,0,0] + "
+			    "[8,16,1]<br/><i>discard_write</i> B0 {[8,0,0] - [16,16,1]}> fontcolor=crimson shape=box];}subgraph cluster_id_1_2{label=<<font "
+			    "color=\"#606060\">T2 (horizon)</font>>;color=darkgray;id_1_2[label=<C2 on N1<br/><b>horizon</b>> fontcolor=crimson shape=box];}subgraph "
 			    "cluster_id_1_3{label=<<font color=\"#606060\">T3 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_1_3[label=<C3 on "
 			    "N1<br/><b>execution</b> [8,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[8,0,0] - [16,16,1]}> fontcolor=crimson shape=box];}subgraph "
 			    "cluster_id_1_4{label=<<font color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_1_4[label=<C4 on N1<br/><b>horizon</b>> "
 			    "fontcolor=crimson shape=box];}subgraph cluster_id_1_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_1_5[label=<C5 on "
 			    "N1<br/><b>epoch</b> (barrier)> fontcolor=crimson "
-			    "shape=box];}id_1_0->id_1_1[];id_1_1->id_1_2[color=orange];id_1_1->id_1_3[];id_1_3->id_1_4[color=orange];id_1_2->id_1_4[color=orange];id_1_4->"
-			    "id_1_5[color=orange];}";
+			    "shape=box];}id_1_0->id_1_1[color=orchid];id_1_1->id_1_2[color=orange];id_1_1->id_1_3[];id_1_3->id_1_4[color=orange];id_1_2->id_1_4[color="
+			    "orange];id_1_4->id_1_5[color=orange];}";
 
 			CHECK(graph == expected);
 
 			std::cout << "....... \n\n" << graph << "\n------------------------------\n\n";
 		}
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between commands iff access pattern diagnostics are enabled",
+	    "[runtime][diagnostics]") //
+	{
+		std::unique_ptr<celerity::test_utils::log_capture> lc;
+		{
+			distr_queue q;
+			const auto num_nodes = runtime::get_instance().get_num_nodes();
+			if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
+
+			lc = std::make_unique<celerity::test_utils::log_capture>();
+
+			buffer<int, 1> buf(1);
+
+			SECTION("in distributed device kernels") {
+				q.submit([&](handler& cgh) {
+					accessor acc(buf, cgh, celerity::access::all(), write_only, no_init);
+					cgh.parallel_for(range(num_nodes), [=](item<1>) { (void)acc; });
+				});
+			}
+
+			SECTION("in collective host tasks") {
+				q.submit([&](handler& cgh) {
+					accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+					cgh.host_task(celerity::experimental::collective, [=](experimental::collective_partition) { (void)acc; });
+				});
+			}
+
+			q.slow_full_sync();
+		}
+
+		const auto error_message = "has overlapping writes between multiple nodes in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the "
+		                           "write access or constrain the split to make the access non-overlapping.";
+#if CELERITY_ACCESS_PATTERN_DIAGNOSTICS
+		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+#else
+		CHECK_THAT(lc->get_log(), !Catch::Matchers::ContainsSubstring(error_message));
+#endif
 	}
 
 } // namespace detail
