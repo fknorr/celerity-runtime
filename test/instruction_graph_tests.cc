@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include "command_graph.h"
 #include "distributed_graph_generator.h"
@@ -324,6 +325,54 @@ TEST_CASE("global reduction without a local contribution does not read a stale l
 	    .read(buf, acc::all())
 	    .submit();
 }
+
+TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitialized read", "[instruction_graph_generator]") {
+	const size_t num_devices = 2;
+	const range<1> device_range{num_devices};
+
+	test_utils::idag_test_context ictx(1, 0, num_devices);
+	ictx.get_task_manager().set_uninitialized_read_policy(error_policy::ignore);    // otherwise we get task-level errors first
+	ictx.get_graph_generator().set_uninitialized_read_policy(error_policy::ignore); // otherwise we get command-level errors first
+
+	SECTION("on a fully uninitialized buffer") {
+		auto buf = ictx.create_buffer<1>({1});
+		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::all()).submit()),
+		    "Instruction is trying to read B0 {[0,0,0] - [1,1,1]}, which is neither found locally nor has been await-pushed before.");
+	}
+
+	SECTION("on a partially, locally initialized buffer") {
+		auto buf = ictx.create_buffer<1>(device_range);
+		ictx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
+		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::all()).submit()),
+		    "Instruction is trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
+	}
+
+	SECTION("on a partially, remotely initialized buffer") {
+		auto buf = ictx.create_buffer<1>(device_range);
+		ictx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
+		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::one_to_one()).submit()),
+		    "Instruction is trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
+	}
+}
+
+TEST_CASE("distributed_graph_generator throws in tests if it detects overlapping writes", "[instruction_graph_generator]") {
+	const size_t num_devices = 2;
+	test_utils::idag_test_context ictx(1, 0, num_devices);
+	auto buf = ictx.create_buffer<2>({20, 20});
+
+	SECTION("on all-write") {
+		CHECK_THROWS_WITH((ictx.device_compute(buf.get_range()).discard_write(buf, acc::all()).submit()),
+		    "Task T1 \"celerity::detail::unnamed_kernel\" has overlapping writes on N0 in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping range mapper for "
+		    "the write access or constrain the split to make the access non-overlapping.");
+	}
+
+	SECTION("on neighborhood-write") {
+		CHECK_THROWS_WITH((ictx.device_compute(buf.get_range()).discard_write(buf, acc::neighborhood(1, 1)).submit()),
+		    "Task T1 \"celerity::detail::unnamed_kernel\" has overlapping writes on N0 in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping range mapper for "
+		    "the write access or constrain the split to make the access non-overlapping.");
+	}
+}
+
 
 // TODO a test with impossible requirements (overlapping writes maybe?)
 // TODO an oversubscribed host task with side effects

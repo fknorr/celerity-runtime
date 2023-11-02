@@ -420,7 +420,7 @@ namespace detail {
 		}
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes", "[runtime]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between commands", "[runtime]") {
 		std::unique_ptr<celerity::test_utils::log_capture> lc;
 		{
 			distr_queue q;

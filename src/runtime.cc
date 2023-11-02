@@ -173,6 +173,7 @@ namespace detail {
 			CELERITY_DEBUG("Device D{} with native memory M{} is {}", backend_devices[i].device_id, backend_devices[i].native_memory,
 			    backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
 		}
+		m_num_local_devices = devices.size();
 
 		m_exec = std::make_unique<instruction_executor>(backend::make_queue(backend_type, backend_devices), std::make_unique<mpi_communicator>(MPI_COMM_WORLD),
 		    static_cast<instruction_executor::delegate*>(this));
@@ -182,6 +183,8 @@ namespace detail {
 		    std::make_unique<instruction_graph_generator>(*m_task_mngr, m_num_nodes, m_local_nid, std::move(iggen_devices), m_instruction_recorder.get());
 		// Any uninitialized read that is observed on IDAG generation was already logged on task generation, unless we have a bug.
 		iggen->set_uninitialized_read_policy(error_policy::ignore);
+		// Since the iggen divides the iteration space of commands further, it can create overlaps that were not yet present in the CDAG.
+		iggen->set_overlapping_write_policy(error_policy::log_error);
 
 		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), static_cast<abstract_scheduler::delegate*>(this));
 

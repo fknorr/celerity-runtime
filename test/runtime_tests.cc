@@ -1432,5 +1432,27 @@ namespace detail {
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between instructions", "[runtime]") {
+		std::unique_ptr<celerity::test_utils::log_capture> lc;
+		{
+			distr_queue q;
+			const auto num_devices = runtime::get_instance().get_num_local_devices();
+			if(num_devices < 2) { SKIP("Test needs at least 2 devices"); }
+
+			lc = std::make_unique<celerity::test_utils::log_capture>();
+
+			buffer<int, 1> buf(1);
+			q.submit([&](handler& cgh) {
+				accessor acc(buf, cgh, celerity::access::all(), write_only, no_init);
+				cgh.parallel_for(range(num_devices), [=](item<1>) { (void)acc; });
+			});
+			q.slow_full_sync();
+		}
+
+		const auto error_message = "has overlapping writes on N0 in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the write access or "
+		                           "constrain the split to make the access non-overlapping.";
+		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+	}
+
 } // namespace detail
 } // namespace celerity

@@ -48,6 +48,8 @@ namespace detail {
 
 		size_t get_num_nodes() const { return m_num_nodes; }
 
+		size_t get_num_local_devices() const { return m_num_local_devices; }
+
 		task_manager& get_task_manager() const;
 
 		experimental::bench::detail::user_benchmarker& get_user_benchmarker() const { return *m_user_bench; }
@@ -96,6 +98,7 @@ namespace detail {
 		std::unique_ptr<host_queue> m_h_queue;
 		size_t m_num_nodes;
 		node_id m_local_nid;
+		size_t m_num_local_devices;
 
 		// track all instances of celerity::distr_queue, celerity::buffer and celerity::host_object to know when to destroy s_instance
 		bool m_has_live_queue = false;

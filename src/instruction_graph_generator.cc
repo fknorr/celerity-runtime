@@ -433,15 +433,18 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 		for(auto& region : disjoint_regions) {
 			const auto region_sources = buffer.newest_data_location.get_region_values(region);
 
-			box_vector<3> uninitialized_reads;
-			for(const auto& [box, sources] : region_sources) {
-				if(!sources.any()) { uninitialized_reads.push_back(box); }
-			}
-			if(!uninitialized_reads.empty()) {
-				// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
-				utils::report_error(m_uninitialized_read_policy,
-				    "Instruction is to read B{} {}, which is neither found locally nor has been await-pushed before", bid,
-				    detail::region(std::move(uninitialized_reads)));
+			if(m_uninitialized_read_policy != error_policy::ignore) {
+				box_vector<3> uninitialized_reads;
+				for(const auto& [box, sources] : region_sources) {
+					if(!sources.any()) { uninitialized_reads.push_back(box); }
+				}
+				if(!uninitialized_reads.empty()) {
+					// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
+					utils::report_error(m_uninitialized_read_policy,
+					    // TODO print task / buffer names
+					    "Instruction is trying to read B{} {}, which is neither found locally nor has been await-pushed before.", bid,
+					    detail::region(std::move(uninitialized_reads)));
+				}
 			}
 
 			// try finding a common source for the entire region first to minimize instruction / synchronization complexity down the line
@@ -744,14 +747,17 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		instruction* instruction = nullptr;
 	};
 	// TODO deduplicate these two structures
+	std::vector<chunk<3>> local_chunks;
 	std::vector<partial_instruction> cmd_instrs;
 
 	const auto command_sr = ecmd.get_execution_range();
 	if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device) {
-		const auto device_chunks =
+		// one chunk per device
+		// TODO oversubscription
+		local_chunks =
 		    split_equal(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_devices.size(), tsk.get_dimensions());
-		for(device_id did = 0; did < m_devices.size() && did < device_chunks.size(); ++did) {
-			const auto& chunk = device_chunks[did];
+		for(device_id did = 0; did < m_devices.size() && did < local_chunks.size(); ++did) {
+			const auto& chunk = local_chunks[did];
 			auto& insn = cmd_instrs.emplace_back();
 			insn.subrange = subrange<3>(chunk.offset, chunk.range);
 			insn.did = did;
@@ -759,6 +765,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	} else {
 		// TODO oversubscribe distributed host tasks (but not if they have side effects)
+		local_chunks = {chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size())};
 		auto& insn = cmd_instrs.emplace_back();
 		insn.subrange = command_sr;
 		if(tsk.get_execution_target() == execution_target::device) {
@@ -771,6 +778,23 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			insn.memory_id = host_memory_id;
 		}
 	}
+
+	// detect overlapping writes
+
+	if(m_overlapping_write_policy != error_policy::ignore) {
+		if(const auto overlapping_writes = detect_overlapping_writes(tsk, local_chunks); !overlapping_writes.empty()) {
+			auto error = fmt::format("Task T{}", tsk.get_id());
+			if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
+			fmt::format_to(std::back_inserter(error), " has overlapping writes on N{} in", m_local_node_id);
+			for(const auto& [bid, overlap] : overlapping_writes) {
+				fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
+			}
+			error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
+			utils::report_error(m_overlapping_write_policy, "{}", error);
+		}
+	}
+
+	// buffer requirements
 
 	auto accessed_bids = bam.get_accessed_buffers();
 	for(const auto& rinfo : tsk.get_reductions()) {
@@ -832,10 +856,8 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 	}
 
-	// collect updated regions, check for overlapping writes
+	// collect updated regions
 
-	std::unordered_map<buffer_id, region<3>> buffer_write_accumulators;
-	std::unordered_map<buffer_id, region<3>> overlapping_writes;
 	for(const auto bid : bam.get_accessed_buffers()) {
 		for(auto& insn : cmd_instrs) {
 			reads_writes rw;
@@ -844,16 +866,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				if(access::mode_traits::is_consumer(mode)) { rw.reads = region_union(rw.reads, req); }
 				if(access::mode_traits::is_producer(mode)) { rw.writes = region_union(rw.writes, req); }
 			}
-
-			if(!rw.writes.empty()) {
-				auto& write_accumulator = buffer_write_accumulators[bid]; // allow default-insert
-				if(const auto overlap = region_intersection(write_accumulator, rw.writes); !overlap.empty()) {
-					auto& full_overlap = overlapping_writes[bid]; // allow default-insert
-					full_overlap = region_union(full_overlap, overlap);
-				}
-				write_accumulator = region_union(write_accumulator, rw.writes);
-			}
-
 			insn.rw_map.emplace(bid, std::move(rw));
 		}
 	}
@@ -863,23 +875,6 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			auto& rw_map = instr.rw_map[rinfo.bid]; // allow default-insert
 			rw_map.writes = region_union(rw_map.writes, scalar_reduction_box);
 		}
-
-		auto& write_accumulator = buffer_write_accumulators[rinfo.bid]; // allow default-insert
-		if(const auto overlap = region_intersection(write_accumulator, scalar_reduction_box); !overlap.empty()) {
-			auto& full_overlap = overlapping_writes[rinfo.bid]; // allow default-insert
-			full_overlap = region_union(full_overlap, overlap);
-		}
-		write_accumulator = region_union(write_accumulator, scalar_reduction_box);
-	}
-
-	if(!overlapping_writes.empty()) {
-		auto error = fmt::format("Command group T{}", tsk.get_id());
-		if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
-		fmt::format_to(std::back_inserter(error), " has overlapping writes on N{}:", tsk.get_id(), m_local_node_id);
-		for(const auto& [bid, overlap] : overlapping_writes) {
-			fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
-		}
-		throw std::runtime_error(error);
 	}
 
 	// collect side effects

@@ -60,7 +60,7 @@ class task_builder {
 
 		task_id submit() {
 			assert(m_command);
-			const auto tid = m_tctx.get_task_manager().submit_command_group([this](handler& cgh) {
+			const auto tid = m_tctx.submit_command_group([this](handler& cgh) {
 				for(auto& a : m_requirements) {
 					a(cgh);
 				}
@@ -613,6 +613,11 @@ class dist_cdag_test_context {
 		return reduction_info{m_next_reduction_id++, bid, include_current_buffer_value};
 	}
 
+	template <typename CGF, typename... Hints>
+	task_id submit_command_group(CGF cgf, Hints... hints) {
+		return m_tm.submit_command_group(cgf, hints...);
+	}
+
 	void build_task(const task_id tid) {
 		for(auto& dggen : m_dggens) {
 			dggen->build_task(*m_tm.get_task(tid));
@@ -651,6 +656,26 @@ class idag_test_context {
 	friend class task_builder<idag_test_context>;
 
   private:
+	class uncaught_exception_guard {
+	  public:
+		explicit uncaught_exception_guard(idag_test_context* ictx) : m_ictx(ictx), m_uncaught_exceptions_before(std::uncaught_exceptions()) {}
+
+		~uncaught_exception_guard() {
+			if(std::uncaught_exceptions() > m_uncaught_exceptions_before) {
+				m_ictx->m_uncaught_exceptions_before = -1; // always destroy idag_test_context under the uncaught-exception condition
+			}
+		}
+
+		uncaught_exception_guard(const uncaught_exception_guard&) = delete;
+		uncaught_exception_guard(uncaught_exception_guard&&) = delete;
+		uncaught_exception_guard& operator=(const uncaught_exception_guard&) = delete;
+		uncaught_exception_guard& operator=(uncaught_exception_guard&&) = delete;
+
+	  private:
+		idag_test_context* m_ictx;
+		int m_uncaught_exceptions_before;
+	};
+
 	static auto make_device_map(const size_t num_devices) {
 		std::vector<instruction_graph_generator::device_info> devices;
 		for(device_id did = 0; did < num_devices; ++did) {
@@ -662,26 +687,29 @@ class idag_test_context {
   public:
 	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node)
 	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_num_devices_per_node(num_devices_per_node),
-	      m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
+	      m_uncaught_exceptions_before(std::uncaught_exceptions()), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
 	      m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
 	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), &m_instr_recorder) {}
 
 	~idag_test_context() {
-		for(auto iter = m_managed_objects.rbegin(); iter != m_managed_objects.rend(); ++iter) {
-			matchbox::match(
-			    *iter,
-			    [&](const buffer_id bid) {
-				    m_iggen.destroy_buffer(bid);
-				    m_dggen.destroy_buffer(bid);
-				    m_tm.destroy_buffer(bid);
-			    },
-			    [&](const host_object_id hoid) {
-				    m_iggen.destroy_host_object(hoid);
-				    m_dggen.destroy_host_object(hoid);
-				    m_tm.destroy_host_object(hoid);
-			    });
+		// instruction-graph-generator has no exception guarantees, so we must not call further member functions if one of them threw an exception
+		if(m_uncaught_exceptions_before == std::uncaught_exceptions()) {
+			for(auto iter = m_managed_objects.rbegin(); iter != m_managed_objects.rend(); ++iter) {
+				matchbox::match(
+				    *iter,
+				    [&](const buffer_id bid) {
+					    m_iggen.destroy_buffer(bid);
+					    m_dggen.destroy_buffer(bid);
+					    m_tm.destroy_buffer(bid);
+				    },
+				    [&](const host_object_id hoid) {
+					    m_iggen.destroy_host_object(hoid);
+					    m_dggen.destroy_host_object(hoid);
+					    m_tm.destroy_host_object(hoid);
+				    });
+			}
+			build_task(m_tm.generate_epoch_task(epoch_action::shutdown));
 		}
-		build_task(m_tm.generate_epoch_task(epoch_action::shutdown));
 		maybe_log_graphs();
 	}
 
@@ -692,6 +720,7 @@ class idag_test_context {
 
 	template <typename DataT, int Dims>
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
+		const uncaught_exception_guard guard(this);
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
@@ -707,6 +736,7 @@ class idag_test_context {
 	}
 
 	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
+		const uncaught_exception_guard guard(this);
 		const host_object_id hoid = m_next_host_object_id++;
 		m_tm.create_host_object(hoid);
 		m_dggen.create_host_object(hoid);
@@ -758,6 +788,7 @@ class idag_test_context {
 	}
 
 	task_id epoch(epoch_action action) {
+		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_epoch_task(action);
 		build_task(tid);
 		return tid;
@@ -790,6 +821,7 @@ class idag_test_context {
 	size_t m_num_nodes;
 	node_id m_local_nid;
 	size_t m_num_devices_per_node;
+	int m_uncaught_exceptions_before;
 	buffer_id m_next_buffer_id = 0;
 	host_object_id m_next_host_object_id = 0;
 	reduction_id m_next_reduction_id = 1; // Start from 1 as rid 0 designates "no reduction" in push commands
@@ -807,7 +839,14 @@ class idag_test_context {
 		return reduction_info{m_next_reduction_id++, bid, include_current_buffer_value};
 	}
 
+	template <typename CGF, typename... Hints>
+	task_id submit_command_group(CGF cgf, Hints... hints) {
+		const uncaught_exception_guard guard(this);
+		return m_tm.submit_command_group(cgf, hints...);
+	}
+
 	void build_task(const task_id tid) {
+		const uncaught_exception_guard guard(this);
 		const auto commands = m_dggen.build_task(*m_tm.get_task(tid));
 		for(const auto cmd : commands) {
 			m_iggen.compile(*cmd);
@@ -815,6 +854,7 @@ class idag_test_context {
 	}
 
 	void maybe_build_horizon() {
+		const uncaught_exception_guard guard(this);
 		const auto current_horizon = task_manager_testspy::get_current_horizon(m_tm);
 		if(m_most_recently_built_horizon != current_horizon) {
 			assert(current_horizon.has_value());
@@ -832,6 +872,7 @@ class idag_test_context {
 	}
 
 	task_id fence(buffer_access_map access_map, side_effect_map side_effects) {
+		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::make_unique<null_fence_promise>());
 		build_task(tid);
 		maybe_build_horizon();
