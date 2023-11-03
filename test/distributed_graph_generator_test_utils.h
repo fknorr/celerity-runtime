@@ -652,92 +652,107 @@ class dist_cdag_test_context {
 	}
 };
 
-template <typename InstructionRecord>
+template <typename Record = instruction_record>
 class instruction_query {
   public:
-	using value_type = const InstructionRecord&;
+	using value_type = const Record&;
 
-	class const_iterator : public std::vector<const InstructionRecord*>::const_iterator {
+	class const_iterator : public std::vector<const Record*>::const_iterator {
 	  private:
-		using base_iterator = typename std::vector<const InstructionRecord*>::const_iterator;
+		using base_iterator = typename std::vector<const Record*>::const_iterator;
 
 	  public:
 		const_iterator(base_iterator it) : base_iterator(it) {}
-		const InstructionRecord& operator*() const { return **static_cast<base_iterator>(*this); }
-		const InstructionRecord* operator->() const { return *static_cast<base_iterator>(*this); }
+		const Record& operator*() const { return **static_cast<base_iterator>(*this); }
+		const Record* operator->() const { return *static_cast<base_iterator>(*this); }
 	};
 
 	using iterator = const_iterator;
 
-	template <typename... Filters>
-	explicit instruction_query(const std::vector<instruction_record>& instrs, const Filters&... filters)
-	    : instruction_query(sub_query, &instrs, pointers_to(instrs), filters...) {}
+	template <typename R = Record, std::enable_if_t<std::is_same_v<R, instruction_record>, int> = 0>
+	explicit instruction_query(const instruction_recorder& recorder) : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions())) {}
 
-	template <typename SpecificInstructionRecord = InstructionRecord, typename... Filters>
-	instruction_query<SpecificInstructionRecord> filter(const Filters&... filters) const {
-		return instruction_query<SpecificInstructionRecord>(sub_query, m_all_instructions, m_query_instructions, filters...);
+	template <typename SpecificRecord = Record, typename... Filters>
+	instruction_query<SpecificRecord> filter(const Filters&... filters) const {
+		std::vector<const SpecificRecord*> filtered;
+		for(const auto instr : m_query) {
+			if(matches<SpecificRecord>(*instr, filters...)) { filtered.push_back(utils::as<SpecificRecord>(instr)); }
+		}
+		return instruction_query<SpecificRecord>(m_recorder, std::move(filtered));
 	}
 
-	template <typename SpecificInstructionRecord = instruction_record, typename... Filters>
-	instruction_query<SpecificInstructionRecord> successors(const Filters&... filters) const {
-		std::vector<const InstructionRecord> successors;
-		for(const auto& instr : *m_all_instructions) {
-			const auto& deps = std::visit([](const auto& instr) -> const instruction_dependency_list& { return instr.dependencies; }, instr);
-			for(const auto maybe_successor : m_query_instructions) {
-				if(std::any_of(deps.begin(), deps.end(), [=](const dependency_record<instruction_id>& d) { return d.node == maybe_successor->id; })) {
-					successors.push_back(instr);
-				}
+	template <typename DepRecord = instruction_record, typename... Filters>
+	instruction_query<DepRecord> predecessors(const Filters&... filters) const {
+		std::vector<const DepRecord*> predecessors;
+		for(const auto& maybe_predecessor : m_recorder->get_instructions()) {
+			if(matches<DepRecord>(*maybe_predecessor, filters...) //
+			    && std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
+				       return std::any_of(instr->dependencies.begin(), instr->dependencies.end(),
+				           [&](const dependency_record<instruction_id>& d) { return d.node == maybe_predecessor->id; });
+			       })) {
+				predecessors.push_back(utils::as<DepRecord>(maybe_predecessor.get()));
 			}
 		}
-		return instruction_query<SpecificInstructionRecord>(sub_query, m_all_instructions, m_query_instructions, filters...);
+		return instruction_query<DepRecord>(m_recorder, std::move(predecessors));
 	}
 
-	size_t count() const { return m_query_instructions.size(); }
-	iterator begin() const { return m_query_instructions.begin(); }
-	iterator end() const { return m_query_instructions.end(); }
+	template <typename DepRecord = instruction_record, typename... Filters>
+	instruction_query<DepRecord> successors(const Filters&... filters) const {
+		std::vector<const DepRecord*> successors;
+		for(const auto& maybe_successor : m_recorder->get_instructions()) {
+			if(matches<DepRecord>(*maybe_successor, filters...) //
+			    && std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
+				       return std::any_of(maybe_successor->dependencies.begin(), maybe_successor->dependencies.end(),
+				           [&](const dependency_record<instruction_id>& d) { return d.node == instr->id; });
+			       })) {
+				successors.push_back(utils::as<DepRecord>(maybe_successor.get()));
+			}
+		}
+		return instruction_query<DepRecord>(m_recorder, std::move(successors));
+	}
 
-	instruction_query& require_count(const size_t expected) const {
-		REQUIRE(count() == expected);
+	template <typename Fn>
+	void for_each(const Fn& fn) {
+		for(const auto instr : m_query) {
+			fn(std::as_const(instruction_query(m_recorder, {instr})));
+		}
+		return *this;
+	}
+
+	size_t count() const { return m_query.size(); }
+	iterator begin() const { return m_query.begin(); }
+	iterator end() const { return m_query.end(); }
+
+	const instruction_query& check_count(const size_t expected) const {
+		CHECK(count() == expected);
 		return *this;
 	}
 
 	value_type single_instance() const {
 		REQUIRE(count() == 1);
-		return m_query_instructions.front();
+		return *m_query.front();
 	}
 
   private:
-	struct sub_query_tag {
-	} inline static constexpr sub_query;
+	template <typename>
+	friend class instruction_query;
 
-	const std::vector<instruction_record>* m_all_instructions;
-	std::vector<const InstructionRecord*> m_query_instructions;
+	const instruction_recorder* m_recorder;
+	std::vector<const Record*> m_query;
 
 	template <typename T>
-	static std::vector<const T*> pointers_to(const std::vector<T>& instrs) {
-		std::vector<const T*> result(instrs.size());
-		std::transform(instrs.begin(), instrs.end(), result.begin(), [](const auto& instr) { return &instr; });
-		return result;
+	static std::vector<const T*> non_owning_pointers(const std::vector<std::unique_ptr<T>>& unique) {
+		std::vector<const T*> ptrs(unique.size());
+		std::transform(unique.begin(), unique.end(), ptrs.begin(), [](const std::unique_ptr<T>& p) { return p.get(); });
+		return ptrs;
 	}
 
-	template <typename GeneralInstructionRecord, typename... Filters>
-	instruction_query(const sub_query_tag /* tag */, const std::vector<GeneralInstructionRecord>* all_instrs,
-	    const std::vector<const GeneralInstructionRecord*>& query_instrs, const Filters&... filters)
-	    : m_all_instructions(all_instrs) {
-		for(const auto instr : query_instrs) {
-			if constexpr(std::is_same_v<GeneralInstructionRecord, instruction_record> && !std::is_same_v<InstructionRecord, instruction_record>) {
-				if(const auto specific = std::get_if<InstructionRecord>(instr); specific != nullptr && (matches(*specific, filters) && ...)) {
-					m_query_instructions.push_back(specific);
-				}
-			} else {
-				if((matches(*instr, filters) && ...)) { m_query_instructions.push_back(instr); }
-			}
-		}
+	template <typename SpecificRecord, typename... Filters>
+	static bool matches(const instruction_record& instr, const Filters&... filters) {
+		return utils::isa<SpecificRecord>(&instr) && (matches(instr, filters) && ...);
 	}
 
-	static bool matches(const instruction_record& instr, instruction_id iid) {
-		return std::visit([=](const auto& instr) { return instr.id == iid; }, instr);
-	}
+	static bool matches(const instruction_record& instr, const instruction_id iid) { return instr.id == iid; }
 
 	static bool matches(const instruction_record& instr, const task_id tid) {
 		return matchbox::match(
@@ -748,6 +763,8 @@ class instruction_query {
 		    [=](const epoch_instruction_record& einstr) { return einstr.epoch_task_id == tid; },          //
 		    [](const auto& /* other */) { return false; });
 	}
+
+	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query) : m_recorder(recorder), m_query(std::move(query)) {}
 };
 
 class idag_test_context {
@@ -791,23 +808,7 @@ class idag_test_context {
 
 	~idag_test_context() {
 		// instruction-graph-generator has no exception guarantees, so we must not call further member functions if one of them threw an exception
-		if(m_uncaught_exceptions_before == std::uncaught_exceptions()) {
-			for(auto iter = m_managed_objects.rbegin(); iter != m_managed_objects.rend(); ++iter) {
-				matchbox::match(
-				    *iter,
-				    [&](const buffer_id bid) {
-					    m_iggen.destroy_buffer(bid);
-					    m_dggen.destroy_buffer(bid);
-					    m_tm.destroy_buffer(bid);
-				    },
-				    [&](const host_object_id hoid) {
-					    m_iggen.destroy_host_object(hoid);
-					    m_dggen.destroy_host_object(hoid);
-					    m_tm.destroy_host_object(hoid);
-				    });
-			}
-			build_task(m_tm.generate_epoch_task(epoch_action::shutdown));
-		}
+		if(m_uncaught_exceptions_before == std::uncaught_exceptions()) { finish(); }
 		maybe_log_graphs();
 	}
 
@@ -816,8 +817,31 @@ class idag_test_context {
 	idag_test_context& operator=(const idag_test_context&) = delete;
 	idag_test_context& operator=(idag_test_context&&) = delete;
 
+	void finish() {
+		if(m_finished) return;
+
+		for(auto iter = m_managed_objects.rbegin(); iter != m_managed_objects.rend(); ++iter) {
+			matchbox::match(
+			    *iter,
+			    [&](const buffer_id bid) {
+				    m_iggen.destroy_buffer(bid);
+				    m_dggen.destroy_buffer(bid);
+				    m_tm.destroy_buffer(bid);
+			    },
+			    [&](const host_object_id hoid) {
+				    m_iggen.destroy_host_object(hoid);
+				    m_dggen.destroy_host_object(hoid);
+				    m_tm.destroy_host_object(hoid);
+			    });
+		}
+		build_task(m_tm.generate_epoch_task(epoch_action::shutdown));
+
+		m_finished = true;
+	}
+
 	template <typename DataT, int Dims>
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
+		REQUIRE(!m_finished);
 		const uncaught_exception_guard guard(this);
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
@@ -834,6 +858,7 @@ class idag_test_context {
 	}
 
 	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
+		REQUIRE(!m_finished);
 		const uncaught_exception_guard guard(this);
 		const host_object_id hoid = m_next_host_object_id++;
 		m_tm.create_host_object(hoid);
@@ -886,6 +911,7 @@ class idag_test_context {
 	}
 
 	task_id epoch(epoch_action action) {
+		REQUIRE(!m_finished);
 		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_epoch_task(action);
 		build_task(tid);
@@ -906,7 +932,7 @@ class idag_test_context {
 
 	template <typename InstructionRecord, typename... Filters>
 	instruction_query<InstructionRecord> query(const Filters&... filters) {
-		return instruction_query<InstructionRecord>(m_instr_recorder.get_instructions());
+		return instruction_query<>(m_instr_recorder).filter<InstructionRecord>(filters...);
 	}
 
 	[[nodiscard]] std::string print_task_graph() { //
@@ -937,6 +963,7 @@ class idag_test_context {
 	distributed_graph_generator m_dggen;
 	instruction_recorder m_instr_recorder;
 	instruction_graph_generator m_iggen;
+	bool m_finished = false;
 
 	reduction_info create_reduction(const buffer_id bid, const bool include_current_buffer_value) {
 		return reduction_info{m_next_reduction_id++, bid, include_current_buffer_value};
@@ -944,11 +971,13 @@ class idag_test_context {
 
 	template <typename CGF, typename... Hints>
 	task_id submit_command_group(CGF cgf, Hints... hints) {
+		REQUIRE(!m_finished);
 		const uncaught_exception_guard guard(this);
 		return m_tm.submit_command_group(cgf, hints...);
 	}
 
 	void build_task(const task_id tid) {
+		REQUIRE(!m_finished);
 		const uncaught_exception_guard guard(this);
 		const auto commands = m_dggen.build_task(*m_tm.get_task(tid));
 		for(const auto cmd : commands) {
@@ -957,6 +986,7 @@ class idag_test_context {
 	}
 
 	void maybe_build_horizon() {
+		REQUIRE(!m_finished);
 		const uncaught_exception_guard guard(this);
 		const auto current_horizon = task_manager_testspy::get_current_horizon(m_tm);
 		if(m_most_recently_built_horizon != current_horizon) {
@@ -975,6 +1005,7 @@ class idag_test_context {
 	}
 
 	task_id fence(buffer_access_map access_map, side_effect_map side_effects) {
+		REQUIRE(!m_finished);
 		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::make_unique<null_fence_promise>());
 		build_task(tid);

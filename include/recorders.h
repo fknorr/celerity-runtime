@@ -136,21 +136,27 @@ struct buffer_allocation_record {
 
 using instruction_dependency_list = std::vector<dependency_record<instruction_id>>;
 
-struct instruction_record_base {
+struct instruction_record
+    : matchbox::acceptor<struct clone_collective_group_instruction_record, struct alloc_instruction_record, struct free_instruction_record,
+          struct init_buffer_instruction_record, struct export_instruction_record, struct copy_instruction_record, struct launch_instruction_record,
+          struct send_instruction_record, struct receive_instruction_record, struct spilt_receive_instruction_record, struct await_receive_instruction_record,
+          struct gather_receive_instruction_record, struct fill_identity_instruction_record, struct reduce_instruction_record, struct fence_instruction_record,
+          struct destroy_host_object_instruction_record, struct horizon_instruction_record, struct epoch_instruction_record> //
+{
 	instruction_id id;
 	instruction_dependency_list dependencies;
 
-	explicit instruction_record_base(const instruction& instr);
+	explicit instruction_record(const instruction& instr);
 };
 
-struct clone_collective_group_instruction_record : instruction_record_base {
+struct clone_collective_group_instruction_record : matchbox::implement_acceptor<instruction_record, clone_collective_group_instruction_record> {
 	collective_group_id origin_collective_group_id;
 	collective_group_id new_collective_group_id;
 
 	explicit clone_collective_group_instruction_record(const clone_collective_group_instruction& ccginstr);
 };
 
-struct alloc_instruction_record : instruction_record_base {
+struct alloc_instruction_record : matchbox::implement_acceptor<instruction_record, alloc_instruction_record> {
 	enum class alloc_origin {
 		buffer,
 		gather,
@@ -168,7 +174,7 @@ struct alloc_instruction_record : instruction_record_base {
 	    const alloc_instruction& ainstr, alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation, std::optional<size_t> num_chunks);
 };
 
-struct free_instruction_record : instruction_record_base {
+struct free_instruction_record : matchbox::implement_acceptor<instruction_record, free_instruction_record> {
 	detail::memory_id memory_id;
 	detail::allocation_id allocation_id;
 	size_t size;
@@ -177,7 +183,7 @@ struct free_instruction_record : instruction_record_base {
 	free_instruction_record(const free_instruction& finstr, size_t size, const std::optional<buffer_allocation_record>& buffer_allocation);
 };
 
-struct init_buffer_instruction_record : instruction_record_base {
+struct init_buffer_instruction_record : matchbox::implement_acceptor<instruction_record, init_buffer_instruction_record> {
 	detail::buffer_id buffer_id;
 	detail::allocation_id host_allocation_id;
 	size_t size;
@@ -185,7 +191,7 @@ struct init_buffer_instruction_record : instruction_record_base {
 	explicit init_buffer_instruction_record(const init_buffer_instruction& ibinstr);
 };
 
-struct export_instruction_record : instruction_record_base {
+struct export_instruction_record : matchbox::implement_acceptor<instruction_record, export_instruction_record> {
 	buffer_id buffer;
 	celerity::id<3> offset_in_buffer;
 	allocation_id host_allocation_id;
@@ -198,7 +204,7 @@ struct export_instruction_record : instruction_record_base {
 	explicit export_instruction_record(const export_instruction& einstr, buffer_id buffer, const celerity::id<3>& offset_in_buffer);
 };
 
-struct copy_instruction_record : instruction_record_base {
+struct copy_instruction_record : matchbox::implement_acceptor<instruction_record, copy_instruction_record> {
 	enum class copy_origin {
 		linearize,
 		resize,
@@ -244,7 +250,7 @@ struct buffer_allocation_reduction_record : access_allocation, buffer_memory_red
 	    : access_allocation(aa), buffer_memory_reduction_record(bmrr) {}
 };
 
-struct launch_instruction_record : instruction_record_base {
+struct launch_instruction_record : matchbox::implement_acceptor<instruction_record, launch_instruction_record> {
 	execution_target target;
 	std::optional<detail::device_id> device_id;
 	std::optional<detail::collective_group_id> collective_group_id;
@@ -260,7 +266,7 @@ struct launch_instruction_record : instruction_record_base {
 	    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map);
 };
 
-struct send_instruction_record : instruction_record_base {
+struct send_instruction_record : matchbox::implement_acceptor<instruction_record, send_instruction_record> {
 	node_id dest_node_id;
 	int tag;
 	memory_id source_memory_id;
@@ -287,22 +293,22 @@ struct receive_instruction_record_impl {
 	receive_instruction_record_impl(const receive_instruction_impl& rinstr);
 };
 
-struct receive_instruction_record : instruction_record_base, receive_instruction_record_impl {
+struct receive_instruction_record : matchbox::implement_acceptor<instruction_record, receive_instruction_record>, receive_instruction_record_impl {
 	receive_instruction_record(const receive_instruction& rinstr);
 };
 
-struct spilt_receive_instruction_record : instruction_record_base, receive_instruction_record_impl {
+struct spilt_receive_instruction_record : matchbox::implement_acceptor<instruction_record, spilt_receive_instruction_record>, receive_instruction_record_impl {
 	spilt_receive_instruction_record(const split_receive_instruction& srinstr);
 };
 
-struct await_receive_instruction_record : instruction_record_base {
+struct await_receive_instruction_record : matchbox::implement_acceptor<instruction_record, await_receive_instruction_record> {
 	detail::transfer_id transfer_id;
 	region<3> received_region;
 
 	await_receive_instruction_record(const await_receive_instruction& arinstr);
 };
 
-struct gather_receive_instruction_record : instruction_record_base {
+struct gather_receive_instruction_record : matchbox::implement_acceptor<instruction_record, gather_receive_instruction_record> {
 	transfer_id transfer_id;
 	memory_id memory_id;
 	allocation_id allocation_id;
@@ -313,7 +319,7 @@ struct gather_receive_instruction_record : instruction_record_base {
 	gather_receive_instruction_record(const gather_receive_instruction& grinstr, const box<3>& gather_box, size_t num_nodes);
 };
 
-struct fill_identity_instruction_record : instruction_record_base {
+struct fill_identity_instruction_record : matchbox::implement_acceptor<instruction_record, fill_identity_instruction_record> {
 	reduction_id reduction_id;
 	memory_id memory_id;
 	allocation_id allocation_id;
@@ -322,7 +328,7 @@ struct fill_identity_instruction_record : instruction_record_base {
 	fill_identity_instruction_record(const fill_identity_instruction& fiinstr);
 };
 
-struct reduce_instruction_record : instruction_record_base {
+struct reduce_instruction_record : matchbox::implement_acceptor<instruction_record, reduce_instruction_record> {
 	enum class reduction_scope {
 		global,
 		local,
@@ -342,7 +348,7 @@ struct reduce_instruction_record : instruction_record_base {
 	    const detail::box<3>& box, reduction_scope scope);
 };
 
-struct fence_instruction_record : instruction_record_base {
+struct fence_instruction_record : matchbox::implement_acceptor<instruction_record, fence_instruction_record> {
 	struct buffer_variant {
 		buffer_id bid;
 		box<3> box;
@@ -359,20 +365,20 @@ struct fence_instruction_record : instruction_record_base {
 	fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, host_object_id hoid);
 };
 
-struct destroy_host_object_instruction_record : instruction_record_base {
+struct destroy_host_object_instruction_record : matchbox::implement_acceptor<instruction_record, destroy_host_object_instruction_record> {
 	detail::host_object_id host_object_id;
 
 	explicit destroy_host_object_instruction_record(const destroy_host_object_instruction& dhoinstr);
 };
 
-struct horizon_instruction_record : instruction_record_base {
+struct horizon_instruction_record : matchbox::implement_acceptor<instruction_record, horizon_instruction_record> {
 	task_id horizon_task_id;
 	command_id horizon_command_id;
 
 	horizon_instruction_record(const horizon_instruction& hinstr, command_id horizon_cid);
 };
 
-struct epoch_instruction_record : instruction_record_base {
+struct epoch_instruction_record : matchbox::implement_acceptor<instruction_record, epoch_instruction_record> {
 	task_id epoch_task_id;
 	command_id epoch_command_id;
 	epoch_action epoch_action;
@@ -380,40 +386,34 @@ struct epoch_instruction_record : instruction_record_base {
 	epoch_instruction_record(const epoch_instruction& einstr, command_id epoch_cid);
 };
 
-using instruction_record =
-    std::variant<clone_collective_group_instruction_record, alloc_instruction_record, free_instruction_record, init_buffer_instruction_record,
-        export_instruction_record, copy_instruction_record, launch_instruction_record, send_instruction_record, receive_instruction_record,
-        spilt_receive_instruction_record, await_receive_instruction_record, gather_receive_instruction_record, fill_identity_instruction_record,
-        reduce_instruction_record, fence_instruction_record, destroy_host_object_instruction_record, horizon_instruction_record, epoch_instruction_record>;
-
 class instruction_recorder {
   public:
-	using instruction_records = std::vector<instruction_record>;
 	using outbound_pilots = std::vector<outbound_pilot>;
 
 	void record_await_push_command_id(const transfer_id& trid, const command_id cid) { m_await_push_cids.emplace(trid, cid); }
 	void record_buffer_debug_name(const buffer_id bid, const std::string& debug_name) { m_buffer_debug_names.emplace(bid, debug_name); }
-	void record_instruction(instruction_record record) { m_recorded_instructions.push_back(std::move(record)); }
-	void record_pilot_message(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
+	void record_instruction(std::unique_ptr<instruction_record> record) { m_recorded_instructions.push_back(std::move(record)); }
+	void record_outbound_pilot(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
 	void record_dependencies(const instruction& instr);
 
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, instruction_record record) {
-		recorder.record_instruction(std::move(record));
+	template <typename InstructionRecord>
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, InstructionRecord record) {
+		recorder.record_instruction(std::make_unique<InstructionRecord>(std::move(record)));
 		return recorder;
 	}
 
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, const outbound_pilot& pilot) {
-		recorder.record_pilot_message(pilot);
+		recorder.record_outbound_pilot(pilot);
 		return recorder;
 	}
 
-	const instruction_records& get_instructions() const { return m_recorded_instructions; }
+	const std::vector<std::unique_ptr<instruction_record>>& get_instructions() const { return m_recorded_instructions; }
 
 	const instruction_record& get_instruction(const instruction_id iid) const {
-		const auto it = std::find_if(m_recorded_instructions.begin(), m_recorded_instructions.end(),
-		    [iid](const instruction_record& instr) { return std::visit([=](const auto& instr) { return instr.id == iid; }, instr); });
+		const auto it = std::find_if(
+		    m_recorded_instructions.begin(), m_recorded_instructions.end(), [=](const std::unique_ptr<instruction_record>& instr) { return instr->id == iid; });
 		assert(it != m_recorded_instructions.end());
-		return *it;
+		return **it;
 	}
 
 	const outbound_pilots& get_outbound_pilots() const { return m_recorded_pilots; }
@@ -421,8 +421,8 @@ class instruction_recorder {
 	const std::string& get_buffer_debug_name(buffer_id bid) const;
 
   private:
-	instruction_records m_recorded_instructions;
-	outbound_pilots m_recorded_pilots;
+	std::vector<std::unique_ptr<instruction_record>> m_recorded_instructions;
+	std::vector<outbound_pilot> m_recorded_pilots;
 	std::unordered_map<transfer_id, command_id> m_await_push_cids;
 	std::unordered_map<buffer_id, std::string> m_buffer_debug_names;
 };

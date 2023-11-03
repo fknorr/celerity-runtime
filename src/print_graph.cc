@@ -265,7 +265,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 	std::string dot = make_graph_preamble(title);
 	const auto back = std::back_inserter(dot);
 
-	const auto begin_node = [&](const instruction_record_base& instr, const std::string_view& shape, const std::string_view& color) {
+	const auto begin_node = [&](const instruction_record& instr, const std::string_view& shape, const std::string_view& color) {
 		// TODO consider moving the task-reference / command-reference printing here.
 		fmt::format_to(back, "I{}[color={},shape={},label=<", instr.id, color, shape);
 	};
@@ -277,7 +277,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 	std::unordered_map<int, instruction_id> send_instructions_by_tag; // for connecting pilot messages to send instructions
 	for(const auto& instr : irec.get_instructions()) {
 		matchbox::match(
-		    instr,
+		    *instr,
 		    [&](const clone_collective_group_instruction_record& ccginstr) {
 			    begin_node(ccginstr, "ellipse", "darkred");
 			    fmt::format_to(back, "I{}<br/><b>clone collective group</b><br/>CG{} -&gt; CG{}", ccginstr.id, ccginstr.origin_collective_group_id,
@@ -467,10 +467,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	for(const auto& instr : irec.get_instructions()) {
 		// since all instruction_records inherit from instruction_record_base, this *should* just compile to a pointer adjustment
-		const auto& instr_base = matchbox::match(instr, [](const auto& i) -> const instruction_record_base& { return i; });
-
-		for(const auto& dep : instr_base.dependencies) {
-			fmt::format_to(back, "I{}->I{}[{}];", dep.node, instr_base.id, dependency_style(dep));
+		for(const auto& dep : instr->dependencies) {
+			fmt::format_to(back, "I{}->I{}[{}];", dep.node, instr->id, dependency_style(dep));
 		}
 	}
 
