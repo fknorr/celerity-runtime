@@ -22,10 +22,12 @@ TEST_CASE("trivial graph", "[instruction graph]") {
 	const auto kernel_tid = ictx.device_compute<class UKN(kernel)>(test_range).submit();
 	ictx.finish();
 
-	ictx.query<instruction_record>().check_count(3);
-	const auto q_kernel_instr = ictx.query<launch_instruction_record>(kernel_tid).check_count(1);
-	q_kernel_instr.predecessors().check_count(1).filter<epoch_instruction_record>().check_count(1);
-	q_kernel_instr.successors().check_count(1).filter<epoch_instruction_record>().check_count(1);
+	auto instrs = ictx.query<instruction_record>();
+	CHECK(instrs.count() == 3);
+	const auto launch_instrs = ictx.query<launch_instruction_record>(kernel_tid);
+	CHECK(launch_instrs.count() == 1);
+	CHECK(launch_instrs.predecessors().unique<epoch_instruction_record>().epoch_task_id == task_id(0));
+	CHECK(launch_instrs.successors().unique<epoch_instruction_record>().epoch_task_id == task_id(2));
 }
 
 TEST_CASE("graph with only writes", "[instruction graph]") {

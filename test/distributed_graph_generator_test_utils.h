@@ -711,16 +711,23 @@ class instruction_query {
 		return instruction_query<DepRecord>(m_recorder, std::move(successors));
 	}
 
-	template <typename Fn>
-	void for_each(const Fn& fn) {
-		for(const auto instr : m_query) {
-			fn(std::as_const(instruction_query(m_recorder, {instr})));
-		}
+	template <typename SpecificRecord = Record, typename... FiltersAndFn>
+	const instruction_query& for_each(const FiltersAndFn&... filters_and_fn) const {
+		static_assert(sizeof...(FiltersAndFn) > 0);
+		for_each_dispatch<SpecificRecord>(std::tuple(filters_and_fn...), std::make_index_sequence<sizeof...(FiltersAndFn) - 1>());
 		return *this;
 	}
 
 	size_t count() const { return m_query.size(); }
+
+	template <typename SpecificRecord = Record, typename... Filters>
+	size_t count(const Filters&... filters) const {
+		return static_cast<size_t>(
+		    std::count_if(m_query.begin(), m_query.end(), [&](const Record* instr) { return matches<SpecificRecord>(*instr, filters...); }));
+	}
+
 	iterator begin() const { return m_query.begin(); }
+
 	iterator end() const { return m_query.end(); }
 
 	const instruction_query& check_count(const size_t expected) const {
@@ -728,9 +735,21 @@ class instruction_query {
 		return *this;
 	}
 
-	value_type single_instance() const {
+	template <typename SpecificRecord = Record, typename... FiltersAndSizeT>
+	const instruction_query& check_count(const FiltersAndSizeT&... filters_and_expected_count) const {
+		static_assert(sizeof...(FiltersAndSizeT) > 0);
+		check_count_dispatch<SpecificRecord>(std::tuple(filters_and_expected_count...), std::make_index_sequence<sizeof...(FiltersAndSizeT) - 1>());
+		return *this;
+	}
+
+	value_type unique() const {
 		REQUIRE(count() == 1);
 		return *m_query.front();
+	}
+
+	template <typename SpecificRecord = Record, typename... Filters>
+	const SpecificRecord& unique(const Filters&... filters) const {
+		return filter<SpecificRecord>(filters...).unique();
 	}
 
   private:
@@ -765,6 +784,30 @@ class instruction_query {
 	}
 
 	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query) : m_recorder(recorder), m_query(std::move(query)) {}
+
+	template <typename SpecificRecord, typename... Params, size_t... FilterIndices>
+	void for_each_dispatch(const std::tuple<Params...>& filters_and_fn, const std::index_sequence<FilterIndices...> /* filter_indices */) const {
+		constexpr size_t fn_index = sizeof...(Params) - 1;
+		for_each_impl<SpecificRecord>(std::get<fn_index>(filters_and_fn), std::get<FilterIndices>(filters_and_fn)...);
+	}
+
+	template <typename SpecificRecord, typename Fn, typename... Filters>
+	void for_each_impl(const Fn& fn, const Filters&... filters) const {
+		for(const auto instr : m_query) {
+			if(matches<SpecificRecord>(*instr, filters...)) { fn(instruction_query(m_recorder, {utils::as<SpecificRecord>(instr)})); }
+		}
+	}
+
+	template <typename SpecificRecord, typename... Params, size_t... FilterIndices>
+	void check_count_dispatch(const std::tuple<Params...>& filters_and_expected_count, const std::index_sequence<FilterIndices...> /* filter_indices */) const {
+		constexpr size_t count_index = sizeof...(Params) - 1;
+		return check_count_impl<SpecificRecord>(std::get<count_index>(filters_and_expected_count), std::get<FilterIndices>(filters_and_expected_count)...);
+	}
+
+	template <typename SpecificRecord, typename... Filters>
+	void check_count_impl(const size_t expected_count, const Filters&... filters) const {
+		CHECK(count<SpecificRecord>(filters...) == expected_count);
+	}
 };
 
 class idag_test_context {
