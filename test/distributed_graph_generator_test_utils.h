@@ -655,40 +655,82 @@ class dist_cdag_test_context {
 template <typename InstructionRecord>
 class instruction_query {
   public:
-	using value_type = const InstructionRecord*;
-	using const_iterator = typename std::vector<const InstructionRecord*>::const_iterator;
+	using value_type = const InstructionRecord&;
+
+	class const_iterator : public std::vector<const InstructionRecord*>::const_iterator {
+	  private:
+		using base_iterator = typename std::vector<const InstructionRecord*>::const_iterator;
+
+	  public:
+		const_iterator(base_iterator it) : base_iterator(it) {}
+		const InstructionRecord& operator*() const { return **static_cast<base_iterator>(*this); }
+		const InstructionRecord* operator->() const { return *static_cast<base_iterator>(*this); }
+	};
+
 	using iterator = const_iterator;
 
 	template <typename... Filters>
-	explicit instruction_query(const std::vector<InstructionRecord>& instrs, const Filters&... filters) : instruction_query(pointers_to(instrs), filters...) {}
+	explicit instruction_query(const std::vector<instruction_record>& instrs, const Filters&... filters)
+	    : instruction_query(sub_query, &instrs, pointers_to(instrs), filters...) {}
 
 	template <typename SpecificInstructionRecord = InstructionRecord, typename... Filters>
-	instruction_query<SpecificInstructionRecord> find_all(const Filters&... filters) const {
-		return instruction_query<SpecificInstructionRecord>(m_instructions, filters...);
+	instruction_query<SpecificInstructionRecord> filter(const Filters&... filters) const {
+		return instruction_query<SpecificInstructionRecord>(sub_query, m_all_instructions, m_query_instructions, filters...);
 	}
 
-	size_t count() const { return m_instructions.size(); }
-	iterator begin() const { return m_instructions.begin(); }
-	iterator end() const { return m_instructions.end(); }
+	template <typename SpecificInstructionRecord = instruction_record, typename... Filters>
+	instruction_query<SpecificInstructionRecord> successors(const Filters&... filters) const {
+		std::vector<const InstructionRecord> successors;
+		for(const auto& instr : *m_all_instructions) {
+			const auto& deps = std::visit([](const auto& instr) -> const instruction_dependency_list& { return instr.dependencies; }, instr);
+			for(const auto maybe_successor : m_query_instructions) {
+				if(std::any_of(deps.begin(), deps.end(), [=](const dependency_record<instruction_id>& d) { return d.node == maybe_successor->id; })) {
+					successors.push_back(instr);
+				}
+			}
+		}
+		return instruction_query<SpecificInstructionRecord>(sub_query, m_all_instructions, m_query_instructions, filters...);
+	}
+
+	size_t count() const { return m_query_instructions.size(); }
+	iterator begin() const { return m_query_instructions.begin(); }
+	iterator end() const { return m_query_instructions.end(); }
+
+	instruction_query& require_count(const size_t expected) const {
+		REQUIRE(count() == expected);
+		return *this;
+	}
+
+	value_type single_instance() const {
+		REQUIRE(count() == 1);
+		return m_query_instructions.front();
+	}
 
   private:
-	std::vector<const InstructionRecord*> m_instructions;
+	struct sub_query_tag {
+	} inline static constexpr sub_query;
 
-	static auto pointers_to(const std::vector<InstructionRecord>& instrs) {
-		std::vector<const InstructionRecord*> result(instrs.size());
+	const std::vector<instruction_record>* m_all_instructions;
+	std::vector<const InstructionRecord*> m_query_instructions;
+
+	template <typename T>
+	static std::vector<const T*> pointers_to(const std::vector<T>& instrs) {
+		std::vector<const T*> result(instrs.size());
 		std::transform(instrs.begin(), instrs.end(), result.begin(), [](const auto& instr) { return &instr; });
 		return result;
 	}
 
 	template <typename GeneralInstructionRecord, typename... Filters>
-	instruction_query(const std::vector<const GeneralInstructionRecord*>& instrs, const Filters&... filters) {
-		for(const auto instr : instrs) {
+	instruction_query(const sub_query_tag /* tag */, const std::vector<GeneralInstructionRecord>* all_instrs,
+	    const std::vector<const GeneralInstructionRecord*>& query_instrs, const Filters&... filters)
+	    : m_all_instructions(all_instrs) {
+		for(const auto instr : query_instrs) {
 			if constexpr(std::is_same_v<GeneralInstructionRecord, instruction_record> && !std::is_same_v<InstructionRecord, instruction_record>) {
 				if(const auto specific = std::get_if<InstructionRecord>(instr); specific != nullptr && (matches(*specific, filters) && ...)) {
-					m_instructions.push_back(specific);
+					m_query_instructions.push_back(specific);
 				}
 			} else {
-				if((matches(*instr, filters) && ...)) { m_instructions.push_back(instr); }
+				if((matches(*instr, filters) && ...)) { m_query_instructions.push_back(instr); }
 			}
 		}
 	}

@@ -6,9 +6,7 @@
 #include "distributed_graph_generator.h"
 #include "distributed_graph_generator_test_utils.h"
 #include "instruction_graph_generator.h"
-#include "print_graph.h"
 #include "recorders.h"
-#include "task_ring_buffer.h"
 #include "test_utils.h"
 
 
@@ -23,6 +21,9 @@ TEST_CASE("trivial graph", "[instruction graph]") {
 	const range<1> test_range = {256};
 	ictx.device_compute<class UKN(kernel)>(test_range).submit();
 	CHECK(ictx.query<epoch_instruction_record>(task_id(0)).count() == 1);
+	for(auto& instr : ictx.query<epoch_instruction_record>(task_id(0))) {
+		CHECK(instr.epoch_task_id == task_id(0));
+	}
 }
 
 TEST_CASE("graph with only writes", "[instruction graph]") {
