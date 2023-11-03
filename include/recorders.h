@@ -259,9 +259,9 @@ struct launch_instruction_record : matchbox::implement_acceptor<instruction_reco
 	std::vector<buffer_allocation_reduction_record> reduction_map;
 	task_id command_group_task_id;
 	command_id execution_command_id;
-	std::string kernel_debug_name;
+	std::string debug_name;
 
-	launch_instruction_record(const launch_instruction& linstr, task_id cg_tid, command_id execution_cid, const std::string& kernel_debug_name,
+	launch_instruction_record(const launch_instruction& linstr, task_id cg_tid, command_id execution_cid, const std::string& debug_name,
 	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
 	    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map);
 };

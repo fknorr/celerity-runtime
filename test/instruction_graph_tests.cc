@@ -19,7 +19,7 @@ namespace acc = celerity::access;
 TEST_CASE("trivial graph", "[instruction graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
-	const auto kernel_tid = ictx.device_compute<class UKN(kernel)>(test_range).submit();
+	const auto kernel_tid = ictx.device_compute(test_range).name("kernel").submit();
 	ictx.finish();
 
 	auto instrs = ictx.query<instruction_record>();
@@ -34,15 +34,31 @@ TEST_CASE("graph with only writes", "[instruction graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
-	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
 }
 
 TEST_CASE("resize and overwrite", "[instruction graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	auto buf1 = ictx.create_buffer(range<1>(256));
-	ictx.device_compute<class UKN(writer)>(range<1>(1)).discard_write(buf1, acc::fixed<1>({0, 128})).submit();
-	ictx.device_compute<class UKN(writer)>(range<1>(1)).discard_write(buf1, acc::fixed<1>({64, 196})).submit();
-	// TODO assert that we do not copy the overwritten buffer portion
+	ictx.device_compute(range<1>(1)).name("1st writer").discard_write(buf1, acc::fixed<1>({0, 128})).submit();
+	ictx.device_compute(range<1>(1)).name("2nd writer").discard_write(buf1, acc::fixed<1>({64, 196})).submit();
+	ictx.finish();
+
+	const auto first_writer_iq = ictx.query<launch_instruction_record>("1st writer");
+	const auto first_alloc_iq = first_writer_iq.predecessors<alloc_instruction_record>().check_count(1);
+	CHECK(first_alloc_iq.unique().buffer_allocation.value().box == box_cast<3>(box<1>(0, 128)));
+
+	const auto second_writer_iq = ictx.query<launch_instruction_record>("2nd writer");
+	const auto second_alloc_iq = second_writer_iq.predecessors<alloc_instruction_record>();
+	CHECK(second_alloc_iq.count() == 1); // does not depend on copy
+	CHECK(second_alloc_iq.unique().buffer_allocation.value().box == box_cast<3>(box<1>(0, 256)));
+
+	const auto resize_copy_iq = ictx.query<copy_instruction_record>().check_count(1);
+	CHECK(resize_copy_iq.unique().box == box_cast<3>(box<1>(0, 64)));
+	const auto resize_copy_pred_iq = resize_copy_iq.predecessors();
+	CHECK(resize_copy_pred_iq.count() == 2);
+	CHECK(resize_copy_pred_iq.filter<launch_instruction_record>() == first_writer_iq);
+	CHECK(resize_copy_pred_iq.filter<alloc_instruction_record>() == second_alloc_iq);
 }
 
 TEST_CASE("communication-free dataflow", "[instruction graph]") {

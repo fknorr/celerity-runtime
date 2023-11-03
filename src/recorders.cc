@@ -191,7 +191,7 @@ copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr,
       box(box) {}
 
 launch_instruction_record::launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid,
-    const std::string& kernel_debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
+    const std::string& debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
     const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map)
     : acceptor_base(linstr), target(utils::isa<host_task_instruction>(&linstr) ? execution_target::host : execution_target::device),
       device_id(matchbox::match<std::optional<detail::device_id>>(
@@ -199,7 +199,7 @@ launch_instruction_record::launch_instruction_record(const launch_instruction& l
       collective_group_id(matchbox::match<std::optional<detail::collective_group_id>>(
           linstr, [](const host_task_instruction& htinstr) { return htinstr.get_collective_group_id(); }, [](const auto&) { return std::nullopt; })),
       execution_range(linstr.get_execution_range()), command_group_task_id(cg_tid), execution_command_id(execution_cid),
-      kernel_debug_name(utils::simplify_task_name(kernel_debug_name)) //
+      debug_name(utils::simplify_task_name(debug_name)) //
 {
 	assert(linstr.get_access_allocations().size() == buffer_memory_allocation_map.size());
 	access_map.reserve(linstr.get_access_allocations().size());

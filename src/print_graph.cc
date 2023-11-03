@@ -352,7 +352,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			            : "host-compute",
 			        linstr.command_group_task_id, linstr.execution_command_id);
 			    fmt::format_to(back, "<br/><b>{}</b>", linstr.target == execution_target::device ? "device kernel" : "host task");
-			    if(!linstr.kernel_debug_name.empty()) { fmt::format_to(back, " {}", linstr.kernel_debug_name /* TODO escape? */); }
+			    if(!linstr.debug_name.empty()) { fmt::format_to(back, " {}", linstr.debug_name /* TODO escape? */); }
 			    if(linstr.device_id.has_value()) {
 				    fmt::format_to(back, "<br/>on D{} {}", *linstr.device_id, linstr.execution_range);
 			    } else {

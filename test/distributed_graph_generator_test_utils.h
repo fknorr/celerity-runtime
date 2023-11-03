@@ -73,6 +73,10 @@ class task_builder {
 			return tid;
 		}
 
+		step name(const std::string& task_name) {
+			return chain<step>([task_name](handler& cgh) { debug::set_task_name(cgh, task_name); });
+		}
+
 		template <typename BufferT, typename RangeMapper>
 		step read(BufferT& buf, RangeMapper rmfn) {
 			return chain<step>([&buf, rmfn](handler& cgh) { buf.template get_access<access_mode::read>(cgh, rmfn); });
@@ -752,6 +756,10 @@ class instruction_query {
 		return filter<SpecificRecord>(filters...).unique();
 	}
 
+	// m_query follows m_recorder ordering, so vector-equality is enough
+	friend bool operator==(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query == rhs.m_query; }
+	friend bool operator!=(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query != rhs.m_query; }
+
   private:
 	template <typename>
 	friend class instruction_query;
@@ -781,6 +789,10 @@ class instruction_query {
 		    [=](const horizon_instruction_record& hinstr) { return hinstr.horizon_task_id == tid; },      //
 		    [=](const epoch_instruction_record& einstr) { return einstr.epoch_task_id == tid; },          //
 		    [](const auto& /* other */) { return false; });
+	}
+
+	static bool matches(const instruction_record& instr, const std::string& debug_name) {
+		return utils::isa<launch_instruction_record>(&instr) && utils::as<launch_instruction_record>(&instr)->debug_name == debug_name;
 	}
 
 	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query) : m_recorder(recorder), m_query(std::move(query)) {}
@@ -1058,3 +1070,14 @@ class idag_test_context {
 };
 
 } // namespace celerity::test_utils
+
+namespace Catch {
+
+template<typename Record>
+struct StringMaker<Record, std::enable_if_t<std::is_base_of_v<instruction_record, Record>>> {
+	static std::string convert(const instruction_record& instr) {
+		return fmt::format("I{}", instr.id);
+	}
+};
+
+} // namespace Catch
