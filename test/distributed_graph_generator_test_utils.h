@@ -652,6 +652,62 @@ class dist_cdag_test_context {
 	}
 };
 
+template <typename InstructionRecord>
+class instruction_query {
+  public:
+	using value_type = const InstructionRecord*;
+	using const_iterator = typename std::vector<const InstructionRecord*>::const_iterator;
+	using iterator = const_iterator;
+
+	template <typename... Filters>
+	explicit instruction_query(const std::vector<InstructionRecord>& instrs, const Filters&... filters) : instruction_query(pointers_to(instrs), filters...) {}
+
+	template <typename SpecificInstructionRecord = InstructionRecord, typename... Filters>
+	instruction_query<SpecificInstructionRecord> find_all(const Filters&... filters) const {
+		return instruction_query<SpecificInstructionRecord>(m_instructions, filters...);
+	}
+
+	size_t count() const { return m_instructions.size(); }
+	iterator begin() const { return m_instructions.begin(); }
+	iterator end() const { return m_instructions.end(); }
+
+  private:
+	std::vector<const InstructionRecord*> m_instructions;
+
+	static auto pointers_to(const std::vector<InstructionRecord>& instrs) {
+		std::vector<const InstructionRecord*> result(instrs.size());
+		std::transform(instrs.begin(), instrs.end(), result.begin(), [](const auto& instr) { return &instr; });
+		return result;
+	}
+
+	template <typename GeneralInstructionRecord, typename... Filters>
+	instruction_query(const std::vector<const GeneralInstructionRecord*>& instrs, const Filters&... filters) {
+		for(const auto instr : instrs) {
+			if constexpr(std::is_same_v<GeneralInstructionRecord, instruction_record> && !std::is_same_v<InstructionRecord, instruction_record>) {
+				if(const auto specific = std::get_if<InstructionRecord>(instr); specific != nullptr && (matches(*specific, filters) && ...)) {
+					m_instructions.push_back(specific);
+				}
+			} else {
+				if((matches(*instr, filters) && ...)) { m_instructions.push_back(instr); }
+			}
+		}
+	}
+
+	static bool matches(const instruction_record& instr, instruction_id iid) {
+		return std::visit([=](const auto& instr) { return instr.id == iid; }, instr);
+	}
+
+	static bool matches(const instruction_record& instr, const task_id tid) {
+		return matchbox::match(
+		    instr,                                                                                        //
+		    [=](const launch_instruction_record& linstr) { return linstr.command_group_task_id == tid; }, //
+		    [=](const fence_instruction_record& finstr) { return finstr.tid == tid; },                    //
+		    [=](const horizon_instruction_record& hinstr) { return hinstr.horizon_task_id == tid; },      //
+		    [=](const epoch_instruction_record& einstr) { return einstr.epoch_task_id == tid; },          //
+		    [](const auto& /* other */) { return false; });
+	}
+};
+
 class idag_test_context {
 	friend class task_builder<idag_test_context>;
 
@@ -805,6 +861,11 @@ class idag_test_context {
 	task_manager& get_task_manager() { return m_tm; }
 
 	distributed_graph_generator& get_graph_generator() { return m_dggen; }
+
+	template <typename InstructionRecord, typename... Filters>
+	instruction_query<InstructionRecord> query(const Filters&... filters) {
+		return instruction_query<InstructionRecord>(m_instr_recorder.get_instructions());
+	}
 
 	[[nodiscard]] std::string print_task_graph() { //
 		return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph"));

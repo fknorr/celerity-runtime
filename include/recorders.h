@@ -408,6 +408,14 @@ class instruction_recorder {
 	}
 
 	const instruction_records& get_instructions() const { return m_recorded_instructions; }
+
+	const instruction_record& get_instruction(const instruction_id iid) const {
+		const auto it = std::find_if(m_recorded_instructions.begin(), m_recorded_instructions.end(),
+		    [iid](const instruction_record& instr) { return std::visit([=](const auto& instr) { return instr.id == iid; }, instr); });
+		assert(it != m_recorded_instructions.end());
+		return *it;
+	}
+
 	const outbound_pilots& get_outbound_pilots() const { return m_recorded_pilots; }
 	command_id get_await_push_command_id(const transfer_id& trid) const;
 	const std::string& get_buffer_debug_name(buffer_id bid) const;

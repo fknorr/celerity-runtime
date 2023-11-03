@@ -22,6 +22,7 @@ TEST_CASE("trivial graph", "[instruction graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
 	ictx.device_compute<class UKN(kernel)>(test_range).submit();
+	CHECK(ictx.query<epoch_instruction_record>(task_id(0)).count() == 1);
 }
 
 TEST_CASE("graph with only writes", "[instruction graph]") {
