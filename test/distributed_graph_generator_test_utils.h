@@ -703,13 +703,6 @@ class instruction_query {
 		return instruction_query<DepRecord>(m_recorder, std::move(successors), filter_stack<DepRecord, instruction_record>("successors", filters...));
 	}
 
-	template <typename SpecificRecord = Record, typename... FiltersAndFn>
-	const instruction_query& for_each(const FiltersAndFn&... filters_and_fn) const {
-		static_assert(sizeof...(FiltersAndFn) > 0);
-		for_each_dispatch<SpecificRecord>(std::tuple(filters_and_fn...), std::make_index_sequence<sizeof...(FiltersAndFn) - 1>());
-		return *this;
-	}
-
 	size_t count() const { return m_query.size(); }
 
 	template <typename SpecificRecord = Record, typename... Filters>
@@ -736,19 +729,6 @@ class instruction_query {
 		return queries;
 	}
 
-	const instruction_query& check_count(const size_t expected) const {
-		INFO(m_stack);
-		CHECK(count() == expected);
-		return *this;
-	}
-
-	template <typename SpecificRecord = Record, typename... FiltersAndSizeT>
-	const instruction_query& check_count(const FiltersAndSizeT&... filters_and_expected_count) const {
-		static_assert(sizeof...(FiltersAndSizeT) > 0);
-		check_count_dispatch<SpecificRecord>(std::tuple(filters_and_expected_count...), std::make_index_sequence<sizeof...(FiltersAndSizeT) - 1>());
-		return *this;
-	}
-
 	template <typename SpecificRecord = Record, typename... Filters>
 	bool all(const Filters&... filters) const {
 		std::string non_matching;
@@ -765,17 +745,31 @@ class instruction_query {
 		return false;
 	}
 
-	const Record& unique() const {
-		INFO(fmt::format("query: {}", m_stack));
-		INFO(fmt::format("result: {}", *this));
-		if(m_query.empty()) { FAIL("query is empty"); }
-		if(m_query.size() > 1) { FAIL_CHECK("query is not unique"); }
-		return *m_query.front();
+	template <typename SpecificRecord = Record, typename... Filters>
+	bool is_unique(const Filters&... filters) const {
+		if(m_query.empty()) { UNSCOPED_INFO("query is empty"); }
+		if(m_query.size() > 1) {
+			std::string result;
+			for(const Record* instr : m_query) {
+				if(!result.empty()) { result += ", "; }
+				fmt::format_to(std::back_inserter(result), "I{}", instr->id);
+			}
+			UNSCOPED_INFO(fmt::format("result: {}", result));
+			UNSCOPED_INFO("result is not unique");
+		}
+		return m_query.size() == 1 && all<SpecificRecord>(filters...);
 	}
 
 	template <typename SpecificRecord = Record, typename... Filters>
-	const SpecificRecord& unique(const Filters&... filters) const {
-		return select<SpecificRecord>(filters...).unique();
+	instruction_query<SpecificRecord> assert_unique(const Filters&... filters) const {
+		REQUIRE(is_unique<SpecificRecord>(filters...));
+		return instruction_query<SpecificRecord>(
+		    m_recorder, {utils::as<SpecificRecord>(m_query.front())}, filter_stack<Record, SpecificRecord>("assert_unique", filters...));
+	}
+
+	const Record* operator->() const {
+		REQUIRE(is_unique());
+		return m_query.front();
 	}
 
 	// m_query follows m_recorder ordering, so vector-equality is enough
@@ -839,32 +833,6 @@ class instruction_query {
 
 	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query, std::string stack)
 	    : m_recorder(recorder), m_query(std::move(query)), m_stack(std::move(stack)) {}
-
-	template <typename SpecificRecord, typename... Params, size_t... FilterIndices>
-	void for_each_dispatch(const std::tuple<Params...>& filters_and_fn, const std::index_sequence<FilterIndices...> /* filter_indices */) const {
-		constexpr size_t fn_index = sizeof...(Params) - 1;
-		for_each_impl<SpecificRecord>(std::get<fn_index>(filters_and_fn), std::get<FilterIndices>(filters_and_fn)...);
-	}
-
-	template <typename SpecificRecord, typename Fn, typename... Filters>
-	void for_each_impl(const Fn& fn, const Filters&... filters) const {
-		const auto inner_stack = filter_stack<Record, SpecificRecord>("for_each", filters...);
-		for(const auto instr : m_query) {
-			if(matches<SpecificRecord>(*instr, filters...)) { fn(instruction_query(m_recorder, {utils::as<SpecificRecord>(instr)}, inner_stack)); }
-		}
-	}
-
-	template <typename SpecificRecord, typename... Params, size_t... FilterIndices>
-	void check_count_dispatch(const std::tuple<Params...>& filters_and_expected_count, const std::index_sequence<FilterIndices...> /* filter_indices */) const {
-		constexpr size_t count_index = sizeof...(Params) - 1;
-		return check_count_impl<SpecificRecord>(std::get<count_index>(filters_and_expected_count), std::get<FilterIndices>(filters_and_expected_count)...);
-	}
-
-	template <typename SpecificRecord, typename... Filters>
-	void check_count_impl(const size_t expected_count, const Filters&... filters) const {
-		INFO(m_stack);
-		CHECK(count<SpecificRecord>(filters...) == expected_count);
-	}
 };
 
 class idag_test_context {

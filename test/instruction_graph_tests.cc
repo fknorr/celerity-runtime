@@ -28,8 +28,8 @@ TEST_CASE("A command group without data access compiles to a trivial graph", "[i
 	CHECK(iq.count<launch_instruction_record>() == 1);
 
 	const auto kernel = iq.select<launch_instruction_record>("kernel");
-	CHECK(kernel.predecessors().all<epoch_instruction_record>());
-	CHECK(kernel.successors().all<epoch_instruction_record>());
+	CHECK(kernel.predecessors().is_unique<epoch_instruction_record>());
+	CHECK(kernel.successors().is_unique<epoch_instruction_record>());
 }
 
 TEST_CASE("allocations and kernels are split between devices", "[instruction_graph_generator][instruction-graph]") {
@@ -46,17 +46,17 @@ TEST_CASE("allocations and kernels are split between devices", "[instruction_gra
 	const auto writers = iq.select<launch_instruction_record>();
 	CHECK(writers.count() == 2);
 	CHECK(writers.all("writer"));
-	CHECK(writers[0].unique().device_id != writers[1].unique().device_id);
+	CHECK(writers[0]->device_id != writers[1]->device_id);
 
-	for(const auto& w : writers.each()) {
-		CHECK(w.predecessors().all<alloc_instruction_record>());
-		const auto alloc = w.predecessors().unique<alloc_instruction_record>();
-		CHECK(alloc.memory_id == ictx.get_native_memory(w.unique().device_id.value()));
-		CHECK(alloc.buffer_allocation.value().box == w.unique().access_map.front().accessed_box_in_buffer);
+	for(const auto& wr : writers.each()) {
+		CHECK(wr.predecessors().all<alloc_instruction_record>());
+		const auto alloc = wr.predecessors().assert_unique<alloc_instruction_record>();
+		CHECK(alloc->memory_id == ictx.get_native_memory(wr->device_id.value()));
+		CHECK(alloc->buffer_allocation.value().box == wr->access_map.front().accessed_box_in_buffer);
 
-		CHECK(w.successors().all<free_instruction_record>());
-		const auto free = w.successors().unique<free_instruction_record>();
-		CHECK(free.memory_id == alloc.memory_id);
+		CHECK(wr.successors().all<free_instruction_record>());
+		const auto free = wr.successors().assert_unique<free_instruction_record>();
+		CHECK(free->memory_id == alloc->memory_id);
 	}
 
 	CHECK(iq.select<free_instruction_record>().successors().all<epoch_instruction_record>());
@@ -70,16 +70,16 @@ TEST_CASE("resize and overwrite", "[instruction_graph_generator][instruction-gra
 	ictx.finish();
 
 	const auto first_writer_iq = ictx.query<launch_instruction_record>("1st writer");
-	const auto first_alloc_iq = first_writer_iq.predecessors<alloc_instruction_record>().check_count(1);
-	CHECK(first_alloc_iq.unique().buffer_allocation.value().box == box_cast<3>(box<1>(0, 128)));
+	const auto first_alloc_iq = first_writer_iq.predecessors().select<alloc_instruction_record>();
+	CHECK(first_alloc_iq->buffer_allocation.value().box == box_cast<3>(box<1>(0, 128)));
 
 	const auto second_writer_iq = ictx.query<launch_instruction_record>("2nd writer");
 	const auto second_alloc_iq = second_writer_iq.predecessors<alloc_instruction_record>();
 	CHECK(second_alloc_iq.count() == 1); // does not depend on copy
-	CHECK(second_alloc_iq.unique().buffer_allocation.value().box == box_cast<3>(box<1>(0, 256)));
+	CHECK(second_alloc_iq->buffer_allocation.value().box == box_cast<3>(box<1>(0, 256)));
 
-	const auto resize_copy_iq = ictx.query<copy_instruction_record>().check_count(1);
-	CHECK(resize_copy_iq.unique().box == box_cast<3>(box<1>(0, 64)));
+	const auto resize_copy_iq = ictx.query<copy_instruction_record>();
+	CHECK(resize_copy_iq->box == box_cast<3>(box<1>(0, 64)));
 	const auto resize_copy_pred_iq = resize_copy_iq.predecessors();
 	CHECK(resize_copy_pred_iq.count() == 2);
 	CHECK(resize_copy_pred_iq.select<launch_instruction_record>() == first_writer_iq);
