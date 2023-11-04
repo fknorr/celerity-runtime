@@ -22,12 +22,12 @@ TEST_CASE("A command group without data access compiles to a trivial graph", "[i
 	ictx.device_compute(test_range).name("kernel").submit();
 	ictx.finish();
 
-	const auto iq = ictx.query<instruction_record>();
+	const auto iq = ictx.query_instructions();
 	CHECK(iq.count() == 3);
 	CHECK(iq.count<epoch_instruction_record>() == 2);
 	CHECK(iq.count<launch_instruction_record>() == 1);
 
-	const auto kernel = iq.select<launch_instruction_record>("kernel");
+	const auto kernel = iq.select_unique<launch_instruction_record>("kernel");
 	CHECK(kernel.predecessors().is_unique<epoch_instruction_record>());
 	CHECK(kernel.successors().is_unique<epoch_instruction_record>());
 }
@@ -39,51 +39,71 @@ TEST_CASE("allocations and kernels are split between devices", "[instruction_gra
 	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query<instruction_record>();
+	const auto iq = ictx.query_instructions();
 
-	CHECK(iq.select<alloc_instruction_record>().predecessors().all<epoch_instruction_record>());
+	CHECK(iq.select_all<alloc_instruction_record>().predecessors().all_match<epoch_instruction_record>());
 
-	const auto writers = iq.select<launch_instruction_record>();
+	// we have two writer instructions, one per device, each operating on their separate allocations on separate memories.
+	const auto writers = iq.select_all<launch_instruction_record>();
 	CHECK(writers.count() == 2);
-	CHECK(writers.all("writer"));
+	CHECK(writers.all_match("writer"));
 	CHECK(writers[0]->device_id != writers[1]->device_id);
 
 	for(const auto& wr : writers.each()) {
-		CHECK(wr.predecessors().all<alloc_instruction_record>());
+		// the IDAG allocates appropriate boxes on the memories native to each executing device.
 		const auto alloc = wr.predecessors().assert_unique<alloc_instruction_record>();
 		CHECK(alloc->memory_id == ictx.get_native_memory(wr->device_id.value()));
 		CHECK(alloc->buffer_allocation.value().box == wr->access_map.front().accessed_box_in_buffer);
 
-		CHECK(wr.successors().all<free_instruction_record>());
 		const auto free = wr.successors().assert_unique<free_instruction_record>();
 		CHECK(free->memory_id == alloc->memory_id);
 	}
 
-	CHECK(iq.select<free_instruction_record>().successors().all<epoch_instruction_record>());
+	CHECK(iq.select_all<free_instruction_record>().successors().all_match<epoch_instruction_record>());
 }
 
-TEST_CASE("resize and overwrite", "[instruction_graph_generator][instruction-graph]") {
+TEST_CASE("resizing a buffer allocation for at discard-write access preserves only the non-overwritten parts", //
+    "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	auto buf1 = ictx.create_buffer(range<1>(256));
 	ictx.device_compute(range<1>(1)).name("1st writer").discard_write(buf1, acc::fixed<1>({0, 128})).submit();
 	ictx.device_compute(range<1>(1)).name("2nd writer").discard_write(buf1, acc::fixed<1>({64, 196})).submit();
 	ictx.finish();
 
-	const auto first_writer_iq = ictx.query<launch_instruction_record>("1st writer");
-	const auto first_alloc_iq = first_writer_iq.predecessors().select<alloc_instruction_record>();
-	CHECK(first_alloc_iq->buffer_allocation.value().box == box_cast<3>(box<1>(0, 128)));
+	const auto iq = ictx.query_instructions();
 
-	const auto second_writer_iq = ictx.query<launch_instruction_record>("2nd writer");
-	const auto second_alloc_iq = second_writer_iq.predecessors<alloc_instruction_record>();
-	CHECK(second_alloc_iq.count() == 1); // does not depend on copy
-	CHECK(second_alloc_iq->buffer_allocation.value().box == box_cast<3>(box<1>(0, 256)));
+	// part of the buffer is allocated for the first writer
+	const auto first_writer = iq.select_unique<launch_instruction_record>("1st writer");
+	REQUIRE(first_writer->access_map.size() == 1);
+	const auto first_alloc = first_writer.predecessors().select_unique<alloc_instruction_record>();
+	const auto first_write_box = first_writer->access_map.front().accessed_box_in_buffer;
+	CHECK(first_alloc->buffer_allocation.value().box == first_write_box);
 
-	const auto resize_copy_iq = ictx.query<copy_instruction_record>();
-	CHECK(resize_copy_iq->box == box_cast<3>(box<1>(0, 64)));
-	const auto resize_copy_pred_iq = resize_copy_iq.predecessors();
-	CHECK(resize_copy_pred_iq.count() == 2);
-	CHECK(resize_copy_pred_iq.select<launch_instruction_record>() == first_writer_iq);
-	CHECK(resize_copy_pred_iq.select<alloc_instruction_record>() == second_alloc_iq);
+	// first and second writer ranges overlap, so the bounding box has to be allocated (and the old allocation freed)
+	const auto second_writer = iq.select_unique<launch_instruction_record>("2nd writer");
+	REQUIRE(second_writer->access_map.size() == 1);
+	const auto second_alloc = second_writer.predecessors().assert_unique<alloc_instruction_record>();
+	    const auto second_write_box = second_writer->access_map.front().accessed_box_in_buffer;
+	const auto large_alloc_box = bounding_box(first_write_box, second_write_box);
+	CHECK(second_alloc->buffer_allocation.value().box == large_alloc_box);
+
+	// the copy must attempt to preserve ranges that were not writen in the old allocation ([128] - [256]) or that were written but are going to be overwritten
+	// (without being read) in the command for which the resize was generated ([64] - [128]).
+	const auto preserved_region = region_difference(first_write_box, second_write_box);
+	REQUIRE(preserved_region.get_boxes().size() == 1);
+	const auto preserved_box = preserved_region.get_boxes().front();
+
+	const auto resize_copy = iq.select_unique<copy_instruction_record>();
+	CHECK(resize_copy->box == preserved_box);
+
+	const auto resize_copy_preds = resize_copy.predecessors();
+	CHECK(resize_copy_preds.count() == 2);
+	CHECK(resize_copy_preds.select_unique<launch_instruction_record>() == first_writer);
+	CHECK(resize_copy_preds.select_unique<alloc_instruction_record>() == second_alloc);
+
+	// resize-copy and overwriting kernel are concurrent, because they access non-overlapping regions in the same allocation
+	CHECK(second_writer.successors().all_match<free_instruction_record>());
+	CHECK(resize_copy.successors().all_match<free_instruction_record>());
 }
 
 TEST_CASE("communication-free dataflow", "[instruction_graph_generator][instruction-graph]") {

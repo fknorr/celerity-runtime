@@ -664,7 +664,7 @@ class instruction_query {
 	    : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions()), "query()") {}
 
 	template <typename SpecificRecord = Record, typename... Filters>
-	instruction_query<SpecificRecord> select(const Filters&... filters) const {
+	instruction_query<SpecificRecord> select_all(const Filters&... filters) const {
 		std::vector<const SpecificRecord*> filtered;
 		for(const auto instr : m_query) {
 			if(matches<SpecificRecord>(*instr, filters...)) { filtered.push_back(utils::as<SpecificRecord>(instr)); }
@@ -673,34 +673,37 @@ class instruction_query {
 		    std::is_same_v<SpecificRecord, Record> && sizeof...(Filters) == 0 ? m_stack : filter_stack<Record, SpecificRecord>("select", filters...));
 	}
 
-	template <typename DepRecord = instruction_record, typename... Filters>
-	instruction_query<DepRecord> predecessors(const Filters&... filters) const {
-		std::vector<const DepRecord*> predecessors;
-		for(const auto& maybe_predecessor : m_recorder->get_instructions()) {
-			if(matches<DepRecord>(*maybe_predecessor, filters...) //
-			    && std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
-				       return std::any_of(instr->dependencies.begin(), instr->dependencies.end(),
-				           [&](const dependency_record<instruction_id>& d) { return d.node == maybe_predecessor->id; });
-			       })) {
-				predecessors.push_back(utils::as<DepRecord>(maybe_predecessor.get()));
-			}
-		}
-		return instruction_query<DepRecord>(m_recorder, std::move(predecessors), filter_stack<DepRecord, instruction_record>("predecessors", filters...));
+	template <typename SpecificRecord = Record, typename... Filters>
+	instruction_query<SpecificRecord> select_unique(const Filters&... filters) const {
+		return select_all<SpecificRecord>(filters...).assert_unique();
 	}
 
-	template <typename DepRecord = instruction_record, typename... Filters>
-	instruction_query<DepRecord> successors(const Filters&... filters) const {
-		std::vector<const DepRecord*> successors;
-		for(const auto& maybe_successor : m_recorder->get_instructions()) {
-			if(matches<DepRecord>(*maybe_successor, filters...) //
-			    && std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
-				       return std::any_of(maybe_successor->dependencies.begin(), maybe_successor->dependencies.end(),
-				           [&](const dependency_record<instruction_id>& d) { return d.node == instr->id; });
-			       })) {
-				successors.push_back(utils::as<DepRecord>(maybe_successor.get()));
+	instruction_query<instruction_record> predecessors() const {
+		std::vector<const instruction_record*> predecessors;
+		// find predecessors without duplicates (even when m_query.size() > 1) and keep them in recorder-ordering
+		for(const auto& maybe_predecessor : m_recorder->get_instructions()) {
+			if(std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
+				   return std::any_of(instr->dependencies.begin(), instr->dependencies.end(),
+				       [&](const dependency_record<instruction_id>& d) { return d.node == maybe_predecessor->id; });
+			   })) {
+				predecessors.push_back(maybe_predecessor.get());
 			}
 		}
-		return instruction_query<DepRecord>(m_recorder, std::move(successors), filter_stack<DepRecord, instruction_record>("successors", filters...));
+		return instruction_query<instruction_record>(m_recorder, std::move(predecessors), m_stack + ".predecessors()");
+	}
+
+	instruction_query<instruction_record> successors() const {
+		std::vector<const instruction_record*> successors;
+		// find successors without duplicates (even when m_query.size() > 1) and keep them in recorder-ordering
+		for(const auto& maybe_successor : m_recorder->get_instructions()) {
+			if(std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
+				   return std::any_of(maybe_successor->dependencies.begin(), maybe_successor->dependencies.end(),
+				       [&](const dependency_record<instruction_id>& d) { return d.node == instr->id; });
+			   })) {
+				successors.push_back(maybe_successor.get());
+			}
+		}
+		return instruction_query<instruction_record>(m_recorder, std::move(successors), m_stack + ".successors()");
 	}
 
 	size_t count() const { return m_query.size(); }
@@ -730,7 +733,7 @@ class instruction_query {
 	}
 
 	template <typename SpecificRecord = Record, typename... Filters>
-	bool all(const Filters&... filters) const {
+	bool all_match(const Filters&... filters) const {
 		std::string non_matching;
 		for(const Record* instr : m_query) {
 			if(!matches<SpecificRecord>(*instr, filters...)) {
@@ -757,7 +760,7 @@ class instruction_query {
 			UNSCOPED_INFO(fmt::format("result: {}", result));
 			UNSCOPED_INFO("result is not unique");
 		}
-		return m_query.size() == 1 && all<SpecificRecord>(filters...);
+		return m_query.size() == 1 && all_match<SpecificRecord>(filters...);
 	}
 
 	template <typename SpecificRecord = Record, typename... Filters>
@@ -1000,14 +1003,8 @@ class idag_test_context {
 
 	distributed_graph_generator& get_graph_generator() { return m_dggen; }
 
-	template <typename InstructionRecord, typename... Filters>
-	instruction_query<InstructionRecord> query(const Filters&... filters) {
-		return instruction_query<>(m_instr_recorder).select<InstructionRecord>(filters...);
-	}
-
-	template <typename InstructionRecord, typename... Filters>
-	const InstructionRecord& select(const Filters&... filters) {
-		return instruction_query<>(m_instr_recorder).select<InstructionRecord>(filters...);
+	instruction_query<> query_instructions() const {
+		return instruction_query<>(m_instr_recorder);
 	}
 
 	[[nodiscard]] std::string print_task_graph() { //
