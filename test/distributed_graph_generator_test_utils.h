@@ -674,7 +674,8 @@ class instruction_query {
 	using iterator = const_iterator;
 
 	template <typename R = Record, std::enable_if_t<std::is_same_v<R, instruction_record>, int> = 0>
-	explicit instruction_query(const instruction_recorder& recorder) : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions())) {}
+	explicit instruction_query(const instruction_recorder& recorder)
+	    : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions()), "query()") {}
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	instruction_query<SpecificRecord> filter(const Filters&... filters) const {
@@ -682,7 +683,8 @@ class instruction_query {
 		for(const auto instr : m_query) {
 			if(matches<SpecificRecord>(*instr, filters...)) { filtered.push_back(utils::as<SpecificRecord>(instr)); }
 		}
-		return instruction_query<SpecificRecord>(m_recorder, std::move(filtered));
+		return instruction_query<SpecificRecord>(m_recorder, std::move(filtered),
+		    std::is_same_v<SpecificRecord, Record> && sizeof...(Filters) == 0 ? m_stack : filter_stack<Record, SpecificRecord>("filter", filters...));
 	}
 
 	template <typename DepRecord = instruction_record, typename... Filters>
@@ -697,7 +699,7 @@ class instruction_query {
 				predecessors.push_back(utils::as<DepRecord>(maybe_predecessor.get()));
 			}
 		}
-		return instruction_query<DepRecord>(m_recorder, std::move(predecessors));
+		return instruction_query<DepRecord>(m_recorder, std::move(predecessors), filter_stack<DepRecord, instruction_record>("predecessors", filters...));
 	}
 
 	template <typename DepRecord = instruction_record, typename... Filters>
@@ -712,7 +714,7 @@ class instruction_query {
 				successors.push_back(utils::as<DepRecord>(maybe_successor.get()));
 			}
 		}
-		return instruction_query<DepRecord>(m_recorder, std::move(successors));
+		return instruction_query<DepRecord>(m_recorder, std::move(successors), filter_stack<DepRecord, instruction_record>("successors", filters...));
 	}
 
 	template <typename SpecificRecord = Record, typename... FiltersAndFn>
@@ -735,6 +737,7 @@ class instruction_query {
 	iterator end() const { return m_query.end(); }
 
 	const instruction_query& check_count(const size_t expected) const {
+		INFO(m_stack);
 		CHECK(count() == expected);
 		return *this;
 	}
@@ -747,7 +750,10 @@ class instruction_query {
 	}
 
 	value_type unique() const {
-		REQUIRE(count() == 1);
+		INFO(fmt::format("query: {}", m_stack));
+		INFO(fmt::format("result: {}", Catch::StringMaker<instruction_query>().convert(*this)));
+		if(m_query.empty()) { FAIL("query is empty"); }
+		if(m_query.size() > 1) { FAIL_CHECK("query is not unique"); }
 		return *m_query.front();
 	}
 
@@ -766,6 +772,7 @@ class instruction_query {
 
 	const instruction_recorder* m_recorder;
 	std::vector<const Record*> m_query;
+	std::string m_stack;
 
 	template <typename T>
 	static std::vector<const T*> non_owning_pointers(const std::vector<std::unique_ptr<T>>& unique) {
@@ -795,7 +802,24 @@ class instruction_query {
 		return utils::isa<launch_instruction_record>(&instr) && utils::as<launch_instruction_record>(&instr)->debug_name == debug_name;
 	}
 
-	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query) : m_recorder(recorder), m_query(std::move(query)) {}
+	template <typename GeneralRecord, typename SpecificRecord, typename... Filters>
+	std::string filter_stack(const std::string& selector, const Filters&... filters) const {
+		auto stack = fmt::format("{}.{}", m_stack, selector);
+		if constexpr(!std::is_same_v<GeneralRecord, SpecificRecord>) {
+			fmt::format_to(std::back_inserter(stack), "<{}>", utils::simplify_task_name(kernel_debug_name<SpecificRecord>()));
+		}
+		stack += "(";
+		auto format_filter = [&, i = 0](const auto& f) mutable {
+			if(i != 0) { stack += ", "; }
+			fmt::format_to(std::back_inserter(stack), "{}", f);
+		};
+		(format_filter(filters), ...);
+		stack += ")";
+		return stack;
+	}
+
+	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query, std::string stack)
+	    : m_recorder(recorder), m_query(std::move(query)), m_stack(std::move(stack)) {}
 
 	template <typename SpecificRecord, typename... Params, size_t... FilterIndices>
 	void for_each_dispatch(const std::tuple<Params...>& filters_and_fn, const std::index_sequence<FilterIndices...> /* filter_indices */) const {
@@ -805,8 +829,9 @@ class instruction_query {
 
 	template <typename SpecificRecord, typename Fn, typename... Filters>
 	void for_each_impl(const Fn& fn, const Filters&... filters) const {
+		const auto inner_stack = filter_stack<Record, SpecificRecord>("for_each", filters...);
 		for(const auto instr : m_query) {
-			if(matches<SpecificRecord>(*instr, filters...)) { fn(instruction_query(m_recorder, {utils::as<SpecificRecord>(instr)})); }
+			if(matches<SpecificRecord>(*instr, filters...)) { fn(instruction_query(m_recorder, {utils::as<SpecificRecord>(instr)}, inner_stack)); }
 		}
 	}
 
@@ -818,6 +843,7 @@ class instruction_query {
 
 	template <typename SpecificRecord, typename... Filters>
 	void check_count_impl(const size_t expected_count, const Filters&... filters) const {
+		INFO(m_stack);
 		CHECK(count<SpecificRecord>(filters...) == expected_count);
 	}
 };
@@ -990,6 +1016,11 @@ class idag_test_context {
 		return instruction_query<>(m_instr_recorder).filter<InstructionRecord>(filters...);
 	}
 
+	template <typename InstructionRecord, typename... Filters>
+	const InstructionRecord& select(const Filters&... filters) {
+		return instruction_query<>(m_instr_recorder).filter<InstructionRecord>(filters...);
+	}
+
 	[[nodiscard]] std::string print_task_graph() { //
 		return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph"));
 	}
@@ -1073,11 +1104,9 @@ class idag_test_context {
 
 namespace Catch {
 
-template<typename Record>
+template <typename Record>
 struct StringMaker<Record, std::enable_if_t<std::is_base_of_v<instruction_record, Record>>> {
-	static std::string convert(const instruction_record& instr) {
-		return fmt::format("I{}", instr.id);
-	}
+	static std::string convert(const instruction_record& instr) { return fmt::format("I{}", instr.id); }
 };
 
 } // namespace Catch
