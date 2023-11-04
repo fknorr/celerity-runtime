@@ -16,28 +16,37 @@ using namespace celerity::experimental;
 
 namespace acc = celerity::access;
 
-TEST_CASE("trivial graph", "[instruction graph]") {
+TEST_CASE("A command group without data access compiles to a trivial graph", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
-	const auto kernel_tid = ictx.device_compute(test_range).name("kernel").submit();
+	ictx.device_compute(test_range).name("kernel").submit();
 	ictx.finish();
 
-	auto instrs = ictx.query<instruction_record>();
-	CHECK(instrs.count() == 3);
-	const auto launch_instrs = ictx.query<launch_instruction_record>(kernel_tid);
-	CHECK(launch_instrs.count() == 1);
-	CHECK(launch_instrs.predecessors().unique<epoch_instruction_record>().epoch_task_id == task_id(0));
-	CHECK(launch_instrs.successors().unique<epoch_instruction_record>().epoch_task_id == task_id(2));
+	const auto iq = ictx.query<instruction_record>();
+	CHECK(iq.count() == 3);
+	CHECK(iq.count<epoch_instruction_record>() == 2);
+	CHECK(iq.count<launch_instruction_record>() == 1);
+
+	const auto kernel = iq.select<launch_instruction_record>("kernel");
+	CHECK(kernel.predecessors().all<epoch_instruction_record>());
+	CHECK(kernel.successors().all<epoch_instruction_record>());
 }
 
-TEST_CASE("graph with only writes", "[instruction graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+TEST_CASE("allocations and kernels are split between devices", "[instruction_graph_generator][instruction-graph]") {
+	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 2 /* devices */);
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
 	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
+	ictx.finish();
+
+	const auto iq = ictx.query<instruction_record>();
+	const auto writers = iq.select<launch_instruction_record>();
+	CHECK(writers.count() == 2);
+	CHECK(writers.predecessors().all<alloc_instruction_record>());
+	CHECK(writers.successors().all<free_instruction_record>());
 }
 
-TEST_CASE("resize and overwrite", "[instruction graph]") {
+TEST_CASE("resize and overwrite", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	auto buf1 = ictx.create_buffer(range<1>(256));
 	ictx.device_compute(range<1>(1)).name("1st writer").discard_write(buf1, acc::fixed<1>({0, 128})).submit();
@@ -57,11 +66,11 @@ TEST_CASE("resize and overwrite", "[instruction graph]") {
 	CHECK(resize_copy_iq.unique().box == box_cast<3>(box<1>(0, 64)));
 	const auto resize_copy_pred_iq = resize_copy_iq.predecessors();
 	CHECK(resize_copy_pred_iq.count() == 2);
-	CHECK(resize_copy_pred_iq.filter<launch_instruction_record>() == first_writer_iq);
-	CHECK(resize_copy_pred_iq.filter<alloc_instruction_record>() == second_alloc_iq);
+	CHECK(resize_copy_pred_iq.select<launch_instruction_record>() == first_writer_iq);
+	CHECK(resize_copy_pred_iq.select<alloc_instruction_record>() == second_alloc_iq);
 }
 
-TEST_CASE("communication-free dataflow", "[instruction graph]") {
+TEST_CASE("communication-free dataflow", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
@@ -69,7 +78,7 @@ TEST_CASE("communication-free dataflow", "[instruction graph]") {
 	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::one_to_one()).submit();
 }
 
-TEST_CASE("communication-free dataflow with copies", "[instruction graph]") {
+TEST_CASE("communication-free dataflow with copies", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
@@ -77,7 +86,7 @@ TEST_CASE("communication-free dataflow with copies", "[instruction graph]") {
 	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::all()).submit();
 }
 
-TEST_CASE("simple communication", "[instruction graph]") {
+TEST_CASE("simple communication", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
@@ -85,7 +94,7 @@ TEST_CASE("simple communication", "[instruction graph]") {
 	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::all()).submit();
 }
 
-TEST_CASE("large graph", "[instruction graph]") {
+TEST_CASE("large graph", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
 
 	const range<1> test_range = {256};
@@ -159,7 +168,7 @@ TEST_CASE("hello world pattern (host initialization)", "[instruction-graph]") {
 	ictx.fence(buf);
 }
 
-TEST_CASE("matmul pattern", "[instruction graph]") {
+TEST_CASE("matmul pattern", "[instruction_graph_generator][instruction-graph]") {
 	const size_t mat_size = 128;
 
 	const auto my_nid = GENERATE(values<node_id>({0, 1}));

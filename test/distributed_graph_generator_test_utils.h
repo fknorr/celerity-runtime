@@ -678,13 +678,13 @@ class instruction_query {
 	    : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions()), "query()") {}
 
 	template <typename SpecificRecord = Record, typename... Filters>
-	instruction_query<SpecificRecord> filter(const Filters&... filters) const {
+	instruction_query<SpecificRecord> select(const Filters&... filters) const {
 		std::vector<const SpecificRecord*> filtered;
 		for(const auto instr : m_query) {
 			if(matches<SpecificRecord>(*instr, filters...)) { filtered.push_back(utils::as<SpecificRecord>(instr)); }
 		}
 		return instruction_query<SpecificRecord>(m_recorder, std::move(filtered),
-		    std::is_same_v<SpecificRecord, Record> && sizeof...(Filters) == 0 ? m_stack : filter_stack<Record, SpecificRecord>("filter", filters...));
+		    std::is_same_v<SpecificRecord, Record> && sizeof...(Filters) == 0 ? m_stack : filter_stack<Record, SpecificRecord>("select", filters...));
 	}
 
 	template <typename DepRecord = instruction_record, typename... Filters>
@@ -736,6 +736,16 @@ class instruction_query {
 
 	iterator end() const { return m_query.end(); }
 
+	instruction_query operator[](const size_t index) const {
+		auto index_stack = fmt::format("query: {}[{}]", m_stack, index);
+		if(index > m_query.size()) {
+			INFO(fmt::format("query: ", index_stack));
+			INFO(fmt::format("result: {}", Catch::StringMaker<instruction_query>().convert(*this)));
+			FAIL(fmt::format("index {} out of bounds (size: {})", index, m_query.size()));
+		}
+		return instruction_query(m_recorder, {m_query[index]}, std::move(index_stack));
+	}
+
 	const instruction_query& check_count(const size_t expected) const {
 		INFO(m_stack);
 		CHECK(count() == expected);
@@ -749,7 +759,20 @@ class instruction_query {
 		return *this;
 	}
 
-	value_type unique() const {
+	template <typename SpecificRecord, typename... Filters>
+	bool all(const Filters&... filters) const {
+		std::vector<instruction_id> non_matching;
+		for(const Record* instr : m_query) {
+			if(!matches<SpecificRecord>(*instr, filters...)) { non_matching.push_back(instr->id); }
+		}
+		if(non_matching.empty()) return true;
+
+		UNSCOPED_INFO(fmt::format("query: {}", filter_stack<Record, SpecificRecord>("all", filters...)));
+		UNSCOPED_INFO(fmt::format("non-matching: {}", Catch::StringMaker<instruction_query>().convert(*this)));
+		return false;
+	}
+
+	const Record& unique() const {
 		INFO(fmt::format("query: {}", m_stack));
 		INFO(fmt::format("result: {}", Catch::StringMaker<instruction_query>().convert(*this)));
 		if(m_query.empty()) { FAIL("query is empty"); }
@@ -759,7 +782,7 @@ class instruction_query {
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	const SpecificRecord& unique(const Filters&... filters) const {
-		return filter<SpecificRecord>(filters...).unique();
+		return select<SpecificRecord>(filters...).unique();
 	}
 
 	// m_query follows m_recorder ordering, so vector-equality is enough
@@ -922,7 +945,7 @@ class idag_test_context {
 
 	template <typename DataT, int Dims>
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
-		REQUIRE(!m_finished);
+		if (m_finished) { FAIL("idag_test_context already finish()ed"); } // if{FAIL} instead of REQUIRE so we don't count these as passed assertions
 		const uncaught_exception_guard guard(this);
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
@@ -939,7 +962,7 @@ class idag_test_context {
 	}
 
 	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
-		REQUIRE(!m_finished);
+		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const host_object_id hoid = m_next_host_object_id++;
 		m_tm.create_host_object(hoid);
@@ -992,7 +1015,7 @@ class idag_test_context {
 	}
 
 	task_id epoch(epoch_action action) {
-		REQUIRE(!m_finished);
+		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_epoch_task(action);
 		build_task(tid);
@@ -1013,12 +1036,12 @@ class idag_test_context {
 
 	template <typename InstructionRecord, typename... Filters>
 	instruction_query<InstructionRecord> query(const Filters&... filters) {
-		return instruction_query<>(m_instr_recorder).filter<InstructionRecord>(filters...);
+		return instruction_query<>(m_instr_recorder).select<InstructionRecord>(filters...);
 	}
 
 	template <typename InstructionRecord, typename... Filters>
 	const InstructionRecord& select(const Filters&... filters) {
-		return instruction_query<>(m_instr_recorder).filter<InstructionRecord>(filters...);
+		return instruction_query<>(m_instr_recorder).select<InstructionRecord>(filters...);
 	}
 
 	[[nodiscard]] std::string print_task_graph() { //
@@ -1057,13 +1080,13 @@ class idag_test_context {
 
 	template <typename CGF, typename... Hints>
 	task_id submit_command_group(CGF cgf, Hints... hints) {
-		REQUIRE(!m_finished);
+		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		return m_tm.submit_command_group(cgf, hints...);
 	}
 
 	void build_task(const task_id tid) {
-		REQUIRE(!m_finished);
+		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto commands = m_dggen.build_task(*m_tm.get_task(tid));
 		for(const auto cmd : commands) {
@@ -1072,7 +1095,7 @@ class idag_test_context {
 	}
 
 	void maybe_build_horizon() {
-		REQUIRE(!m_finished);
+		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto current_horizon = task_manager_testspy::get_current_horizon(m_tm);
 		if(m_most_recently_built_horizon != current_horizon) {
@@ -1091,7 +1114,7 @@ class idag_test_context {
 	}
 
 	task_id fence(buffer_access_map access_map, side_effect_map side_effects) {
-		REQUIRE(!m_finished);
+		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::make_unique<null_fence_promise>());
 		build_task(tid);
