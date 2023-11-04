@@ -40,10 +40,26 @@ TEST_CASE("allocations and kernels are split between devices", "[instruction_gra
 	ictx.finish();
 
 	const auto iq = ictx.query<instruction_record>();
+
+	CHECK(iq.select<alloc_instruction_record>().predecessors().all<epoch_instruction_record>());
+
 	const auto writers = iq.select<launch_instruction_record>();
 	CHECK(writers.count() == 2);
-	CHECK(writers.predecessors().all<alloc_instruction_record>());
-	CHECK(writers.successors().all<free_instruction_record>());
+	CHECK(writers.all("writer"));
+	CHECK(writers[0].unique().device_id != writers[1].unique().device_id);
+
+	for(const auto& w : writers.each()) {
+		CHECK(w.predecessors().all<alloc_instruction_record>());
+		const auto alloc = w.predecessors().unique<alloc_instruction_record>();
+		CHECK(alloc.memory_id == ictx.get_native_memory(w.unique().device_id.value()));
+		CHECK(alloc.buffer_allocation.value().box == w.unique().access_map.front().accessed_box_in_buffer);
+
+		CHECK(w.successors().all<free_instruction_record>());
+		const auto free = w.successors().unique<free_instruction_record>();
+		CHECK(free.memory_id == alloc.memory_id);
+	}
+
+	CHECK(iq.select<free_instruction_record>().successors().all<epoch_instruction_record>());
 }
 
 TEST_CASE("resize and overwrite", "[instruction_graph_generator][instruction-graph]") {

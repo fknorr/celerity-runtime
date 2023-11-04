@@ -659,20 +659,6 @@ class dist_cdag_test_context {
 template <typename Record = instruction_record>
 class instruction_query {
   public:
-	using value_type = const Record&;
-
-	class const_iterator : public std::vector<const Record*>::const_iterator {
-	  private:
-		using base_iterator = typename std::vector<const Record*>::const_iterator;
-
-	  public:
-		const_iterator(base_iterator it) : base_iterator(it) {}
-		const Record& operator*() const { return **static_cast<base_iterator>(*this); }
-		const Record* operator->() const { return *static_cast<base_iterator>(*this); }
-	};
-
-	using iterator = const_iterator;
-
 	template <typename R = Record, std::enable_if_t<std::is_same_v<R, instruction_record>, int> = 0>
 	explicit instruction_query(const instruction_recorder& recorder)
 	    : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions()), "query()") {}
@@ -732,18 +718,22 @@ class instruction_query {
 		    std::count_if(m_query.begin(), m_query.end(), [&](const Record* instr) { return matches<SpecificRecord>(*instr, filters...); }));
 	}
 
-	iterator begin() const { return m_query.begin(); }
-
-	iterator end() const { return m_query.end(); }
-
 	instruction_query operator[](const size_t index) const {
 		auto index_stack = fmt::format("query: {}[{}]", m_stack, index);
 		if(index > m_query.size()) {
 			INFO(fmt::format("query: ", index_stack));
-			INFO(fmt::format("result: {}", Catch::StringMaker<instruction_query>().convert(*this)));
+			INFO(fmt::format("result: {}", *this));
 			FAIL(fmt::format("index {} out of bounds (size: {})", index, m_query.size()));
 		}
 		return instruction_query(m_recorder, {m_query[index]}, std::move(index_stack));
+	}
+
+	std::vector<instruction_query> each() const {
+		std::vector<instruction_query> queries;
+		for(size_t i = 0; i < m_query.size(); ++i) {
+			queries.push_back(instruction_query(m_recorder, {m_query[i]}, fmt::format("query: {}[{}]", m_stack, i)));
+		}
+		return queries;
 	}
 
 	const instruction_query& check_count(const size_t expected) const {
@@ -759,22 +749,25 @@ class instruction_query {
 		return *this;
 	}
 
-	template <typename SpecificRecord, typename... Filters>
+	template <typename SpecificRecord = Record, typename... Filters>
 	bool all(const Filters&... filters) const {
-		std::vector<instruction_id> non_matching;
+		std::string non_matching;
 		for(const Record* instr : m_query) {
-			if(!matches<SpecificRecord>(*instr, filters...)) { non_matching.push_back(instr->id); }
+			if(!matches<SpecificRecord>(*instr, filters...)) {
+				if(!non_matching.empty()) { non_matching += ", "; }
+				fmt::format_to(std::back_inserter(non_matching), "I{}", instr->id);
+			}
 		}
 		if(non_matching.empty()) return true;
 
 		UNSCOPED_INFO(fmt::format("query: {}", filter_stack<Record, SpecificRecord>("all", filters...)));
-		UNSCOPED_INFO(fmt::format("non-matching: {}", Catch::StringMaker<instruction_query>().convert(*this)));
+		UNSCOPED_INFO(fmt::format("non-matching: {{{}}}", non_matching));
 		return false;
 	}
 
 	const Record& unique() const {
 		INFO(fmt::format("query: {}", m_stack));
-		INFO(fmt::format("result: {}", Catch::StringMaker<instruction_query>().convert(*this)));
+		INFO(fmt::format("result: {}", *this));
 		if(m_query.empty()) { FAIL("query is empty"); }
 		if(m_query.size() > 1) { FAIL_CHECK("query is not unique"); }
 		return *m_query.front();
@@ -792,6 +785,9 @@ class instruction_query {
   private:
 	template <typename>
 	friend class instruction_query;
+
+	template <typename, typename, typename>
+	friend struct fmt::formatter;
 
 	const instruction_recorder* m_recorder;
 	std::vector<const Record*> m_query;
@@ -898,7 +894,7 @@ class idag_test_context {
 	static auto make_device_map(const size_t num_devices) {
 		std::vector<instruction_graph_generator::device_info> devices;
 		for(device_id did = 0; did < num_devices; ++did) {
-			devices.push_back(instruction_graph_generator::device_info{memory_id(did + 1)});
+			devices.push_back(instruction_graph_generator::device_info{get_native_memory(did)});
 		}
 		return devices;
 	}
@@ -920,6 +916,8 @@ class idag_test_context {
 	idag_test_context(idag_test_context&&) = delete;
 	idag_test_context& operator=(const idag_test_context&) = delete;
 	idag_test_context& operator=(idag_test_context&&) = delete;
+
+	static memory_id get_native_memory(device_id did) { return memory_id(did + 1); }
 
 	void finish() {
 		if(m_finished) return;
@@ -945,7 +943,7 @@ class idag_test_context {
 
 	template <typename DataT, int Dims>
 	test_utils::mock_buffer<Dims> create_buffer(range<Dims> size, bool mark_as_host_initialized = false) {
-		if (m_finished) { FAIL("idag_test_context already finish()ed"); } // if{FAIL} instead of REQUIRE so we don't count these as passed assertions
+		if(m_finished) { FAIL("idag_test_context already finish()ed"); } // if{FAIL} instead of REQUIRE so we don't count these as passed assertions
 		const uncaught_exception_guard guard(this);
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
@@ -962,7 +960,7 @@ class idag_test_context {
 	}
 
 	test_utils::mock_host_object create_host_object(const bool owns_instance = true) {
-		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
+		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const host_object_id hoid = m_next_host_object_id++;
 		m_tm.create_host_object(hoid);
@@ -1015,7 +1013,7 @@ class idag_test_context {
 	}
 
 	task_id epoch(epoch_action action) {
-		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
+		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_epoch_task(action);
 		build_task(tid);
@@ -1080,13 +1078,13 @@ class idag_test_context {
 
 	template <typename CGF, typename... Hints>
 	task_id submit_command_group(CGF cgf, Hints... hints) {
-		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
+		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		return m_tm.submit_command_group(cgf, hints...);
 	}
 
 	void build_task(const task_id tid) {
-		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
+		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto commands = m_dggen.build_task(*m_tm.get_task(tid));
 		for(const auto cmd : commands) {
@@ -1095,7 +1093,7 @@ class idag_test_context {
 	}
 
 	void maybe_build_horizon() {
-		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
+		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto current_horizon = task_manager_testspy::get_current_horizon(m_tm);
 		if(m_most_recently_built_horizon != current_horizon) {
@@ -1114,7 +1112,7 @@ class idag_test_context {
 	}
 
 	task_id fence(buffer_access_map access_map, side_effect_map side_effects) {
-		if (m_finished) { FAIL("idag_test_context already finish()ed"); }
+		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::make_unique<null_fence_promise>());
 		build_task(tid);
@@ -1125,11 +1123,21 @@ class idag_test_context {
 
 } // namespace celerity::test_utils
 
-namespace Catch {
-
 template <typename Record>
-struct StringMaker<Record, std::enable_if_t<std::is_base_of_v<instruction_record, Record>>> {
-	static std::string convert(const instruction_record& instr) { return fmt::format("I{}", instr.id); }
+struct fmt::formatter<celerity::test_utils::instruction_query<Record>> : fmt::formatter<size_t> {
+	format_context::iterator format(const celerity::test_utils::instruction_query<Record>& iq, format_context& ctx) const {
+		auto out = ctx.out();
+		*out++ = '{';
+		for(size_t i = 0; i < iq.m_query.size(); ++i) {
+			if(i > 0) { out = std::copy_n(", ", 2, out); }
+			fmt::format_to(out, "I{}", iq.m_query[i]->id);
+		}
+		*out++ = '}';
+		return out;
+	}
 };
 
-} // namespace Catch
+template <typename Record>
+struct Catch::StringMaker<celerity::test_utils::instruction_query<Record>> {
+	static std::string convert(const celerity::test_utils::instruction_query<Record>& iq) { return fmt::format("{}", iq); }
+};
