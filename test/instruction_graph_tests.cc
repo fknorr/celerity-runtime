@@ -83,12 +83,12 @@ TEST_CASE("resizing a buffer allocation for at discard-write access preserves on
 	const auto second_writer = iq.select_unique<launch_instruction_record>("2nd writer");
 	REQUIRE(second_writer->access_map.size() == 1);
 	const auto second_alloc = second_writer.predecessors().assert_unique<alloc_instruction_record>();
-	    const auto second_write_box = second_writer->access_map.front().accessed_box_in_buffer;
+	const auto second_write_box = second_writer->access_map.front().accessed_box_in_buffer;
 	const auto large_alloc_box = bounding_box(first_write_box, second_write_box);
 	CHECK(second_alloc->buffer_allocation.value().box == large_alloc_box);
 
-	// the copy must attempt to preserve ranges that were not writen in the old allocation ([128] - [256]) or that were written but are going to be overwritten
-	// (without being read) in the command for which the resize was generated ([64] - [128]).
+	// The copy must not attempt to preserve ranges that were not written in the old allocation ([128] - [256]) or that were written but are going to be
+	// overwritten (without being read) in the command for which the resize was generated ([64] - [128]).
 	const auto preserved_region = region_difference(first_write_box, second_write_box);
 	REQUIRE(preserved_region.get_boxes().size() == 1);
 	const auto preserved_box = preserved_region.get_boxes().front();
@@ -106,12 +106,45 @@ TEST_CASE("resizing a buffer allocation for at discard-write access preserves on
 	CHECK(resize_copy.successors().all_match<free_instruction_record>());
 }
 
-TEST_CASE("communication-free dataflow", "[instruction_graph_generator][instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
-	const range<1> test_range = {256};
-	auto buf1 = ictx.create_buffer(test_range);
-	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::one_to_one()).submit();
+TEST_CASE("data-dependencies are generated between kernels on the same memory", "[instruction_graph_generator][instruction-graph]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf1 = ictx.create_buffer<1>(256);
+	auto buf2 = ictx.create_buffer<1>(256);
+	ictx.device_compute(range(1)).name("write buf1").discard_write(buf1, acc::all()).submit();
+	ictx.device_compute(range(1)).name("overwrite buf1 right").discard_write(buf1, acc::fixed<1>({128, 128})).submit();
+	ictx.device_compute(range(1)).name("read buf 1, write buf2").read(buf1, acc::all()).discard_write(buf2, acc::all()).submit();
+	ictx.device_compute(range(1)).name("read-write buf1 center").read_write(buf1, acc::fixed<1>({64, 128})).submit();
+	ictx.device_compute(range(1)).name("read buf2").read(buf2, acc::all()).submit();
+	ictx.device_compute(range(1)).name("read buf1+2").read(buf1, acc::all()).read(buf2, acc::all()).submit();
+	ictx.finish();
+
+	const auto iq = ictx.query_instructions();
+
+	const auto predecessor_kernels = [](const auto& q) { return q.predecessors().template select_all<launch_instruction_record>(); };
+	const auto successor_kernels = [](const auto& q) { return q.successors().template select_all<launch_instruction_record>(); };
+
+	const auto write_buf1 = iq.select_unique<launch_instruction_record>("write buf1");
+	CHECK(predecessor_kernels(write_buf1).count() == 0);
+
+	const auto overwrite_buf1_right = iq.select_unique<launch_instruction_record>("overwrite buf1 right");
+	CHECK(predecessor_kernels(overwrite_buf1_right) == write_buf1 /* output-dependency on buf1 [128] - [256]*/);
+
+	const auto read_buf1_write_buf2 = iq.select_unique<launch_instruction_record>("read buf 1, write buf2");
+	CHECK(predecessor_kernels(read_buf1_write_buf2).contains(overwrite_buf1_right /* true-dependency on buf1 [128] - [256]*/));
+	// IDAG might also specify a true-dependency on "write buf1" for buf1 [0] - [128], but this is transitive
+
+	const auto read_write_buf1_center = iq.select_unique<launch_instruction_record>("read-write buf1 center");
+	CHECK(predecessor_kernels(read_write_buf1_center).contains(read_buf1_write_buf2 /* anti-dependency on buf1 [64] - [192]*/));
+	// IDAG might also specify true-dependencies on "write buf1" and "overwrite buf1 right", but these are transitive
+
+	const auto read_buf2 = iq.select_unique<launch_instruction_record>("read buf2");
+	CHECK(predecessor_kernels(read_buf2) == read_buf1_write_buf2 /* true-dependency on buf2 [0] - [256] */);
+	// This should not depend on any other kernel instructions, because none other are concerned with buf2.
+
+	const auto read_buf1_buf2 = iq.select_unique<launch_instruction_record>("read buf1+2");
+	CHECK(predecessor_kernels(read_buf1_buf2).contains(read_write_buf1_center) /* true-dependency on buf1 [64] - [192] */);
+	CHECK(!predecessor_kernels(read_buf1_buf2).contains(read_buf2) /* readers are concurrent */);
+	// IDAG might also specify true-dependencies on "write buf1", "overwrite buf1 right", "read buf1, write_buf2", but these are transitive
 }
 
 TEST_CASE("communication-free dataflow with copies", "[instruction_graph_generator][instruction-graph]") {

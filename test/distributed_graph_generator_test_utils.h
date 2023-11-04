@@ -661,7 +661,7 @@ class instruction_query {
   public:
 	template <typename R = Record, std::enable_if_t<std::is_same_v<R, instruction_record>, int> = 0>
 	explicit instruction_query(const instruction_recorder& recorder)
-	    : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions()), "query()") {}
+	    : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions()), std::string()) {}
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	instruction_query<SpecificRecord> select_all(const Filters&... filters) const {
@@ -748,8 +748,15 @@ class instruction_query {
 		return false;
 	}
 
+	bool contains(const instruction_query& subset) const {
+		return std::all_of(subset.m_query.begin(), subset.m_query.end(), [&](const Record* their) {
+			return std::any_of(m_query.begin(), m_query.end(), [&](const Record* my) { return their->id == my->id; }); //
+		});
+	}
+
 	template <typename SpecificRecord = Record, typename... Filters>
 	bool is_unique(const Filters&... filters) const {
+		if(m_query.size() != 1) { UNSCOPED_INFO(fmt::format("query: {}", m_stack)); }
 		if(m_query.empty()) { UNSCOPED_INFO("query is empty"); }
 		if(m_query.size() > 1) {
 			std::string result;
@@ -778,6 +785,26 @@ class instruction_query {
 	// m_query follows m_recorder ordering, so vector-equality is enough
 	friend bool operator==(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query == rhs.m_query; }
 	friend bool operator!=(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query != rhs.m_query; }
+
+	template <typename... InstructionQueries, std::enable_if_t<(std::is_same_v<InstructionQueries, instruction_query> && ...), int> = 0>
+	friend instruction_query union_of(const InstructionQueries&... queries) {
+		std::vector<const Record*> union_query;
+		const auto recorder = (queries, ...).m_recorder; // pick any one recorder, we trust the user to not mix different instances
+		// construct union in recorder-ordering without duplicates
+		for(const auto& instr : recorder->get_instructions()) {
+			if((std::find(queries.m_query.begin(), queries.m_query.end(), instr.get() != queries.m_query.end()) || ...)) { //
+				union_query.push_back(instr.get());
+			}
+		}
+
+		std::string stack_params;
+		const auto add_query_stack = [&](const auto& query) {
+			if(!stack_params.empty()) { stack_params += ", "; }
+			stack_params += query.m_stack;
+		};
+		(add_query_stack(queries), ...);
+		return instruction_query<instruction_record>(recorder, std::move(union_query), fmt::format("union_of({})", stack_params));
+	}
 
   private:
 	template <typename>
@@ -820,17 +847,24 @@ class instruction_query {
 
 	template <typename GeneralRecord, typename SpecificRecord, typename... Filters>
 	std::string filter_stack(const std::string& selector, const Filters&... filters) const {
-		auto stack = fmt::format("{}.{}", m_stack, selector);
+		auto stack = m_stack.empty() ? selector : fmt::format("{}.{}", m_stack, selector);
 		if constexpr(!std::is_same_v<GeneralRecord, SpecificRecord>) {
 			fmt::format_to(std::back_inserter(stack), "<{}>", utils::simplify_task_name(kernel_debug_name<SpecificRecord>()));
 		}
-		stack += "(";
-		auto format_filter = [&, i = 0](const auto& f) mutable {
-			if(i != 0) { stack += ", "; }
-			fmt::format_to(std::back_inserter(stack), "{}", f);
+
+		std::string param_stack;
+		const auto format_param = matchbox::detail::overload{
+		    // TODO make `overload` part of matchbox public interface
+		    [&](const instruction_id iid) { return fmt::format("I{}", iid); },
+		    [&](const task_id tid) { return fmt::format("T{}", tid); },
+		    [&](const std::string& debug_name) { return fmt::format("\"{}\"", debug_name); },
 		};
-		(format_filter(filters), ...);
-		stack += ")";
+		const auto format_filter_param = [&](const auto& f) {
+			if(!param_stack.empty()) { param_stack += ", "; }
+			param_stack += format_param(f);
+		};
+		(format_filter_param(filters), ...);
+		fmt::format_to(std::back_inserter(stack), "({})", param_stack);
 		return stack;
 	}
 
@@ -1003,9 +1037,7 @@ class idag_test_context {
 
 	distributed_graph_generator& get_graph_generator() { return m_dggen; }
 
-	instruction_query<> query_instructions() const {
-		return instruction_query<>(m_instr_recorder);
-	}
+	instruction_query<> query_instructions() const { return instruction_query<>(m_instr_recorder); }
 
 	[[nodiscard]] std::string print_task_graph() { //
 		return detail::print_task_graph(m_task_recorder, make_test_graph_title("Task Graph"));
