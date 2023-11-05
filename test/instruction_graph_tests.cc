@@ -147,12 +147,41 @@ TEST_CASE("data-dependencies are generated between kernels on the same memory", 
 	// IDAG might also specify true-dependencies on "write buf1", "overwrite buf1 right", "read buf1, write_buf2", but these are transitive
 }
 
-TEST_CASE("communication-free dataflow with copies", "[instruction_graph_generator][instruction-graph]") {
-	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
+TEST_CASE("data dependencies across memories introduce coherence copies", "[instruction_graph_generator][instruction-graph]") {
+	size_t num_devices = 2;
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, num_devices);
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
-	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::all()).submit();
+	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute(test_range).name("reader").read(buf1, acc::all()).submit();
+	ictx.finish();
+
+	const auto iq = ictx.query_instructions();
+
+	const auto all_writers = iq.select_all<launch_instruction_record>("writer");
+	const auto all_readers = iq.select_all<launch_instruction_record>("reader");
+	const auto coherence_copies = iq.select_all<copy_instruction_record>(
+	    [](const copy_instruction_record& copy) { return copy.origin == copy_instruction_record::copy_origin::coherence; });
+
+	CHECK(all_readers.count() == num_devices);
+	for(device_id did = 0; did < num_devices; ++did) {
+		const device_id opposite_did = 1 - did;
+		CAPTURE(did, opposite_did);
+
+		const auto reader = all_readers.select_unique(did);
+		REQUIRE(reader->access_map.size() == 1);
+		const auto opposite_writer = all_writers.select_unique(opposite_did);
+		REQUIRE(opposite_writer->access_map.size() == 1);
+
+		// There is one coherence copy per reader kernel, which copies the portion written on the opposite device
+		const auto coherence_copy = intersection_of(coherence_copies, reader.predecessors()).assert_unique();
+		CHECK(coherence_copy->source_memory == ictx.get_native_memory(opposite_did));
+		CHECK(coherence_copy->dest_memory == ictx.get_native_memory(did));
+		CHECK(coherence_copy->box == opposite_writer->access_map.front().accessed_box_in_buffer);
+	}
+
+	// Coherence copies are independent
+	CHECK(intersection_of(coherence_copies, coherence_copies.successors()).count() == 0);
 }
 
 TEST_CASE("simple communication", "[instruction_graph_generator][instruction-graph]") {

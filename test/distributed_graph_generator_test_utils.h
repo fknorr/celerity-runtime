@@ -786,24 +786,43 @@ class instruction_query {
 	friend bool operator==(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query == rhs.m_query; }
 	friend bool operator!=(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query != rhs.m_query; }
 
-	template <typename... InstructionQueries, std::enable_if_t<(std::is_same_v<InstructionQueries, instruction_query> && ...), int> = 0>
-	friend instruction_query union_of(const InstructionQueries&... queries) {
-		std::vector<const Record*> union_query;
-		const auto recorder = (queries, ...).m_recorder; // pick any one recorder, we trust the user to not mix different instances
+	template <typename... InstructionQueries>
+	friend instruction_query union_of(const instruction_query& head, const InstructionQueries&... tail) {
+		const auto recorder = head.m_recorder;
+		assert(((head.m_recorder == tail.m_recorder) && ...));
+
 		// construct union in recorder-ordering without duplicates
+		std::vector<const Record*> union_query;
 		for(const auto& instr : recorder->get_instructions()) {
-			if((std::find(queries.m_query.begin(), queries.m_query.end(), instr.get() != queries.m_query.end()) || ...)) { //
+			if(std::find(head.m_query.begin(), head.m_query.end(), instr.get()) != head.m_query.end()
+			    || (std::find(tail.m_query.begin(), tail.m_query.end(), instr.get() != tail.m_query.end()) || ...)) { //
 				union_query.push_back(instr.get());
 			}
 		}
 
-		std::string stack_params;
-		const auto add_query_stack = [&](const auto& query) {
-			if(!stack_params.empty()) { stack_params += ", "; }
-			stack_params += query.m_stack;
-		};
-		(add_query_stack(queries), ...);
-		return instruction_query<instruction_record>(recorder, std::move(union_query), fmt::format("union_of({})", stack_params));
+		std::string stack = fmt::format("union_of({}", head.m_stack);
+		(((stack += ", ") += tail.m_stack), ...);
+		stack += ")";
+		return instruction_query(recorder, std::move(union_query), stack);
+	}
+
+	template <typename... InstructionQueries>
+	friend instruction_query intersection_of(const instruction_query& head, const InstructionQueries&... tail) {
+		const auto recorder = head.m_recorder;
+		assert(((head.m_recorder == tail.m_recorder) && ...));
+
+		// construct union in recorder-ordering without duplicates
+		std::vector<const Record*> intersection_query;
+		for(const auto& instr : head.m_query) {
+			if(((std::find(tail.m_query.begin(), tail.m_query.end(), instr) != tail.m_query.end()) && ...)) { //
+				intersection_query.push_back(instr);
+			}
+		}
+
+		std::string stack = fmt::format("intersection_of({}", head.m_stack);
+		(((stack += ", ") += tail.m_stack), ...);
+		stack += ")";
+		return instruction_query(recorder, std::move(intersection_query), stack);
 	}
 
   private:
@@ -825,13 +844,13 @@ class instruction_query {
 	}
 
 	template <typename SpecificRecord, typename... Filters>
-	static bool matches(const instruction_record& instr, const Filters&... filters) {
-		return utils::isa<SpecificRecord>(&instr) && (matches(instr, filters) && ...);
+	static bool matches(const Record& instr, const Filters&... filters) {
+		return utils::isa<SpecificRecord>(&instr) && (instruction_query<SpecificRecord>::matches(*utils::as<SpecificRecord>(&instr), filters) && ...);
 	}
 
-	static bool matches(const instruction_record& instr, const instruction_id iid) { return instr.id == iid; }
+	static bool matches(const Record& instr, const instruction_id iid) { return instr.id == iid; }
 
-	static bool matches(const instruction_record& instr, const task_id tid) {
+	static bool matches(const Record& instr, const task_id tid) {
 		return matchbox::match(
 		    instr,                                                                                        //
 		    [=](const launch_instruction_record& linstr) { return linstr.command_group_task_id == tid; }, //
@@ -841,8 +860,27 @@ class instruction_query {
 		    [](const auto& /* other */) { return false; });
 	}
 
-	static bool matches(const instruction_record& instr, const std::string& debug_name) {
+	static bool matches(const Record& instr, const device_id did) {
+		return utils::isa<launch_instruction_record>(&instr) && utils::as<launch_instruction_record>(&instr)->device_id == did;
+	}
+
+	static bool matches(const Record& instr, const std::string& debug_name) {
 		return utils::isa<launch_instruction_record>(&instr) && utils::as<launch_instruction_record>(&instr)->debug_name == debug_name;
+	}
+
+	template <typename Predicate, std::enable_if_t<std::is_invocable_r_v<bool, const Predicate&, const Record&>, int> = 0>
+	static bool matches(const Record& instr, const Predicate& predicate) {
+		return predicate(instr);
+	}
+
+	static std::string print_filter(const instruction_id iid) { return fmt::format("I{}", iid); }
+	static std::string print_filter(const task_id iid) { return fmt::format("T{}", iid); }
+	static std::string print_filter(const device_id iid) { return fmt::format("D{}", iid); }
+	static std::string print_filter(const std::string& debug_name) { return fmt::format("\"{}\"", debug_name); }
+
+	template <typename Predicate, std::enable_if_t<std::is_invocable_r_v<bool, const Predicate&, const Record&>, int> = 0>
+	static std::string print_filter(const Predicate& /* predicate */) {
+		return "<lambda>";
 	}
 
 	template <typename GeneralRecord, typename SpecificRecord, typename... Filters>
@@ -853,15 +891,9 @@ class instruction_query {
 		}
 
 		std::string param_stack;
-		const auto format_param = matchbox::detail::overload{
-		    // TODO make `overload` part of matchbox public interface
-		    [&](const instruction_id iid) { return fmt::format("I{}", iid); },
-		    [&](const task_id tid) { return fmt::format("T{}", tid); },
-		    [&](const std::string& debug_name) { return fmt::format("\"{}\"", debug_name); },
-		};
 		const auto format_filter_param = [&](const auto& f) {
 			if(!param_stack.empty()) { param_stack += ", "; }
-			param_stack += format_param(f);
+			param_stack += instruction_query<SpecificRecord>::print_filter(f);
 		};
 		(format_filter_param(filters), ...);
 		fmt::format_to(std::back_inserter(stack), "({})", param_stack);
