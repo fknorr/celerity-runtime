@@ -3,11 +3,7 @@
 #include <catch2/generators/catch_generators_range.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 
-#include "command_graph.h"
-#include "distributed_graph_generator.h"
-#include "distributed_graph_generator_test_utils.h"
-#include "instruction_graph_generator.h"
-#include "recorders.h"
+#include "instruction_graph_test_utils.h"
 #include "test_utils.h"
 
 
@@ -238,8 +234,8 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 		CHECK(coherence_copy->box == opposite_writer->access_map.front().accessed_box_in_buffer);
 	}
 
-	// Coherence copies are independent
-	CHECK(intersection_of(coherence_copies, coherence_copies.successors()).count() == 0);
+	// Coherence copies are not sequenced with respect to each other
+	CHECK(coherence_copies.all_concurrent());
 }
 
 // This test should become obsolete in the future when we allow the instruction_executor to manage user memory - this feature would remove the need for both
@@ -266,12 +262,52 @@ TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer fro
 	CHECK(init->host_allocation_id == alloc->allocation_id);
 }
 
-TEST_CASE("simple communication", "[instruction_graph_generator][instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
-	const range<1> test_range = {256};
-	auto buf1 = ictx.create_buffer(test_range, true /* host_initialized */);
+TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push and await-push commands", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) {
+	const auto test_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto local_nid = GENERATE(values<node_id>({0, 1}));
+	const node_id opposite_nid = 1 - local_nid;
+	CAPTURE(local_nid, opposite_nid);
+
+	test_utils::idag_test_context ictx(2 /* nodes */, local_nid, 1 /* devices */);
+
+	auto buf1 = ictx.create_buffer<int>(test_range);
 	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
 	ictx.device_compute(test_range).name("reader").read(buf1, acc::all()).submit();
+	ictx.finish();
+
+	const auto iq = ictx.query_instructions();
+	const auto pilots = ictx.query_outbound_pilots();
+
+	const auto writer = iq.select_unique<launch_instruction_record>("writer");
+	const auto send = iq.select_unique<send_instruction_record>();
+	const auto recv = iq.select_unique<receive_instruction_record>();
+	const auto reader = iq.select_unique<launch_instruction_record>("reader");
+
+	// send properties
+	REQUIRE(writer->access_map.size() == 1);
+	const auto& write_access = writer->access_map.front();
+	CHECK(send->dest_node_id == opposite_nid);
+	CHECK(send->send_range == write_access.accessed_box_in_buffer.get_range());
+	CHECK(send->offset_in_buffer == write_access.accessed_box_in_buffer.get_offset());
+	CHECK(send->element_size == sizeof(int));
+
+	// pilot is attached to the send
+	CHECK(pilots.is_unique());
+	CHECK(pilots->to == opposite_nid);
+	CHECK(pilots->message.trid == send->transfer_id);
+	CHECK(pilots->message.tag == send->tag);
+
+	// recv properties
+	REQUIRE(reader->access_map.size() == 1);
+	const auto& read_access = reader->access_map.front();
+	CHECK(recv->element_size == sizeof(int));
+	CHECK(region_intersection(write_access.accessed_box_in_buffer, recv->requested_region).empty());
+	CHECK(region_union(write_access.accessed_box_in_buffer, recv->requested_region) == region(read_access.accessed_box_in_buffer));
+
+	// the logical dependencies are (writer -> send, writer -> reader, recv -> reader)
+	CHECK(writer.transitive_successors_across<copy_instruction_record>().contains(send));
+	CHECK(recv.transitive_successors_across<copy_instruction_record>().contains(reader));
+	CHECK(send.is_concurrent_with(recv));
 }
 
 TEST_CASE("large graph", "[instruction_graph_generator][instruction-graph]") {
@@ -566,7 +602,7 @@ TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitia
 	}
 }
 
-TEST_CASE("distributed_graph_generator throws in tests if it detects overlapping writes", "[instruction_graph_generator]") {
+TEST_CASE("instruction_graph_generator throws in tests if it detects overlapping writes", "[instruction_graph_generator]") {
 	const size_t num_devices = 2;
 	test_utils::idag_test_context ictx(1, 0, num_devices);
 	auto buf = ictx.create_buffer<2>({20, 20});
