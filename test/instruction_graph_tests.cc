@@ -1,3 +1,4 @@
+#include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
@@ -16,8 +17,8 @@ using namespace celerity::experimental;
 
 namespace acc = celerity::access;
 
-TEST_CASE("A command group without data access compiles to a trivial graph", "[instruction_graph_generator][instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+TEST_CASE("a command group without data access compiles to a trivial graph", "[instruction_graph_generator][instruction-graph]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
 	ictx.device_compute(test_range).name("kernel").submit();
 	ictx.finish();
@@ -28,15 +29,21 @@ TEST_CASE("A command group without data access compiles to a trivial graph", "[i
 	CHECK(iq.count<launch_instruction_record>() == 1);
 
 	const auto kernel = iq.select_unique<launch_instruction_record>("kernel");
+	CHECK(kernel->access_map.empty());
+	CHECK(kernel->execution_range == subrange<3>(zeros, range_cast<3>(test_range)));
+	CHECK(kernel->device_id == device_id(0));
 	CHECK(kernel.predecessors().is_unique<epoch_instruction_record>());
 	CHECK(kernel.successors().is_unique<epoch_instruction_record>());
 }
 
-TEST_CASE("allocations and kernels are split between devices", "[instruction_graph_generator][instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 2 /* devices */);
-	const range<1> test_range = {256};
-	auto buf1 = ictx.create_buffer(test_range);
-	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
+TEMPLATE_TEST_CASE_SIG(
+    "allocations and kernels are split between devices", "[instruction_graph_generator][instruction-graph][allocation]", ((int Dims), Dims), 1, 2, 3) //
+{
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
+	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256}); // dim0 split
+	auto buf1 = ictx.create_buffer(full_range);
+	ictx.device_compute(full_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
 	ictx.finish();
 
 	const auto iq = ictx.query_instructions();
@@ -48,22 +55,74 @@ TEST_CASE("allocations and kernels are split between devices", "[instruction_gra
 	CHECK(writers.count() == 2);
 	CHECK(writers.all_match("writer"));
 	CHECK(writers[0]->device_id != writers[1]->device_id);
+	CHECK(region_union(box(writers[0]->execution_range), box(writers[1]->execution_range)) == region(box(subrange<3>(zeros, range_cast<3>(full_range)))));
 
 	for(const auto& wr : writers.each()) {
+		REQUIRE(wr->access_map.size() == 1);
+
+		// instruction_graph_generator guarantees the default dim0 split
+		CHECK(wr->execution_range.range == range_cast<3>(half_range));
+		CHECK((wr->execution_range.offset[0] == 0 || wr->execution_range.offset[0] == half_range[0]));
+
 		// the IDAG allocates appropriate boxes on the memories native to each executing device.
 		const auto alloc = wr.predecessors().assert_unique<alloc_instruction_record>();
 		CHECK(alloc->memory_id == ictx.get_native_memory(wr->device_id.value()));
+		CHECK(wr->access_map.front().allocation_id == alloc->allocation_id);
 		CHECK(alloc->buffer_allocation.value().box == wr->access_map.front().accessed_box_in_buffer);
 
 		const auto free = wr.successors().assert_unique<free_instruction_record>();
 		CHECK(free->memory_id == alloc->memory_id);
+		CHECK(free->allocation_id == alloc->allocation_id);
+		CHECK(free->size == alloc->size);
 	}
 
 	CHECK(iq.select_all<free_instruction_record>().successors().all_match<epoch_instruction_record>());
 }
 
-TEST_CASE("resizing a buffer allocation for at discard-write access preserves only the non-overwritten parts", //
-    "[instruction_graph_generator][instruction-graph]") {
+// This test may fail in the future if we implement a more sophisticated allocator that decides to merge some allocations.
+// When this happens, consider replacing the subranges with a pair that is never reasonable to allocate the bounding-box of.
+TEMPLATE_TEST_CASE_SIG("accessing non-overlapping buffer subranges in subsequent kernels causes distinct allocations",
+    "[instrution_graph_generator][instruction-graph][allocation]", ((int Dims), Dims), 1, 2, 3) //
+{
+	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto half_range = test_utils::truncate_range<Dims>({128, 128, 128});
+	const auto first_half = subrange(id<Dims>(zeros), half_range);
+	const auto second_half = subrange(id(half_range), half_range);
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf1 = ictx.create_buffer(full_range);
+	ictx.device_compute(first_half.range, first_half.offset).name("1st").discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute(second_half.range, second_half.offset).name("2nd").discard_write(buf1, acc::one_to_one()).submit();
+	ictx.finish();
+
+	const auto iq = ictx.query_instructions();
+
+	CHECK(iq.select_all<alloc_instruction_record>().count() == 2);
+	CHECK(iq.select_all<copy_instruction_record>().count() == 0); // no coherence copies needed
+	CHECK(iq.select_all<launch_instruction_record>().count() == 2);
+	CHECK(iq.select_all<free_instruction_record>().count() == 2);
+
+	const auto first = iq.select_unique<launch_instruction_record>("1st");
+	const auto second = iq.select_unique<launch_instruction_record>("2nd");
+	REQUIRE(first->access_map.size() == 1);
+	REQUIRE(second->access_map.size() == 1);
+
+	// the kernels access distinct allocations
+	CHECK(first->access_map.front().allocation_id != second->access_map.front().allocation_id);
+	CHECK(first->access_map.front().accessed_box_in_buffer == first->access_map.front().allocated_box_in_buffer);
+
+	// the allocations exactly match the accessed subrange
+	CHECK(second->access_map.front().accessed_box_in_buffer == second->access_map.front().allocated_box_in_buffer);
+
+	// kernels are fully concurrent
+	CHECK(first.predecessors().is_unique<alloc_instruction_record>());
+	CHECK(first.successors().is_unique<free_instruction_record>());
+	CHECK(second.predecessors().is_unique<alloc_instruction_record>());
+	CHECK(second.successors().is_unique<free_instruction_record>());
+}
+
+TEST_CASE("resizing a buffer allocation for a discard-write access preserves only the non-overwritten parts", //
+    "[instruction_graph_generator][instruction-graph][allocation]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	auto buf1 = ictx.create_buffer(range<1>(256));
 	ictx.device_compute(range<1>(1)).name("1st writer").discard_write(buf1, acc::fixed<1>({0, 128})).submit();
@@ -148,8 +207,7 @@ TEST_CASE("data-dependencies are generated between kernels on the same memory", 
 }
 
 TEST_CASE("data dependencies across memories introduce coherence copies", "[instruction_graph_generator][instruction-graph]") {
-	size_t num_devices = 2;
-	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, num_devices);
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
 	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
@@ -163,8 +221,8 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 	const auto coherence_copies = iq.select_all<copy_instruction_record>(
 	    [](const copy_instruction_record& copy) { return copy.origin == copy_instruction_record::copy_origin::coherence; });
 
-	CHECK(all_readers.count() == num_devices);
-	for(device_id did = 0; did < num_devices; ++did) {
+	CHECK(all_readers.count() == 2);
+	for(device_id did = 0; did < 2; ++did) {
 		const device_id opposite_did = 1 - did;
 		CAPTURE(did, opposite_did);
 
@@ -184,12 +242,36 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 	CHECK(intersection_of(coherence_copies, coherence_copies.successors()).count() == 0);
 }
 
+// This test should become obsolete in the future when we allow the instruction_executor to manage user memory - this feature would remove the need for both
+// init_buffer_instruction and export_instruction
+TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer from user memory to a host allocation",
+    "[instruction_graph_generator][instruction-graph][allocation]", ((int Dims), Dims), 1, 2, 3) //
+{
+	const auto buffer_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto buffer_box = box(subrange(id<Dims>(zeros), buffer_range));
+
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf = ictx.create_buffer<int, Dims>(buffer_range, true /* host_initialized */);
+	ictx.finish();
+
+	const auto iq = ictx.query_instructions();
+
+	const auto init = iq.select_unique<init_buffer_instruction_record>();
+	const auto alloc = init.predecessors().assert_unique<alloc_instruction_record>();
+	CHECK(alloc->memory_id == host_memory_id);
+	CHECK(alloc->buffer_allocation.value().box == box_cast<3>(buffer_box));
+	CHECK(alloc->size == buffer_range.size() * sizeof(int));
+	CHECK(init->size == alloc->size);
+	CHECK(init->buffer_id == buf.get_id());
+	CHECK(init->host_allocation_id == alloc->allocation_id);
+}
+
 TEST_CASE("simple communication", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
-	auto buf1 = ictx.create_buffer(test_range);
-	ictx.device_compute<class UKN(writer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(reader)>(test_range).read(buf1, acc::all()).submit();
+	auto buf1 = ictx.create_buffer(test_range, true /* host_initialized */);
+	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute(test_range).name("reader").read(buf1, acc::all()).submit();
 }
 
 TEST_CASE("large graph", "[instruction_graph_generator][instruction-graph]") {
