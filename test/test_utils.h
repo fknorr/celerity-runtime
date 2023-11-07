@@ -385,7 +385,7 @@ namespace test_utils {
 	// truncate_*(): unchecked versions of *_cast() with signatures friendly to parameter type inference
 
 	template <int Dims>
-	range<Dims> truncate_range(const range<3>& r3) {
+	constexpr range<Dims> truncate_range(const range<3>& r3) {
 		static_assert(Dims <= 3);
 		range<Dims> r = detail::zeros;
 		for(int d = 0; d < Dims; ++d) {
@@ -395,7 +395,7 @@ namespace test_utils {
 	}
 
 	template <int Dims>
-	id<Dims> truncate_id(const id<3>& i3) {
+	constexpr id<Dims> truncate_id(const id<3>& i3) {
 		static_assert(Dims <= 3);
 		id<Dims> i;
 		for(int d = 0; d < Dims; ++d) {

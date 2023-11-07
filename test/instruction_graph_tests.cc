@@ -516,6 +516,62 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 	CHECK(custom_group_2.successors().is_unique<epoch_instruction_record>());
 }
 
+TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 0, 1, 2, 3) {
+	constexpr static auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto export_subrange = GENERATE(values({subrange<Dims>({}, full_range), test_utils::truncate_subrange<Dims>({{48, 64, 72}, {128, 128, 128}})}));
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf = ictx.create_buffer<int>(full_range);
+	ictx.device_compute(full_range).name("writer").discard_write(buf, acc::one_to_one()).submit();
+	ictx.fence(buf, export_subrange);
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto fence = all_instrs.select_unique<fence_instruction_record>();
+	const auto& fence_buffer_info = std::get<fence_instruction_record::buffer_variant>(fence->variant);
+	CHECK(fence_buffer_info.bid == buf.get_id());
+	CHECK(fence_buffer_info.box.get_offset() == id_cast<3>(export_subrange.offset));
+	CHECK(fence_buffer_info.box.get_range() == range_cast<3>(export_subrange.range));
+
+	// At some point in the future we want to track user-memory allocations in the executor, and emit normal copy-instructions from host-memory instead of
+	// these specialized export instructions.
+	const auto xport = fence.predecessors().assert_unique<export_instruction_record>();
+	CHECK(xport->buffer == buf.get_id());
+	CHECK(xport->dimensions == Dims);
+	CHECK(xport->offset_in_buffer == id_cast<3>(export_subrange.offset));
+	CHECK(xport->copy_range == range_cast<3>(export_subrange.range));
+	CHECK(xport->element_size == sizeof(int));
+
+	// exports are done from host memory
+	const auto coherence_copy = xport.predecessors().assert_unique<copy_instruction_record>();
+	CHECK(coherence_copy->copy_range == xport->copy_range);
+	CHECK(coherence_copy->buffer == buf.get_id());
+	CHECK(coherence_copy->dimensions == Dims);
+	CHECK(coherence_copy->box.get_offset() == xport->offset_in_buffer);
+	CHECK(coherence_copy->box.get_range() == xport->copy_range);
+}
+
+TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruction_graph_generator][instruction-graph]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto ho = ictx.create_host_object();
+	ictx.master_node_host_task().name("task 1").affect(ho).submit();
+	ictx.fence(ho);
+	ictx.master_node_host_task().name("task 2").affect(ho).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	const auto task_1 = all_instrs.select_unique<launch_instruction_record>("task 1");
+	const auto fence = all_instrs.select_unique<fence_instruction_record>();
+	const auto task_2 = all_instrs.select_unique<launch_instruction_record>("task 2");
+
+	CHECK(task_1.successors() == fence);
+	CHECK(fence.successors() == task_2);
+
+	const auto &ho_fence_info = std::get<fence_instruction_record::host_object_variant>(fence->variant);
+	CHECK(ho_fence_info.hoid == ho.get_id());
+}
+
 TEST_CASE("transitive copy dependencies", "[instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
 
