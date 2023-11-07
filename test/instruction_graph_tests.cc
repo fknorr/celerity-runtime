@@ -604,182 +604,141 @@ TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruc
 	CHECK(ho_fence_info.hoid == ho.get_id());
 }
 
-TEST_CASE("transitive copy dependencies", "[instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
-
-	const range<1> test_range = {256};
-	auto buf1 = ictx.create_buffer(test_range);
-	auto buf2 = ictx.create_buffer(test_range);
-	ictx.device_compute(test_range).name("producer").discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute(test_range).name("gather").read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
-	ictx.device_compute(test_range).name("consumer").read(buf2, reverse_one_to_one()).submit();
+TEST_CASE("reductions are equivalent to writes on a single-node single-device setup", "[instruction_graph_generator][instruction-graph][reduction]") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
+	auto buf = ictx.create_buffer<1>(1);
+	ictx.device_compute(range(256)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
+	ictx.device_compute(range(256)).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
+	const auto all_instrs = ictx.query_instructions();
+	const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
+	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	CHECK(writer.successors() == reader);
+	CHECK(reader.predecessors() == writer);
+
+	// there is no local (eager) reduce-instruction generated on the reduction-write, nor do we get a reduction_command to generate a global (lazy)
+	// reduce-instruction between nodes.
+	CHECK(all_instrs.count<send_instruction_record>() == 0);
+	CHECK(all_instrs.count<gather_receive_instruction_record>() == 0);
+	CHECK(all_instrs.count<copy_instruction_record>() == 0);
+	CHECK(all_instrs.count<reduce_instruction_record>() == 0);
 }
 
-TEST_CASE("RSim pattern", "[instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 2 /* devices */);
-	size_t width = 1000;
-	size_t n_iters = 3;
-	auto buf = ictx.create_buffer(range<2>(n_iters, width));
+TEST_CASE("single-node single-device reductions locally include the initial buffer value"
+          "[instruction_graph_generator][instruction-graph][reduction]") //
+{
+	// almost the same setup as above, but now we include the current buffer value, which generates a local reduce-instruction.
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
+	auto buf = ictx.create_buffer<1>(1, true /* host initialized */);
+	ictx.device_compute(range(256)).name("writer").reduce(buf, true /* include_current_buffer_value */).submit();
+	ictx.device_compute(range(256)).name("reader").read(buf, acc::all()).submit();
+	ictx.finish();
 
-	const auto access_up_to_ith_line_all = [&](size_t i) { //
-		return celerity::access::fixed<2>({{0, 0}, {i, width}});
-	};
-	const auto access_ith_line_1to1 = [](size_t i) {
-		return [i](celerity::chunk<2> chnk) { return celerity::subrange<2>({i, chnk.offset[0]}, {1, chnk.range[0]}); };
-	};
+	const auto all_instrs = ictx.query_instructions();
 
-	for(size_t i = 0; i < n_iters; ++i) {
-		ictx.device_compute<class UKN(rsim)>(range<2>(width, width))
-		    .read(buf, access_up_to_ith_line_all(i))
-		    .discard_write(buf, access_ith_line_1to1(i))
-		    .submit();
-	}
+	const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
+	const auto init_buffer = all_instrs.select_unique<init_buffer_instruction_record>();
+	CHECK(writer.is_concurrent_with(init_buffer));
+
+	// initialization happens in a buffer allocation, from which we must copy into the gather allocation
+	const auto gather_from_init = init_buffer.successors().assert_unique<copy_instruction_record>();
+	CHECK(gather_from_init->origin == copy_instruction_record::copy_origin::gather);
+	CHECK(gather_from_init->box == box<3>(zeros, ones));
+
+	// we also directly perfrom a device-to-host copy into the gather allocation
+	const auto gather_from_writer = writer.successors().assert_unique<copy_instruction_record>();
+	CHECK(gather_from_writer->origin == copy_instruction_record::copy_origin::gather);
+	CHECK(gather_from_writer->box == box<3>(zeros, ones));
+	CHECK(gather_from_writer.is_concurrent_with(gather_from_init));
+
+	const auto gather_alloc = intersection_of(gather_from_init.predecessors(), gather_from_writer.predecessors()).assert_unique<alloc_instruction_record>();
+	CHECK(gather_alloc->origin == alloc_instruction_record::alloc_origin::gather);
+	CHECK(gather_alloc->size == 2 * sizeof(int)); // 1 for the initial value, 1 for the "writer" contribution
+
+	// the local reduction combines both values and writes into the (final) host buffer allocation
+	const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
+	CHECK(local_reduce->scope == reduce_instruction_record::reduction_scope::local);
+	CHECK(local_reduce->num_source_values == 2);
+	CHECK(local_reduce->memory_id == gather_from_init->dest_memory);
+	CHECK(local_reduce->source_allocation_id == gather_from_init->dest_allocation);
+	CHECK(local_reduce->memory_id == gather_from_writer->dest_memory);
+	CHECK(local_reduce->source_allocation_id == gather_from_writer->dest_allocation);
+
+	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	CHECK(reader.transitive_predecessors_across<copy_instruction_record>().contains(local_reduce));
 }
 
-TEST_CASE("hello world pattern (host initialization)", "[instruction-graph]") {
-	const auto [num_nodes, my_nid] = GENERATE(values<std::pair<size_t, node_id>>({{1, 0}, {2, 0}, {2, 1}}));
-	CAPTURE(num_nodes);
-	CAPTURE(my_nid);
-
-	test_utils::idag_test_context ictx(num_nodes, my_nid, 1 /* devices */);
-	const std::string input_str = "Ifmmp!Xpsme\"\x01";
-	auto buf = ictx.create_buffer<1>(input_str.size(), true /* host initialized */);
-
-	ictx.device_compute(buf.get_range()).read_write(buf, acc::one_to_one()).submit();
-	ictx.fence(buf);
-}
-
-TEST_CASE("matmul pattern", "[instruction_graph_generator][instruction-graph]") {
-	const size_t mat_size = 128;
-
-	const auto my_nid = GENERATE(values<node_id>({0, 1}));
-	CAPTURE(my_nid);
-
-	test_utils::idag_test_context ictx(4 /* nodes */, my_nid, 1 /* devices */);
-
-	const auto range = celerity::range<2>(mat_size, mat_size);
-	auto mat_a_buf = ictx.create_buffer(range);
-	auto mat_b_buf = ictx.create_buffer(range);
-	auto mat_c_buf = ictx.create_buffer(range);
-
-	const auto set_identity = [&](test_utils::mock_buffer<2> mat) {
-		ictx.device_compute<class set_identity>(mat.get_range()) //
-		    .discard_write(mat, celerity::access::one_to_one())
-		    .submit();
-	};
-
-	set_identity(mat_a_buf);
-	set_identity(mat_b_buf);
-
-	const auto multiply = [&](test_utils::mock_buffer<2> mat_a, test_utils::mock_buffer<2> mat_b, test_utils::mock_buffer<2> mat_c) {
-		const size_t group_size = 8;
-		ictx.device_compute<class multiply>(celerity::nd_range<2>{range, {group_size, group_size}})
-		    .read(mat_a, celerity::access::slice<2>(1))
-		    .read(mat_b, celerity::access::slice<2>(0))
-		    .discard_write(mat_c, celerity::access::one_to_one())
-		    .submit();
-	};
-
-	multiply(mat_a_buf, mat_b_buf, mat_c_buf);
-	multiply(mat_b_buf, mat_c_buf, mat_a_buf);
-
-	const auto verify = [&](test_utils::mock_buffer<2> mat_c, test_utils::mock_host_object passed_obj) {
-		ictx.host_task(mat_c.get_range()) //
-		    .read(mat_c, celerity::access::one_to_one())
-		    .affect(passed_obj)
-		    .submit();
-	};
-
-	auto passed_obj = ictx.create_host_object();
-	verify(mat_a_buf, passed_obj);
-
-	ictx.fence(passed_obj);
-}
-
-TEST_CASE("collective host tasks", "[instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
-	ictx.collective_host_task(default_collective_group).submit();
-	ictx.collective_host_task(collective_group()).submit();
-}
-
-TEST_CASE("syncing pattern", "[instruction-graph]") {
-	const auto my_nid = GENERATE(values<node_id>({0, 1}));
-	CAPTURE(my_nid);
-
-	test_utils::idag_test_context ictx(2 /* nodes */, my_nid, 2 /* devices */);
-
-	auto buf = ictx.create_buffer<1>(512);
-	ictx.device_compute(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
-	ictx.collective_host_task().read(buf, acc::all()).submit();
-	ictx.epoch(epoch_action::barrier);
-}
-
-TEST_CASE("allreduce from identity", "[instruction-graph]") {
-	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
-	const auto num_devices = GENERATE(values<size_t>({1, 2}));
-	CAPTURE(num_nodes, num_devices);
-
-	test_utils::idag_test_context ictx(num_nodes, 0, num_devices);
+TEST_CASE("reduction accesses on a single-node multi-device setup generate local reduce-instructions only",
+    "[instruction_graph_generator][instruction-graph][reduction]") //
+{
+	const size_t num_devices = 2;
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, num_devices);
 
 	auto buf = ictx.create_buffer<1>(1);
-	ictx.device_compute(range<1>(256)).reduce(buf, false /* include_current_buffer_value */).submit();
-	ictx.device_compute(range<1>(256)).read(buf, acc::all()).submit();
+	ictx.device_compute(range(256)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
+	ictx.device_compute(range(256)).name("reader").read(buf, acc::all()).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	// partial results are written on the device
+	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	CHECK(all_writers.count() == num_devices);
+	CHECK(all_writers.all_concurrent());
+
+	// partial results are written to the appropriate positions in a (host) gather buffer
+	const auto all_gather_copies = all_writers.successors().select_all<copy_instruction_record>();
+	CHECK(all_gather_copies.count() == num_devices);
+	CHECK(all_gather_copies.all_concurrent());
+	for(const auto& gather_copy : all_gather_copies.iterate()) {
+		CAPTURE(gather_copy);
+		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
+
+		// the order of reduction inputs must be deterministic because the reduction operator is not necessarily associative
+		const auto writer = intersection_of(all_writers, gather_copy.predecessors());
+		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id.value()))));
+	}
+
+	const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
+	CHECK(local_reduce.predecessors().contains(all_gather_copies));
+
+	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
+	CHECK(all_readers.all_concurrent());
+	CHECK(local_reduce.transitive_successors_across<copy_instruction_record>().contains(all_readers));
 }
 
-TEST_CASE("allreduce including current buffer value", "[instruction-graph]") {
-	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
-	const auto my_nid = GENERATE(values<node_id>({0, 1}));
-	const auto num_devices = GENERATE(values<size_t>({1, 2}));
-	if(my_nid >= num_nodes) return;
-	CAPTURE(num_nodes, my_nid, num_devices);
+TEST_CASE("reduction accesses on a multi-node single-device setup generate global reduce-instructions only",
+    "[instruction_graph_generator][instruction-graph][reduction]") //
+{
+	const size_t num_nodes = 2;
+	test_utils::idag_test_context ictx(num_nodes, 0 /* my nid */, 1);
 
-	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
+	auto buf = ictx.create_buffer<1>(1);
+	ictx.device_compute(range(256)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
+	ictx.device_compute(range(256)).name("reader").read(buf, acc::all()).submit();
+	ictx.finish();
 
-	auto buf = ictx.create_buffer<1>(1, true /* host initialized */);
-	ictx.device_compute(range<1>(256)).reduce(buf, true /* include_current_buffer_value */).submit();
-	ictx.device_compute(range<1>(256)).read(buf, acc::all()).submit();
+	const auto all_instrs = ictx.query_instructions();
+
+	// TODO
 }
 
-TEST_CASE("reduction example pattern", "[instruction-graph]") {
-	const auto num_nodes = GENERATE(values<size_t>({1, 2}));
-	const auto my_nid = GENERATE(values<node_id>({0, 1}));
-	const auto num_devices = GENERATE(values<size_t>({1, 2}));
-	if(my_nid >= num_nodes) return;
-	CAPTURE(num_nodes, my_nid, num_devices);
+TEST_CASE("reduction accesses on a multi-node multi-device setup generate global and local reduce-instructions",
+    "[instruction_graph_generator][instruction-graph][reduction]") //
+{
+	const size_t num_nodes = 2;
+	const size_t num_devices = 2;
+	test_utils::idag_test_context ictx(num_nodes, 0 /* my nid */, num_devices);
 
-	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
+	auto buf = ictx.create_buffer<1>(1);
+	ictx.device_compute(range(256)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
+	ictx.device_compute(range(256)).name("reader").read(buf, acc::all()).submit();
+	ictx.finish();
 
-	const celerity::range image_size{1536, 2048};
-	auto srgb_255_buf = ictx.create_buffer<sycl::uchar4, 2>(image_size, true /* host initialized */);
-	auto rgb_buf = ictx.create_buffer<sycl::float4, 2>(image_size);
-	auto min_buf = ictx.create_buffer<float, 0>({});
-	auto max_buf = ictx.create_buffer<float, 0>({});
+	const auto all_instrs = ictx.query_instructions();
 
-	ictx.device_compute<class linearize_and_accumulate>(image_size)
-	    .read(srgb_255_buf, acc::one_to_one())
-	    .discard_write(rgb_buf, acc::one_to_one())
-	    .reduce(min_buf, false)
-	    .reduce(max_buf, false)
-	    .submit();
-
-	ictx.master_node_host_task() //
-	    .read(min_buf, acc::all())
-	    .read(max_buf, acc::all())
-	    .submit();
-
-	ictx.device_compute<class correct_and_compress>(image_size)
-	    .read(rgb_buf, acc::one_to_one())
-	    .read(min_buf, acc::all())
-	    .read(max_buf, acc::all())
-	    .discard_write(srgb_255_buf, acc::one_to_one())
-	    .submit();
-
-	ictx.master_node_host_task() //
-	    .read(srgb_255_buf, acc::all())
-	    .submit();
+	// TODO
 }
 
 TEST_CASE("local reductions can be initialized to a buffer value that is not present locally", "[instruction_graph_generator][instruction-graph][reduction]") {
