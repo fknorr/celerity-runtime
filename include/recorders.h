@@ -139,7 +139,7 @@ using instruction_dependency_list = std::vector<dependency_record<instruction_id
 struct instruction_record
     : matchbox::acceptor<struct clone_collective_group_instruction_record, struct alloc_instruction_record, struct free_instruction_record,
           struct init_buffer_instruction_record, struct export_instruction_record, struct copy_instruction_record, struct launch_instruction_record,
-          struct send_instruction_record, struct receive_instruction_record, struct spilt_receive_instruction_record, struct await_receive_instruction_record,
+          struct send_instruction_record, struct receive_instruction_record, struct split_receive_instruction_record, struct await_receive_instruction_record,
           struct gather_receive_instruction_record, struct fill_identity_instruction_record, struct reduce_instruction_record, struct fence_instruction_record,
           struct destroy_host_object_instruction_record, struct horizon_instruction_record, struct epoch_instruction_record> //
 {
@@ -297,8 +297,8 @@ struct receive_instruction_record : matchbox::implement_acceptor<instruction_rec
 	receive_instruction_record(const receive_instruction& rinstr);
 };
 
-struct spilt_receive_instruction_record : matchbox::implement_acceptor<instruction_record, spilt_receive_instruction_record>, receive_instruction_record_impl {
-	spilt_receive_instruction_record(const split_receive_instruction& srinstr);
+struct split_receive_instruction_record : matchbox::implement_acceptor<instruction_record, split_receive_instruction_record>, receive_instruction_record_impl {
+	split_receive_instruction_record(const split_receive_instruction& srinstr);
 };
 
 struct await_receive_instruction_record : matchbox::implement_acceptor<instruction_record, await_receive_instruction_record> {

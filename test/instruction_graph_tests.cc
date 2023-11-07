@@ -13,6 +13,20 @@ using namespace celerity::experimental;
 
 namespace acc = celerity::access;
 
+
+struct reverse_one_to_one {
+	template <int Dims>
+	subrange<Dims> operator()(chunk<Dims> ck) const {
+		subrange<Dims> sr;
+		for(int d = 0; d < Dims; ++d) {
+			sr.offset[d] = ck.global_size[d] - ck.range[d] - ck.offset[d];
+			sr.range[d] = ck.range[d];
+		}
+		return sr;
+	}
+};
+
+
 TEST_CASE("a command group without data access compiles to a trivial graph", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	const range<1> test_range = {256};
@@ -53,7 +67,7 @@ TEMPLATE_TEST_CASE_SIG(
 	CHECK(writers[0]->device_id != writers[1]->device_id);
 	CHECK(region_union(box(writers[0]->execution_range), box(writers[1]->execution_range)) == region(box(subrange<3>(zeros, range_cast<3>(full_range)))));
 
-	for(const auto& wr : writers.each()) {
+	for(const auto& wr : writers.iterate()) {
 		REQUIRE(wr->access_map.size() == 1);
 
 		// instruction_graph_generator guarantees the default dim0 split
@@ -205,9 +219,9 @@ TEST_CASE("data-dependencies are generated between kernels on the same memory", 
 TEST_CASE("data dependencies across memories introduce coherence copies", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
 	const range<1> test_range = {256};
-	auto buf1 = ictx.create_buffer(test_range);
-	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute(test_range).name("reader").read(buf1, acc::all()).submit();
+	auto buf = ictx.create_buffer(test_range);
+	ictx.device_compute(test_range).name("writer").discard_write(buf, acc::one_to_one()).submit();
+	ictx.device_compute(test_range).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
 
 	const auto iq = ictx.query_instructions();
@@ -262,7 +276,9 @@ TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer fro
 	CHECK(init->host_allocation_id == alloc->allocation_id);
 }
 
-TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push and await-push commands", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) {
+TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push and await-push commands",
+    "[instruction_graph_generator][instruction-graph][send-recv]", ((int Dims), Dims), 1, 2, 3) //
+{
 	const auto test_range = test_utils::truncate_range<Dims>({256, 256, 256});
 	const auto local_nid = GENERATE(values<node_id>({0, 1}));
 	const node_id opposite_nid = 1 - local_nid;
@@ -270,36 +286,39 @@ TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push a
 
 	test_utils::idag_test_context ictx(2 /* nodes */, local_nid, 1 /* devices */);
 
-	auto buf1 = ictx.create_buffer<int>(test_range);
-	ictx.device_compute(test_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute(test_range).name("reader").read(buf1, acc::all()).submit();
+	auto buf = ictx.create_buffer<int>(test_range);
+	ictx.device_compute(test_range).name("writer").discard_write(buf, acc::one_to_one()).submit();
+	const auto reader_tid = ictx.device_compute(test_range).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
 
 	const auto iq = ictx.query_instructions();
-	const auto pilots = ictx.query_outbound_pilots();
-
 	const auto writer = iq.select_unique<launch_instruction_record>("writer");
 	const auto send = iq.select_unique<send_instruction_record>();
 	const auto recv = iq.select_unique<receive_instruction_record>();
 	const auto reader = iq.select_unique<launch_instruction_record>("reader");
 
-	// send properties
+	const transfer_id expected_trid(reader_tid, buf.get_id(), no_reduction_id);
+
+	// we send exactly the part of the buffer that our node has written
 	REQUIRE(writer->access_map.size() == 1);
 	const auto& write_access = writer->access_map.front();
 	CHECK(send->dest_node_id == opposite_nid);
+	CHECK(send->transfer_id == expected_trid);
 	CHECK(send->send_range == write_access.accessed_box_in_buffer.get_range());
 	CHECK(send->offset_in_buffer == write_access.accessed_box_in_buffer.get_offset());
 	CHECK(send->element_size == sizeof(int));
 
-	// pilot is attached to the send
-	CHECK(pilots.is_unique());
-	CHECK(pilots->to == opposite_nid);
-	CHECK(pilots->message.trid == send->transfer_id);
-	CHECK(pilots->message.tag == send->tag);
+	// a pilot is attached to the send
+	const auto pilot = ictx.query_outbound_pilots();
+	CHECK(pilot.is_unique());
+	CHECK(pilot->to == opposite_nid);
+	CHECK(pilot->message.trid == send->transfer_id);
+	CHECK(pilot->message.tag == send->tag);
 
-	// recv properties
+	// we receive exactly the part of the buffer that our node has _not_ written
 	REQUIRE(reader->access_map.size() == 1);
 	const auto& read_access = reader->access_map.front();
+	CHECK(recv->transfer_id == expected_trid);
 	CHECK(recv->element_size == sizeof(int));
 	CHECK(region_intersection(write_access.accessed_box_in_buffer, recv->requested_region).empty());
 	CHECK(region_union(write_access.accessed_box_in_buffer, recv->requested_region) == region(read_access.accessed_box_in_buffer));
@@ -310,44 +329,95 @@ TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push a
 	CHECK(send.is_concurrent_with(recv));
 }
 
-TEST_CASE("large graph", "[instruction_graph_generator][instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device systems to allow compute-transfer overlap",
+    "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) {
+	const auto test_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto local_nid = GENERATE(values<node_id>({0, 1}));
+	const node_id opposite_nid = 1 - local_nid;
+	CAPTURE(local_nid, opposite_nid);
 
-	const range<1> test_range = {256};
-	auto buf1 = ictx.create_buffer(test_range);
-	auto buf2 = ictx.create_buffer(test_range);
-
-	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(gather)>(test_range).read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(gather)>(test_range).read(buf2, acc::all()).discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(gather)>(test_range).read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(gather)>(test_range).read(buf2, acc::all()).discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(gather)>(test_range).read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(consumer)>(test_range).read(buf2, acc::all()).submit();
-}
-
-TEST_CASE("recv split", "[instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 2 /* devices */);
+	auto buf = ictx.create_buffer<int>(test_range);
+	ictx.device_compute(test_range).name("writer").discard_write(buf, acc::one_to_one()).submit();
+	const auto reader_tid = ictx.device_compute(test_range).name("reader").read(buf, reverse_one_to_one()).submit();
+	ictx.finish();
 
-	const auto reverse_one_to_one = [](chunk<1> ck) -> subrange<1> { return {ck.global_size[0] - ck.range[0] - ck.offset[0], ck.range[0]}; };
+	const auto iq = ictx.query_instructions();
+	const auto pq = ictx.query_outbound_pilots();
 
-	const range<1> test_range = {256};
-	auto buf = ictx.create_buffer(test_range);
-	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(consumer)>(test_range).read(buf, reverse_one_to_one).submit();
+	const transfer_id expected_trid(reader_tid, buf.get_id(), no_reduction_id);
+
+	const auto all_writers = iq.select_all<launch_instruction_record>("writer");
+	CHECK(all_writers.count() == 2);
+	CHECK(all_writers.all_concurrent());
+
+	const auto all_sends = iq.select_all<send_instruction_record>();
+	CHECK(all_sends.count() == 2);
+	CHECK(all_sends.all_concurrent());
+
+	CHECK(pq.count() == all_sends.count());
+
+	// there is one send per writer instruction (with coherence copies in between)
+	for(const auto& send : all_sends.iterate()) {
+		CAPTURE(send);
+
+		const auto associated_writer =
+		    intersection_of(send.transitive_predecessors_across<copy_instruction_record>(), all_writers).assert_unique<launch_instruction_record>();
+		REQUIRE(associated_writer->access_map.size() == 1);
+		const auto& write = associated_writer->access_map.front();
+
+		// the send operates on a (host) allocation that is distinct from the (device) allocation that associated_writer writes to, but both instructions need
+		// to access the same buffer subrange
+		const auto send_box = box(subrange(send->offset_in_buffer, send->send_range));
+		CHECK(send_box == write.accessed_box_in_buffer);
+		CHECK(send->element_size == sizeof(int));
+		CHECK(send->transfer_id == expected_trid);
+
+		CHECK(pq.count(send->dest_node_id, expected_trid, send_box) == 1);
+	}
+
+	const auto split_recv = iq.select_unique<split_receive_instruction_record>();
+	const auto all_await_recvs = iq.select_all<await_receive_instruction_record>();
+	const auto all_readers = iq.select_all<launch_instruction_record>("reader");
+
+	// There is one split-receive instruction which binds the allocation to a transfer id, because we don't know the shape / stride of incoming messages until
+	// we receive pilots at runtime, and messages might either match our awaited subregions (and complete them independently), cover both (and need the
+	// bounding-box allocation), or anything in between.
+	CHECK(split_recv.successors().contains(all_await_recvs));
+	CHECK(split_recv->requested_region == region_union(all_await_recvs[0]->received_region, all_await_recvs[1]->received_region));
+	CHECK(split_recv->element_size == sizeof(int));
+	CHECK(region_intersection(all_await_recvs[0]->received_region, all_await_recvs[1]->received_region).empty());
+
+	CHECK(all_await_recvs.count() == 2); // one per device
+	CHECK(all_await_recvs.all_concurrent());
+	CHECK(all_readers.all_concurrent());
+
+	// there is one reader per await-receive instruction (with coherence copies in between)
+	for(const auto& await_recv : all_await_recvs.iterate()) {
+		CAPTURE(await_recv);
+
+		const auto associated_reader =
+		    intersection_of(await_recv.transitive_successors_across<copy_instruction_record>(), all_readers).assert_unique<launch_instruction_record>();
+		REQUIRE(associated_reader->access_map.size() == 1);
+		const auto& read = associated_reader->access_map.front();
+
+		CHECK(await_recv->received_region == region(read.accessed_box_in_buffer));
+		CHECK(await_recv->transfer_id == expected_trid);
+	}
 }
 
 TEST_CASE("transitive copy dependencies", "[instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
 
-	const auto reverse_one_to_one = [](chunk<1> ck) -> subrange<1> { return {ck.global_size[0] - ck.range[0] - ck.offset[0], ck.range[0]}; };
-
 	const range<1> test_range = {256};
 	auto buf1 = ictx.create_buffer(test_range);
 	auto buf2 = ictx.create_buffer(test_range);
-	ictx.device_compute<class UKN(producer)>(test_range).discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(gather)>(test_range).read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
-	ictx.device_compute<class UKN(consumer)>(test_range).read(buf2, reverse_one_to_one).submit();
+	ictx.device_compute(test_range).name("producer").discard_write(buf1, acc::one_to_one()).submit();
+	ictx.device_compute(test_range).name("gather").read(buf1, acc::all()).discard_write(buf2, acc::one_to_one()).submit();
+	ictx.device_compute(test_range).name("consumer").read(buf2, reverse_one_to_one()).submit();
+	ictx.finish();
+
+	const auto iq = ictx.query_instructions();
 }
 
 TEST_CASE("RSim pattern", "[instruction-graph]") {

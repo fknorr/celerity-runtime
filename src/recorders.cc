@@ -228,7 +228,7 @@ receive_instruction_record_impl::receive_instruction_record_impl(const receive_i
 
 receive_instruction_record::receive_instruction_record(const receive_instruction& rinstr) : acceptor_base(rinstr), receive_instruction_record_impl(rinstr) {}
 
-spilt_receive_instruction_record::spilt_receive_instruction_record(const split_receive_instruction& srinstr)
+split_receive_instruction_record::split_receive_instruction_record(const split_receive_instruction& srinstr)
     : acceptor_base(srinstr), receive_instruction_record_impl(srinstr) {}
 
 await_receive_instruction_record::await_receive_instruction_record(const await_receive_instruction& arinstr)

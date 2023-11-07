@@ -16,81 +16,88 @@ class instruction_query {
 	// allow upcast
 	template <typename SpecificRecord, std::enable_if_t<std::is_base_of_v<Record, SpecificRecord> && !std::is_same_v<Record, SpecificRecord>, int> = 0>
 	instruction_query(const instruction_query<SpecificRecord>& other)
-	    : instruction_query(other.m_recorder, std::vector<const Record*>(other.m_query.begin(), other.m_query.end()), other.m_stack) {}
+	    : instruction_query(other.m_recorder, std::vector<const Record*>(other.m_result.begin(), other.m_result.end()), other.m_trace) {}
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	instruction_query<SpecificRecord> select_all(const Filters&... filters) const {
 		std::vector<const SpecificRecord*> filtered;
-		for(const auto instr : m_query) {
+		for(const auto instr : m_result) {
 			if(matches<SpecificRecord>(*instr, filters...)) { filtered.push_back(utils::as<SpecificRecord>(instr)); }
 		}
 		return instruction_query<SpecificRecord>(m_recorder, std::move(filtered),
-		    std::is_same_v<SpecificRecord, Record> && sizeof...(Filters) == 0 ? m_stack : filter_stack<Record, SpecificRecord>("select", filters...));
+		    std::is_same_v<SpecificRecord, Record> && sizeof...(Filters) == 0 ? m_trace : filter_trace<Record, SpecificRecord>("select_all", filters...));
 	}
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	instruction_query<SpecificRecord> select_unique(const Filters&... filters) const {
-		return select_all<SpecificRecord>(filters...).assert_unique();
+		auto query = select_all<SpecificRecord>(filters...).assert_unique();
+		return instruction_query<SpecificRecord>(m_recorder, std::move(query.m_result), filter_trace<Record, SpecificRecord>("select_unique", filters...));
 	}
 
 	instruction_query<instruction_record> predecessors() const {
 		std::vector<const instruction_record*> predecessors;
-		// find predecessors without duplicates (even when m_query.size() > 1) and keep them in recorder-ordering
+		// find predecessors without duplicates (even when m_result.size() > 1) and keep them in recorder-ordering
 		for(const auto& maybe_predecessor : m_recorder->get_instructions()) {
-			if(std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
+			if(std::any_of(m_result.begin(), m_result.end(), [&](const Record* instr) {
 				   return std::any_of(instr->dependencies.begin(), instr->dependencies.end(),
 				       [&](const dependency_record<instruction_id>& d) { return d.node == maybe_predecessor->id; });
 			   })) {
 				predecessors.push_back(maybe_predecessor.get());
 			}
 		}
-		return instruction_query<instruction_record>(m_recorder, std::move(predecessors), m_stack + ".predecessors()");
+		return instruction_query<instruction_record>(m_recorder, std::move(predecessors), m_trace + ".predecessors()");
 	}
 
 	instruction_query<instruction_record> transitive_predecessors() const {
 		for(auto query = predecessors();;) {
 			auto next = union_of(query, query.predecessors());
-			if(query == next) return query;
+			if(query == next) { return instruction_query<instruction_record>(m_recorder, std::move(query.m_result), m_trace + ".transitive_predecessors()"); }
 			query = std::move(next);
 		}
 	};
 
-	template <typename SpecificRecord = Record, typename... Filters>
+	template <typename SpecificRecord, typename... Filters>
 	instruction_query<instruction_record> transitive_predecessors_across(const Filters&... filters) const {
 		for(auto query = predecessors();;) {
 			auto next = union_of(query, query.template select_all<SpecificRecord>(filters...).predecessors());
-			if(query == next) return query;
+			if(query == next) {
+				return instruction_query<instruction_record>(
+				    m_recorder, std::move(query.m_result), filter_trace<Record, SpecificRecord>("transitive_predecessors_across", filters...));
+			}
 			query = std::move(next);
 		}
 	};
 
 	instruction_query<instruction_record> successors() const {
 		std::vector<const instruction_record*> successors;
-		// find successors without duplicates (even when m_query.size() > 1) and keep them in recorder-ordering
+		// find successors without duplicates (even when m_result.size() > 1) and keep them in recorder-ordering
 		for(const auto& maybe_successor : m_recorder->get_instructions()) {
-			if(std::any_of(m_query.begin(), m_query.end(), [&](const Record* instr) {
+			if(std::any_of(m_result.begin(), m_result.end(), [&](const Record* instr) {
 				   return std::any_of(maybe_successor->dependencies.begin(), maybe_successor->dependencies.end(),
 				       [&](const dependency_record<instruction_id>& d) { return d.node == instr->id; });
 			   })) {
 				successors.push_back(maybe_successor.get());
 			}
 		}
-		return instruction_query<instruction_record>(m_recorder, std::move(successors), m_stack + ".successors()");
+		return instruction_query<instruction_record>(m_recorder, std::move(successors), m_trace + ".successors()");
 	}
 
 	instruction_query<instruction_record> transitive_successors() const {
 		for(auto query = successors();;) {
 			auto next = union_of(query, query.successors());
-			if(query == next) return query;
+			if(query == next) { return instruction_query<instruction_record>(m_recorder, std::move(query.m_result), m_trace + ".transitive_successors()"); }
 			query = std::move(next);
 		}
 	};
 
-	template <typename SpecificRecord = Record, typename... Filters>
+	template <typename SpecificRecord, typename... Filters>
 	instruction_query<instruction_record> transitive_successors_across(const Filters&... filters) const {
 		for(auto query = successors();;) {
 			auto next = union_of(query, query.template select_all<SpecificRecord>(filters...).successors());
-			if(query == next) return query;
+			if(query == next) {
+				return instruction_query<instruction_record>(
+				    m_recorder, std::move(query.m_result), filter_trace<Record, SpecificRecord>("transitive_successors_across", filters...));
+			}
 			query = std::move(next);
 		}
 	};
@@ -99,28 +106,27 @@ class instruction_query {
 		return !transitive_predecessors().contains(other) && !transitive_successors().contains(other);
 	}
 
-	size_t count() const { return m_query.size(); }
+	size_t count() const { return m_result.size(); }
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	size_t count(const Filters&... filters) const {
 		return static_cast<size_t>(
-		    std::count_if(m_query.begin(), m_query.end(), [&](const Record* instr) { return matches<SpecificRecord>(*instr, filters...); }));
+		    std::count_if(m_result.begin(), m_result.end(), [&](const Record* instr) { return matches<SpecificRecord>(*instr, filters...); }));
 	}
 
 	instruction_query operator[](const size_t index) const {
-		auto index_stack = fmt::format("query: {}[{}]", m_stack, index);
-		if(index > m_query.size()) {
-			INFO(fmt::format("query: ", index_stack));
+		if(index > m_result.size()) {
+			INFO(fmt::format("query: ", m_trace));
 			INFO(fmt::format("result: {}", *this));
-			FAIL(fmt::format("index {} out of bounds (size: {})", index, m_query.size()));
+			FAIL(fmt::format("index {} out of bounds (size: {})", index, m_result.size()));
 		}
-		return instruction_query(m_recorder, {m_query[index]}, std::move(index_stack));
+		return instruction_query(m_recorder, {m_result[index]}, fmt::format("{}[{}]", m_trace, index));
 	}
 
-	std::vector<instruction_query> each() const {
+	std::vector<instruction_query> iterate() const {
 		std::vector<instruction_query> queries;
-		for(size_t i = 0; i < m_query.size(); ++i) {
-			queries.push_back(instruction_query(m_recorder, {m_query[i]}, fmt::format("query: {}[{}]", m_stack, i)));
+		for(size_t i = 0; i < m_result.size(); ++i) {
+			queries.push_back(instruction_query(m_recorder, {m_result[i]}, fmt::format("{}[{}]", m_trace, i)));
 		}
 		return queries;
 	}
@@ -128,7 +134,7 @@ class instruction_query {
 	template <typename SpecificRecord = Record, typename... Filters>
 	bool all_match(const Filters&... filters) const {
 		std::string non_matching;
-		for(const Record* instr : m_query) {
+		for(const Record* instr : m_result) {
 			if(!matches<SpecificRecord>(*instr, filters...)) {
 				if(!non_matching.empty()) { non_matching += ", "; }
 				fmt::format_to(std::back_inserter(non_matching), "I{}", instr->id);
@@ -136,7 +142,7 @@ class instruction_query {
 		}
 		if(non_matching.empty()) return true;
 
-		UNSCOPED_INFO(fmt::format("query: {}", filter_stack<Record, SpecificRecord>("all", filters...)));
+		UNSCOPED_INFO(fmt::format("query: {}", filter_trace<Record, SpecificRecord>("all_match", filters...)));
 		UNSCOPED_INFO(fmt::format("non-matching: {{{}}}", non_matching));
 		return false;
 	}
@@ -145,7 +151,7 @@ class instruction_query {
 		for(size_t i = 0; i < count(); ++i) {
 			for(size_t j = i + 1; j < count(); ++j) {
 				if(!(*this)[i].is_concurrent_with((*this)[j])) {
-					UNSCOPED_INFO(fmt::format("query: {}", m_stack));
+					UNSCOPED_INFO(fmt::format("query: {}", m_trace));
 					UNSCOPED_INFO(fmt::format("result: {}", *this));
 					UNSCOPED_INFO(fmt::format("I{} and I{} are not concurrent", (*this)[i]->id, (*this)[j]->id));
 					return false;
@@ -156,42 +162,35 @@ class instruction_query {
 	}
 
 	bool contains(const instruction_query& subset) const {
-		return std::all_of(subset.m_query.begin(), subset.m_query.end(), [&](const Record* their) {
-			return std::any_of(m_query.begin(), m_query.end(), [&](const Record* my) { return their->id == my->id; }); //
+		return std::all_of(subset.m_result.begin(), subset.m_result.end(), [&](const Record* their) {
+			return std::any_of(m_result.begin(), m_result.end(), [&](const Record* my) { return their->id == my->id; }); //
 		});
 	}
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	bool is_unique(const Filters&... filters) const {
-		if(m_query.size() != 1) { UNSCOPED_INFO(fmt::format("query: {}", m_stack)); }
-		if(m_query.empty()) { UNSCOPED_INFO("query is empty"); }
-		if(m_query.size() > 1) {
-			std::string result;
-			for(const Record* instr : m_query) {
-				if(!result.empty()) { result += ", "; }
-				fmt::format_to(std::back_inserter(result), "I{}", instr->id);
-			}
-			UNSCOPED_INFO(fmt::format("result: {}", result));
-			UNSCOPED_INFO("result is not unique");
+		if(m_result.size() != 1) {
+			UNSCOPED_INFO(fmt::format("query: {}", m_trace));
+			UNSCOPED_INFO(fmt::format("result: {}", *this));
 		}
-		return m_query.size() == 1 && all_match<SpecificRecord>(filters...);
+		return m_result.size() == 1 && all_match<SpecificRecord>(filters...);
 	}
 
 	template <typename SpecificRecord = Record, typename... Filters>
 	instruction_query<SpecificRecord> assert_unique(const Filters&... filters) const {
 		REQUIRE(is_unique<SpecificRecord>(filters...));
 		return instruction_query<SpecificRecord>(
-		    m_recorder, {utils::as<SpecificRecord>(m_query.front())}, filter_stack<Record, SpecificRecord>("assert_unique", filters...));
+		    m_recorder, {utils::as<SpecificRecord>(m_result.front())}, filter_trace<Record, SpecificRecord>("assert_unique", filters...));
 	}
 
 	const Record* operator->() const {
 		REQUIRE(is_unique());
-		return m_query.front();
+		return m_result.front();
 	}
 
-	// m_query follows m_recorder ordering, so vector-equality is enough
-	friend bool operator==(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query == rhs.m_query; }
-	friend bool operator!=(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_query != rhs.m_query; }
+	// m_result follows m_recorder ordering, so vector-equality is enough
+	friend bool operator==(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_result == rhs.m_result; }
+	friend bool operator!=(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_result != rhs.m_result; }
 
 	template <typename... InstructionQueries>
 	friend instruction_query union_of(const instruction_query& head, const InstructionQueries&... tail) {
@@ -201,16 +200,16 @@ class instruction_query {
 		// construct union in recorder-ordering without duplicates
 		std::vector<const Record*> union_query;
 		for(const auto& instr : recorder->get_instructions()) {
-			if(std::find(head.m_query.begin(), head.m_query.end(), instr.get()) != head.m_query.end()
-			    || ((std::find(tail.m_query.begin(), tail.m_query.end(), instr.get()) != tail.m_query.end()) || ...)) { //
+			if(std::find(head.m_result.begin(), head.m_result.end(), instr.get()) != head.m_result.end()
+			    || ((std::find(tail.m_result.begin(), tail.m_result.end(), instr.get()) != tail.m_result.end()) || ...)) { //
 				union_query.push_back(instr.get());
 			}
 		}
 
-		std::string stack = fmt::format("union_of({}", head.m_stack);
-		(((stack += ", ") += tail.m_stack), ...);
-		stack += ")";
-		return instruction_query(recorder, std::move(union_query), stack);
+		std::string trace = fmt::format("union_of({}", head.m_trace);
+		(((trace += ", ") += tail.m_trace), ...);
+		trace += ")";
+		return instruction_query(recorder, std::move(union_query), std::move(trace));
 	}
 
 	template <typename... InstructionQueries>
@@ -218,18 +217,18 @@ class instruction_query {
 		const auto recorder = head.m_recorder;
 		assert(((head.m_recorder == tail.m_recorder) && ...));
 
-		// construct union in recorder-ordering without duplicates
+		// construct intersection in recorder-ordering without duplicates
 		std::vector<const Record*> intersection_query;
-		for(const auto& instr : head.m_query) {
-			if(((std::find(tail.m_query.begin(), tail.m_query.end(), instr) != tail.m_query.end()) && ...)) { //
+		for(const auto& instr : head.m_result) {
+			if(((std::find(tail.m_result.begin(), tail.m_result.end(), instr) != tail.m_result.end()) && ...)) { //
 				intersection_query.push_back(instr);
 			}
 		}
 
-		std::string stack = fmt::format("intersection_of({}", head.m_stack);
-		(((stack += ", ") += tail.m_stack), ...);
-		stack += ")";
-		return instruction_query(recorder, std::move(intersection_query), stack);
+		std::string trace = fmt::format("intersection_of({}", head.m_trace);
+		(((trace += ", ") += tail.m_trace), ...);
+		trace += ")";
+		return instruction_query(recorder, std::move(intersection_query), std::move(trace));
 	}
 
   private:
@@ -240,8 +239,8 @@ class instruction_query {
 	friend struct fmt::formatter;
 
 	const instruction_recorder* m_recorder;
-	std::vector<const Record*> m_query;
-	std::string m_stack;
+	std::vector<const Record*> m_result;
+	std::string m_trace;
 
 	template <typename T>
 	static std::vector<const T*> non_owning_pointers(const std::vector<std::unique_ptr<T>>& unique) {
@@ -291,24 +290,24 @@ class instruction_query {
 	}
 
 	template <typename GeneralRecord, typename SpecificRecord, typename... Filters>
-	std::string filter_stack(const std::string& selector, const Filters&... filters) const {
-		auto stack = m_stack.empty() ? selector : fmt::format("{}.{}", m_stack, selector);
+	std::string filter_trace(const std::string& selector, const Filters&... filters) const {
+		auto trace = m_trace.empty() ? selector : fmt::format("{}.{}", m_trace, selector);
 		if constexpr(!std::is_same_v<GeneralRecord, SpecificRecord>) {
-			fmt::format_to(std::back_inserter(stack), "<{}>", utils::simplify_task_name(kernel_debug_name<SpecificRecord>()));
+			fmt::format_to(std::back_inserter(trace), "<{}>", utils::simplify_task_name(kernel_debug_name<SpecificRecord>()));
 		}
 
-		std::string param_stack;
+		std::string param_trace;
 		const auto format_filter_param = [&](const auto& f) {
-			if(!param_stack.empty()) { param_stack += ", "; }
-			param_stack += instruction_query<SpecificRecord>::print_filter(f);
+			if(!param_trace.empty()) { param_trace += ", "; }
+			param_trace += instruction_query<SpecificRecord>::print_filter(f);
 		};
 		(format_filter_param(filters), ...);
-		fmt::format_to(std::back_inserter(stack), "({})", param_stack);
-		return stack;
+		fmt::format_to(std::back_inserter(trace), "({})", param_trace);
+		return trace;
 	}
 
-	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query, std::string stack)
-	    : m_recorder(recorder), m_query(std::move(query)), m_stack(std::move(stack)) {}
+	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query, std::string trace)
+	    : m_recorder(recorder), m_result(std::move(query)), m_trace(std::move(trace)) {}
 };
 
 class pilot_query {
@@ -363,6 +362,7 @@ class pilot_query {
 
 	static bool matches(const outbound_pilot& pilot, const node_id nid) { return pilot.to == nid; }
 	static bool matches(const outbound_pilot& pilot, const transfer_id& trid) { return pilot.message.trid == trid; }
+	static bool matches(const outbound_pilot& pilot, const box<3>& box) { return pilot.message.box == box; }
 
 	template <typename... Filters>
 	static bool matches(const outbound_pilot& pilot, const Filters&... filters) {
@@ -626,9 +626,9 @@ struct fmt::formatter<celerity::test_utils::instruction_query<Record>> : fmt::fo
 	format_context::iterator format(const celerity::test_utils::instruction_query<Record>& iq, format_context& ctx) const {
 		auto out = ctx.out();
 		*out++ = '{';
-		for(size_t i = 0; i < iq.m_query.size(); ++i) {
+		for(size_t i = 0; i < iq.m_result.size(); ++i) {
 			if(i > 0) { out = std::copy_n(", ", 2, out); }
-			fmt::format_to(out, "I{}", iq.m_query[i]->id);
+			fmt::format_to(out, "I{}", iq.m_result[i]->id);
 		}
 		*out++ = '}';
 		return out;

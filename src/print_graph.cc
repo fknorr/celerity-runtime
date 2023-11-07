@@ -396,7 +396,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/>x{} bytes", rinstr.element_size);
 			    end_node();
 		    },
-		    [&](const spilt_receive_instruction_record& srinstr) {
+		    [&](const split_receive_instruction_record& srinstr) {
 			    begin_node(srinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", srinstr.id, irec.get_await_push_command_id(srinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>split receive</b> {}", srinstr.transfer_id);
