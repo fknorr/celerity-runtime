@@ -147,6 +147,14 @@ class instruction_query {
 		return false;
 	}
 
+	template <typename SpecificRecord = Record, typename... Filters>
+	instruction_query<SpecificRecord> assert_all(const Filters&... filters) const {
+		REQUIRE(all_match<SpecificRecord>(filters...));
+		std::vector<const SpecificRecord*> result;
+		std::transform(m_result.begin(), m_result.end(), result.begin(), [](const Record* instr) { return utils::as<SpecificRecord>(instr); });
+		return instruction_query<SpecificRecord>(m_recorder, std::move(result), filter_trace<Record, SpecificRecord>("assert_all", filters...));
+	}
+
 	bool all_concurrent() const {
 		for(size_t i = 0; i < count(); ++i) {
 			for(size_t j = i + 1; j < count(); ++j) {

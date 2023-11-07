@@ -408,6 +408,38 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 	}
 }
 
+TEST_CASE("an await-push of disconnected subregions does not allocate their bounding-box", "[instruction_graph_generator][instruction-graph]") {
+	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
+	auto buf = ictx.create_buffer(range(1024));
+	const auto acc_first = acc::fixed(subrange<1>(0, 1));
+	const auto acc_last = acc::fixed(subrange<1>(1023, 1));
+	ictx.host_task(range(1)).name("writer").discard_write(buf, acc::all()).submit(); // remote only
+	ictx.host_task(range(2)).name("reader").read(buf, acc_first).read(buf, acc_last).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	// since the individual elements (acc_first, acc_last) are bound to different accessors, we can (and should) allocate them separately to avoid allocating
+	// the large bounding box. This means we have two allocations, with one receive each.
+	const auto all_allocs = all_instrs.select_all<alloc_instruction_record>();
+	CHECK(all_allocs.count() == 2);
+	const auto all_recvs = all_instrs.select_all<receive_instruction_record>();
+	CHECK(all_recvs.count() == 2);
+	CHECK(all_recvs.all_concurrent());
+
+	for(const auto& recv : all_recvs.iterate()) {
+		CAPTURE(recv);
+		CHECK(recv->requested_region.get_area() == 1);
+
+		const auto alloc = recv.predecessors().select_unique<alloc_instruction_record>();
+		CHECK(alloc->buffer_allocation->buffer_id == buf.get_id());
+		CHECK(region(alloc->buffer_allocation->box) == recv->requested_region);
+	}
+
+	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	CHECK(reader.predecessors() == all_recvs);
+}
+
 TEST_CASE("side-effects introduce dependencies between host-task instructions", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	ictx.set_horizon_step(999);
@@ -568,7 +600,7 @@ TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruc
 	CHECK(task_1.successors() == fence);
 	CHECK(fence.successors() == task_2);
 
-	const auto &ho_fence_info = std::get<fence_instruction_record::host_object_variant>(fence->variant);
+	const auto& ho_fence_info = std::get<fence_instruction_record::host_object_variant>(fence->variant);
 	CHECK(ho_fence_info.hoid == ho.get_id());
 }
 
@@ -667,17 +699,6 @@ TEST_CASE("matmul pattern", "[instruction_graph_generator][instruction-graph]") 
 	ictx.fence(passed_obj);
 }
 
-TEST_CASE("await-push of disconnected subregions does not allocate their bounding-box", "[instruction-graph]") {
-	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 1 /* devices */);
-
-	auto buf = ictx.create_buffer(range(1024));
-	const auto acc_first = acc::fixed(subrange<1>(0, 1));
-	const auto acc_last = acc::fixed(subrange<1>(1023, 1));
-	ictx.device_compute<class writer_1>(range(1)).discard_write(buf, acc_first).submit();
-	ictx.device_compute<class writer_2>(range(1)).discard_write(buf, acc_last).submit();
-	ictx.device_compute<class reader>(buf.get_range()).read(buf, acc_first).read(buf, acc_last).submit();
-}
-
 TEST_CASE("collective host tasks", "[instruction-graph]") {
 	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	ictx.collective_host_task(default_collective_group).submit();
@@ -761,35 +782,111 @@ TEST_CASE("reduction example pattern", "[instruction-graph]") {
 	    .submit();
 }
 
-TEST_CASE("local reduction can be initialized to a buffer value that is not present locally", "[instruction-graph]") {
-	const size_t num_nodes = 2;
-	const node_id my_nid = 0;
-	const auto num_devices = 2;
+TEST_CASE("local reductions can be initialized to a buffer value that is not present locally", "[instruction-graph]") {
+	const size_t num_nodes = 2; // we need a remote writer
+	const node_id my_nid = GENERATE(values<node_id>({0, 1}));
+	const auto num_devices = 1; // we generate a local reduction even for a single device because there's a remote contribution
+	CAPTURE(my_nid);
+
+	constexpr auto item_1_accesses_0 = [](const chunk<1> ck) { return subrange(id(0), range(ck.offset[0] + ck.range[0] > 1 ? 1 : 0)); };
 
 	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
+	auto buf = ictx.create_buffer<int>(range(1));
+	ictx.device_compute(range<1>(num_nodes)).name("init").discard_write(buf, item_1_accesses_0).submit();
+	const auto reduce_tid = ictx.device_compute(range<1>(1)).name("writer").reduce(buf, true /* include_current_buffer_value */).submit();
+	// local reductions are generated eagerly, even if there is no subsequent reader
+	ictx.finish();
 
-	auto buf = ictx.create_buffer(range<1>(1));
+	// the generated push / await-push pair is not in preparation of a reduction command (since there is none in this example), instead, the kernel starting the
+	// reduction defines an implicit read-requirement on the buffer on the reduction-initializer node (node 0), and push / await-push commands are generated
+	// accordingly to establish coherence.
+	const auto expected_trid = transfer_id(reduce_tid, buf.get_id(), no_reduction_id);
 
-	ictx.device_compute(range<1>(num_nodes)) //
-	    .discard_write(buf, [](const chunk<1> ck) { return subrange(id(0), range(ck.offset[0] + ck.range[0] > 1 ? 1 : 0)); })
-	    .submit();
-	ictx.device_compute(range<1>(1)) //
-	    .reduce(buf, true /* include_current_buffer_value */)
-	    .submit();
+	const auto all_instrs = ictx.query_instructions();
+	const auto all_pilots = ictx.query_outbound_pilots();
+
+	if(my_nid == 0) {
+		// we are the receiver / reducer node
+		const auto recv = all_instrs.select_unique<receive_instruction_record>();
+		CHECK(recv->transfer_id == expected_trid);
+		CHECK(recv->requested_region == region(box<3>(zeros, ones)));
+		CHECK(recv->element_size == sizeof(int));
+
+		const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
+		CHECK(writer->access_map.empty()); // we have reductions, not (regular) accesses
+		REQUIRE(writer->reduction_map.size() == 1);
+		const auto& red_acc = writer->reduction_map.front();
+		CHECK(red_acc.buffer_id == buf.get_id());
+		CHECK(red_acc.box == box<3>(zeros, ones));
+
+		const auto gather_copies = all_instrs.select_all<copy_instruction_record>();
+		for(const auto& copy : gather_copies.iterate()) {
+			CHECK(copy->origin == copy_instruction_record::copy_origin::gather);
+			CHECK(copy->buffer == buf.get_id());
+			CHECK(copy->copy_range == ones);
+			CHECK(copy->box == box<3>(zeros, ones));
+		}
+
+		const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
+		CHECK(local_reduce->box == box<3>(zeros, ones));
+		CHECK(local_reduce->reduction_id != no_reduction_id);
+		CHECK(local_reduce->reduction_id == red_acc.reduction_id);
+		CHECK(local_reduce->num_source_values == 2); // the received remote init value + our contribution
+		CHECK(local_reduce.predecessors() == gather_copies);
+	} else {
+		// we are the initializer / sender node
+		const auto send = all_instrs.select_unique<send_instruction_record>();
+		CHECK(send->transfer_id == expected_trid);
+		CHECK(send->send_range == range_cast<3>(range(1)));
+		CHECK(send->offset_in_buffer == zeros);
+		CHECK(send->element_size == sizeof(int));
+
+		const auto pilot = all_pilots.assert_unique();
+		CHECK(pilot->to == 0);
+		CHECK(pilot->message.trid == expected_trid);
+		CHECK(pilot->message.box == box<3>(zeros, ones));
+	}
 }
 
 TEST_CASE("local reductions only include values from participating devices", "[instruction-graph]") {
 	const size_t num_nodes = 1;
 	const node_id my_nid = 0;
-	const auto num_devices = 4;
+	const auto num_devices = 4; // we need multiple, but not all devices to produce partial reduction results
 
 	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
-
 	auto buf = ictx.create_buffer(range<1>(1));
+	ictx.device_compute(range<1>(num_devices / 2)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
+	ictx.finish();
 
-	ictx.device_compute(range<1>(num_devices / 2)) //
-	    .reduce(buf, false /* include_current_buffer_value */)
-	    .submit();
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	CHECK(all_writers.count() == num_devices / 2);
+
+	// look up the reduce-instruction first because it defines which memory / allocation we need to gather-copy to
+	const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
+
+	// there is one gather-copy for each writer kernel
+	for(const auto& writer : all_writers.iterate()) {
+		CAPTURE(writer);
+
+		CHECK(writer->access_map.empty()); // we have reductions, not (regular) accesses
+		REQUIRE(writer->reduction_map.size() == 1);
+		const auto& red_acc = writer->reduction_map.front();
+
+		const auto gather_copy = writer.successors().assert_unique<copy_instruction_record>();
+		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
+		CHECK(gather_copy->source_memory == red_acc.memory_id);
+		CHECK(gather_copy->source_allocation == red_acc.allocation_id);
+
+		CHECK(gather_copy->dest_memory == local_reduce->memory_id);
+		CHECK(gather_copy->dest_allocation == local_reduce->source_allocation_id);
+
+		// gather-order must be deterministic because the reduction operation is not necessarily associative
+		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id.value()))));
+
+		CHECK(local_reduce.predecessors().contains(gather_copy));
+	}
 }
 
 TEST_CASE("global reduction without a local contribution does not read a stale local value", "[instruction-graph]") {
