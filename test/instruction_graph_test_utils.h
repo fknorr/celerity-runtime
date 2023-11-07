@@ -202,7 +202,7 @@ class instruction_query {
 		for(const auto& instr : recorder->get_instructions()) {
 			if(std::find(head.m_result.begin(), head.m_result.end(), instr.get()) != head.m_result.end()
 			    || ((std::find(tail.m_result.begin(), tail.m_result.end(), instr.get()) != tail.m_result.end()) || ...)) { //
-				union_query.push_back(instr.get());
+				union_query.push_back(utils::as<Record>(instr.get()));
 			}
 		}
 
@@ -221,7 +221,7 @@ class instruction_query {
 		std::vector<const Record*> intersection_query;
 		for(const auto& instr : head.m_result) {
 			if(((std::find(tail.m_result.begin(), tail.m_result.end(), instr) != tail.m_result.end()) && ...)) { //
-				intersection_query.push_back(instr);
+				intersection_query.push_back(utils::as<Record>(instr));
 			}
 		}
 

@@ -33,12 +33,12 @@ TEST_CASE("a command group without data access compiles to a trivial graph", "[i
 	ictx.device_compute(test_range).name("kernel").submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
-	CHECK(iq.count() == 3);
-	CHECK(iq.count<epoch_instruction_record>() == 2);
-	CHECK(iq.count<launch_instruction_record>() == 1);
+	const auto all_instrs = ictx.query_instructions();
+	CHECK(all_instrs.count() == 3);
+	CHECK(all_instrs.count<epoch_instruction_record>() == 2);
+	CHECK(all_instrs.count<launch_instruction_record>() == 1);
 
-	const auto kernel = iq.select_unique<launch_instruction_record>("kernel");
+	const auto kernel = all_instrs.select_unique<launch_instruction_record>("kernel");
 	CHECK(kernel->access_map.empty());
 	CHECK(kernel->execution_range == subrange<3>(zeros, range_cast<3>(test_range)));
 	CHECK(kernel->device_id == device_id(0));
@@ -56,37 +56,39 @@ TEMPLATE_TEST_CASE_SIG(
 	ictx.device_compute(full_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
+	const auto all_instrs = ictx.query_instructions();
 
-	CHECK(iq.select_all<alloc_instruction_record>().predecessors().all_match<epoch_instruction_record>());
+	CHECK(all_instrs.select_all<alloc_instruction_record>().predecessors().all_match<epoch_instruction_record>());
 
 	// we have two writer instructions, one per device, each operating on their separate allocations on separate memories.
-	const auto writers = iq.select_all<launch_instruction_record>();
-	CHECK(writers.count() == 2);
-	CHECK(writers.all_match("writer"));
-	CHECK(writers[0]->device_id != writers[1]->device_id);
-	CHECK(region_union(box(writers[0]->execution_range), box(writers[1]->execution_range)) == region(box(subrange<3>(zeros, range_cast<3>(full_range)))));
+	const auto all_writers = all_instrs.select_all<launch_instruction_record>();
+	CHECK(all_writers.count() == 2);
+	CHECK(all_writers.all_match("writer"));
+	CHECK(all_writers[0]->device_id != all_writers[1]->device_id);
+	CHECK(
+	    region_union(box(all_writers[0]->execution_range), box(all_writers[1]->execution_range)) == region(box(subrange<3>(zeros, range_cast<3>(full_range)))));
 
-	for(const auto& wr : writers.iterate()) {
-		REQUIRE(wr->access_map.size() == 1);
+	for(const auto& writer : all_writers.iterate()) {
+		CAPTURE(writer);
+		REQUIRE(writer->access_map.size() == 1);
 
 		// instruction_graph_generator guarantees the default dim0 split
-		CHECK(wr->execution_range.range == range_cast<3>(half_range));
-		CHECK((wr->execution_range.offset[0] == 0 || wr->execution_range.offset[0] == half_range[0]));
+		CHECK(writer->execution_range.range == range_cast<3>(half_range));
+		CHECK((writer->execution_range.offset[0] == 0 || writer->execution_range.offset[0] == half_range[0]));
 
 		// the IDAG allocates appropriate boxes on the memories native to each executing device.
-		const auto alloc = wr.predecessors().assert_unique<alloc_instruction_record>();
-		CHECK(alloc->memory_id == ictx.get_native_memory(wr->device_id.value()));
-		CHECK(wr->access_map.front().allocation_id == alloc->allocation_id);
-		CHECK(alloc->buffer_allocation.value().box == wr->access_map.front().accessed_box_in_buffer);
+		const auto alloc = writer.predecessors().assert_unique<alloc_instruction_record>();
+		CHECK(alloc->memory_id == ictx.get_native_memory(writer->device_id.value()));
+		CHECK(writer->access_map.front().allocation_id == alloc->allocation_id);
+		CHECK(alloc->buffer_allocation.value().box == writer->access_map.front().accessed_box_in_buffer);
 
-		const auto free = wr.successors().assert_unique<free_instruction_record>();
+		const auto free = writer.successors().assert_unique<free_instruction_record>();
 		CHECK(free->memory_id == alloc->memory_id);
 		CHECK(free->allocation_id == alloc->allocation_id);
 		CHECK(free->size == alloc->size);
 	}
 
-	CHECK(iq.select_all<free_instruction_record>().successors().all_match<epoch_instruction_record>());
+	CHECK(all_instrs.select_all<free_instruction_record>().successors().all_match<epoch_instruction_record>());
 }
 
 // This test may fail in the future if we implement a more sophisticated allocator that decides to merge some allocations.
@@ -105,15 +107,15 @@ TEMPLATE_TEST_CASE_SIG("accessing non-overlapping buffer subranges in subsequent
 	ictx.device_compute(second_half.range, second_half.offset).name("2nd").discard_write(buf1, acc::one_to_one()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
+	const auto all_instrs = ictx.query_instructions();
 
-	CHECK(iq.select_all<alloc_instruction_record>().count() == 2);
-	CHECK(iq.select_all<copy_instruction_record>().count() == 0); // no coherence copies needed
-	CHECK(iq.select_all<launch_instruction_record>().count() == 2);
-	CHECK(iq.select_all<free_instruction_record>().count() == 2);
+	CHECK(all_instrs.select_all<alloc_instruction_record>().count() == 2);
+	CHECK(all_instrs.select_all<copy_instruction_record>().count() == 0); // no coherence copies needed
+	CHECK(all_instrs.select_all<launch_instruction_record>().count() == 2);
+	CHECK(all_instrs.select_all<free_instruction_record>().count() == 2);
 
-	const auto first = iq.select_unique<launch_instruction_record>("1st");
-	const auto second = iq.select_unique<launch_instruction_record>("2nd");
+	const auto first = all_instrs.select_unique<launch_instruction_record>("1st");
+	const auto second = all_instrs.select_unique<launch_instruction_record>("2nd");
 	REQUIRE(first->access_map.size() == 1);
 	REQUIRE(second->access_map.size() == 1);
 
@@ -139,17 +141,17 @@ TEST_CASE("resizing a buffer allocation for a discard-write access preserves onl
 	ictx.device_compute(range<1>(1)).name("2nd writer").discard_write(buf1, acc::fixed<1>({64, 196})).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
+	const auto all_instrs = ictx.query_instructions();
 
 	// part of the buffer is allocated for the first writer
-	const auto first_writer = iq.select_unique<launch_instruction_record>("1st writer");
+	const auto first_writer = all_instrs.select_unique<launch_instruction_record>("1st writer");
 	REQUIRE(first_writer->access_map.size() == 1);
 	const auto first_alloc = first_writer.predecessors().select_unique<alloc_instruction_record>();
 	const auto first_write_box = first_writer->access_map.front().accessed_box_in_buffer;
 	CHECK(first_alloc->buffer_allocation.value().box == first_write_box);
 
 	// first and second writer ranges overlap, so the bounding box has to be allocated (and the old allocation freed)
-	const auto second_writer = iq.select_unique<launch_instruction_record>("2nd writer");
+	const auto second_writer = all_instrs.select_unique<launch_instruction_record>("2nd writer");
 	REQUIRE(second_writer->access_map.size() == 1);
 	const auto second_alloc = second_writer.predecessors().assert_unique<alloc_instruction_record>();
 	const auto second_write_box = second_writer->access_map.front().accessed_box_in_buffer;
@@ -162,7 +164,7 @@ TEST_CASE("resizing a buffer allocation for a discard-write access preserves onl
 	REQUIRE(preserved_region.get_boxes().size() == 1);
 	const auto preserved_box = preserved_region.get_boxes().front();
 
-	const auto resize_copy = iq.select_unique<copy_instruction_record>();
+	const auto resize_copy = all_instrs.select_unique<copy_instruction_record>();
 	CHECK(resize_copy->box == preserved_box);
 
 	const auto resize_copy_preds = resize_copy.predecessors();
@@ -187,30 +189,30 @@ TEST_CASE("data-dependencies are generated between kernels on the same memory", 
 	ictx.device_compute(range(1)).name("read buf1+2").read(buf1, acc::all()).read(buf2, acc::all()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
+	const auto all_instrs = ictx.query_instructions();
 
 	const auto predecessor_kernels = [](const auto& q) { return q.predecessors().template select_all<launch_instruction_record>(); };
 	const auto successor_kernels = [](const auto& q) { return q.successors().template select_all<launch_instruction_record>(); };
 
-	const auto write_buf1 = iq.select_unique<launch_instruction_record>("write buf1");
+	const auto write_buf1 = all_instrs.select_unique<launch_instruction_record>("write buf1");
 	CHECK(predecessor_kernels(write_buf1).count() == 0);
 
-	const auto overwrite_buf1_right = iq.select_unique<launch_instruction_record>("overwrite buf1 right");
+	const auto overwrite_buf1_right = all_instrs.select_unique<launch_instruction_record>("overwrite buf1 right");
 	CHECK(predecessor_kernels(overwrite_buf1_right) == write_buf1 /* output-dependency on buf1 [128] - [256]*/);
 
-	const auto read_buf1_write_buf2 = iq.select_unique<launch_instruction_record>("read buf 1, write buf2");
+	const auto read_buf1_write_buf2 = all_instrs.select_unique<launch_instruction_record>("read buf 1, write buf2");
 	CHECK(predecessor_kernels(read_buf1_write_buf2).contains(overwrite_buf1_right /* true-dependency on buf1 [128] - [256]*/));
 	// IDAG might also specify a true-dependency on "write buf1" for buf1 [0] - [128], but this is transitive
 
-	const auto read_write_buf1_center = iq.select_unique<launch_instruction_record>("read-write buf1 center");
+	const auto read_write_buf1_center = all_instrs.select_unique<launch_instruction_record>("read-write buf1 center");
 	CHECK(predecessor_kernels(read_write_buf1_center).contains(read_buf1_write_buf2 /* anti-dependency on buf1 [64] - [192]*/));
 	// IDAG might also specify true-dependencies on "write buf1" and "overwrite buf1 right", but these are transitive
 
-	const auto read_buf2 = iq.select_unique<launch_instruction_record>("read buf2");
+	const auto read_buf2 = all_instrs.select_unique<launch_instruction_record>("read buf2");
 	CHECK(predecessor_kernels(read_buf2) == read_buf1_write_buf2 /* true-dependency on buf2 [0] - [256] */);
 	// This should not depend on any other kernel instructions, because none other are concerned with buf2.
 
-	const auto read_buf1_buf2 = iq.select_unique<launch_instruction_record>("read buf1+2");
+	const auto read_buf1_buf2 = all_instrs.select_unique<launch_instruction_record>("read buf1+2");
 	CHECK(predecessor_kernels(read_buf1_buf2).contains(read_write_buf1_center) /* true-dependency on buf1 [64] - [192] */);
 	CHECK(!predecessor_kernels(read_buf1_buf2).contains(read_buf2) /* readers are concurrent */);
 	// IDAG might also specify true-dependencies on "write buf1", "overwrite buf1 right", "read buf1, write_buf2", but these are transitive
@@ -224,11 +226,11 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 	ictx.device_compute(test_range).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
+	const auto all_instrs = ictx.query_instructions();
 
-	const auto all_writers = iq.select_all<launch_instruction_record>("writer");
-	const auto all_readers = iq.select_all<launch_instruction_record>("reader");
-	const auto coherence_copies = iq.select_all<copy_instruction_record>(
+	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
+	const auto coherence_copies = all_instrs.select_all<copy_instruction_record>(
 	    [](const copy_instruction_record& copy) { return copy.origin == copy_instruction_record::copy_origin::coherence; });
 
 	CHECK(all_readers.count() == 2);
@@ -264,9 +266,9 @@ TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer fro
 	auto buf = ictx.create_buffer<int, Dims>(buffer_range, true /* host_initialized */);
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
+	const auto all_instrs = ictx.query_instructions();
 
-	const auto init = iq.select_unique<init_buffer_instruction_record>();
+	const auto init = all_instrs.select_unique<init_buffer_instruction_record>();
 	const auto alloc = init.predecessors().assert_unique<alloc_instruction_record>();
 	CHECK(alloc->memory_id == host_memory_id);
 	CHECK(alloc->buffer_allocation.value().box == box_cast<3>(buffer_box));
@@ -291,11 +293,11 @@ TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push a
 	const auto reader_tid = ictx.device_compute(test_range).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
-	const auto writer = iq.select_unique<launch_instruction_record>("writer");
-	const auto send = iq.select_unique<send_instruction_record>();
-	const auto recv = iq.select_unique<receive_instruction_record>();
-	const auto reader = iq.select_unique<launch_instruction_record>("reader");
+	const auto all_instrs = ictx.query_instructions();
+	const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
+	const auto send = all_instrs.select_unique<send_instruction_record>();
+	const auto recv = all_instrs.select_unique<receive_instruction_record>();
+	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
 
 	const transfer_id expected_trid(reader_tid, buf.get_id(), no_reduction_id);
 
@@ -342,20 +344,20 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 	const auto reader_tid = ictx.device_compute(test_range).name("reader").read(buf, reverse_one_to_one()).submit();
 	ictx.finish();
 
-	const auto iq = ictx.query_instructions();
-	const auto pq = ictx.query_outbound_pilots();
+	const auto all_instrs = ictx.query_instructions();
+	const auto all_pilots = ictx.query_outbound_pilots();
 
 	const transfer_id expected_trid(reader_tid, buf.get_id(), no_reduction_id);
 
-	const auto all_writers = iq.select_all<launch_instruction_record>("writer");
+	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
 	CHECK(all_writers.count() == 2);
 	CHECK(all_writers.all_concurrent());
 
-	const auto all_sends = iq.select_all<send_instruction_record>();
+	const auto all_sends = all_instrs.select_all<send_instruction_record>();
 	CHECK(all_sends.count() == 2);
 	CHECK(all_sends.all_concurrent());
 
-	CHECK(pq.count() == all_sends.count());
+	CHECK(all_pilots.count() == all_sends.count());
 
 	// there is one send per writer instruction (with coherence copies in between)
 	for(const auto& send : all_sends.iterate()) {
@@ -373,12 +375,12 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 		CHECK(send->element_size == sizeof(int));
 		CHECK(send->transfer_id == expected_trid);
 
-		CHECK(pq.count(send->dest_node_id, expected_trid, send_box) == 1);
+		CHECK(all_pilots.count(send->dest_node_id, expected_trid, send_box) == 1);
 	}
 
-	const auto split_recv = iq.select_unique<split_receive_instruction_record>();
-	const auto all_await_recvs = iq.select_all<await_receive_instruction_record>();
-	const auto all_readers = iq.select_all<launch_instruction_record>("reader");
+	const auto split_recv = all_instrs.select_unique<split_receive_instruction_record>();
+	const auto all_await_recvs = all_instrs.select_all<await_receive_instruction_record>();
+	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
 
 	// There is one split-receive instruction which binds the allocation to a transfer id, because we don't know the shape / stride of incoming messages until
 	// we receive pilots at runtime, and messages might either match our awaited subregions (and complete them independently), cover both (and need the
@@ -404,6 +406,114 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 		CHECK(await_recv->received_region == region(read.accessed_box_in_buffer));
 		CHECK(await_recv->transfer_id == expected_trid);
 	}
+}
+
+TEST_CASE("side-effects introduce dependencies between host-task instructions", "[instruction_graph_generator][instruction-graph]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	ictx.set_horizon_step(999);
+	auto ho1 = ictx.create_host_object();
+	auto ho2 = ictx.create_host_object(false /* owns instance */);
+	ictx.master_node_host_task().name("affect ho1 (a)").affect(ho1).submit();
+	ictx.master_node_host_task().name("affect ho2 (a)").affect(ho2).submit();
+	ictx.master_node_host_task().name("affect ho1 (b)").affect(ho1).submit();
+	ictx.master_node_host_task().name("affect ho2 (b)").affect(ho2).submit();
+	ictx.master_node_host_task().name("affect ho1 + ho2").affect(ho1).affect(ho2).submit();
+	ictx.master_node_host_task().name("affect ho1 (c)").affect(ho1).submit();
+	ictx.master_node_host_task().name("affect ho2 (c)").affect(ho2).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	const auto affect_ho1_a = all_instrs.select_unique<launch_instruction_record>("affect ho1 (a)");
+	const auto affect_ho2_a = all_instrs.select_unique<launch_instruction_record>("affect ho2 (a)");
+	const auto affect_ho1_b = all_instrs.select_unique<launch_instruction_record>("affect ho1 (b)");
+	const auto affect_ho2_b = all_instrs.select_unique<launch_instruction_record>("affect ho2 (b)");
+	const auto affect_both = all_instrs.select_unique<launch_instruction_record>("affect ho1 + ho2");
+	const auto affect_ho1_c = all_instrs.select_unique<launch_instruction_record>("affect ho1 (c)");
+	const auto affect_ho2_c = all_instrs.select_unique<launch_instruction_record>("affect ho2 (c)");
+	// only ho1 owns its instance, so only one destroy_host_object_instruction is generated
+	const auto destroy_ho1 = all_instrs.select_unique<destroy_host_object_instruction_record>();
+
+	CHECK(affect_ho1_a.predecessors().is_unique<epoch_instruction_record>());
+	CHECK(affect_ho2_a.predecessors().is_unique<epoch_instruction_record>());
+	CHECK(affect_ho1_a.successors() == affect_ho1_b);
+	CHECK(affect_ho2_a.successors() == affect_ho2_b);
+	CHECK(affect_ho1_b.successors() == affect_both);
+	CHECK(affect_ho2_b.successors() == affect_both);
+	CHECK(affect_both.successors() == union_of(affect_ho1_c, affect_ho2_c));
+	CHECK(affect_ho1_c.successors() == destroy_ho1);
+	CHECK(destroy_ho1.successors().is_unique<epoch_instruction_record>());
+	CHECK(affect_ho2_c.successors().is_unique<epoch_instruction_record>());
+}
+
+TEST_CASE("collective-group instructions follow a single global total order", "[instruction_graph_generator][instruction-graph]") {
+	const auto local_nid = GENERATE(values<node_id>({0, 1}));
+
+	test_utils::idag_test_context ictx(2 /* nodes */, local_nid, 1 /* devices */);
+	ictx.set_horizon_step(999);
+
+	// collective-groups are not explicitly registered with graph generators, so both IDAG tests and the runtime use the same mechanism to declare them
+	experimental::collective_group custom_cg_1;
+	experimental::collective_group custom_cg_2;
+
+	ictx.collective_host_task().name("default-group (a)").submit();
+	ictx.collective_host_task().name("default-group (b)").submit();
+	ictx.collective_host_task(custom_cg_1).name("custom-group 1 (a)").submit();
+	ictx.collective_host_task(custom_cg_2).name("custom-group 2").submit();
+	ictx.collective_host_task(custom_cg_1).name("custom-group 1 (b)").submit();
+	ictx.collective_host_task().name("default-group (c)").submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto init_epoch = all_instrs.select_unique(task_manager::initial_epoch_task);
+	// the default collective group does not use the default communicator (aka MPI_COMM_WORLD) because host tasks are executed on a different thread
+	const auto clone_for_default_group = init_epoch.successors().assert_unique<clone_collective_group_instruction_record>();
+	CHECK(clone_for_default_group->origin_collective_group_id == root_collective_group_id);
+	CHECK(clone_for_default_group->new_collective_group_id != clone_for_default_group->origin_collective_group_id);
+	const auto default_cgid = clone_for_default_group->new_collective_group_id;
+
+	const auto default_group_a = all_instrs.select_unique<launch_instruction_record>("default-group (a)");
+	CHECK(default_group_a->collective_group_id == default_cgid);
+	CHECK(default_group_a.predecessors() == clone_for_default_group);
+
+	const auto default_group_b = all_instrs.select_unique<launch_instruction_record>("default-group (b)");
+	CHECK(default_group_b->collective_group_id == default_cgid);
+	CHECK(default_group_b.predecessors() == default_group_a); // collective-group ordering
+
+	// even though "default-group (c)" is submitted last, it only depends on its predecessor in the same group
+	const auto default_group_c = all_instrs.select_unique<launch_instruction_record>("default-group (c)");
+	CHECK(default_group_c->collective_group_id == default_cgid);
+	CHECK(default_group_c.predecessors() == default_group_b); // collective-group ordering
+	CHECK(default_group_c.successors().is_unique<epoch_instruction_record>());
+
+	// clone-collective-group instructions are ordered, because cloning an MPI communicator is a collective operation as well
+	const auto clone_for_custom_group_1 = clone_for_default_group.successors().select_unique<clone_collective_group_instruction_record>();
+	CHECK(clone_for_custom_group_1->origin_collective_group_id == root_collective_group_id);
+	CHECK(clone_for_custom_group_1->new_collective_group_id != clone_for_custom_group_1->origin_collective_group_id);
+	const auto custom_cgid_1 = clone_for_custom_group_1->new_collective_group_id;
+	CHECK(custom_cgid_1 != default_cgid);
+
+	const auto custom_group_1_a = all_instrs.select_unique<launch_instruction_record>("custom-group 1 (a)");
+	CHECK(custom_group_1_a->collective_group_id == custom_cgid_1);
+	CHECK(custom_group_1_a.predecessors() == clone_for_custom_group_1);
+
+	const auto custom_group_1_b = all_instrs.select_unique<launch_instruction_record>("custom-group 1 (b)");
+	CHECK(custom_group_1_b->collective_group_id == custom_cgid_1);
+	CHECK(custom_group_1_b.predecessors() == custom_group_1_a); // collective-group ordering
+	CHECK(custom_group_1_b.successors().is_unique<epoch_instruction_record>());
+
+	// clone-collective-group instructions are ordered, because cloning an MPI communicator is a collective operation as well
+	const auto clone_for_custom_group_2 = clone_for_custom_group_1.successors().select_unique<clone_collective_group_instruction_record>();
+	CHECK(clone_for_custom_group_2->origin_collective_group_id == root_collective_group_id);
+	CHECK(clone_for_custom_group_2->new_collective_group_id != clone_for_custom_group_2->origin_collective_group_id);
+	const auto custom_cgid_2 = clone_for_custom_group_2->new_collective_group_id;
+	CHECK(custom_cgid_2 != default_cgid);
+	CHECK(custom_cgid_2 != custom_cgid_1);
+
+	const auto custom_group_2 = all_instrs.select_unique<launch_instruction_record>("custom-group 2");
+	CHECK(custom_group_2->collective_group_id == custom_cgid_2);
+	CHECK(custom_group_2.predecessors() == clone_for_custom_group_2);
+	CHECK(custom_group_2.successors().is_unique<epoch_instruction_record>());
 }
 
 TEST_CASE("transitive copy dependencies", "[instruction-graph]") {
