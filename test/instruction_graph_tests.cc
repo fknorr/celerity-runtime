@@ -548,7 +548,7 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 	CHECK(custom_group_2.successors().is_unique<epoch_instruction_record>());
 }
 
-TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 0, 1, 2, 3) {
+TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction_graph_generator][instruction-graph][fence]", ((int Dims), Dims), 0, 1, 2, 3) {
 	constexpr static auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
 	const auto export_subrange = GENERATE(values({subrange<Dims>({}, full_range), test_utils::truncate_subrange<Dims>({{48, 64, 72}, {128, 128, 128}})}));
 
@@ -584,7 +584,7 @@ TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction
 	CHECK(coherence_copy->box.get_range() == xport->copy_range);
 }
 
-TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruction_graph_generator][instruction-graph]") {
+TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruction_graph_generator][instruction-graph][fence]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	auto ho = ictx.create_host_object();
 	ictx.master_node_host_task().name("task 1").affect(ho).submit();
@@ -782,7 +782,7 @@ TEST_CASE("reduction example pattern", "[instruction-graph]") {
 	    .submit();
 }
 
-TEST_CASE("local reductions can be initialized to a buffer value that is not present locally", "[instruction-graph]") {
+TEST_CASE("local reductions can be initialized to a buffer value that is not present locally", "[instruction_graph_generator][instruction-graph][reduction]") {
 	const size_t num_nodes = 2; // we need a remote writer
 	const node_id my_nid = GENERATE(values<node_id>({0, 1}));
 	const auto num_devices = 1; // we generate a local reduction even for a single device because there's a remote contribution
@@ -848,7 +848,7 @@ TEST_CASE("local reductions can be initialized to a buffer value that is not pre
 	}
 }
 
-TEST_CASE("local reductions only include values from participating devices", "[instruction-graph]") {
+TEST_CASE("local reductions only include values from participating devices", "[instruction_graph_generator][instruction-graph][reduction]") {
 	const size_t num_nodes = 1;
 	const node_id my_nid = 0;
 	const auto num_devices = 4; // we need multiple, but not all devices to produce partial reduction results
@@ -889,21 +889,83 @@ TEST_CASE("local reductions only include values from participating devices", "[i
 	}
 }
 
-TEST_CASE("global reduction without a local contribution does not read a stale local value", "[instruction-graph]") {
+TEST_CASE("global reductions without a local contribution do not read stale local values", "[instruction_graph_generator][instruction-graph][reduction]") {
 	const size_t num_nodes = 3;
-	const node_id my_nid = GENERATE(values<node_id>({0, 1, 2}));
+	const node_id local_nid = GENERATE(values<node_id>({0, 1, 2}));
 	const auto num_devices = 1;
 
-	test_utils::idag_test_context ictx(num_nodes, my_nid, num_devices);
-
+	test_utils::idag_test_context ictx(num_nodes, local_nid, num_devices);
 	auto buf = ictx.create_buffer(range<1>(1));
+	ictx.device_compute(range<1>(2)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
+	const auto reader_tid = ictx.device_compute(range<1>(num_nodes)).name("reader").read(buf, acc::all()).submit();
+	ictx.finish();
 
-	ictx.device_compute(range<1>(2)) //
-	    .reduce(buf, false /* include_current_buffer_value */)
-	    .submit();
-	ictx.device_compute(range<1>(num_nodes)) //
-	    .read(buf, acc::all())
-	    .submit();
+	const auto all_instrs = ictx.query_instructions();
+	const auto all_pilots = ictx.query_outbound_pilots();
+
+	const auto global_reduce = all_instrs.select_unique<reduce_instruction_record>();
+	CHECK(global_reduce->scope == reduce_instruction_record::reduction_scope::global);
+	CHECK(global_reduce->buffer_id == buf.get_id());
+	CHECK(global_reduce->box == box<3>(zeros, ones));
+	CHECK(global_reduce->num_source_values == num_nodes);
+
+	const auto gather_recv = all_instrs.select_unique<gather_receive_instruction_record>();
+	CHECK(global_reduce.predecessors().contains(gather_recv));
+	CHECK(gather_recv->transfer_id.rid == global_reduce->reduction_id);
+	CHECK(gather_recv->transfer_id.bid == buf.get_id());
+
+	// the gather-receive buffer must be filled with the reduction identity since some nodes might not contribute partial results (and notify us of that fact at
+	// runtime via zero-range pilot messages).
+	const auto fill_identity = all_instrs.select_unique<fill_identity_instruction_record>();
+	CHECK(gather_recv.predecessors().contains(fill_identity));
+	CHECK(fill_identity->memory_id == gather_recv->memory_id);
+	CHECK(fill_identity->allocation_id == gather_recv->allocation_id);
+	CHECK(fill_identity->num_values == gather_recv->num_nodes);
+	CHECK(fill_identity->reduction_id == global_reduce->reduction_id);
+
+	if(local_nid < 2) {
+		// there is a local contribution, which will be copied to the global gather buffer concurrent with the receive
+		const auto gather_copy = global_reduce.predecessors().select_unique<copy_instruction_record>();
+		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
+		CHECK(gather_copy->dest_memory == gather_recv->memory_id);
+		CHECK(gather_copy->dest_allocation == gather_recv->allocation_id);
+		CHECK(gather_copy->copy_range == ones);
+		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(local_nid)));
+		CHECK(gather_copy.is_concurrent_with(gather_recv));
+
+		// fill_identity writes the entire buffer, so we need to overwrite one slot with our contribution
+		CHECK(gather_copy.predecessors().contains(fill_identity));
+
+		// since every node participates in the global reduction, we need to push our partial results to every peer
+		const auto partial_result_sends = all_instrs.select_all<send_instruction_record>();
+		CHECK(partial_result_sends.count() == num_nodes - 1);
+		for(const auto& send : partial_result_sends.iterate()) {
+			CAPTURE(send);
+			CHECK(send->transfer_id == gather_recv->transfer_id);
+			CHECK(send->send_range == ones);
+			CHECK(send.is_concurrent_with(gather_copy));
+
+			const auto pilot = all_pilots.select_unique(send->dest_node_id);
+			CHECK(pilot->message.trid == send->transfer_id);
+			CHECK(pilot->message.box == box<3>(zeros, ones));
+		}
+
+		// global_reduce will overwrite the host buffer, so it must anti-depend on the partial-result send instructions
+		CHECK(global_reduce.predecessors().contains(partial_result_sends));
+	} else {
+		// there is no local contribution, but we still participate in the global reduction
+		CHECK(all_instrs.count<send_instruction_record>() == 0);
+
+		// we signal all peers that we are not going to perform a `send` by transmitting zero-ranged pilots
+		for(node_id peer = 0; peer < 2; ++peer) {
+			const auto pilot = all_pilots.select_unique(peer);
+			CHECK(pilot->message.trid == transfer_id(reader_tid, buf.get_id(), global_reduce->reduction_id));
+			CHECK(pilot->message.box == box<3>());
+		}
+	}
+
+	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	CHECK(reader.transitive_predecessors_across<copy_instruction_record>().contains(global_reduce));
 }
 
 TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitialized read", "[instruction_graph_generator]") {
