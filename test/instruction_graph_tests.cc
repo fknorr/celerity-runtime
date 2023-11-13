@@ -304,7 +304,7 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 }
 
 TEMPLATE_TEST_CASE_SIG(
-    "coherence copies of the same data are only performed once", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) //
+    "coherence copies of the same data are performed only once", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) //
 {
 	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
 	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256});
@@ -893,7 +893,11 @@ TEST_CASE("reduction accesses on a multi-node single-device setup generate globa
     "[instruction_graph_generator][instruction-graph][reduction]") //
 {
 	const size_t num_nodes = 2;
-	test_utils::idag_test_context ictx(num_nodes, 0 /* my nid */, 1);
+	const auto local_nid = GENERATE(values<node_id>({0, 1}));
+	const node_id peer_nid = 1 - local_nid;
+	CAPTURE(local_nid, peer_nid);
+
+	test_utils::idag_test_context ictx(num_nodes, local_nid, 1 /* num devices */);
 
 	auto buf = ictx.create_buffer<1>(1);
 	ictx.device_compute(range(256)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
@@ -901,8 +905,45 @@ TEST_CASE("reduction accesses on a multi-node single-device setup generate globa
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
+	const auto all_pilots = ictx.query_outbound_pilots();
 
-	// TODO
+	// there is exactly one (global) reduce-instruction per node.
+	const auto reduce = all_instrs.select_unique<reduce_instruction_record>();
+	CHECK(reduce->scope == reduce_instruction_record::reduction_scope::global);
+	CHECK(reduce->num_source_values == num_nodes);
+	CHECK(reduce->buffer_id == buf.get_id());
+	CHECK(reduce->box == box<3>(zeros, ones));
+
+	// we send partial results to the peer - this operation anti-depends on the reduce operation, which will overwrite its buffer
+	const auto send_to_peer = all_instrs.select_unique<send_instruction_record>();
+	CHECK(reduce.predecessors().contains(send_to_peer));
+	CHECK(send_to_peer->offset_in_buffer == zeros);
+	CHECK(send_to_peer->send_range == ones);
+	CHECK(send_to_peer->dest_node_id == peer_nid);
+	CHECK(send_to_peer->transfer_id.rid == reduce->reduction_id);
+	CHECK(send_to_peer->transfer_id.bid == buf.get_id());
+
+	// we (gather-) copy the local partial result to the appropriate position in the gather buffer
+	const auto gather_copy = reduce.predecessors().select_unique<copy_instruction_record>();
+	CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
+	CHECK(gather_copy->offset_in_source == zeros);
+	CHECK(gather_copy->offset_in_dest == id_cast<3>(id(local_nid)));
+	CHECK(gather_copy->copy_range == ones);
+
+	// we gather-receive from all peers - this will _not_ write to the position `local_nid`
+	const auto gather_recv = all_instrs.select_unique<gather_receive_instruction_record>();
+	CHECK(reduce.predecessors().contains(gather_recv));
+	CHECK(gather_recv->gather_box == box<3>(zeros, ones));
+	CHECK(gather_recv->num_nodes == num_nodes);
+	CHECK(gather_recv->allocation_id == gather_copy->dest_allocation);
+	CHECK(gather_recv->transfer_id == send_to_peer->transfer_id);
+
+	// fill the gather-buffer before initiating the gather-receive because if the peer decides to not send a payload (but an empty pilot), the gather-recv can
+	// simply skip writing to the appropriate position in the gather buffer.
+	const auto fill_identity = all_instrs.select_unique<fill_identity_instruction_record>();
+	CHECK(fill_identity.successors().contains(union_of(gather_copy, gather_recv)));
+	CHECK(fill_identity->reduction_id == reduce->reduction_id);
+	CHECK(fill_identity->num_values == num_nodes);
 }
 
 TEST_CASE("reduction accesses on a multi-node multi-device setup generate global and local reduce-instructions",

@@ -9,6 +9,8 @@ namespace celerity::test_utils {
 template <typename Record = instruction_record>
 class instruction_query {
   public:
+	using record_type = Record;
+
 	template <typename R = Record, std::enable_if_t<std::is_same_v<R, instruction_record>, int> = 0>
 	explicit instruction_query(const instruction_recorder& recorder)
 	    : instruction_query(&recorder, non_owning_pointers(recorder.get_instructions()), std::string()) {}
@@ -201,23 +203,23 @@ class instruction_query {
 	friend bool operator!=(const instruction_query& lhs, const instruction_query& rhs) { return lhs.m_result != rhs.m_result; }
 
 	template <typename... InstructionQueries>
-	friend instruction_query union_of(const instruction_query& head, const InstructionQueries&... tail) {
+	friend instruction_query<> union_of(const instruction_query& head, const InstructionQueries&... tail) {
 		const auto recorder = head.m_recorder;
 		assert(((head.m_recorder == tail.m_recorder) && ...));
 
-		// construct union in recorder-ordering without duplicates
-		std::vector<const Record*> union_query;
+		// construct union in recorder-ordering without duplicates - always returns the base type
+		std::vector<const instruction_record*> union_query;
 		for(const auto& instr : recorder->get_instructions()) {
 			if(std::find(head.m_result.begin(), head.m_result.end(), instr.get()) != head.m_result.end()
 			    || ((std::find(tail.m_result.begin(), tail.m_result.end(), instr.get()) != tail.m_result.end()) || ...)) { //
-				union_query.push_back(utils::as<Record>(instr.get()));
+				union_query.push_back(instr.get());
 			}
 		}
 
 		std::string trace = fmt::format("union_of({}", head.m_trace);
 		(((trace += ", ") += tail.m_trace), ...);
 		trace += ")";
-		return instruction_query(recorder, std::move(union_query), std::move(trace));
+		return instruction_query<>(recorder, std::move(union_query), std::move(trace));
 	}
 
 	template <typename... InstructionQueries>
@@ -225,11 +227,11 @@ class instruction_query {
 		const auto recorder = head.m_recorder;
 		assert(((head.m_recorder == tail.m_recorder) && ...));
 
-		// construct intersection in recorder-ordering without duplicates
+		// construct intersection in recorder-ordering without duplicates - returns the type of `head`
 		std::vector<const Record*> intersection_query;
 		for(const auto& instr : head.m_result) {
 			if(((std::find(tail.m_result.begin(), tail.m_result.end(), instr) != tail.m_result.end()) && ...)) { //
-				intersection_query.push_back(utils::as<Record>(instr));
+				intersection_query.push_back(instr);
 			}
 		}
 
