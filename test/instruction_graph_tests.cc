@@ -303,8 +303,54 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 	CHECK(coherence_copies.all_concurrent());
 }
 
-TEMPLATE_TEST_CASE_SIG("local copies are split to allow overlap between compute and copy", "[instruction_graph_generator][instruction-graph]",
-    ((int Dims), Dims), 1, 2, 3) //
+TEMPLATE_TEST_CASE_SIG(
+    "coherence copies of the same data are only performed once", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) //
+{
+	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256});
+	const auto first_half = subrange(id<Dims>(zeros), half_range);
+	const auto second_half = subrange(test_utils::truncate_id<Dims>({128, 0, 0}), half_range);
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	ictx.set_horizon_step(999);
+	auto buf = ictx.create_buffer<int>(full_range, true /* host-initialize to avoid resizes */);
+
+	ictx.device_compute(range(1)).name("write 1st half").discard_write(buf, acc::fixed(first_half)).submit();
+	// requires a coherence copy for the first half
+	ictx.master_node_host_task().name("read 1st half").read(buf, acc::fixed(first_half)).submit();
+	ictx.master_node_host_task().name("read 1st half").read(buf, acc::fixed(first_half)).submit();
+	ictx.device_compute(range(1)).name("write 2nd half").discard_write(buf, acc::fixed(second_half)).submit();
+	// requires a coherence copy for the second half
+	ictx.master_node_host_task().name("read all").read(buf, acc::all()).submit();
+	ictx.master_node_host_task().name("read all").read(buf, acc::all()).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto write_first_half = all_instrs.select_all<launch_instruction_record>("write 1st half");
+	const auto read_first_half = all_instrs.select_all<launch_instruction_record>("read 1st half");
+	const auto write_second_half = all_instrs.select_all<launch_instruction_record>("write 2nd half");
+	const auto read_all = all_instrs.select_all<launch_instruction_record>("read all");
+	const auto all_copies = all_instrs.select_all<copy_instruction_record>();
+
+	// there is one device -> host copy for each half
+	CHECK(all_copies.count() == 2);
+	const auto first_half_copy = intersection_of(all_copies, write_first_half.successors()).assert_unique();
+	CHECK(first_half_copy->box == box_cast<3>(box(first_half)));
+	const auto second_half_copy = intersection_of(all_copies, write_second_half.successors()).assert_unique();
+	CHECK(second_half_copy->box == box_cast<3>(box(second_half)));
+
+	// copies depend on their producers only
+	CHECK(first_half_copy.predecessors().contains(write_first_half));
+	CHECK(first_half_copy.successors().contains(read_first_half)); // both readers of 1st half
+	CHECK(first_half_copy.successors().contains(read_all));        // both readers of full range
+
+	CHECK(second_half_copy.predecessors().contains(write_second_half));
+	CHECK(second_half_copy.successors().contains(read_all)); // both readers of full range
+}
+
+TEMPLATE_TEST_CASE_SIG(
+    "local copies are split to allow overlap between compute and copy", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) //
 {
 	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
 	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256});
@@ -330,11 +376,11 @@ TEMPLATE_TEST_CASE_SIG("local copies are split to allow overlap between compute 
 	CHECK(all_copies.count() == 2);
 
 	// the reader depends on one copy per writer
-	for (const auto &copy: all_copies.iterate()) {
+	for(const auto& copy : all_copies.iterate()) {
 		const auto writer = intersection_of(copy.predecessors(), all_writers).assert_unique<launch_instruction_record>();
 		REQUIRE(writer->access_map.size() == 1);
 
-		const auto &write = writer->access_map.front();
+		const auto& write = writer->access_map.front();
 		CHECK(write.buffer_id == copy->buffer);
 		CHECK(write.accessed_box_in_buffer == copy->box);
 		copy.successors().contains(reader);
@@ -517,7 +563,7 @@ TEMPLATE_TEST_CASE_SIG("overlapping requirements generate split-receives with on
 
 	// await-receives for the same split-receive must never intersect, but their union must cover the entire received region
 	region<3> awaited_region;
-	for(const auto &await : all_await_recvs.iterate()) {
+	for(const auto& await : all_await_recvs.iterate()) {
 		CHECK(region_intersection(awaited_region, await->received_region).empty());
 		awaited_region = region_union(awaited_region, await->received_region);
 	}
@@ -526,13 +572,13 @@ TEMPLATE_TEST_CASE_SIG("overlapping requirements generate split-receives with on
 	// Each reader instruction sources its input data from multiple await-receive instructions, and by extension, the await-receives operating on the overlap
 	// service multiple reader chunks.
 	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
-	for(const auto &reader : all_readers.iterate()) {
+	for(const auto& reader : all_readers.iterate()) {
 		const auto all_pred_awaits = reader.transitive_predecessors_across<copy_instruction_record>().select_all<await_receive_instruction_record>();
 		CHECK(all_pred_awaits.count() > 1);
 
 		// Sanity check: Each reader chunk depends on await-receives for the subranges it reads
 		region<3> pred_awaited_region;
-		for(const auto &pred_await : all_pred_awaits.iterate()) {
+		for(const auto& pred_await : all_pred_awaits.iterate()) {
 			pred_awaited_region = region_union(pred_awaited_region, pred_await->received_region);
 		}
 
