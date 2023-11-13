@@ -410,7 +410,7 @@ namespace test_utils {
 	}
 
 	template <int Dims>
-	subrange<Dims> truncate_chunk(const chunk<3>& ck3) {
+	chunk<Dims> truncate_chunk(const chunk<3>& ck3) {
 		return chunk<Dims>(truncate_id<Dims>(ck3.offset), truncate_range<Dims>(ck3.range), truncate_range<Dims>(ck3.global_size));
 	}
 

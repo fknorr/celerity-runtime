@@ -132,6 +132,11 @@ class command_recorder {
 struct buffer_allocation_record {
 	detail::buffer_id buffer_id;
 	box<3> box;
+
+	friend bool operator==(const buffer_allocation_record& lhs, const buffer_allocation_record& rhs) {
+		return lhs.buffer_id == rhs.buffer_id && lhs.box == rhs.box;
+	}
+	friend bool operator!=(const buffer_allocation_record& lhs, const buffer_allocation_record& rhs) { return !(lhs == rhs); }
 };
 
 using instruction_dependency_list = std::vector<dependency_record<instruction_id>>;
@@ -230,6 +235,7 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 	copy_instruction_record(const copy_instruction& cinstr, copy_origin origin, buffer_id bid, const detail::box<3>& box);
 };
 
+// TODO dupe with buffer_allocation_record?
 struct buffer_memory_allocation_record {
 	detail::buffer_id buffer_id;
 	detail::memory_id memory_id;

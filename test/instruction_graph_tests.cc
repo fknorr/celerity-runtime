@@ -26,6 +26,17 @@ struct reverse_one_to_one {
 	}
 };
 
+template <int Dims>
+acc::neighborhood<Dims> make_neighborhood(const size_t border) {
+	if constexpr(Dims == 1) {
+		return acc::neighborhood<1>(border);
+	} else if constexpr(Dims == 2) {
+		return acc::neighborhood<2>(border, border);
+	} else if constexpr(Dims == 3) {
+		return acc::neighborhood<3>(border, border, border);
+	}
+}
+
 
 TEST_CASE("a command group without data access compiles to a trivial graph", "[instruction_graph_generator][instruction-graph]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
@@ -46,14 +57,52 @@ TEST_CASE("a command group without data access compiles to a trivial graph", "[i
 	CHECK(kernel.successors().is_unique<epoch_instruction_record>());
 }
 
+TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors cause allocation of their bounding box", "[instruction_graph_generator][instruction-graph][allocation]",
+    ((int Dims), Dims), 1, 2, 3) //
+{
+	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto access_range = test_utils::truncate_range<Dims>({128, 128, 128});
+	const auto access_offset_1 = test_utils::truncate_id<Dims>({32, 32, 32});
+	const auto access_offset_2 = test_utils::truncate_id<Dims>({96, 96, 96});
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf = ictx.create_buffer(full_range);
+	ictx.device_compute(access_range)
+	    .discard_write(buf, [=](const chunk<Dims>& ck) { return subrange(ck.offset + access_offset_1, ck.range); })
+	    .discard_write(buf, [=](const chunk<Dims>& ck) { return subrange(ck.offset + access_offset_2, ck.range); })
+	    .submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	const auto kernel = all_instrs.select_unique<launch_instruction_record>();
+
+	const auto alloc = all_instrs.select_unique<alloc_instruction_record>();
+	CHECK(alloc->memory_id == ictx.get_native_memory(kernel->device_id.value()));
+	CHECK(alloc->buffer_allocation->buffer_id == buf.get_id());
+
+	// the IDAG must allocate the bounding box for both accessors to map to overlapping, contiguous memory
+	const auto expected_box = bounding_box(box(subrange(access_offset_1, access_range)), box(subrange(access_offset_2, access_range)));
+	CHECK(alloc->buffer_allocation->box == box_cast<3>(expected_box));
+	CHECK(alloc->size == expected_box.get_area() * sizeof(int));
+	CHECK(alloc.successors().contains(kernel));
+
+	// alloc and free instructions are always symmetric
+	const auto free = all_instrs.select_unique<free_instruction_record>();
+	CHECK(free->memory_id == alloc->memory_id);
+	CHECK(free->allocation_id == alloc->allocation_id);
+	CHECK(free->size == alloc->size);
+	CHECK(free->buffer_allocation == alloc->buffer_allocation);
+	CHECK(free.predecessors().contains(kernel));
+}
+
 TEMPLATE_TEST_CASE_SIG(
     "allocations and kernels are split between devices", "[instruction_graph_generator][instruction-graph][allocation]", ((int Dims), Dims), 1, 2, 3) //
 {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 2 /* devices */);
 	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
 	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256}); // dim0 split
-	auto buf1 = ictx.create_buffer(full_range);
-	ictx.device_compute(full_range).name("writer").discard_write(buf1, acc::one_to_one()).submit();
+	auto buf = ictx.create_buffer(full_range);
+	ictx.device_compute(full_range).name("writer").discard_write(buf, acc::one_to_one()).submit();
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
@@ -102,9 +151,9 @@ TEMPLATE_TEST_CASE_SIG("accessing non-overlapping buffer subranges in subsequent
 	const auto second_half = subrange(id(half_range), half_range);
 
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
-	auto buf1 = ictx.create_buffer(full_range);
-	ictx.device_compute(first_half.range, first_half.offset).name("1st").discard_write(buf1, acc::one_to_one()).submit();
-	ictx.device_compute(second_half.range, second_half.offset).name("2nd").discard_write(buf1, acc::one_to_one()).submit();
+	auto buf = ictx.create_buffer(full_range);
+	ictx.device_compute(first_half.range, first_half.offset).name("1st").discard_write(buf, acc::one_to_one()).submit();
+	ictx.device_compute(second_half.range, second_half.offset).name("2nd").discard_write(buf, acc::one_to_one()).submit();
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
@@ -136,9 +185,9 @@ TEMPLATE_TEST_CASE_SIG("accessing non-overlapping buffer subranges in subsequent
 TEST_CASE("resizing a buffer allocation for a discard-write access preserves only the non-overwritten parts", //
     "[instruction_graph_generator][instruction-graph][allocation]") {
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
-	auto buf1 = ictx.create_buffer(range<1>(256));
-	ictx.device_compute(range<1>(1)).name("1st writer").discard_write(buf1, acc::fixed<1>({0, 128})).submit();
-	ictx.device_compute(range<1>(1)).name("2nd writer").discard_write(buf1, acc::fixed<1>({64, 196})).submit();
+	auto buf = ictx.create_buffer(range<1>(256));
+	ictx.device_compute(range<1>(1)).name("1st writer").discard_write(buf, acc::fixed<1>({0, 128})).submit();
+	ictx.device_compute(range<1>(1)).name("2nd writer").discard_write(buf, acc::fixed<1>({64, 196})).submit();
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
@@ -252,6 +301,44 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 
 	// Coherence copies are not sequenced with respect to each other
 	CHECK(coherence_copies.all_concurrent());
+}
+
+TEMPLATE_TEST_CASE_SIG("local copies are split to allow overlap between compute and copy", "[instruction_graph_generator][instruction-graph]",
+    ((int Dims), Dims), 1, 2, 3) //
+{
+	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256});
+	const auto first_half = subrange(id<Dims>(zeros), half_range);
+	const auto second_half = subrange(test_utils::truncate_id<Dims>({128, 0, 0}), half_range);
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf = ictx.create_buffer<int>(full_range);
+	// both writers write to the same memory, initializing the full_range on D0 / M1
+	ictx.device_compute(range(1)).name("writer").discard_write(buf, acc::fixed(first_half)).submit();
+	ictx.device_compute(range(1)).name("writer").discard_write(buf, acc::fixed(second_half)).submit();
+	// read on host / M0 must create one copy per writer to allow compute-copy overlap
+	ictx.master_node_host_task().name("reader").read(buf, acc::all()).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	const auto all_copies = all_instrs.select_all<copy_instruction_record>();
+	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+
+	CHECK(all_writers.count() == 2);
+	CHECK(all_copies.count() == 2);
+
+	// the reader depends on one copy per writer
+	for (const auto &copy: all_copies.iterate()) {
+		const auto writer = intersection_of(copy.predecessors(), all_writers).assert_unique<launch_instruction_record>();
+		REQUIRE(writer->access_map.size() == 1);
+
+		const auto &write = writer->access_map.front();
+		CHECK(write.buffer_id == copy->buffer);
+		CHECK(write.accessed_box_in_buffer == copy->box);
+		copy.successors().contains(reader);
+	}
 }
 
 // This test should become obsolete in the future when we allow the instruction_executor to manage user memory - this feature would remove the need for both
@@ -405,6 +492,54 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 
 		CHECK(await_recv->received_region == region(read.accessed_box_in_buffer));
 		CHECK(await_recv->transfer_id == expected_trid);
+	}
+}
+
+TEMPLATE_TEST_CASE_SIG("overlapping requirements generate split-receives with one await per reader-set", "[instruction_graph_generator][instruction-graph]",
+    ((int Dims), Dims), 1, 2, 3) //
+{
+	const auto test_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 4 /* devices */);
+	auto buf = ictx.create_buffer<int>(test_range);
+	ictx.device_compute(range(1)).name("writer").discard_write(buf, acc::all()).submit();
+	ictx.device_compute(test_range).name("reader").read(buf, make_neighborhood<Dims>(1)).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	// We are N1, so we receive the entire buffer from N0.
+	const auto split_recv = all_instrs.select_unique<split_receive_instruction_record>();
+
+	// We do not know the send-split, so we create a receive-split that awaits subregions used by single chunks separately from subregions used by multiple
+	// chunks (the neighborhood overlap) in order to un-block any instruction as soon as their requirements are fulfilled.
+	const auto all_await_recvs = all_instrs.select_all<await_receive_instruction_record>();
+	CHECK(split_recv.successors().contains(all_await_recvs));
+
+	// await-receives for the same split-receive must never intersect, but their union must cover the entire received region
+	region<3> awaited_region;
+	for(const auto &await : all_await_recvs.iterate()) {
+		CHECK(region_intersection(awaited_region, await->received_region).empty());
+		awaited_region = region_union(awaited_region, await->received_region);
+	}
+	CHECK(awaited_region == split_recv->requested_region);
+
+	// Each reader instruction sources its input data from multiple await-receive instructions, and by extension, the await-receives operating on the overlap
+	// service multiple reader chunks.
+	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
+	for(const auto &reader : all_readers.iterate()) {
+		const auto all_pred_awaits = reader.transitive_predecessors_across<copy_instruction_record>().select_all<await_receive_instruction_record>();
+		CHECK(all_pred_awaits.count() > 1);
+
+		// Sanity check: Each reader chunk depends on await-receives for the subranges it reads
+		region<3> pred_awaited_region;
+		for(const auto &pred_await : all_pred_awaits.iterate()) {
+			pred_awaited_region = region_union(pred_awaited_region, pred_await->received_region);
+		}
+
+		REQUIRE(reader->access_map.size() == 1);
+		const auto& read = reader->access_map.front();
+		CHECK(read.buffer_id == buf.get_id());
+		CHECK(read.accessed_box_in_buffer == pred_awaited_region);
 	}
 }
 
