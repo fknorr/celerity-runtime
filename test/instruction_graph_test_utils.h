@@ -376,7 +376,7 @@ class pilot_query {
 	pilot_query(const instruction_recorder* recorder, std::vector<outbound_pilot> result) : m_recorder(recorder), m_result(std::move(result)) {}
 
 	static bool matches(const outbound_pilot& pilot, const node_id nid) { return pilot.to == nid; }
-	static bool matches(const outbound_pilot& pilot, const transfer_id& trid) { return pilot.message.trid == trid; }
+	static bool matches(const outbound_pilot& pilot, const transfer_id& trid) { return pilot.message.transfer_id == trid; }
 	static bool matches(const outbound_pilot& pilot, const box<3>& box) { return pilot.message.box == box; }
 
 	template <typename... Filters>

@@ -39,7 +39,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 			CAPTURE(pilot.from, comm.get_local_node_id());
 			const auto expect = make_pilot_message(pilot.from, comm.get_local_node_id());
 			CHECK(pilot.message.tag == expect.message.tag);
-			CHECK(pilot.message.trid == expect.message.trid);
+			CHECK(pilot.message.transfer_id == expect.message.transfer_id);
 			CHECK(pilot.message.box == expect.message.box);
 			++num_pilots_received;
 		}

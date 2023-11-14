@@ -69,14 +69,14 @@ TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors trigger allocation of the
 	// the IDAG must allocate the bounding box for both accessors to map to overlapping, contiguous memory
 	const auto expected_box = bounding_box(box(subrange(access_offset_1, access_range)), box(subrange(access_offset_2, access_range)));
 	CHECK(alloc->buffer_allocation->box == box_cast<3>(expected_box));
-	CHECK(alloc->size == expected_box.get_area() * sizeof(int));
+	CHECK(alloc->size_bytes == expected_box.get_area() * sizeof(int));
 	CHECK(alloc.successors().contains(kernel));
 
 	// alloc and free instructions are always symmetric
 	const auto free = all_instrs.select_unique<free_instruction_record>();
 	CHECK(free->memory_id == alloc->memory_id);
 	CHECK(free->allocation_id == alloc->allocation_id);
-	CHECK(free->size == alloc->size);
+	CHECK(free->size == alloc->size_bytes);
 	CHECK(free->buffer_allocation == alloc->buffer_allocation);
 	CHECK(free.predecessors().contains(kernel));
 }
@@ -120,7 +120,7 @@ TEMPLATE_TEST_CASE_SIG(
 		const auto free = writer.successors().assert_unique<free_instruction_record>();
 		CHECK(free->memory_id == alloc->memory_id);
 		CHECK(free->allocation_id == alloc->allocation_id);
-		CHECK(free->size == alloc->size);
+		CHECK(free->size == alloc->size_bytes);
 	}
 
 	CHECK(all_instrs.select_all<free_instruction_record>().successors().all_match<epoch_instruction_record>());
@@ -194,8 +194,8 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 
 		// There is one coherence copy per reader kernel, which copies the portion written on the opposite device
 		const auto coherence_copy = intersection_of(coherence_copies, reader.predecessors()).assert_unique();
-		CHECK(coherence_copy->source_memory == ictx.get_native_memory(opposite_did));
-		CHECK(coherence_copy->dest_memory == ictx.get_native_memory(did));
+		CHECK(coherence_copy->source_memory_id == ictx.get_native_memory(opposite_did));
+		CHECK(coherence_copy->dest_memory_id == ictx.get_native_memory(did));
 		CHECK(coherence_copy->box == opposite_writer->access_map.front().accessed_box_in_buffer);
 	}
 
@@ -403,8 +403,8 @@ TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer fro
 	const auto alloc = init.predecessors().assert_unique<alloc_instruction_record>();
 	CHECK(alloc->memory_id == host_memory_id);
 	CHECK(alloc->buffer_allocation.value().box == box_cast<3>(buffer_box));
-	CHECK(alloc->size == buffer_range.size() * sizeof(int));
-	CHECK(init->size == alloc->size);
+	CHECK(alloc->size_bytes == buffer_range.size() * sizeof(int));
+	CHECK(init->size_bytes == alloc->size_bytes);
 	CHECK(init->buffer_id == buf.get_id());
 	CHECK(init->host_allocation_id == alloc->allocation_id);
 }

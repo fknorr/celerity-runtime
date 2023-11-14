@@ -259,10 +259,10 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return completed_synchronous();
 	    },
 	    [&](const alloc_instruction& ainstr) {
-		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(), ainstr.get_size(),
-		        ainstr.get_alignment());
+		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
+		        ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 
-		    auto ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size(), ainstr.get_alignment());
+		    auto ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
 
 		    CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
@@ -281,11 +281,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const init_buffer_instruction& ibinstr) {
 		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
-		        ibinstr.get_size());
+		        ibinstr.get_size_bytes());
 
 		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
 		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id());
-		    memcpy(host_ptr, user_ptr, ibinstr.get_size());
+		    memcpy(host_ptr, user_ptr, ibinstr.get_size_bytes());
 		    return completed_synchronous();
 	    },
 	    [&](const export_instruction& einstr) {
@@ -311,13 +311,13 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return completed_synchronous();
 	    },
 	    [&](const copy_instruction& cinstr) -> event {
-		    CELERITY_DEBUG("[executor] I{}: copy M{}.A{}+{} -> M{}.A{}+{}, {}x{} bytes", cinstr.get_id(), cinstr.get_source_memory(),
-		        cinstr.get_source_allocation(), cinstr.get_offset_in_source(), cinstr.get_dest_memory(), cinstr.get_dest_allocation(),
+		    CELERITY_DEBUG("[executor] I{}: copy M{}.A{}+{} -> M{}.A{}+{}, {}x{} bytes", cinstr.get_id(), cinstr.get_source_memory_id(),
+		        cinstr.get_source_allocation_id(), cinstr.get_offset_in_source(), cinstr.get_dest_memory_id(), cinstr.get_dest_allocation_id(),
 		        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
 
-		    const auto source_base_ptr = m_allocations.at(cinstr.get_source_allocation());
-		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation());
-		    if(cinstr.get_source_memory() == host_memory_id && cinstr.get_dest_memory() == host_memory_id) {
+		    const auto source_base_ptr = m_allocations.at(cinstr.get_source_allocation_id());
+		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation_id());
+		    if(cinstr.get_source_memory_id() == host_memory_id && cinstr.get_dest_memory_id() == host_memory_id) {
 			    const auto dispatch_copy = [&](const auto dims) {
 				    memcpy_strided_host(source_base_ptr, dest_base_ptr, cinstr.get_element_size(), range_cast<dims.value>(cinstr.get_source_range()),
 				        id_cast<dims.value>(cinstr.get_offset_in_source()), range_cast<dims.value>(cinstr.get_dest_range()),
@@ -332,9 +332,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 			    }
 			    return completed_synchronous();
 		    } else {
-			    return m_backend_queue->memcpy_strided_device(cinstr.get_dimensions(), cinstr.get_source_memory(), cinstr.get_dest_memory(), source_base_ptr,
-			        dest_base_ptr, cinstr.get_element_size(), cinstr.get_source_range(), cinstr.get_offset_in_source(), cinstr.get_dest_range(),
-			        cinstr.get_offset_in_dest(), cinstr.get_copy_range());
+			    return m_backend_queue->memcpy_strided_device(cinstr.get_dimensions(), cinstr.get_source_memory_id(), cinstr.get_dest_memory_id(),
+			        source_base_ptr, dest_base_ptr, cinstr.get_element_size(), cinstr.get_source_range(), cinstr.get_offset_in_source(),
+			        cinstr.get_dest_range(), cinstr.get_offset_in_dest(), cinstr.get_copy_range());
 		    }
 	    },
 	    [&](const device_kernel_instruction& dkinstr) {
@@ -394,18 +394,19 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const receive_instruction& rinstr) {
 		    CELERITY_DEBUG("[executor] I{}: receive {} {} into M{}.A{} ({}), x{} bytes", rinstr.get_id(), rinstr.get_transfer_id(),
-		        rinstr.get_requested_region(), rinstr.get_dest_memory(), rinstr.get_dest_allocation(), rinstr.get_allocated_box(), rinstr.get_element_size());
+		        rinstr.get_requested_region(), rinstr.get_dest_memory_id(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(),
+		        rinstr.get_element_size());
 
-		    const auto allocation = m_allocations.at(rinstr.get_dest_allocation());
+		    const auto allocation = m_allocations.at(rinstr.get_dest_allocation_id());
 		    return m_recv_arbiter.receive(
 		        rinstr.get_transfer_id(), rinstr.get_requested_region(), allocation, rinstr.get_allocated_box(), rinstr.get_element_size());
 	    },
 	    [&](const split_receive_instruction& srinstr) {
 		    CELERITY_DEBUG("[executor] I{}: split receive {} {} into M{}.A{} ({}), x{} bytes", srinstr.get_id(), srinstr.get_transfer_id(),
-		        srinstr.get_requested_region(), srinstr.get_dest_memory(), srinstr.get_dest_allocation(), srinstr.get_allocated_box(),
+		        srinstr.get_requested_region(), srinstr.get_dest_memory_id(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(),
 		        srinstr.get_element_size());
 
-		    const auto allocation = m_allocations.at(srinstr.get_dest_allocation());
+		    const auto allocation = m_allocations.at(srinstr.get_dest_allocation_id());
 		    m_recv_arbiter.begin_split_receive(
 		        srinstr.get_transfer_id(), srinstr.get_requested_region(), allocation, srinstr.get_allocated_box(), srinstr.get_element_size());
 		    return completed_synchronous();

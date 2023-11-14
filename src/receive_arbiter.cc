@@ -142,7 +142,7 @@ void receive_arbiter::poll_communicator() {
 	}
 
 	for(const auto& pilot : m_comm->poll_inbound_pilots()) {
-		if(const auto entry = m_transfers.find(pilot.message.trid); entry != m_transfers.end()) {
+		if(const auto entry = m_transfers.find(pilot.message.transfer_id); entry != m_transfers.end()) {
 			matchbox::match(
 			    entry->second, //
 			    [&](unassigned_transfer& ut) { ut.pilots.push_back(pilot); },
@@ -154,7 +154,7 @@ void receive_arbiter::poll_communicator() {
 			    },
 			    [&](gather_transfer& gt) { handle_gather_request_pilot(*gt.request, pilot); });
 		} else {
-			m_transfers.emplace(pilot.message.trid, unassigned_transfer{{pilot}});
+			m_transfers.emplace(pilot.message.transfer_id, unassigned_transfer{{pilot}});
 		}
 	}
 }

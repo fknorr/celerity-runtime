@@ -108,4 +108,10 @@ enum class error_policy {
 	throw_exception,
 };
 
-}
+enum class epoch_action {
+	none,
+	barrier,
+	shutdown,
+};
+
+} // namespace celerity::detail

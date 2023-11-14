@@ -2,13 +2,15 @@
 
 #include "grid.h"
 #include "intrusive_graph.h"
+#include "launcher.h"
 #include "ranges.h"
-#include "task.h" // TODO the only dependencies on task.h are launcher types and contiguous_box_set, consider moving those
 #include "types.h"
 
 #include <matchbox.hh>
 
 namespace celerity::detail {
+
+class fence_promise;
 
 class instruction : public intrusive_graph_node<instruction>,
                     public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction,
@@ -49,8 +51,8 @@ class alloc_instruction final : public matchbox::implement_acceptor<instruction,
 
 	allocation_id get_allocation_id() const { return m_aid; }
 	memory_id get_memory_id() const { return m_mid; }
-	size_t get_size() const { return m_size; }
-	size_t get_alignment() const { return m_alignment; }
+	size_t get_size_bytes() const { return m_size; }
+	size_t get_alignment_bytes() const { return m_alignment; }
 
   private:
 	allocation_id m_aid;
@@ -79,7 +81,7 @@ class init_buffer_instruction final : public matchbox::implement_acceptor<instru
 
 	buffer_id get_buffer_id() const { return m_bid; }
 	allocation_id get_host_allocation_id() const { return m_host_aid; }
-	size_t get_size() const { return m_size_bytes; }
+	size_t get_size_bytes() const { return m_size_bytes; }
 
   private:
 	buffer_id m_bid;
@@ -120,27 +122,27 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
 	explicit copy_instruction(const instruction_id iid, const int dims, const memory_id source_memory, const allocation_id source_allocation,
 	    const range<3>& source_range, const id<3>& offset_in_source, const memory_id dest_memory, const allocation_id dest_allocation,
 	    const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
-	    : acceptor_base(iid), m_source_memory(source_memory), m_source_allocation(source_allocation), m_dest_memory(dest_memory),
-	      m_dest_allocation(dest_allocation), m_dims(dims), m_source_range(source_range), m_dest_range(dest_range), m_offset_in_source(offset_in_source),
-	      m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
+	    : acceptor_base(iid), m_source_mid(source_memory), m_source_aid(source_allocation), m_dest_mid(dest_memory), m_dest_aid(dest_allocation), m_dims(dims),
+	      m_source_range(source_range), m_dest_range(dest_range), m_offset_in_source(offset_in_source), m_offset_in_dest(offset_in_dest),
+	      m_copy_range(copy_range), m_elem_size(elem_size) {}
 
-	memory_id get_source_memory() const { return m_source_memory; }
-	allocation_id get_source_allocation() const { return m_source_allocation; }
+	memory_id get_source_memory_id() const { return m_source_mid; }
+	allocation_id get_source_allocation_id() const { return m_source_aid; }
 	int get_dimensions() const { return m_dims; }
 	const range<3>& get_source_range() const { return m_source_range; }
 	const id<3>& get_offset_in_source() const { return m_offset_in_source; }
-	memory_id get_dest_memory() const { return m_dest_memory; }
-	allocation_id get_dest_allocation() const { return m_dest_allocation; }
+	memory_id get_dest_memory_id() const { return m_dest_mid; }
+	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
 	const range<3>& get_dest_range() const { return m_dest_range; }
 	const id<3>& get_offset_in_dest() const { return m_offset_in_dest; }
 	const range<3>& get_copy_range() const { return m_copy_range; }
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
-	memory_id m_source_memory;
-	allocation_id m_source_allocation;
-	memory_id m_dest_memory;
-	allocation_id m_dest_allocation;
+	memory_id m_source_mid;
+	allocation_id m_source_aid;
+	memory_id m_dest_mid;
+	allocation_id m_dest_aid;
 	int m_dims; // TODO does this actually need to know dimensions or can we just copy by effective_dims?
 	range<3> m_source_range;
 	range<3> m_dest_range;
@@ -203,7 +205,7 @@ class host_task_instruction final : public matchbox::implement_acceptor<instruct
 
 struct pilot_message {
 	int tag = -1;
-	transfer_id trid;
+	detail::transfer_id transfer_id;
 	box<3> box;
 };
 
@@ -252,21 +254,21 @@ class receive_instruction_impl {
   public:
 	explicit receive_instruction_impl(const transfer_id& trid, region<3> request, const memory_id dest_memory, const allocation_id dest_allocation,
 	    const box<3>& allocated_box, const size_t elem_size)
-	    : m_trid(trid), m_request(std::move(request)), m_dest_memory(dest_memory), m_dest_allocation(dest_allocation), m_allocated_box(allocated_box),
+	    : m_trid(trid), m_request(std::move(request)), m_dest_mid(dest_memory), m_dest_aid(dest_allocation), m_allocated_box(allocated_box),
 	      m_elem_size(elem_size) {}
 
 	const transfer_id& get_transfer_id() const { return m_trid; }
 	const region<3>& get_requested_region() const { return m_request; }
-	memory_id get_dest_memory() const { return m_dest_memory; }
-	allocation_id get_dest_allocation() const { return m_dest_allocation; }
+	memory_id get_dest_memory_id() const { return m_dest_mid; }
+	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
 	const box<3>& get_allocated_box() const { return m_allocated_box; }
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	transfer_id m_trid;
 	region<3> m_request;
-	memory_id m_dest_memory;
-	allocation_id m_dest_allocation;
+	memory_id m_dest_mid;
+	allocation_id m_dest_aid;
 	box<3> m_allocated_box;
 	size_t m_elem_size;
 };

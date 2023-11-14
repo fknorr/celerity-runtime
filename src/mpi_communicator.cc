@@ -62,7 +62,7 @@ node_id mpi_communicator::get_local_node_id() const {
 }
 
 void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
-	CELERITY_DEBUG("[mpi] pilot -> N{} (tag {}, {}, {})", pilot.to, pilot.message.tag, pilot.message.trid, pilot.message.box);
+	CELERITY_DEBUG("[mpi] pilot -> N{} (tag {}, {}, {})", pilot.to, pilot.message.tag, pilot.message.transfer_id, pilot.message.box);
 
 	assert(pilot.to < get_num_nodes());
 	assert(pilot.to != get_local_node_id());
@@ -97,7 +97,7 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 		const inbound_pilot pilot{static_cast<node_id>(status.MPI_SOURCE), *m_inbound_pilot.message};
 		begin_receive_pilot(); // initiate next receive asap
 
-		CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, {} {})", pilot.from, pilot.message.tag, pilot.message.trid, pilot.message.box);
+		CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, {} {})", pilot.from, pilot.message.tag, pilot.message.transfer_id, pilot.message.box);
 		received_pilots.push_back(pilot);
 	}
 }

@@ -63,16 +63,16 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 
 	const auto gather_alloc = intersection_of(gather_from_init.predecessors(), gather_from_writer.predecessors()).assert_unique<alloc_instruction_record>();
 	CHECK(gather_alloc->origin == alloc_instruction_record::alloc_origin::gather);
-	CHECK(gather_alloc->size == 2 * sizeof(int)); // 1 for the initial value, 1 for the "writer" contribution
+	CHECK(gather_alloc->size_bytes == 2 * sizeof(int)); // 1 for the initial value, 1 for the "writer" contribution
 
 	// the local reduction combines both values and writes into the (final) host buffer allocation
 	const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
 	CHECK(local_reduce->scope == reduce_instruction_record::reduction_scope::local);
 	CHECK(local_reduce->num_source_values == 2);
-	CHECK(local_reduce->memory_id == gather_from_init->dest_memory);
-	CHECK(local_reduce->source_allocation_id == gather_from_init->dest_allocation);
-	CHECK(local_reduce->memory_id == gather_from_writer->dest_memory);
-	CHECK(local_reduce->source_allocation_id == gather_from_writer->dest_allocation);
+	CHECK(local_reduce->memory_id == gather_from_init->dest_memory_id);
+	CHECK(local_reduce->source_allocation_id == gather_from_init->dest_allocation_id);
+	CHECK(local_reduce->memory_id == gather_from_writer->dest_memory_id);
+	CHECK(local_reduce->source_allocation_id == gather_from_writer->dest_allocation_id);
 
 	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 	CHECK(reader.transitive_predecessors_across<copy_instruction_record>().contains(local_reduce));
@@ -107,13 +107,13 @@ TEST_CASE("reduction accesses on a single-node multi-device setup generate local
 	// the local gather buffer is a single allocation
 	const auto gather_alloc = all_gather_copies.predecessors().select_unique<alloc_instruction_record>();
 	CHECK(gather_alloc->origin == alloc_instruction_record::alloc_origin::gather);
-	CHECK(gather_alloc->size == num_devices * sizeof(int));
+	CHECK(gather_alloc->size_bytes == num_devices * sizeof(int));
 
 	for(const auto& gather_copy : all_gather_copies.iterate()) {
 		CAPTURE(gather_copy);
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-		CHECK(gather_copy->dest_memory == gather_alloc->memory_id);
-		CHECK(gather_copy->dest_allocation == gather_alloc->allocation_id);
+		CHECK(gather_copy->dest_memory_id == gather_alloc->memory_id);
+		CHECK(gather_copy->dest_allocation_id == gather_alloc->allocation_id);
 
 		// the order of reduction inputs must be deterministic because the reduction operator is not necessarily associative
 		const auto writer = intersection_of(all_writers, gather_copy.predecessors());
@@ -171,7 +171,7 @@ TEST_CASE("reduction accesses on a multi-node single-device setup generate globa
 	// the global gather buffer is a single allocation
 	const auto gather_alloc = fill_identity.predecessors().select_unique<alloc_instruction_record>();
 	CHECK(gather_alloc->origin == alloc_instruction_record::alloc_origin::gather);
-	CHECK(gather_alloc->size == num_nodes * sizeof(int));
+	CHECK(gather_alloc->size_bytes == num_nodes * sizeof(int));
 	CHECK(gather_alloc->memory_id == fill_identity->memory_id);
 	CHECK(gather_alloc->allocation_id == fill_identity->allocation_id);
 
@@ -187,7 +187,7 @@ TEST_CASE("reduction accesses on a multi-node single-device setup generate globa
 	CHECK(reduce.predecessors().contains(gather_recv));
 	CHECK(gather_recv->gather_box == box<3>(zeros, ones));
 	CHECK(gather_recv->num_nodes == num_nodes);
-	CHECK(gather_recv->allocation_id == gather_copy->dest_allocation);
+	CHECK(gather_recv->allocation_id == gather_copy->dest_allocation_id);
 	CHECK(gather_recv->transfer_id == send_to_peer->transfer_id);
 }
 
@@ -222,16 +222,16 @@ TEST_CASE("reduction accesses on a multi-node multi-device setup generate global
 	const auto gather_copies_to_local = local_reduce.predecessors().select_all<copy_instruction_record>();
 	const auto local_gather_alloc = gather_copies_to_local.predecessors().select_unique<alloc_instruction_record>();
 	CHECK(local_gather_alloc->origin == alloc_instruction_record::alloc_origin::gather);
-	CHECK(local_gather_alloc->size == num_devices * sizeof(int));
+	CHECK(local_gather_alloc->size_bytes == num_devices * sizeof(int));
 	CHECK(local_gather_alloc->num_chunks == num_devices);
 
 	for(const auto& gather_copy : gather_copies_to_local.iterate()) {
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
 		CHECK(gather_copy->box == box<3>(zeros, ones));
-		CHECK(gather_copy->dest_memory == local_gather_alloc->memory_id);
-		CHECK(gather_copy->dest_allocation == local_gather_alloc->allocation_id);
-		CHECK(gather_copy->dest_memory == local_reduce->memory_id);
-		CHECK(gather_copy->dest_allocation == local_reduce->source_allocation_id);
+		CHECK(gather_copy->dest_memory_id == local_gather_alloc->memory_id);
+		CHECK(gather_copy->dest_allocation_id == local_gather_alloc->allocation_id);
+		CHECK(gather_copy->dest_memory_id == local_reduce->memory_id);
+		CHECK(gather_copy->dest_allocation_id == local_reduce->source_allocation_id);
 	}
 
 	// the global reduction has a single local contribution (the locally-reduced partial result from devices), and `num_nodes - 1` contributions from peers.
@@ -259,7 +259,7 @@ TEST_CASE("reduction accesses on a multi-node multi-device setup generate global
 	// we allocate one slot in the gather buffer for every node in the system
 	const auto global_gather_alloc = fill_identity.predecessors().select_unique<alloc_instruction_record>();
 	CHECK(global_gather_alloc->origin == alloc_instruction_record::alloc_origin::gather);
-	CHECK(global_gather_alloc->size == num_nodes * sizeof(int));
+	CHECK(global_gather_alloc->size_bytes == num_nodes * sizeof(int));
 	CHECK(global_gather_alloc->memory_id == fill_identity->memory_id);
 	CHECK(global_gather_alloc->allocation_id == fill_identity->allocation_id);
 
@@ -337,7 +337,7 @@ TEST_CASE("local reductions can be initialized to a buffer value that is not pre
 
 		const auto pilot = all_pilots.assert_unique();
 		CHECK(pilot->to == 0);
-		CHECK(pilot->message.trid == expected_trid);
+		CHECK(pilot->message.transfer_id == expected_trid);
 		CHECK(pilot->message.box == box<3>(zeros, ones));
 	}
 }
@@ -370,11 +370,11 @@ TEST_CASE("local reductions only include values from participating devices", "[i
 
 		const auto gather_copy = writer.successors().assert_unique<copy_instruction_record>();
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-		CHECK(gather_copy->source_memory == red_acc.memory_id);
-		CHECK(gather_copy->source_allocation == red_acc.allocation_id);
+		CHECK(gather_copy->source_memory_id == red_acc.memory_id);
+		CHECK(gather_copy->source_allocation_id == red_acc.allocation_id);
 
-		CHECK(gather_copy->dest_memory == local_reduce->memory_id);
-		CHECK(gather_copy->dest_allocation == local_reduce->source_allocation_id);
+		CHECK(gather_copy->dest_memory_id == local_reduce->memory_id);
+		CHECK(gather_copy->dest_allocation_id == local_reduce->source_allocation_id);
 
 		// gather-order must be deterministic because the reduction operation is not necessarily associative
 		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id))));
@@ -421,8 +421,8 @@ TEST_CASE("global reductions without a local contribution do not read stale loca
 		// there is a local contribution, which will be copied to the global gather buffer concurrent with the receive
 		const auto gather_copy = global_reduce.predecessors().select_unique<copy_instruction_record>();
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-		CHECK(gather_copy->dest_memory == gather_recv->memory_id);
-		CHECK(gather_copy->dest_allocation == gather_recv->allocation_id);
+		CHECK(gather_copy->dest_memory_id == gather_recv->memory_id);
+		CHECK(gather_copy->dest_allocation_id == gather_recv->allocation_id);
 		CHECK(gather_copy->copy_range == ones);
 		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(local_nid)));
 		CHECK(gather_copy.is_concurrent_with(gather_recv));
@@ -440,7 +440,7 @@ TEST_CASE("global reductions without a local contribution do not read stale loca
 			CHECK(send.is_concurrent_with(gather_copy));
 
 			const auto pilot = all_pilots.select_unique(send->dest_node_id);
-			CHECK(pilot->message.trid == send->transfer_id);
+			CHECK(pilot->message.transfer_id == send->transfer_id);
 			CHECK(pilot->message.box == box<3>(zeros, ones));
 		}
 
@@ -453,7 +453,7 @@ TEST_CASE("global reductions without a local contribution do not read stale loca
 		// we signal all peers that we are not going to perform a `send` by transmitting zero-ranged pilots
 		for(node_id peer = 0; peer < 2; ++peer) {
 			const auto pilot = all_pilots.select_unique(peer);
-			CHECK(pilot->message.trid == transfer_id(reader_tid, buf.get_id(), global_reduce->reduction_id));
+			CHECK(pilot->message.transfer_id == transfer_id(reader_tid, buf.get_id(), global_reduce->reduction_id));
 			CHECK(pilot->message.box == box<3>());
 		}
 	}

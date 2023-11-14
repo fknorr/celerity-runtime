@@ -170,8 +170,8 @@ struct alloc_instruction_record : matchbox::implement_acceptor<instruction_recor
 
 	detail::allocation_id allocation_id;
 	detail::memory_id memory_id;
-	size_t size;
-	size_t alignment;
+	size_t size_bytes;
+	size_t alignment_bytes;
 	alloc_origin origin;
 	std::optional<buffer_allocation_record> buffer_allocation;
 	std::optional<size_t> num_chunks;
@@ -192,7 +192,7 @@ struct free_instruction_record : matchbox::implement_acceptor<instruction_record
 struct init_buffer_instruction_record : matchbox::implement_acceptor<instruction_record, init_buffer_instruction_record> {
 	detail::buffer_id buffer_id;
 	detail::allocation_id host_allocation_id;
-	size_t size;
+	size_t size_bytes;
 
 	explicit init_buffer_instruction_record(const init_buffer_instruction& ibinstr);
 };
@@ -218,10 +218,10 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 		gather,
 	};
 
-	memory_id source_memory;
-	allocation_id source_allocation;
-	memory_id dest_memory;
-	allocation_id dest_allocation;
+	memory_id source_memory_id;
+	allocation_id source_allocation_id;
+	memory_id dest_memory_id;
+	allocation_id dest_allocation_id;
 	int dimensions;
 	range<3> source_range;
 	range<3> dest_range;
@@ -302,8 +302,8 @@ struct send_instruction_record : matchbox::implement_acceptor<instruction_record
 struct receive_instruction_record_impl {
 	detail::transfer_id transfer_id;
 	region<3> requested_region;
-	memory_id dest_memory;
-	allocation_id dest_allocation;
+	memory_id dest_memory_id;
+	allocation_id dest_allocation_id;
 	box<3> allocated_box;
 	size_t element_size;
 

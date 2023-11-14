@@ -72,7 +72,7 @@ TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push a
 	const auto pilot = ictx.query_outbound_pilots();
 	CHECK(pilot.is_unique());
 	CHECK(pilot->to == peer_nid);
-	CHECK(pilot->message.trid == send->transfer_id);
+	CHECK(pilot->message.transfer_id == send->transfer_id);
 	CHECK(pilot->message.tag == send->tag);
 
 	// we receive exactly the part of the buffer that our node has _not_ written

@@ -37,12 +37,6 @@ namespace detail {
 		device,
 	};
 
-	enum class epoch_action {
-		none,
-		barrier,
-		shutdown,
-	};
-
 	class buffer_access_map {
 	  public:
 		void add_access(buffer_id bid, std::unique_ptr<range_mapper_base>&& rm) { m_accesses.emplace_back(bid, std::move(rm)); }
