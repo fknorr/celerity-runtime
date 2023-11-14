@@ -199,6 +199,10 @@ TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruc
 }
 
 TEST_CASE("epochs serialize execution and compact dependency tracking", "[instruction_graph_generator][instruction-graph][compaction]") {
+	enum test_mode_enum { baseline_without_barrier_epoch, test_with_barrier_epoch };
+	const auto test_mode = GENERATE(values({baseline_without_barrier_epoch, test_with_barrier_epoch}));
+	INFO((test_mode == baseline_without_barrier_epoch ? "baseline: no epoch is inserted" : "test: barrier epoch is inserted"));
+
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	ictx.set_horizon_step(999);
 
@@ -210,12 +214,23 @@ TEST_CASE("epochs serialize execution and compact dependency tracking", "[instru
 	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({0, 128})).submit();
 	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({128, 256})).submit();
 	ictx.master_node_host_task().name("producer").affect(ho).submit();
-	const auto barrier_epoch_tid = ictx.epoch(epoch_action::barrier);
+	std::optional<task_id> barrier_epoch_tid;
+	if(test_mode == test_with_barrier_epoch) { barrier_epoch_tid = ictx.epoch(epoch_action::barrier); }
 	ictx.master_node_host_task().name("consumer").read(buf, acc::all()).affect(ho).submit();
 	ictx.finish();
 
 	// this test is very explicit about each instuction in the graph - things might easily break when touching IDAG generation.
 	const auto all_instrs = ictx.query_instructions();
+
+	// we expect an init epoch + optional barrier epoch + shutdown epoch
+	CHECK(all_instrs.count<epoch_instruction_record>() == (test_mode == baseline_without_barrier_epoch ? 2 : 3));
+
+	if(test_mode == baseline_without_barrier_epoch) {
+		// Rudimentary check that without an epoch, the IDAG splits the copy to enable concurrency.
+		// For a more thorough test of this, see "local copies are split on writers to facilitate compute-copy overlap" in instruction_graph_memory_tests.
+		CHECK(all_instrs.count<copy_instruction_record>() == 2);
+		return;
+	}
 
 	const auto init_epoch = all_instrs.select_unique<epoch_instruction_record>(task_manager::initial_epoch_task);
 	CHECK(init_epoch.predecessors().count() == 0);
@@ -227,7 +242,7 @@ TEST_CASE("epochs serialize execution and compact dependency tracking", "[instru
 	const auto all_producers = all_instrs.select_all("producer");
 
 	// the barrier epoch (aka slow_full_sync) will transitively depend on all previous instructions
-	const auto barrier_epoch = all_instrs.select_unique<epoch_instruction_record>(barrier_epoch_tid);
+	const auto barrier_epoch = all_instrs.select_unique<epoch_instruction_record>(barrier_epoch_tid.value());
 	CHECK(barrier_epoch->epoch_action == epoch_action::barrier);
 	CHECK(barrier_epoch.transitive_predecessors() == union_of(init_epoch, all_device_allocs, all_producers));
 
@@ -257,22 +272,29 @@ TEST_CASE("epochs serialize execution and compact dependency tracking", "[instru
 }
 
 TEST_CASE("horizon application serializes execution and compacts dependency tracking", "[instruction_graph_generator][instruction-graph][compaction]") {
-	const bool apply_horizon = GENERATE(values<int>({false, true})); // int: Catch2 cannot deal with values<bool> because of vector<bool>
-	CAPTURE(apply_horizon);
+	enum test_mode_enum { baseline_without_horizons = 0, baseline_with_unapplied_horizon = 1, test_with_applied_horizon = 2 };
+	const auto test_mode = GENERATE(values({baseline_without_horizons, baseline_with_unapplied_horizon, test_with_applied_horizon}));
+	INFO((test_mode == baseline_without_horizons         ? "baseline: no horizons are inserted"
+	      : test_mode == baseline_with_unapplied_horizon ? "baseline: horizon is inserted, but not applied"
+	                                                     : "test: applying horizon"));
+	const auto expected_num_horizons = static_cast<int>(test_mode); // we have defined test_mode_enum accordingly
+	CAPTURE(expected_num_horizons);
+
+	const int horizon_step = 3; // so no producer below triggers a horizon
 
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
-	ictx.set_horizon_step(3);
+	ictx.set_horizon_step(test_mode == baseline_without_horizons ? 999 : horizon_step);
 
-	auto buf = ictx.create_buffer(range(256)); // we test dependencies on this buffer
+	auto buf = ictx.create_buffer(range(256));
 	auto test_ho = ictx.create_host_object();
-	auto age_ho = ictx.create_host_object();
+	auto age_ho = ictx.create_host_object(); // we repeatedly affect this host object to trigger horizon generation
 
-	ictx.master_node_host_task().name("producer").affect(age_ho).submit();
+	ictx.master_node_host_task().name("producer").affect(test_ho).submit();
 	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::all()).submit();
 	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({0, 128})).submit();
 	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({128, 128})).submit();
 
-	for(int i = 0; i < (apply_horizon ? 5 : 2); ++i) {
+	for(int i = 0; i < expected_num_horizons * horizon_step; ++i) {
 		ictx.master_node_host_task().name("age").affect(age_ho).submit();
 	}
 
@@ -282,20 +304,40 @@ TEST_CASE("horizon application serializes execution and compacts dependency trac
 	// this test is very explicit about each instuction in the graph - things might easily break when touching IDAG generation.
 	const auto all_instrs = ictx.query_instructions();
 
+	const auto all_horizons = all_instrs.select_all<horizon_instruction_record>();
+	REQUIRE(all_horizons.count() == static_cast<size_t>(expected_num_horizons));
+
+	if(test_mode != test_with_applied_horizon) {
+		// Rudimentary check that without applying a horizon, the IDAG splits the copy to enable concurrency.
+		// For a more thorough test of this, see "local copies are split on writers to facilitate compute-copy overlap" in instruction_graph_memory_tests.
+		CHECK(all_instrs.count<copy_instruction_record>() == 2);
+		return;
+	}
+
+	// instruction records are in the order they were generated
+	const auto applied_horizon = all_horizons[0];
+	const auto current_horizon = all_horizons[1];
+
 	const auto all_device_allocs =
 	    all_instrs.select_all<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id != host_memory_id; });
-
 	const auto all_producers = all_instrs.select_all("producer");
+	CHECK(applied_horizon.transitive_predecessors().contains(union_of(all_device_allocs, all_producers)));
 
 	// There will only be a single d2h copy, since inserting the epoch will compact the last-writer tracking structures, replacing the two concurrent device
 	// kernels with the single epoch.
 	const auto host_alloc =
 	    all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id == host_memory_id; });
 	const auto d2h_copy = host_alloc.successors().select_unique<copy_instruction_record>();
-
 	const auto consumer = all_instrs.select_unique<launch_instruction_record>("consumer");
 	const auto all_frees = all_instrs.select_all<free_instruction_record>();
-	const auto destroy_ho = all_instrs.select_unique<destroy_host_object_instruction_record>();
+	const auto all_destroy_hos = all_instrs.select_all<destroy_host_object_instruction_record>();
+	CHECK(applied_horizon.transitive_successors().contains(union_of(host_alloc, d2h_copy, consumer, all_frees, all_destroy_hos, current_horizon)));
+
+	// The current horizon has been generated through the dependency chain on `age_ho`, and before submission of the consumer.
+	CHECK_FALSE(union_of(host_alloc, d2h_copy, consumer, all_frees, all_destroy_hos, current_horizon).transitive_successors().contains(current_horizon));
+
+	// The current horizon has not been applied, so no instructions except the shutdown epoch depend on it.
+	CHECK(current_horizon.successors().is_unique<epoch_instruction_record>());
 }
 
 TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitialized read", "[instruction_graph_generator]") {

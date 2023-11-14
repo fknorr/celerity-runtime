@@ -172,8 +172,9 @@ class instruction_graph_generator {
 		size_t elem_size;
 		size_t elem_align;
 		std::vector<buffer_per_memory_data> memories;
-		region_map<data_location> newest_data_location;
+		region_map<data_location> newest_data_location; // TODO rename for vs original_write_memories?
 		region_map<instruction*> original_writers;
+		region_map<memory_id> original_write_memories; // only meaningful if newest_data_location[box] is non-empty
 
 		// We store pending receives (await push regions) in a vector instead of a region map since we must process their entire regions en-bloc rather than on
 		// a per-element basis.
@@ -182,7 +183,7 @@ class instruction_graph_generator {
 
 		explicit per_buffer_data(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
 		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), newest_data_location(range, dims),
-		      original_writers(range, dims) {}
+		      original_writers(range, dims), original_write_memories(range, dims) {}
 
 		void apply_epoch(instruction* const epoch) {
 			for(auto& memory : memories) {

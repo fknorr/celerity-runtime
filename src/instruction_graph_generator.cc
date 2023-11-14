@@ -121,6 +121,7 @@ void instruction_graph_generator::create_buffer(
 		allocation.record_write(entire_buffer, &init_instr);
 		buffer.original_writers.update_region(entire_buffer, &init_instr);
 		buffer.newest_data_location.update_region(entire_buffer, data_location().set(host_memory_id));
+		buffer.original_write_memories.update_region(entire_buffer, host_memory_id);
 
 		if(m_recorder != nullptr) {
 			*m_recorder << alloc_instruction_record(
@@ -397,6 +398,7 @@ void instruction_graph_generator::commit_pending_region_receive(
 		}
 	}
 
+	buffer.original_write_memories.update_region(receive.received_region, mid);
 	buffer.newest_data_location.update_region(receive.received_region, data_location().set(mid));
 }
 
@@ -426,12 +428,12 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 	};
 
 	std::vector<copy_template> pending_copies;
-	for(auto& [dest_mid, disjoint_regions] : unsatisfied_reads) {
-		if(disjoint_regions.empty()) continue; // if fully satisfied by incoming transfers
+	for(auto& [dest_mid, disjoint_reader_regions] : unsatisfied_reads) {
+		if(disjoint_reader_regions.empty()) continue; // if fully satisfied by incoming transfers
 
 		auto& buffer = m_buffers.at(bid);
-		for(auto& region : disjoint_regions) {
-			const auto region_sources = buffer.newest_data_location.get_region_values(region);
+		for(auto& reader_region : disjoint_reader_regions) {
+			const auto region_sources = buffer.newest_data_location.get_region_values(reader_region);
 
 			if(m_uninitialized_read_policy != error_policy::ignore) {
 				box_vector<3> uninitialized_reads;
@@ -447,46 +449,29 @@ void instruction_graph_generator::locally_satisfy_read_requirements(const buffer
 				}
 			}
 
-			// try finding a common source for the entire region first to minimize instruction / synchronization complexity down the line
-			const auto common_sources = std::accumulate(region_sources.begin(), region_sources.end(), data_location(),
-			    [](const data_location common, const std::pair<box<3>, data_location>& box_sources) { return common & box_sources.second; });
-
-			if(common_sources.test(host_memory_id)) { // best case: we can copy all data from the host
-				pending_copies.push_back({host_memory_id, dest_mid, std::move(region)});
-				continue;
+			// split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region
+			std::unordered_map<const instruction*, region<3>> writer_regions;
+			for(const auto& [writer_box, original_writer] : buffer.original_writers.get_region_values(reader_region)) {
+				auto& region = writer_regions[original_writer]; // allow default-insert
+				region = region_union(region, writer_box);
 			}
 
-			// see if we can copy all data from a single device
-			if(const auto common_device_sources = data_location(common_sources).reset(host_memory_id); common_device_sources.any()) {
-				const auto copy_from = next_location(common_device_sources, dest_mid + 1);
-				pending_copies.push_back({copy_from, dest_mid, std::move(region)});
-				continue;
-			}
-
-			// mix and match sources - there exists an optimal solution, but for now we just assemble source regions by picking the next device if any,
-			// or the host as a fallback.
-			std::unordered_map<memory_id, detail::region<3>> combined_source_regions;
-			for(const auto& [box, sources] : region_sources) {
-				if(!sources.any()) { continue; /* an uninitialized read was detected and reported above */ }
-
-				memory_id copy_from;
-				if(const auto device_sources = data_location(sources).reset(host_memory_id); device_sources.any()) {
-					copy_from = next_location(device_sources, dest_mid + 1);
-				} else {
-					copy_from = host_memory_id; // heuristic: avoid copies from host because they can't be DMA'd
+			for(const auto& [_, original_writer_region] : writer_regions) {
+				// there can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon
+				std::unordered_map<memory_id, region<3>> source_memory_regions; // TODO rename
+				for(const auto& [copy_box, source_mid] : buffer.original_write_memories.get_region_values(original_writer_region)) {
+					auto& memory = source_memory_regions[source_mid]; // allow default-insert
+					memory = region_union(memory, copy_box);
 				}
-				auto& copy_region = combined_source_regions[copy_from];
-				copy_region = region_union(copy_region, box);
-			}
-			for(auto& [copy_from, copy_region] : combined_source_regions) {
-				pending_copies.push_back({copy_from, dest_mid, std::move(copy_region)});
+				for(auto& [source_mid, copy_region] : source_memory_regions) {
+					pending_copies.push_back({source_mid, dest_mid, std::move(copy_region)});
+				}
 			}
 		}
 	}
 
 	for(auto& copy : pending_copies) {
 		assert(copy.dest_mid != copy.source_mid);
-		auto& buffer = m_buffers.at(bid);
 		// TODO iterating over boxes here could mean that we generate excess copy instructions if region normalization produces more boxes within the
 		// box_intersection below than is necessary. Instead try working on a region_intersection and resolving the matching allocation boxes afterwards.
 		for(const box<3>& box : copy.region.get_boxes()) {
@@ -1003,6 +988,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			assert(instr.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
 			buffer.newest_data_location.update_region(rw.writes, data_location().set(instr.memory_id));
+			buffer.original_write_memories.update_region(rw.writes, instr.memory_id);
 			buffer.original_writers.update_region(rw.writes, instr.instruction);
 
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
@@ -1044,6 +1030,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 				if(!write_box.empty()) { alloc.record_write(write_box, instr.instruction); }
 			}
 			buffer.original_writers.update_box(scalar_reduction_box, instr.instruction);
+			buffer.original_write_memories.update_box(scalar_reduction_box, instr.memory_id);
 			buffer.newest_data_location.update_box(scalar_reduction_box, data_location().set(instr.memory_id));
 			continue;
 		}
@@ -1094,6 +1081,7 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 		}
 		dest->record_write(scalar_reduction_box, reduce_instr);
 		buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
+		buffer.original_write_memories.update_region(scalar_reduction_box, host_memory_id);
 		buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(host_memory_id));
 
 		// free local gather space
@@ -1284,6 +1272,7 @@ void instruction_graph_generator::compile_reduction_command(const reduction_comm
 	}
 	dest_alloc->record_write(scalar_reduction_box, reduce_instr);
 	buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
+	buffer.original_write_memories.update_region(scalar_reduction_box, host_memory_id);
 	buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(host_memory_id));
 
 	// free the gather space

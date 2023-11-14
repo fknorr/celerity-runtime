@@ -219,8 +219,8 @@ TEMPLATE_TEST_CASE_SIG(
 	CHECK(second_half_copy.successors().contains(read_all)); // both readers of full range
 }
 
-TEMPLATE_TEST_CASE_SIG(
-    "local copies are split to allow overlap between compute and copy", "[instruction_graph_generator][instruction-graph][memory]", ((int Dims), Dims), 1, 2, 3) //
+TEMPLATE_TEST_CASE_SIG("local copies are split on writers to facilitate compute-copy overlap", "[instruction_graph_generator][instruction-graph][memory]",
+    ((int Dims), Dims), 1, 2, 3) //
 {
 	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
 	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256});
@@ -228,8 +228,12 @@ TEMPLATE_TEST_CASE_SIG(
 	const auto second_half = subrange(test_utils::truncate_id<Dims>({128, 0, 0}), half_range);
 
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	ictx.set_horizon_step(999);
+
 	auto buf = ictx.create_buffer<int>(full_range);
-	// both writers write to the same memory, initializing the full_range on D0 / M1
+	// first write the entire range on D0 to guarantee a single allocation on M1
+	ictx.device_compute(range(1)).name("init").discard_write(buf, acc::all()).submit();
+	// both writers combined overwrite the entire buffer
 	ictx.device_compute(range(1)).name("writer").discard_write(buf, acc::fixed(first_half)).submit();
 	ictx.device_compute(range(1)).name("writer").discard_write(buf, acc::fixed(second_half)).submit();
 	// read on host / M0 must create one copy per writer to allow compute-copy overlap
@@ -242,23 +246,32 @@ TEMPLATE_TEST_CASE_SIG(
 	const auto all_copies = all_instrs.select_all<copy_instruction_record>();
 	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
 
-	CHECK(all_writers.count() == 2);
-	CHECK(all_copies.count() == 2);
+	REQUIRE(all_writers.count() == 2);
+	REQUIRE(all_copies.count() == 2);
 
 	// the reader depends on one copy per writer
-	for(const auto& copy : all_copies.iterate()) {
-		const auto writer = intersection_of(copy.predecessors(), all_writers).assert_unique<launch_instruction_record>();
+	for(size_t copy_idx = 0; copy_idx < all_copies.count(); ++copy_idx) {
+		const auto this_copy = all_copies[copy_idx];
+		const auto writer = intersection_of(this_copy.predecessors(), all_writers).assert_unique<launch_instruction_record>();
 		REQUIRE(writer->access_map.size() == 1);
 
 		const auto& write = writer->access_map.front();
-		CHECK(write.buffer_id == copy->buffer);
-		CHECK(write.accessed_box_in_buffer == copy->box);
-		copy.successors().contains(reader);
+		CHECK(write.buffer_id == this_copy->buffer);
+		CHECK(write.accessed_box_in_buffer == this_copy->box);
+		this_copy.successors().contains(reader);
+
+		// each copy can be issued once its writer has completed in order to overlap with the other writer
+		const auto other_copy = all_copies[1 - copy_idx];
+		CHECK(writer.is_concurrent_with(other_copy));
 	}
 }
+
+// TODO Verify that copies are split for multiple readers as well. This requires oversubscription to be implemented first. The test should roughly mirror
+// "overlapping requirements generate split-receives with one await per reader-set" from instruction_graph_p2p_tests.
+
 // This test may fail in the future if we implement a more sophisticated allocator that decides to merge some allocations.
-// When this happens, consider replacing the subranges with a pair that is never reasonable to allocate the bounding-box of.
-TEMPLATE_TEST_CASE_SIG("accessing non-overlapping buffer subranges in subsequent kernels causes distinct allocations",
+// When this happens, consider replacing the subranges with a pair for which it is never reasonable to allocate the bounding-box.
+TEMPLATE_TEST_CASE_SIG("accessing non-overlapping buffer subranges in subsequent kernels triggers distinct allocations",
     "[instrution_graph_generator][instruction-graph][memory]", ((int Dims), Dims), 1, 2, 3) //
 {
 	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
@@ -365,4 +378,3 @@ TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer fro
 	CHECK(init->buffer_id == buf.get_id());
 	CHECK(init->host_allocation_id == alloc->allocation_id);
 }
-
