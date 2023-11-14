@@ -115,7 +115,7 @@ class instruction_executor {
 
 	[[nodiscard]] event begin_executing(const instruction& instr);
 
-	accessor_aux_info prepare_accessor_hydration(target target, const access_allocation_map& amap);
+	accessor_aux_info prepare_accessor_hydration(target target, const buffer_access_allocation_map& amap);
 };
 
 } // namespace celerity::detail

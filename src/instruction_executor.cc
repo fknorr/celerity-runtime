@@ -177,7 +177,7 @@ void instruction_executor::loop() {
 	assert(m_host_object_instances.empty());
 }
 
-instruction_executor::accessor_aux_info instruction_executor::prepare_accessor_hydration(target target, const access_allocation_map& amap) {
+instruction_executor::accessor_aux_info instruction_executor::prepare_accessor_hydration(target target, const buffer_access_allocation_map& amap) {
 	accessor_aux_info aux_info;
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 	if(!amap.empty()) {
@@ -233,7 +233,7 @@ bool instruction_executor::boundary_checked_event::is_complete() const {
 #endif
 
 instruction_executor::event instruction_executor::begin_executing(const instruction& instr) {
-	static constexpr auto log_accesses = [](const access_allocation_map& map) {
+	static constexpr auto log_accesses = [](const buffer_access_allocation_map& map) {
 		std::string acc_log;
 		for(size_t i = 0; i < map.size(); ++i) {
 			auto& aa = map[i];
@@ -249,7 +249,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    instr,
 	    [&](const clone_collective_group_instruction& ccginstr) {
 		    const auto new_cgid = ccginstr.get_new_collective_group_id();
-		    const auto origin_cgid = ccginstr.get_origin_collective_group_id();
+		    const auto origin_cgid = ccginstr.get_original_collective_group_id();
 		    CELERITY_DEBUG("[executor] I{}: clone collective group CG{} -> CG{}", ccginstr.get_id(), origin_cgid, new_cgid);
 
 		    assert(m_collective_groups.count(new_cgid) == 0);
@@ -381,13 +381,13 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const send_instruction& sinstr) {
 		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), host_memory_id /* TODO RDMA */,
-		        sinstr.get_source_allocation_id(), sinstr.get_offset_in_allocation(), sinstr.get_send_range(), sinstr.get_element_size(),
+		        sinstr.get_source_allocation_id(), sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(),
 		        sinstr.get_dest_node_id(), sinstr.get_tag());
 
 		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id());
 		    const communicator::stride stride{
-		        sinstr.get_allocation_range(),
-		        subrange<3>{sinstr.get_offset_in_allocation(), sinstr.get_send_range()},
+		        sinstr.get_source_allocation_range(),
+		        subrange<3>{sinstr.get_offset_in_source_allocation(), sinstr.get_send_range()},
 		        sinstr.get_element_size(),
 		    };
 		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
@@ -418,9 +418,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const gather_receive_instruction& grinstr) {
 		    CELERITY_DEBUG("[executor] I{}: gather receive {} into M{}.A{}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
-		        grinstr.get_memory_id(), grinstr.get_allocation_id(), grinstr.get_node_chunk_size());
+		        grinstr.get_dest_memory_id(), grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
 
-		    const auto allocation = m_allocations.at(grinstr.get_allocation_id());
+		    const auto allocation = m_allocations.at(grinstr.get_dest_allocation_id());
 		    return m_recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
 	    },
 	    [&](const fill_identity_instruction& fiinstr) {

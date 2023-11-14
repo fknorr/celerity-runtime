@@ -156,7 +156,7 @@ struct instruction_record
 };
 
 struct clone_collective_group_instruction_record : matchbox::implement_acceptor<instruction_record, clone_collective_group_instruction_record> {
-	collective_group_id origin_collective_group_id;
+	collective_group_id original_collective_group_id;
 	collective_group_id new_collective_group_id;
 
 	explicit clone_collective_group_instruction_record(const clone_collective_group_instruction& ccginstr);
@@ -237,50 +237,51 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 };
 
 // TODO dupe with buffer_allocation_record?
-struct buffer_memory_allocation_record {
+struct buffer_memory_record {
 	detail::buffer_id buffer_id;
 	detail::memory_id memory_id;
-	box<3> box;
 };
 
-struct buffer_memory_reduction_record : buffer_memory_allocation_record {
+struct buffer_reduction_record {
+	detail::buffer_id buffer_id;
+	detail::memory_id memory_id;
 	detail::reduction_id reduction_id;
 };
 
-struct buffer_allocation_access_record : access_allocation, buffer_memory_allocation_record {
-	constexpr buffer_allocation_access_record(const access_allocation& aa, const buffer_memory_allocation_record& bmar)
-	    : access_allocation(aa), buffer_memory_allocation_record(bmar) {}
+struct buffer_access_allocation_record : buffer_access_allocation, buffer_memory_record {
+	constexpr buffer_access_allocation_record(const buffer_access_allocation& aa, const buffer_memory_record& mr)
+	    : buffer_access_allocation(aa), buffer_memory_record(mr) {}
 };
 
-struct buffer_allocation_reduction_record : access_allocation, buffer_memory_reduction_record {
-	constexpr buffer_allocation_reduction_record(const access_allocation& aa, const buffer_memory_reduction_record& bmrr)
-	    : access_allocation(aa), buffer_memory_reduction_record(bmrr) {}
+struct buffer_reduction_allocation_record : buffer_access_allocation, buffer_reduction_record {
+	constexpr buffer_reduction_allocation_record(const buffer_access_allocation& aa, const buffer_reduction_record& mrr)
+	    : buffer_access_allocation(aa), buffer_reduction_record(mrr) {}
 };
 
 struct device_kernel_instruction_record : matchbox::implement_acceptor<instruction_record, device_kernel_instruction_record> {
 	detail::device_id device_id;
 	subrange<3> execution_range;
-	std::vector<buffer_allocation_access_record> access_map;
-	std::vector<buffer_allocation_reduction_record> reduction_map;
+	std::vector<buffer_access_allocation_record> access_map;
+	std::vector<buffer_reduction_allocation_record> reduction_map;
 	task_id command_group_task_id;
 	command_id execution_command_id;
 	std::string debug_name;
 
 	device_kernel_instruction_record(const device_kernel_instruction& dkinstr, task_id cg_tid, command_id execution_cid, const std::string& debug_name,
-	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
-	    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map);
+	    const std::vector<buffer_memory_record>& buffer_memory_allocation_map,
+	    const std::vector<buffer_reduction_record>& buffer_memory_reduction_map);
 };
 
 struct host_task_instruction_record : matchbox::implement_acceptor<instruction_record, host_task_instruction_record> {
 	detail::collective_group_id collective_group_id;
 	subrange<3> execution_range;
-	std::vector<buffer_allocation_access_record> access_map;
+	std::vector<buffer_access_allocation_record> access_map;
 	task_id command_group_task_id;
 	command_id execution_command_id;
 	std::string debug_name;
 
 	host_task_instruction_record(const host_task_instruction& htinstr, task_id cg_tid, command_id execution_cid, const std::string& debug_name,
-	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map);
+	    const std::vector<buffer_memory_record>& buffer_memory_allocation_map);
 };
 
 struct send_instruction_record : matchbox::implement_acceptor<instruction_record, send_instruction_record> {
@@ -288,8 +289,8 @@ struct send_instruction_record : matchbox::implement_acceptor<instruction_record
 	int tag;
 	memory_id source_memory_id;
 	allocation_id source_allocation_id;
-	range<3> allocation_range;
-	celerity::id<3> offset_in_allocation;
+	range<3> source_allocation_range;
+	celerity::id<3> offset_in_source_allocation;
 	range<3> send_range;
 	size_t element_size;
 	command_id push_cid;

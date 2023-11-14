@@ -163,7 +163,7 @@ command_record::command_record(const abstract_command& cmd, const task& tsk, con
 instruction_record::instruction_record(const instruction& instr) : id(instr.get_id()) {}
 
 clone_collective_group_instruction_record::clone_collective_group_instruction_record(const clone_collective_group_instruction& ccginstr)
-    : acceptor_base(ccginstr), origin_collective_group_id(ccginstr.get_origin_collective_group_id()),
+    : acceptor_base(ccginstr), original_collective_group_id(ccginstr.get_original_collective_group_id()),
       new_collective_group_id(ccginstr.get_new_collective_group_id()) {}
 
 alloc_instruction_record::alloc_instruction_record(
@@ -191,8 +191,8 @@ copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr,
       box(box) {}
 
 device_kernel_instruction_record::device_kernel_instruction_record(const device_kernel_instruction& dkinstr, const task_id cg_tid,
-    const command_id execution_cid, const std::string& debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
-    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map)
+    const command_id execution_cid, const std::string& debug_name, const std::vector<buffer_memory_record>& buffer_memory_allocation_map,
+    const std::vector<buffer_reduction_record>& buffer_memory_reduction_map)
     : acceptor_base(dkinstr), device_id(dkinstr.get_device_id()), execution_range(dkinstr.get_execution_range()), command_group_task_id(cg_tid),
       execution_command_id(execution_cid), debug_name(utils::simplify_task_name(debug_name)) //
 {
@@ -210,7 +210,7 @@ device_kernel_instruction_record::device_kernel_instruction_record(const device_
 }
 
 host_task_instruction_record::host_task_instruction_record(const host_task_instruction& htinstr, const task_id cg_tid, const command_id execution_cid,
-    const std::string& debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map)
+    const std::string& debug_name, const std::vector<buffer_memory_record>& buffer_memory_allocation_map)
     : acceptor_base(htinstr), collective_group_id(htinstr.get_collective_group_id()), execution_range(htinstr.get_execution_range()),
       command_group_task_id(cg_tid), execution_command_id(execution_cid), debug_name(utils::simplify_task_name(debug_name)) //
 {
@@ -224,8 +224,8 @@ host_task_instruction_record::host_task_instruction_record(const host_task_instr
 send_instruction_record::send_instruction_record(
     const send_instruction& sinstr, const command_id push_cid, const detail::transfer_id& trid, const celerity::id<3>& offset_in_buffer)
     : acceptor_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()), source_memory_id(sinstr.get_source_memory_id()),
-      source_allocation_id(sinstr.get_source_allocation_id()), allocation_range(sinstr.get_allocation_range()),
-      offset_in_allocation(sinstr.get_offset_in_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
+      source_allocation_id(sinstr.get_source_allocation_id()), source_allocation_range(sinstr.get_source_allocation_range()),
+      offset_in_source_allocation(sinstr.get_offset_in_source_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
       transfer_id(trid), offset_in_buffer(offset_in_buffer) {}
 
 receive_instruction_record_impl::receive_instruction_record_impl(const receive_instruction_impl& rinstr)
@@ -241,7 +241,7 @@ await_receive_instruction_record::await_receive_instruction_record(const await_r
     : acceptor_base(arinstr), transfer_id(arinstr.get_transfer_id()), received_region(arinstr.get_received_region()) {}
 
 gather_receive_instruction_record::gather_receive_instruction_record(const gather_receive_instruction& grinstr, const box<3>& gather_box, size_t num_nodes)
-    : acceptor_base(grinstr), transfer_id(grinstr.get_transfer_id()), memory_id(grinstr.get_memory_id()), allocation_id(grinstr.get_allocation_id()),
+    : acceptor_base(grinstr), transfer_id(grinstr.get_transfer_id()), memory_id(grinstr.get_dest_memory_id()), allocation_id(grinstr.get_dest_allocation_id()),
       node_chunk_size(grinstr.get_node_chunk_size()), gather_box(gather_box), num_nodes(num_nodes) {}
 
 fill_identity_instruction_record::fill_identity_instruction_record(const fill_identity_instruction& fiinstr)

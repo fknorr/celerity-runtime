@@ -280,7 +280,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    *instr,
 		    [&](const clone_collective_group_instruction_record& ccginstr) {
 			    begin_node(ccginstr, "ellipse", "darkred");
-			    fmt::format_to(back, "I{}<br/><b>clone collective group</b><br/>CG{} -&gt; CG{}", ccginstr.id, ccginstr.origin_collective_group_id,
+			    fmt::format_to(back, "I{}<br/><b>clone collective group</b><br/>CG{} -&gt; CG{}", ccginstr.id, ccginstr.original_collective_group_id,
 			        ccginstr.new_collective_group_id);
 			    end_node();
 		    },
@@ -353,14 +353,14 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.box);
+				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.accessed_box_in_buffer);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    for(const auto& access : dkinstr.reduction_map) {
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, get_buffer_label(access.buffer_id), access.box);
+				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, get_buffer_label(access.buffer_id), access.accessed_box_in_buffer);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();
@@ -379,7 +379,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.box);
+				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.accessed_box_in_buffer);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();
@@ -391,7 +391,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/>to N{} tag {}", sinstr.dest_node_id, sinstr.tag);
 			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(sinstr.transfer_id.bid), box(subrange(sinstr.offset_in_buffer, sinstr.send_range)));
 			    fmt::format_to(back, "<br/>via M{}.A{} {}", sinstr.source_memory_id, sinstr.source_allocation_id,
-			        box(subrange(sinstr.offset_in_allocation, sinstr.send_range)));
+			        box(subrange(sinstr.offset_in_source_allocation, sinstr.send_range)));
 			    fmt::format_to(back, "<br/>{}x{} bytes", sinstr.send_range, sinstr.element_size);
 			    send_instructions_by_tag.emplace(sinstr.tag, sinstr.id);
 			    end_node();

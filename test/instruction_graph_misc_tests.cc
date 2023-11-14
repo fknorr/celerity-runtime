@@ -94,8 +94,8 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 	const auto init_epoch = all_instrs.select_unique(task_manager::initial_epoch_task);
 	// the default collective group does not use the default communicator (aka MPI_COMM_WORLD) because host tasks are executed on a different thread
 	const auto clone_for_default_group = init_epoch.successors().assert_unique<clone_collective_group_instruction_record>();
-	CHECK(clone_for_default_group->origin_collective_group_id == root_collective_group_id);
-	CHECK(clone_for_default_group->new_collective_group_id != clone_for_default_group->origin_collective_group_id);
+	CHECK(clone_for_default_group->original_collective_group_id == root_collective_group_id);
+	CHECK(clone_for_default_group->new_collective_group_id != clone_for_default_group->original_collective_group_id);
 	const auto default_cgid = clone_for_default_group->new_collective_group_id;
 
 	const auto default_group_a = all_instrs.select_unique<host_task_instruction_record>("default-group (a)");
@@ -114,8 +114,8 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 
 	// clone-collective-group instructions are ordered, because cloning an MPI communicator is a collective operation as well
 	const auto clone_for_custom_group_1 = clone_for_default_group.successors().select_unique<clone_collective_group_instruction_record>();
-	CHECK(clone_for_custom_group_1->origin_collective_group_id == root_collective_group_id);
-	CHECK(clone_for_custom_group_1->new_collective_group_id != clone_for_custom_group_1->origin_collective_group_id);
+	CHECK(clone_for_custom_group_1->original_collective_group_id == root_collective_group_id);
+	CHECK(clone_for_custom_group_1->new_collective_group_id != clone_for_custom_group_1->original_collective_group_id);
 	const auto custom_cgid_1 = clone_for_custom_group_1->new_collective_group_id;
 	CHECK(custom_cgid_1 != default_cgid);
 
@@ -130,8 +130,8 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 
 	// clone-collective-group instructions are ordered, because cloning an MPI communicator is a collective operation as well
 	const auto clone_for_custom_group_2 = clone_for_custom_group_1.successors().select_unique<clone_collective_group_instruction_record>();
-	CHECK(clone_for_custom_group_2->origin_collective_group_id == root_collective_group_id);
-	CHECK(clone_for_custom_group_2->new_collective_group_id != clone_for_custom_group_2->origin_collective_group_id);
+	CHECK(clone_for_custom_group_2->original_collective_group_id == root_collective_group_id);
+	CHECK(clone_for_custom_group_2->new_collective_group_id != clone_for_custom_group_2->original_collective_group_id);
 	const auto custom_cgid_2 = clone_for_custom_group_2->new_collective_group_id;
 	CHECK(custom_cgid_2 != default_cgid);
 	CHECK(custom_cgid_2 != custom_cgid_1);

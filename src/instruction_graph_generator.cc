@@ -12,7 +12,6 @@
 #include "types.h"
 
 #include <bitset>
-#include <numeric>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -80,7 +79,7 @@ class instruction_graph_generator::impl {
 					record = {{instr}, access_front::read};
 				}
 				assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
-				access_fronts.update_region(box, std::move(record));
+				access_fronts.update_region(box, record);
 			}
 		}
 
@@ -1103,11 +1102,11 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 	// 4) create the actual command instructions
 
 	for(auto& instr : cmd_instrs) {
-		access_allocation_map allocation_map(bam.get_num_accesses());
-		access_allocation_map reduction_map(tsk.get_reductions().size());
+		buffer_access_allocation_map allocation_map(bam.get_num_accesses());
+		buffer_access_allocation_map reduction_map(tsk.get_reductions().size());
 
-		std::vector<buffer_memory_allocation_record> buffer_memory_access_map;   // if (m_recorder)
-		std::vector<buffer_memory_reduction_record> buffer_memory_reduction_map; // if (m_recorder)
+		std::vector<buffer_memory_record> buffer_memory_access_map;   // if (m_recorder)
+		std::vector<buffer_reduction_record> buffer_memory_reduction_map; // if (m_recorder)
 		if(m_recorder != nullptr) {
 			buffer_memory_access_map.resize(bam.get_num_accesses());
 			buffer_memory_reduction_map.resize(tsk.get_reductions().size());
@@ -1123,11 +1122,11 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 				    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(accessed_box); });
 				assert(allocation_it != allocations.end());
 				const auto& alloc = *allocation_it;
-				allocation_map[i] = access_allocation{alloc.aid, alloc.box, accessed_box};
-				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, accessed_box}; }
+				allocation_map[i] = buffer_access_allocation{alloc.aid, alloc.box, accessed_box};
+				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_record{bid, instr.memory_id}; }
 			} else {
-				allocation_map[i] = access_allocation{null_allocation_id, {}, {}};
-				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_allocation_record{bid, instr.memory_id, {}}; }
+				allocation_map[i] = buffer_access_allocation{null_allocation_id, {}, {}};
+				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_record{bid, instr.memory_id}; }
 			}
 		}
 
@@ -1140,9 +1139,9 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 			    allocations.begin(), allocations.end(), [&](const buffer_memory_per_allocation_data& alloc) { return alloc.box.covers(scalar_reduction_box); });
 			assert(allocation_it != allocations.end());
 			const auto& alloc = *allocation_it;
-			reduction_map[i] = access_allocation{alloc.aid, alloc.box, scalar_reduction_box};
+			reduction_map[i] = buffer_access_allocation{alloc.aid, alloc.box, scalar_reduction_box};
 			if(m_recorder != nullptr) {
-				buffer_memory_reduction_map[i] = buffer_memory_reduction_record{{rinfo.bid, instr.memory_id, scalar_reduction_box}, rinfo.rid};
+				buffer_memory_reduction_map[i] = buffer_reduction_record{rinfo.bid, instr.memory_id, rinfo.rid};
 			}
 		}
 
