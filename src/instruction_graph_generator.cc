@@ -306,8 +306,6 @@ class instruction_graph_generator::impl {
 	void satisfy_buffer_requirements(
 	    buffer_id bid, const task& tsk, const subrange<3>& local_sr, bool is_reduction_initializer, const std::vector<localized_chunk>& local_chunks);
 
-	std::vector<copy_instruction*> linearize_buffer_subrange(const buffer_id, const box<3>& box, const memory_id out_mid, alloc_instruction& ainstr);
-
 	int create_pilot_message(node_id target, const transfer_id& trid, const box<3>& box);
 
 	void compile_execution_command(const execution_command& ecmd);
@@ -918,80 +916,6 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(const buffer
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
 
 	locally_satisfy_read_requirements(bid, local_chunk_reads);
-}
-
-// TODO remove
-std::vector<copy_instruction*> instruction_graph_generator::impl::linearize_buffer_subrange(
-    const buffer_id bid, const box<3>& box, const memory_id out_mid, alloc_instruction& alloc_instr) {
-	auto& buffer = m_buffers.at(bid);
-
-	const auto box_sources = buffer.newest_data_location.get_region_values(box);
-
-#ifndef NDEBUG
-	for(const auto& [box, sources] : box_sources) {
-		// TODO for convenience, we want to accept read-write access by the first kernel that ever touches a given buffer range (think a read-write
-		//  kernel in a loop). However we still want to be able to detect the error condition of not having received a buffer region that was produced
-		//  by some other kernel in the past.
-		// TODO this should only be allowed for requirements of a task command, not from a push command!
-		assert(sources.any() && "trying to read data that is neither found locally nor has been await-pushed before");
-	}
-	for(const auto& transfer : buffer.pending_receives) {
-		assert(region_intersection(transfer.received_region, box).empty() && "attempting to linearize a subrange with uncommitted await-pushes");
-	}
-#endif
-
-	// There's no danger of multi-hop copies here, but we still stage copies to potentially merge boxes present on multiple memories below
-	std::unordered_map<memory_id, region<3>> pending_copies;
-
-	// try finding a common source for the entire region first to minimize instruction / synchronization complexity down the line
-	const auto common_sources = std::accumulate(box_sources.begin(), box_sources.end(), data_location(),
-	    [](const data_location common, const std::pair<detail::box<3>, data_location>& box_sources) { return common & box_sources.second; });
-	if(const auto common_device_sources = data_location(common_sources).reset(host_memory_id); common_device_sources.any()) {
-		// best case: we can copy all data from a single device
-		const auto source_mid = next_location(common_device_sources, host_memory_id + 1);
-		auto& copy_region = pending_copies[source_mid];
-		copy_region = region_union(copy_region, box);
-	} else {
-		// mix and match sources - there exists an optimal solution, but for now we just assemble source regions by picking the next device if any,
-		// or the host as a fallback.
-		for(const auto& [box, sources] : box_sources) {
-			const memory_id source_mid = next_location(sources, host_memory_id + 1); // picks host_memory last (which usually can't leverage DMA)
-			auto& copy_region = pending_copies[source_mid];
-			copy_region = region_union(copy_region, box);
-		}
-	}
-
-	std::vector<copy_instruction*> copy_instrs;
-	for(const auto& [source_mid, region] : pending_copies) {
-		for(const auto& source_box : region.get_boxes()) {
-			for(auto& source : buffer.memories[source_mid].allocations) {
-				const auto copy_box = box_intersection(source.box, source_box);
-				if(copy_box.empty()) continue;
-
-				const auto [source_offset, source_range] = source.box.get_subrange();
-				const auto [copy_offset, copy_range] = copy_box.get_subrange();
-				const auto [dest_offset, dest_range] = box.get_subrange();
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, source_mid, source.aid, source_range, copy_offset - source_offset, out_mid,
-				    alloc_instr.get_allocation_id(), dest_range, dest_offset - source_offset, copy_range, buffer.elem_size);
-
-				add_dependency(*copy_instr, alloc_instr, dependency_kind::true_dep);
-				// TODO copy-pasta
-				for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
-					assert(last_writer_instr != nullptr);
-					add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
-				}
-				source.record_read(copy_box, copy_instr);
-
-				copy_instrs.push_back(copy_instr);
-
-				if(m_recorder != nullptr) {
-					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::linearize, bid, copy_box);
-				}
-			}
-		}
-	}
-
-	return copy_instrs;
 }
 
 
