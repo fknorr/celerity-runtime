@@ -3,7 +3,6 @@
 
 #include "host_queue.h"
 #include "ranges.h"
-#include "sycl_wrappers.h"
 
 #include <functional>
 #include <future>

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <memory>
 #include <unordered_map>
 
 #include <CL/sycl.hpp>
@@ -9,7 +8,6 @@
 #include <ctpl_stl.h>
 #include <mpi.h>
 
-#include "config.h"
 #include "log.h"
 #include "named_threads.h"
 #include "types.h"
