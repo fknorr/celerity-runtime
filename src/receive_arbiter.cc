@@ -59,12 +59,15 @@ receive_arbiter::event receive_arbiter::await_split_receive_subregion(const tran
 	if(transfer_it == m_transfers.end()) { return event(event::complete); }
 
 	auto& mrt = std::get<multi_region_transfer>(transfer_it->second);
+
+#ifndef NDEBUG
 	const auto awaited_bounds = bounding_box(subregion);
 	assert(std::all_of(mrt.active_requests.begin(), mrt.active_requests.end(), [&](const stable_region_request& rr) {
 		// all boxes from the awaited region must be contained in a single allocation
 		const auto overlap = box_intersection(rr->allocated_box, awaited_bounds);
 		return overlap.empty() || overlap == awaited_bounds;
 	}));
+#endif
 
 	const auto req_it = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
 	    [&](const stable_region_request& rr) { return rr->allocated_box.covers(bounding_box(subregion)); });

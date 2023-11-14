@@ -147,12 +147,12 @@ struct task_manager_benchmark_context {
 	void create_task(range<KernelDims> global_range, CGF cgf) {
 		tm.submit_command_group([=](handler& cgh) {
 			cgf(cgh);
-			cgh.host_task(global_range, [](partition<KernelDims>) {});
+			cgh.parallel_for(global_range, [](item<KernelDims>) {});
 		});
 	}
 };
 
-struct graph_generator_benchmark_context {
+struct command_graph_generator_benchmark_context {
 	const size_t num_nodes;
 	command_graph cdag;
 	task_recorder trec;
@@ -161,19 +161,59 @@ struct graph_generator_benchmark_context {
 	distributed_graph_generator dggen;
 	test_utils::mock_buffer_factory mbf;
 
-	explicit graph_generator_benchmark_context(size_t num_nodes)
+	explicit command_graph_generator_benchmark_context(size_t num_nodes)
 	    : num_nodes{num_nodes}, crec(), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
 		tm.register_task_callback([this](const task* tsk) { dggen.build_task(*tsk); });
 	}
 
-	~graph_generator_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
+	~command_graph_generator_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
 
 	template <int KernelDims, typename CGF>
 	void create_task(range<KernelDims> global_range, CGF cgf) {
 		// note: This ignores communication overhead with the scheduler thread
 		tm.submit_command_group([=](handler& cgh) {
 			cgf(cgh);
-			cgh.host_task(global_range, [](partition<KernelDims>) {});
+			cgh.parallel_for(global_range, [](item<KernelDims>) {});
+		});
+	}
+};
+
+auto make_device_map(const size_t num_devices) {
+	std::vector<instruction_graph_generator::device_info> devices;
+	for(device_id did = 0; did < num_devices; ++did) {
+		devices.push_back(instruction_graph_generator::device_info{memory_id(did + 1)});
+	}
+	return devices;
+}
+
+struct instruction_graph_generator_benchmark_context {
+	const size_t num_nodes;
+	const size_t num_devices;
+	command_graph cdag;
+	task_recorder trec;
+	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr};
+	command_recorder crec;
+	distributed_graph_generator dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr};
+	instruction_recorder irec;
+	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_device_map(num_devices), test_utils::print_graphs ? &irec : nullptr};
+	test_utils::mock_buffer_factory mbf{tm, dggen, iggen};
+
+	explicit instruction_graph_generator_benchmark_context(const size_t num_nodes, const size_t num_devices) : num_nodes(num_nodes), num_devices(num_devices) {
+		tm.register_task_callback([this](const task* tsk) {
+			for(const auto cmd : dggen.build_task(*tsk)) {
+				iggen.compile(*cmd);
+			}
+		});
+	}
+
+	~instruction_graph_generator_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
+
+	template <int KernelDims, typename CGF>
+	void create_task(range<KernelDims> global_range, CGF cgf) {
+		// note: This ignores communication overhead with the scheduler thread
+		tm.submit_command_group([=](handler& cgh) {
+			cgf(cgh);
+			cgh.parallel_for(global_range, [](item<KernelDims>) {});
 		});
 	}
 };
@@ -315,10 +355,10 @@ struct submission_throttle_benchmark_context : public BaseBenchmarkContext {
 // Artificial: large set of disconnected tasks, does not generate horizons
 template <typename BenchmarkContext>
 [[gnu::noinline]] BenchmarkContext&& generate_soup_graph(BenchmarkContext&& ctx, const size_t num_tasks) {
-	test_utils::mock_buffer<2> buf = ctx.mbf.create_buffer(range<2>{ctx.num_nodes, num_tasks}, true /* host_initialized */);
+	test_utils::mock_buffer<2> buf = ctx.mbf.create_buffer(range<2>{ctx.num_nodes, num_tasks});
 	for(size_t t = 0; t < num_tasks; ++t) {
 		ctx.create_task(range<1>{ctx.num_nodes}, [&](handler& cgh) {
-			buf.get_access<access_mode::read_write>(cgh, [=](chunk<1> ck) { return subrange<2>{{ck.offset[0], t}, {ck.range[0], 1}}; });
+			buf.get_access<access_mode::discard_write>(cgh, [=](chunk<1> ck) { return subrange<2>{{ck.offset[0], t}, {ck.range[0], 1}}; });
 		});
 	}
 
@@ -329,7 +369,7 @@ template <typename BenchmarkContext>
 template <typename BenchmarkContext>
 [[gnu::noinline]] BenchmarkContext&& generate_chain_graph(BenchmarkContext&& ctx, const size_t num_tasks) {
 	const range<2> global_range{ctx.num_nodes, ctx.num_nodes};
-	test_utils::mock_buffer<2> buf = ctx.mbf.create_buffer(global_range);
+	test_utils::mock_buffer<2> buf = ctx.mbf.create_buffer(global_range, true /* host initialized */);
 	for(size_t t = 0; t < num_tasks; ++t) {
 		ctx.create_task(global_range, [&](handler& cgh) {
 			buf.get_access<access_mode::read>(cgh, [=](chunk<2> ck) { return subrange<2>{{ck.offset[1], ck.offset[0]}, {ck.range[1], ck.range[0]}}; });
@@ -442,20 +482,26 @@ TEST_CASE("generating large task graphs", "[benchmark][group:task-graph]") {
 }
 
 TEMPLATE_TEST_CASE_SIG("generating large command graphs for N nodes", "[benchmark][group:command-graph]", ((size_t NumNodes), NumNodes), 1, 4, 16) {
-	run_benchmarks([] { return graph_generator_benchmark_context{NumNodes}; });
+	run_benchmarks([] { return command_graph_generator_benchmark_context{NumNodes}; });
+}
+
+TEMPLATE_TEST_CASE_SIG(
+    "generating large instruction graphs for N devices", "[benchmark][group:instruction-graph]", ((size_t NumDevices), NumDevices), 1, 4, 16) {
+	constexpr static size_t num_nodes = 2;
+	run_benchmarks([] { return instruction_graph_generator_benchmark_context(num_nodes, NumDevices); });
 }
 
 TEMPLATE_TEST_CASE_SIG(
     "building command graphs in a dedicated scheduler thread for N nodes", "[benchmark][group:scheduler]", ((size_t NumNodes), NumNodes), 1, 4) {
 	SECTION("reference: single-threaded immediate graph generation") {
-		run_benchmarks([&] { return graph_generator_benchmark_context{NumNodes}; });
+		run_benchmarks([&] { return command_graph_generator_benchmark_context{NumNodes}; });
 	}
 	SECTION("immediate submission to a scheduler thread") {
 		restartable_thread thrd;
 		run_benchmarks([&] { return scheduler_benchmark_context{thrd, NumNodes}; });
 	}
 	SECTION("reference: throttled single-threaded graph generation at 10 us per task") {
-		run_benchmarks([] { return submission_throttle_benchmark_context<graph_generator_benchmark_context>{10us, NumNodes}; });
+		run_benchmarks([] { return submission_throttle_benchmark_context<command_graph_generator_benchmark_context>{10us, NumNodes}; });
 	}
 	SECTION("throttled submission to a scheduler thread at 10 us per task") {
 		restartable_thread thrd;
@@ -478,5 +524,10 @@ TEST_CASE("printing benchmark task graphs", "[.][debug-graphs][task-graph]") {
 }
 
 TEST_CASE("printing benchmark command graphs", "[.][debug-graphs][command-graph]") {
-	debug_graphs([] { return graph_generator_benchmark_context{2}; }, [](auto&& ctx) { test_utils::maybe_print_command_graph(0, ctx.crec); });
+	debug_graphs([] { return command_graph_generator_benchmark_context{2}; }, [](auto&& ctx) { test_utils::maybe_print_command_graph(0, ctx.crec); });
+}
+
+TEST_CASE("printing benchmark instruction graphs", "[.][debug-graphs][instruction-graph]") {
+	debug_graphs([] { return instruction_graph_generator_benchmark_context(2, 2); },
+	    [](auto&& ctx) { test_utils::maybe_print_instruction_graph(ctx.irec, ctx.crec, ctx.trec); });
 }

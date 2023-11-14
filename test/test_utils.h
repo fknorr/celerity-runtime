@@ -197,6 +197,7 @@ namespace test_utils {
 		explicit mock_buffer_factory() = default;
 		explicit mock_buffer_factory(detail::task_manager& tm) : m_task_mngr(&tm) {}
 		explicit mock_buffer_factory(detail::task_manager& tm, detail::distributed_graph_generator& dggen) : m_task_mngr(&tm), m_dggen(&dggen) {}
+		explicit mock_buffer_factory(detail::task_manager& tm, detail::distributed_graph_generator& dggen, detail::instruction_graph_generator &iggen) : m_task_mngr(&tm), m_dggen(&dggen), m_iggen(&iggen) {}
 		explicit mock_buffer_factory(detail::task_manager& tm, detail::abstract_scheduler& schdlr) : m_task_mngr(&tm), m_schdlr(&schdlr) {}
 
 		template <int Dims>
@@ -206,6 +207,7 @@ namespace test_utils {
 			if(m_task_mngr != nullptr) { m_task_mngr->create_buffer(bid, Dims, detail::range_cast<3>(size), mark_as_host_initialized); }
 			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_created(bid, Dims, detail::range_cast<3>(size), 1, 1, mark_as_host_initialized); }
 			if(m_dggen != nullptr) { m_dggen->create_buffer(bid, Dims, detail::range_cast<3>(size), mark_as_host_initialized); }
+			if(m_iggen != nullptr) { m_iggen->create_buffer(bid, Dims, detail::range_cast<3>(size), sizeof(int), alignof(int), mark_as_host_initialized); }
 			return buf;
 		}
 
@@ -213,6 +215,7 @@ namespace test_utils {
 		detail::task_manager* m_task_mngr = nullptr;
 		detail::abstract_scheduler* m_schdlr = nullptr;
 		detail::distributed_graph_generator* m_dggen = nullptr;
+		detail::instruction_graph_generator* m_iggen = nullptr;
 		detail::buffer_id m_next_buffer_id = 0;
 	};
 
@@ -358,6 +361,10 @@ namespace test_utils {
 
 	inline void maybe_print_command_graph(const detail::node_id local_nid, const detail::command_recorder& crec) {
 		if(print_graphs) { CELERITY_INFO("Command graph:\n\n{}\n", detail::print_command_graph(local_nid, crec)); }
+	}
+
+	inline void maybe_print_instruction_graph(const detail::instruction_recorder& irec, const detail::command_recorder& crec, const detail::task_recorder& trec) {
+		if(print_graphs) { CELERITY_INFO("Command graph:\n\n{}\n", detail::print_instruction_graph(irec, crec, trec)); }
 	}
 
 	struct task_test_context {

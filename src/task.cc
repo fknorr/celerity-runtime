@@ -1,5 +1,5 @@
-#include "access_modes.h"
 #include "task.h"
+#include "access_modes.h"
 
 
 namespace celerity {
@@ -28,9 +28,8 @@ namespace detail {
 		case 1: return subrange_cast<3>(rm->map_1(chnk));
 		case 2: return subrange_cast<3>(rm->map_2(chnk));
 		case 3: return rm->map_3(chnk);
-		default: assert(false);
+		default: assert(false); return subrange<3>{};
 		}
-		return subrange<3>{};
 	}
 
 	subrange<3> apply_range_mapper(const range_mapper_base* rm, const chunk<3>& chnk, int kernel_dims) {
@@ -39,7 +38,7 @@ namespace detail {
 		case 1: return apply_range_mapper<1>(rm, chunk_cast<1>(chnk));
 		case 2: return apply_range_mapper<2>(rm, chunk_cast<2>(chnk));
 		case 3: return apply_range_mapper<3>(rm, chunk_cast<3>(chnk));
-		default: assert(!"Unreachable");
+		default: assert(!"Unreachable"); return subrange<3>{};
 		}
 	}
 
