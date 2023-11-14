@@ -13,7 +13,29 @@ using namespace celerity::detail;
 namespace acc = celerity::access;
 
 
-TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors cause allocation of their bounding box", "[instruction_graph_generator][instruction-graph][memory]",
+TEST_CASE("empty-range buffer accesses do not trigger allocations or cause dependencies", "[instruction_graph_generator][instruction-graph][memory]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	auto buf = ictx.create_buffer(range(256));
+	ictx.device_compute(range(1)).discard_write(buf, acc::fixed<1>({0, 0})).submit();
+	ictx.device_compute(range(1)).discard_write(buf, acc::fixed<1>({128, 0})).submit();
+	ictx.master_node_host_task().read_write(buf, acc::fixed<1>({0, 0})).submit();
+	ictx.master_node_host_task().read_write(buf, acc::fixed<1>({128, 0})).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	CHECK(all_instrs.select_all<alloc_instruction_record>().count() == 0);
+	CHECK(all_instrs.select_all<copy_instruction_record>().count() == 0);
+
+	const auto all_launches = all_instrs.select_all<launch_instruction_record>();
+	CHECK(all_launches.count() == 4);
+	CHECK(all_launches.all_concurrent());
+	for(const auto& launch : all_launches.iterate()) {
+		REQUIRE(launch->access_map.size() == 1); // we still need to encode the null allocation for the hydration mechanism
+		CHECK(launch->access_map.front().allocation_id == null_allocation_id);
+	}
+}
+
+TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors trigger allocation of their bounding box", "[instruction_graph_generator][instruction-graph][memory]",
     ((int Dims), Dims), 1, 2, 3) //
 {
 	const auto full_range = test_utils::truncate_range<Dims>({256, 256, 256});
