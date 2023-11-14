@@ -197,7 +197,8 @@ namespace test_utils {
 		explicit mock_buffer_factory() = default;
 		explicit mock_buffer_factory(detail::task_manager& tm) : m_task_mngr(&tm) {}
 		explicit mock_buffer_factory(detail::task_manager& tm, detail::distributed_graph_generator& dggen) : m_task_mngr(&tm), m_dggen(&dggen) {}
-		explicit mock_buffer_factory(detail::task_manager& tm, detail::distributed_graph_generator& dggen, detail::instruction_graph_generator &iggen) : m_task_mngr(&tm), m_dggen(&dggen), m_iggen(&iggen) {}
+		explicit mock_buffer_factory(detail::task_manager& tm, detail::distributed_graph_generator& dggen, detail::instruction_graph_generator& iggen)
+		    : m_task_mngr(&tm), m_dggen(&dggen), m_iggen(&iggen) {}
 		explicit mock_buffer_factory(detail::task_manager& tm, detail::abstract_scheduler& schdlr) : m_task_mngr(&tm), m_schdlr(&schdlr) {}
 
 		template <int Dims>
@@ -363,7 +364,8 @@ namespace test_utils {
 		if(print_graphs) { CELERITY_INFO("Command graph:\n\n{}\n", detail::print_command_graph(local_nid, crec)); }
 	}
 
-	inline void maybe_print_instruction_graph(const detail::instruction_recorder& irec, const detail::command_recorder& crec, const detail::task_recorder& trec) {
+	inline void maybe_print_instruction_graph(
+	    const detail::instruction_recorder& irec, const detail::command_recorder& crec, const detail::task_recorder& trec) {
 		if(print_graphs) { CELERITY_INFO("Command graph:\n\n{}\n", detail::print_instruction_graph(irec, crec, trec)); }
 	}
 

@@ -120,7 +120,7 @@ std::unique_ptr<event> generic_queue::memcpy_strided_device(const int dims, cons
 }
 
 std::unique_ptr<event> generic_queue::launch_kernel(
-    device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
+    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
 	return launch_sycl_kernel(m_device_queues.at(did), launcher, execution_range, reduction_ptrs);
 }
 

@@ -21,8 +21,8 @@ TEST_CASE("reductions are equivalent to writes on a single-node single-device se
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
-	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	const auto writer = all_instrs.select_unique<device_kernel_instruction_record>("writer");
+	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 	CHECK(writer.successors() == reader);
 	CHECK(reader.predecessors() == writer);
 
@@ -46,7 +46,7 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 
 	const auto all_instrs = ictx.query_instructions();
 
-	const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
+	const auto writer = all_instrs.select_unique<device_kernel_instruction_record>("writer");
 	const auto init_buffer = all_instrs.select_unique<init_buffer_instruction_record>();
 	CHECK(writer.is_concurrent_with(init_buffer));
 
@@ -74,7 +74,7 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 	CHECK(local_reduce->memory_id == gather_from_writer->dest_memory);
 	CHECK(local_reduce->source_allocation_id == gather_from_writer->dest_allocation);
 
-	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 	CHECK(reader.transitive_predecessors_across<copy_instruction_record>().contains(local_reduce));
 }
 
@@ -92,7 +92,7 @@ TEST_CASE("reduction accesses on a single-node multi-device setup generate local
 	const auto all_instrs = ictx.query_instructions();
 
 	// partial results are written on the device
-	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
 	CHECK(all_writers.count() == num_devices);
 	CHECK(all_writers.all_concurrent());
 
@@ -117,13 +117,13 @@ TEST_CASE("reduction accesses on a single-node multi-device setup generate local
 
 		// the order of reduction inputs must be deterministic because the reduction operator is not necessarily associative
 		const auto writer = intersection_of(all_writers, gather_copy.predecessors());
-		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id.value()))));
+		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id))));
 	}
 
 	const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
 	CHECK(local_reduce.predecessors().contains(all_gather_copies));
 
-	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
+	const auto all_readers = all_instrs.select_all<device_kernel_instruction_record>("reader");
 	CHECK(all_readers.all_concurrent());
 	CHECK(local_reduce.transitive_successors_across<copy_instruction_record>().contains(all_readers));
 }
@@ -306,7 +306,7 @@ TEST_CASE("local reductions can be initialized to a buffer value that is not pre
 		CHECK(recv->requested_region == region(box<3>(zeros, ones)));
 		CHECK(recv->element_size == sizeof(int));
 
-		const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
+		const auto writer = all_instrs.select_unique<device_kernel_instruction_record>("writer");
 		CHECK(writer->access_map.empty()); // we have reductions, not (regular) accesses
 		REQUIRE(writer->reduction_map.size() == 1);
 		const auto& red_acc = writer->reduction_map.front();
@@ -354,7 +354,7 @@ TEST_CASE("local reductions only include values from participating devices", "[i
 
 	const auto all_instrs = ictx.query_instructions();
 
-	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
 	CHECK(all_writers.count() == num_devices / 2);
 
 	// look up the reduce-instruction first because it defines which memory / allocation we need to gather-copy to
@@ -377,7 +377,7 @@ TEST_CASE("local reductions only include values from participating devices", "[i
 		CHECK(gather_copy->dest_allocation == local_reduce->source_allocation_id);
 
 		// gather-order must be deterministic because the reduction operation is not necessarily associative
-		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id.value()))));
+		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id))));
 
 		CHECK(local_reduce.predecessors().contains(gather_copy));
 	}
@@ -458,6 +458,6 @@ TEST_CASE("global reductions without a local contribution do not read stale loca
 		}
 	}
 
-	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 	CHECK(reader.transitive_predecessors_across<copy_instruction_record>().contains(global_reduce));
 }

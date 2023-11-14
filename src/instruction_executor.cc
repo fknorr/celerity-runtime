@@ -64,8 +64,8 @@ void instruction_executor::loop() {
 			return matchbox::match(
 			    completion_event, //
 			    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
-			    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK([](const boundary_checked_event& e) { return e.is_complete(); },)
-			    [](const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); },
+			    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK([](const boundary_checked_event& e) { return e.is_complete(); }, )[](
+			        const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); },
 			    [](const receive_arbiter::event& evt) { return evt.is_complete(); },
 			    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; },
 			    [](const completed_synchronous) { return true; });
@@ -337,19 +337,19 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 			        cinstr.get_offset_in_dest(), cinstr.get_copy_range());
 		    }
 	    },
-	    [&](const sycl_kernel_instruction& skinstr) {
-		    CELERITY_DEBUG("[executor] I{}: launch SYCL kernel on D{}, {}{}", skinstr.get_id(), skinstr.get_device_id(), skinstr.get_execution_range(),
-		        log_accesses(skinstr.get_access_allocations()));
+	    [&](const device_kernel_instruction& dkinstr) {
+		    CELERITY_DEBUG("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
+		        log_accesses(dkinstr.get_access_allocations()));
 
-		    [[maybe_unused]] auto aux_info = prepare_accessor_hydration(target::device, skinstr.get_access_allocations());
+		    [[maybe_unused]] auto aux_info = prepare_accessor_hydration(target::device, dkinstr.get_access_allocations());
 
 		    std::vector<void*> reduction_ptrs;
-		    reduction_ptrs.reserve(skinstr.get_reduction_allocations().size());
-		    for(const auto& ra : skinstr.get_reduction_allocations()) {
+		    reduction_ptrs.reserve(dkinstr.get_reduction_allocations().size());
+		    for(const auto& ra : dkinstr.get_reduction_allocations()) {
 			    reduction_ptrs.push_back(m_allocations.at(ra.allocation_id));
 		    }
 
-		    auto evt = m_backend_queue->launch_kernel(skinstr.get_device_id(), skinstr.get_launcher(), skinstr.get_execution_range(), reduction_ptrs);
+		    auto evt = m_backend_queue->launch_kernel(dkinstr.get_device_id(), dkinstr.get_launcher(), dkinstr.get_execution_range(), reduction_ptrs);
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(aux_info)}};

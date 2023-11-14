@@ -12,7 +12,7 @@ bool sycl_event::is_complete() const {
 }
 
 std::unique_ptr<event> launch_sycl_kernel(
-    sycl::queue& queue, const sycl_kernel_launcher& launch, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
+    sycl::queue& queue, const device_kernel_launcher& launch, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
 	auto event = queue.submit([&](sycl::handler& sycl_cgh) { launch(sycl_cgh, execution_range, reduction_ptrs); });
 #if CELERITY_WORKAROUND(HIPSYCL)
 	// hipSYCL does not guarantee that command groups are actually scheduled until an explicit await operation, which we cannot insert without

@@ -26,13 +26,21 @@ TEST_CASE("empty-range buffer accesses do not trigger allocations or cause depen
 	CHECK(all_instrs.select_all<alloc_instruction_record>().count() == 0);
 	CHECK(all_instrs.select_all<copy_instruction_record>().count() == 0);
 
-	const auto all_launches = all_instrs.select_all<launch_instruction_record>();
-	CHECK(all_launches.count() == 4);
-	CHECK(all_launches.all_concurrent());
-	for(const auto& launch : all_launches.iterate()) {
-		REQUIRE(launch->access_map.size() == 1); // we still need to encode the null allocation for the hydration mechanism
-		CHECK(launch->access_map.front().allocation_id == null_allocation_id);
+	const auto all_device_kernels = all_instrs.select_all<device_kernel_instruction_record>();
+	CHECK(all_device_kernels.count() == 2);
+	for(const auto& kernel : all_device_kernels.iterate()) {
+		REQUIRE(kernel->access_map.size() == 1); // we still need to encode the null allocation for the hydration mechanism
+		CHECK(kernel->access_map.front().allocation_id == null_allocation_id);
 	}
+
+	const auto all_host_tasks = all_instrs.select_all<host_task_instruction_record>();
+	CHECK(all_host_tasks.count() == 2);
+	for(const auto& host_task : all_host_tasks.iterate()) {
+		REQUIRE(host_task->access_map.size() == 1); // we still need to encode the null allocation for the hydration mechanism
+		CHECK(host_task->access_map.front().allocation_id == null_allocation_id);
+	}
+
+	CHECK(union_of(all_device_kernels, all_host_tasks).all_concurrent());
 }
 
 TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors trigger allocation of their bounding box", "[instruction_graph_generator][instruction-graph][memory]",
@@ -52,10 +60,10 @@ TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors trigger allocation of the
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	const auto kernel = all_instrs.select_unique<launch_instruction_record>();
+	const auto kernel = all_instrs.select_unique<device_kernel_instruction_record>();
 
 	const auto alloc = all_instrs.select_unique<alloc_instruction_record>();
-	CHECK(alloc->memory_id == ictx.get_native_memory(kernel->device_id.value()));
+	CHECK(alloc->memory_id == ictx.get_native_memory(kernel->device_id));
 	CHECK(alloc->buffer_allocation->buffer_id == buf.get_id());
 
 	// the IDAG must allocate the bounding box for both accessors to map to overlapping, contiguous memory
@@ -88,7 +96,7 @@ TEMPLATE_TEST_CASE_SIG(
 	CHECK(all_instrs.select_all<alloc_instruction_record>().predecessors().all_match<epoch_instruction_record>());
 
 	// we have two writer instructions, one per device, each operating on their separate allocations on separate memories.
-	const auto all_writers = all_instrs.select_all<launch_instruction_record>();
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>();
 	CHECK(all_writers.count() == 2);
 	CHECK(all_writers.all_match("writer"));
 	CHECK(all_writers[0]->device_id != all_writers[1]->device_id);
@@ -105,7 +113,7 @@ TEMPLATE_TEST_CASE_SIG(
 
 		// the IDAG allocates appropriate boxes on the memories native to each executing device.
 		const auto alloc = writer.predecessors().assert_unique<alloc_instruction_record>();
-		CHECK(alloc->memory_id == ictx.get_native_memory(writer->device_id.value()));
+		CHECK(alloc->memory_id == ictx.get_native_memory(writer->device_id));
 		CHECK(writer->access_map.front().allocation_id == alloc->allocation_id);
 		CHECK(alloc->buffer_allocation.value().box == writer->access_map.front().accessed_box_in_buffer);
 
@@ -132,28 +140,28 @@ TEST_CASE("data-dependencies are generated between kernels on the same memory", 
 
 	const auto all_instrs = ictx.query_instructions();
 
-	const auto predecessor_kernels = [](const auto& q) { return q.predecessors().template select_all<launch_instruction_record>(); };
-	const auto successor_kernels = [](const auto& q) { return q.successors().template select_all<launch_instruction_record>(); };
+	const auto predecessor_kernels = [](const auto& q) { return q.predecessors().template select_all<device_kernel_instruction_record>(); };
+	const auto successor_kernels = [](const auto& q) { return q.successors().template select_all<device_kernel_instruction_record>(); };
 
-	const auto write_buf1 = all_instrs.select_unique<launch_instruction_record>("write buf1");
+	const auto write_buf1 = all_instrs.select_unique<device_kernel_instruction_record>("write buf1");
 	CHECK(predecessor_kernels(write_buf1).count() == 0);
 
-	const auto overwrite_buf1_right = all_instrs.select_unique<launch_instruction_record>("overwrite buf1 right");
+	const auto overwrite_buf1_right = all_instrs.select_unique<device_kernel_instruction_record>("overwrite buf1 right");
 	CHECK(predecessor_kernels(overwrite_buf1_right) == write_buf1 /* output-dependency on buf1 [128] - [256]*/);
 
-	const auto read_buf1_write_buf2 = all_instrs.select_unique<launch_instruction_record>("read buf 1, write buf2");
+	const auto read_buf1_write_buf2 = all_instrs.select_unique<device_kernel_instruction_record>("read buf 1, write buf2");
 	CHECK(predecessor_kernels(read_buf1_write_buf2).contains(overwrite_buf1_right /* true-dependency on buf1 [128] - [256]*/));
 	// IDAG might also specify a true-dependency on "write buf1" for buf1 [0] - [128], but this is transitive
 
-	const auto read_write_buf1_center = all_instrs.select_unique<launch_instruction_record>("read-write buf1 center");
+	const auto read_write_buf1_center = all_instrs.select_unique<device_kernel_instruction_record>("read-write buf1 center");
 	CHECK(predecessor_kernels(read_write_buf1_center).contains(read_buf1_write_buf2 /* anti-dependency on buf1 [64] - [192]*/));
 	// IDAG might also specify true-dependencies on "write buf1" and "overwrite buf1 right", but these are transitive
 
-	const auto read_buf2 = all_instrs.select_unique<launch_instruction_record>("read buf2");
+	const auto read_buf2 = all_instrs.select_unique<device_kernel_instruction_record>("read buf2");
 	CHECK(predecessor_kernels(read_buf2) == read_buf1_write_buf2 /* true-dependency on buf2 [0] - [256] */);
 	// This should not depend on any other kernel instructions, because none other are concerned with buf2.
 
-	const auto read_buf1_buf2 = all_instrs.select_unique<launch_instruction_record>("read buf1+2");
+	const auto read_buf1_buf2 = all_instrs.select_unique<device_kernel_instruction_record>("read buf1+2");
 	CHECK(predecessor_kernels(read_buf1_buf2).contains(read_write_buf1_center) /* true-dependency on buf1 [64] - [192] */);
 	CHECK(!predecessor_kernels(read_buf1_buf2).contains(read_buf2) /* readers are concurrent */);
 	// IDAG might also specify true-dependencies on "write buf1", "overwrite buf1 right", "read buf1, write_buf2", but these are transitive
@@ -169,8 +177,8 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 
 	const auto all_instrs = ictx.query_instructions();
 
-	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
-	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
+	const auto all_readers = all_instrs.select_all<device_kernel_instruction_record>("reader");
 	const auto coherence_copies = all_instrs.select_all<copy_instruction_record>(
 	    [](const copy_instruction_record& copy) { return copy.origin == copy_instruction_record::copy_origin::coherence; });
 
@@ -219,10 +227,10 @@ TEMPLATE_TEST_CASE_SIG(
 
 	const auto all_instrs = ictx.query_instructions();
 
-	const auto write_first_half = all_instrs.select_all<launch_instruction_record>("write 1st half");
-	const auto read_first_half = all_instrs.select_all<launch_instruction_record>("read 1st half");
-	const auto write_second_half = all_instrs.select_all<launch_instruction_record>("write 2nd half");
-	const auto read_all = all_instrs.select_all<launch_instruction_record>("read all");
+	const auto write_first_half = all_instrs.select_all<device_kernel_instruction_record>("write 1st half");
+	const auto read_first_half = all_instrs.select_all<host_task_instruction_record>("read 1st half");
+	const auto write_second_half = all_instrs.select_all<device_kernel_instruction_record>("write 2nd half");
+	const auto read_all = all_instrs.select_all<host_task_instruction_record>("read all");
 	const auto all_copies = all_instrs.select_all<copy_instruction_record>();
 
 	// there is one device -> host copy for each half
@@ -264,9 +272,9 @@ TEMPLATE_TEST_CASE_SIG("local copies are split on writers to facilitate compute-
 
 	const auto all_instrs = ictx.query_instructions();
 
-	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
 	const auto all_copies = all_instrs.select_all<copy_instruction_record>();
-	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	const auto reader = all_instrs.select_unique<host_task_instruction_record>("reader");
 
 	REQUIRE(all_writers.count() == 2);
 	REQUIRE(all_copies.count() == 2);
@@ -274,7 +282,7 @@ TEMPLATE_TEST_CASE_SIG("local copies are split on writers to facilitate compute-
 	// the reader depends on one copy per writer
 	for(size_t copy_idx = 0; copy_idx < all_copies.count(); ++copy_idx) {
 		const auto this_copy = all_copies[copy_idx];
-		const auto writer = intersection_of(this_copy.predecessors(), all_writers).assert_unique<launch_instruction_record>();
+		const auto writer = intersection_of(this_copy.predecessors(), all_writers).assert_unique<device_kernel_instruction_record>();
 		REQUIRE(writer->access_map.size() == 1);
 
 		const auto& write = writer->access_map.front();
@@ -311,11 +319,11 @@ TEMPLATE_TEST_CASE_SIG("accessing non-overlapping buffer subranges in subsequent
 
 	CHECK(all_instrs.select_all<alloc_instruction_record>().count() == 2);
 	CHECK(all_instrs.select_all<copy_instruction_record>().count() == 0); // no coherence copies needed
-	CHECK(all_instrs.select_all<launch_instruction_record>().count() == 2);
+	CHECK(all_instrs.select_all<device_kernel_instruction_record>().count() == 2);
 	CHECK(all_instrs.select_all<free_instruction_record>().count() == 2);
 
-	const auto first = all_instrs.select_unique<launch_instruction_record>("1st");
-	const auto second = all_instrs.select_unique<launch_instruction_record>("2nd");
+	const auto first = all_instrs.select_unique<device_kernel_instruction_record>("1st");
+	const auto second = all_instrs.select_unique<device_kernel_instruction_record>("2nd");
 	REQUIRE(first->access_map.size() == 1);
 	REQUIRE(second->access_map.size() == 1);
 
@@ -344,14 +352,14 @@ TEST_CASE("resizing a buffer allocation for a discard-write access preserves onl
 	const auto all_instrs = ictx.query_instructions();
 
 	// part of the buffer is allocated for the first writer
-	const auto first_writer = all_instrs.select_unique<launch_instruction_record>("1st writer");
+	const auto first_writer = all_instrs.select_unique<device_kernel_instruction_record>("1st writer");
 	REQUIRE(first_writer->access_map.size() == 1);
 	const auto first_alloc = first_writer.predecessors().select_unique<alloc_instruction_record>();
 	const auto first_write_box = first_writer->access_map.front().accessed_box_in_buffer;
 	CHECK(first_alloc->buffer_allocation.value().box == first_write_box);
 
 	// first and second writer ranges overlap, so the bounding box has to be allocated (and the old allocation freed)
-	const auto second_writer = all_instrs.select_unique<launch_instruction_record>("2nd writer");
+	const auto second_writer = all_instrs.select_unique<device_kernel_instruction_record>("2nd writer");
 	REQUIRE(second_writer->access_map.size() == 1);
 	const auto second_alloc = second_writer.predecessors().assert_unique<alloc_instruction_record>();
 	const auto second_write_box = second_writer->access_map.front().accessed_box_in_buffer;
@@ -369,7 +377,7 @@ TEST_CASE("resizing a buffer allocation for a discard-write access preserves onl
 
 	const auto resize_copy_preds = resize_copy.predecessors();
 	CHECK(resize_copy_preds.count() == 2);
-	CHECK(resize_copy_preds.select_unique<launch_instruction_record>() == first_writer);
+	CHECK(resize_copy_preds.select_unique<device_kernel_instruction_record>() == first_writer);
 	CHECK(resize_copy_preds.select_unique<alloc_instruction_record>() == second_alloc);
 
 	// resize-copy and overwriting kernel are concurrent, because they access non-overlapping regions in the same allocation

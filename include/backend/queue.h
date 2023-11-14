@@ -54,11 +54,11 @@ class queue {
 	    const id<3>& target_offset, const range<3>& copy_range) = 0;
 
 	[[nodiscard]] virtual std::unique_ptr<event> launch_kernel(
-	    device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) = 0;
+	    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) = 0;
 };
 
 std::unique_ptr<event> launch_sycl_kernel(
-    sycl::queue& queue, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs);
+    sycl::queue& queue, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs);
 
 void handle_sycl_errors(const sycl::exception_list& errors);
 

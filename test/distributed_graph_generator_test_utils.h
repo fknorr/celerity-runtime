@@ -655,4 +655,4 @@ class dist_cdag_test_context {
 	}
 };
 
-}
+} // namespace celerity::test_utils

@@ -519,7 +519,7 @@ class handler {
 	}
 
 	template <typename KernelFlavor, typename KernelName, int Dims, typename Kernel, size_t... ReductionIndices, typename... Reductions>
-	detail::sycl_kernel_launcher make_sycl_kernel_launcher(const range<Dims>& global_range, const id<Dims>& global_offset,
+	detail::device_kernel_launcher make_sycl_kernel_launcher(const range<Dims>& global_range, const id<Dims>& global_offset,
 	    typename detail::kernel_flavor_traits<KernelFlavor, Dims>::local_size_type local_range, Kernel&& kernel,
 	    std::index_sequence<ReductionIndices...> /* indices */, Reductions... reductions) {
 		static_assert(std::is_copy_constructible_v<std::decay_t<Kernel>>, "Kernel functor must be copyable"); // Required for hydration

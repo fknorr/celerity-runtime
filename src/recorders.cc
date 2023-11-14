@@ -190,28 +190,34 @@ copy_instruction_record::copy_instruction_record(const copy_instruction& cinstr,
       offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), element_size(cinstr.get_element_size()), origin(origin), buffer(buffer),
       box(box) {}
 
-launch_instruction_record::launch_instruction_record(const launch_instruction& linstr, const task_id cg_tid, const command_id execution_cid,
-    const std::string& debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
+device_kernel_instruction_record::device_kernel_instruction_record(const device_kernel_instruction& dkinstr, const task_id cg_tid,
+    const command_id execution_cid, const std::string& debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
     const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map)
-    : acceptor_base(linstr), target(utils::isa<host_task_instruction>(&linstr) ? execution_target::host : execution_target::device),
-      device_id(matchbox::match<std::optional<detail::device_id>>(
-          linstr, [](const sycl_kernel_instruction& skinstr) { return skinstr.get_device_id(); }, [](const auto&) { return std::nullopt; })),
-      collective_group_id(matchbox::match<std::optional<detail::collective_group_id>>(
-          linstr, [](const host_task_instruction& htinstr) { return htinstr.get_collective_group_id(); }, [](const auto&) { return std::nullopt; })),
-      execution_range(linstr.get_execution_range()), command_group_task_id(cg_tid), execution_command_id(execution_cid),
-      debug_name(utils::simplify_task_name(debug_name)) //
+    : acceptor_base(dkinstr), device_id(dkinstr.get_device_id()), execution_range(dkinstr.get_execution_range()), command_group_task_id(cg_tid),
+      execution_command_id(execution_cid), debug_name(utils::simplify_task_name(debug_name)) //
 {
-	assert(linstr.get_access_allocations().size() == buffer_memory_allocation_map.size());
-	access_map.reserve(linstr.get_access_allocations().size());
-	for(size_t i = 0; i < linstr.get_access_allocations().size(); ++i) {
-		access_map.emplace_back(linstr.get_access_allocations()[i], buffer_memory_allocation_map[i]);
+	assert(dkinstr.get_access_allocations().size() == buffer_memory_allocation_map.size());
+	access_map.reserve(dkinstr.get_access_allocations().size());
+	for(size_t i = 0; i < dkinstr.get_access_allocations().size(); ++i) {
+		access_map.emplace_back(dkinstr.get_access_allocations()[i], buffer_memory_allocation_map[i]);
 	}
-	if(const auto skinstr = dynamic_cast<const sycl_kernel_instruction*>(&linstr)) {
-		assert(skinstr->get_reduction_allocations().size() == buffer_memory_reduction_map.size());
-		reduction_map.reserve(skinstr->get_reduction_allocations().size());
-		for(size_t i = 0; i < skinstr->get_reduction_allocations().size(); ++i) {
-			reduction_map.emplace_back(skinstr->get_reduction_allocations()[i], buffer_memory_reduction_map[i]);
-		}
+
+	assert(dkinstr.get_reduction_allocations().size() == buffer_memory_reduction_map.size());
+	reduction_map.reserve(dkinstr.get_reduction_allocations().size());
+	for(size_t i = 0; i < dkinstr.get_reduction_allocations().size(); ++i) {
+		reduction_map.emplace_back(dkinstr.get_reduction_allocations()[i], buffer_memory_reduction_map[i]);
+	}
+}
+
+host_task_instruction_record::host_task_instruction_record(const host_task_instruction& htinstr, const task_id cg_tid, const command_id execution_cid,
+    const std::string& debug_name, const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map)
+    : acceptor_base(htinstr), collective_group_id(htinstr.get_collective_group_id()), execution_range(htinstr.get_execution_range()),
+      command_group_task_id(cg_tid), execution_command_id(execution_cid), debug_name(utils::simplify_task_name(debug_name)) //
+{
+	assert(htinstr.get_access_allocations().size() == buffer_memory_allocation_map.size());
+	access_map.reserve(htinstr.get_access_allocations().size());
+	for(size_t i = 0; i < htinstr.get_access_allocations().size(); ++i) {
+		access_map.emplace_back(htinstr.get_access_allocations()[i], buffer_memory_allocation_map[i]);
 	}
 }
 

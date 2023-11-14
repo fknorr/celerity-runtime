@@ -12,7 +12,7 @@ namespace celerity::detail {
 
 class instruction : public intrusive_graph_node<instruction>,
                     public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction,
-                        class init_buffer_instruction, class export_instruction, class copy_instruction, class sycl_kernel_instruction,
+                        class init_buffer_instruction, class export_instruction, class copy_instruction, class device_kernel_instruction,
                         class host_task_instruction, class send_instruction, class receive_instruction, class split_receive_instruction,
                         class await_receive_instruction, class gather_receive_instruction, class fill_identity_instruction, class reduce_instruction,
                         class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
@@ -158,53 +158,46 @@ struct access_allocation {
 
 using access_allocation_map = std::vector<access_allocation>;
 
-// TODO is a common base class for host and device "kernels" the right thing to do? On the host these are not called kernels but "host tasks" everywhere else.
-class launch_instruction : public instruction {
+class device_kernel_instruction final : public matchbox::implement_acceptor<instruction, device_kernel_instruction> {
   public:
-	explicit launch_instruction(const instruction_id iid, const subrange<3>& execution_range, access_allocation_map access_allocations)
-	    : instruction(iid), m_execution_range(execution_range), m_access_allocations(std::move(access_allocations)) {}
-
-	const subrange<3>& get_execution_range() const { return m_execution_range; }
-	const access_allocation_map& get_access_allocations() const { return m_access_allocations; }
-
-  private:
-	subrange<3> m_execution_range;
-	access_allocation_map m_access_allocations;
-};
-
-// TODO naming? we don't have cuda_kernel_instruction yet
-class sycl_kernel_instruction final : public matchbox::implement_acceptor<launch_instruction, sycl_kernel_instruction> {
-  public:
-	explicit sycl_kernel_instruction(const instruction_id iid, const device_id did, sycl_kernel_launcher launcher, const subrange<3>& execution_range,
+	explicit device_kernel_instruction(const instruction_id iid, const device_id did, device_kernel_launcher launcher, const subrange<3>& execution_range,
 	    access_allocation_map access_allocations, access_allocation_map reduction_allocations)
-	    : acceptor_base(iid, execution_range, std::move(access_allocations)), m_device_id(did), m_launcher(std::move(launcher)),
-	      m_reduction_allocations(std::move(reduction_allocations)) {}
+	    : acceptor_base(iid), m_device_id(did), m_launcher(std::move(launcher)),
+
+	      m_execution_range(execution_range), m_access_allocations(std::move(access_allocations)), m_reduction_allocations(std::move(reduction_allocations)) {}
 
 	device_id get_device_id() const { return m_device_id; }
-	const sycl_kernel_launcher& get_launcher() const { return m_launcher; }
+	const device_kernel_launcher& get_launcher() const { return m_launcher; }
+	const subrange<3>& get_execution_range() const { return m_execution_range; }
+	const access_allocation_map& get_access_allocations() const { return m_access_allocations; }
 	const access_allocation_map& get_reduction_allocations() const { return m_reduction_allocations; }
 
   private:
 	device_id m_device_id;
-	sycl_kernel_launcher m_launcher;
+	device_kernel_launcher m_launcher;
+	subrange<3> m_execution_range;
+	access_allocation_map m_access_allocations;
 	access_allocation_map m_reduction_allocations;
 };
 
-class host_task_instruction final : public matchbox::implement_acceptor<launch_instruction, host_task_instruction> {
+class host_task_instruction final : public matchbox::implement_acceptor<instruction, host_task_instruction> {
   public:
-	using acceptor_base::launch_instruction;
-
 	host_task_instruction(const instruction_id iid, host_task_launcher launcher, const subrange<3>& execution_range, const range<3>& global_range,
-	    access_allocation_map allocation_map, const collective_group_id cgid)
-	    : acceptor_base(iid, execution_range, std::move(allocation_map)), m_launcher(std::move(launcher)), m_global_range(global_range), m_cgid(cgid) {}
+	    access_allocation_map access_allocations, const collective_group_id cgid)
+	    : acceptor_base(iid), m_launcher(std::move(launcher)), m_global_range(global_range), m_execution_range(execution_range),
+	      m_access_allocations(std::move(access_allocations)), m_cgid(cgid) {}
 
 	const range<3>& get_global_range() const { return m_global_range; }
 	const host_task_launcher& get_launcher() const { return m_launcher; }
 	collective_group_id get_collective_group_id() const { return m_cgid; }
+	const subrange<3>& get_execution_range() const { return m_execution_range; }
+	const access_allocation_map& get_access_allocations() const { return m_access_allocations; }
 
   private:
 	host_task_launcher m_launcher;
 	range<3> m_global_range;
+	subrange<3> m_execution_range;
+	access_allocation_map m_access_allocations;
 	collective_group_id m_cgid;
 };
 

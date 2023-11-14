@@ -23,9 +23,9 @@ TEST_CASE("a command group without data access compiles to a trivial graph", "[i
 	const auto all_instrs = ictx.query_instructions();
 	CHECK(all_instrs.count() == 3);
 	CHECK(all_instrs.count<epoch_instruction_record>() == 2);
-	CHECK(all_instrs.count<launch_instruction_record>() == 1);
+	CHECK(all_instrs.count<device_kernel_instruction_record>() == 1);
 
-	const auto kernel = all_instrs.select_unique<launch_instruction_record>("kernel");
+	const auto kernel = all_instrs.select_unique<device_kernel_instruction_record>("kernel");
 	CHECK(kernel->access_map.empty());
 	CHECK(kernel->execution_range == subrange<3>(zeros, range_cast<3>(test_range)));
 	CHECK(kernel->device_id == device_id(0));
@@ -49,13 +49,13 @@ TEST_CASE("side-effects introduce dependencies between host-task instructions", 
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	const auto affect_ho1_a = all_instrs.select_unique<launch_instruction_record>("affect ho1 (a)");
-	const auto affect_ho2_a = all_instrs.select_unique<launch_instruction_record>("affect ho2 (a)");
-	const auto affect_ho1_b = all_instrs.select_unique<launch_instruction_record>("affect ho1 (b)");
-	const auto affect_ho2_b = all_instrs.select_unique<launch_instruction_record>("affect ho2 (b)");
-	const auto affect_both = all_instrs.select_unique<launch_instruction_record>("affect ho1 + ho2");
-	const auto affect_ho1_c = all_instrs.select_unique<launch_instruction_record>("affect ho1 (c)");
-	const auto affect_ho2_c = all_instrs.select_unique<launch_instruction_record>("affect ho2 (c)");
+	const auto affect_ho1_a = all_instrs.select_unique<host_task_instruction_record>("affect ho1 (a)");
+	const auto affect_ho2_a = all_instrs.select_unique<host_task_instruction_record>("affect ho2 (a)");
+	const auto affect_ho1_b = all_instrs.select_unique<host_task_instruction_record>("affect ho1 (b)");
+	const auto affect_ho2_b = all_instrs.select_unique<host_task_instruction_record>("affect ho2 (b)");
+	const auto affect_both = all_instrs.select_unique<host_task_instruction_record>("affect ho1 + ho2");
+	const auto affect_ho1_c = all_instrs.select_unique<host_task_instruction_record>("affect ho1 (c)");
+	const auto affect_ho2_c = all_instrs.select_unique<host_task_instruction_record>("affect ho2 (c)");
 	// only ho1 owns its instance, so only one destroy_host_object_instruction is generated
 	const auto destroy_ho1 = all_instrs.select_unique<destroy_host_object_instruction_record>();
 
@@ -98,16 +98,16 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 	CHECK(clone_for_default_group->new_collective_group_id != clone_for_default_group->origin_collective_group_id);
 	const auto default_cgid = clone_for_default_group->new_collective_group_id;
 
-	const auto default_group_a = all_instrs.select_unique<launch_instruction_record>("default-group (a)");
+	const auto default_group_a = all_instrs.select_unique<host_task_instruction_record>("default-group (a)");
 	CHECK(default_group_a->collective_group_id == default_cgid);
 	CHECK(default_group_a.predecessors() == clone_for_default_group);
 
-	const auto default_group_b = all_instrs.select_unique<launch_instruction_record>("default-group (b)");
+	const auto default_group_b = all_instrs.select_unique<host_task_instruction_record>("default-group (b)");
 	CHECK(default_group_b->collective_group_id == default_cgid);
 	CHECK(default_group_b.predecessors() == default_group_a); // collective-group ordering
 
 	// even though "default-group (c)" is submitted last, it only depends on its predecessor in the same group
-	const auto default_group_c = all_instrs.select_unique<launch_instruction_record>("default-group (c)");
+	const auto default_group_c = all_instrs.select_unique<host_task_instruction_record>("default-group (c)");
 	CHECK(default_group_c->collective_group_id == default_cgid);
 	CHECK(default_group_c.predecessors() == default_group_b); // collective-group ordering
 	CHECK(default_group_c.successors().is_unique<epoch_instruction_record>());
@@ -119,11 +119,11 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 	const auto custom_cgid_1 = clone_for_custom_group_1->new_collective_group_id;
 	CHECK(custom_cgid_1 != default_cgid);
 
-	const auto custom_group_1_a = all_instrs.select_unique<launch_instruction_record>("custom-group 1 (a)");
+	const auto custom_group_1_a = all_instrs.select_unique<host_task_instruction_record>("custom-group 1 (a)");
 	CHECK(custom_group_1_a->collective_group_id == custom_cgid_1);
 	CHECK(custom_group_1_a.predecessors() == clone_for_custom_group_1);
 
-	const auto custom_group_1_b = all_instrs.select_unique<launch_instruction_record>("custom-group 1 (b)");
+	const auto custom_group_1_b = all_instrs.select_unique<host_task_instruction_record>("custom-group 1 (b)");
 	CHECK(custom_group_1_b->collective_group_id == custom_cgid_1);
 	CHECK(custom_group_1_b.predecessors() == custom_group_1_a); // collective-group ordering
 	CHECK(custom_group_1_b.successors().is_unique<epoch_instruction_record>());
@@ -136,7 +136,7 @@ TEST_CASE("collective-group instructions follow a single global total order", "[
 	CHECK(custom_cgid_2 != default_cgid);
 	CHECK(custom_cgid_2 != custom_cgid_1);
 
-	const auto custom_group_2 = all_instrs.select_unique<launch_instruction_record>("custom-group 2");
+	const auto custom_group_2 = all_instrs.select_unique<host_task_instruction_record>("custom-group 2");
 	CHECK(custom_group_2->collective_group_id == custom_cgid_2);
 	CHECK(custom_group_2.predecessors() == clone_for_custom_group_2);
 	CHECK(custom_group_2.successors().is_unique<epoch_instruction_record>());
@@ -187,9 +187,9 @@ TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruc
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	const auto task_1 = all_instrs.select_unique<launch_instruction_record>("task 1");
+	const auto task_1 = all_instrs.select_unique<host_task_instruction_record>("task 1");
 	const auto fence = all_instrs.select_unique<fence_instruction_record>();
-	const auto task_2 = all_instrs.select_unique<launch_instruction_record>("task 2");
+	const auto task_2 = all_instrs.select_unique<host_task_instruction_record>("task 2");
 
 	CHECK(task_1.successors() == fence);
 	CHECK(fence.successors() == task_2);
@@ -253,7 +253,7 @@ TEST_CASE("epochs serialize execution and compact dependency tracking", "[instru
 	CHECK(host_alloc.predecessors() == barrier_epoch);
 	const auto d2h_copy = host_alloc.successors().select_unique<copy_instruction_record>();
 
-	const auto consumer = all_instrs.select_unique<launch_instruction_record>("consumer");
+	const auto consumer = all_instrs.select_unique<host_task_instruction_record>("consumer");
 	const auto all_frees = all_instrs.select_all<free_instruction_record>();
 	const auto destroy_ho = all_instrs.select_unique<destroy_host_object_instruction_record>();
 	const auto shutdown_epoch = consumer.transitive_successors().select_unique<epoch_instruction_record>();
@@ -328,7 +328,7 @@ TEST_CASE("horizon application serializes execution and compacts dependency trac
 	const auto host_alloc =
 	    all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id == host_memory_id; });
 	const auto d2h_copy = host_alloc.successors().select_unique<copy_instruction_record>();
-	const auto consumer = all_instrs.select_unique<launch_instruction_record>("consumer");
+	const auto consumer = all_instrs.select_unique<host_task_instruction_record>("consumer");
 	const auto all_frees = all_instrs.select_all<free_instruction_record>();
 	const auto all_destroy_hos = all_instrs.select_all<destroy_host_object_instruction_record>();
 	CHECK(applied_horizon.transitive_successors().contains(union_of(host_alloc, d2h_copy, consumer, all_frees, all_destroy_hos, current_horizon)));

@@ -341,36 +341,45 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			        box(subrange(cinstr.offset_in_dest, cinstr.copy_range)), cinstr.copy_range, cinstr.element_size);
 			    end_node();
 		    },
-		    [&](const launch_instruction_record& linstr) {
-			    begin_node(linstr, "box,margin=0.2,style=rounded", "darkorange2");
-			    fmt::format_to(back, "I{}", linstr.id);
-			    // TODO does not correctly label master-node host tasks
-			    fmt::format_to(back, " ({} T{}, execution C{})",
-			        linstr.target == execution_target::device ? "device-compute"
-			        : linstr.collective_group_id.has_value() && *linstr.collective_group_id != non_collective_group_id
-			            ? fmt::format("CG{} collective-host", *linstr.collective_group_id)
-			            : "host-compute",
-			        linstr.command_group_task_id, linstr.execution_command_id);
-			    fmt::format_to(back, "<br/><b>{}</b>", linstr.target == execution_target::device ? "device kernel" : "host task");
-			    if(!linstr.debug_name.empty()) { fmt::format_to(back, " {}", linstr.debug_name /* TODO escape? */); }
-			    if(linstr.device_id.has_value()) {
-				    fmt::format_to(back, "<br/>on D{} {}", *linstr.device_id, linstr.execution_range);
-			    } else {
-				    fmt::format_to(back, "<br/>on host {}", linstr.execution_range);
-			    }
+		    [&](const device_kernel_instruction_record& dkinstr) {
+			    begin_node(dkinstr, "box,margin=0.2,style=rounded", "darkorange2");
+			    fmt::format_to(back, "I{}", dkinstr.id);
+			    fmt::format_to(
+			        back, " (device-compute T{}, execution C{})<br/><b>device kernel</b>", dkinstr.command_group_task_id, dkinstr.execution_command_id);
+			    if(!dkinstr.debug_name.empty()) { fmt::format_to(back, " {}", dkinstr.debug_name /* TODO escape? */); }
+			    fmt::format_to(back, "<br/>on D{} {}", dkinstr.device_id, dkinstr.execution_range);
 
-			    for(const auto& access : linstr.access_map) {
+			    for(const auto& access : dkinstr.access_map) {
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
 				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.box);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
-			    for(const auto& access : linstr.reduction_map) {
+			    for(const auto& access : dkinstr.reduction_map) {
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
 				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, get_buffer_label(access.buffer_id), access.box);
+				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
+			    }
+			    end_node();
+		    },
+		    [&](const host_task_instruction_record& htinstr) {
+			    begin_node(htinstr, "box,margin=0.2,style=rounded", "darkorange2");
+			    fmt::format_to(back, "I{}", htinstr.id);
+			    // TODO does not correctly label master-node host tasks
+			    fmt::format_to(back, " ({} T{}, execution C{})<br/><b>host task</b>",
+			        htinstr.collective_group_id != non_collective_group_id ? fmt::format("CG{} collective-host", htinstr.collective_group_id) : "host-compute",
+			        htinstr.command_group_task_id, htinstr.execution_command_id);
+			    if(!htinstr.debug_name.empty()) { fmt::format_to(back, " {}", htinstr.debug_name /* TODO escape? */); }
+			    fmt::format_to(back, "<br/>on host {}", htinstr.execution_range);
+
+			    for(const auto& access : htinstr.access_map) {
+				    const auto accessed_box_in_allocation = box( //
+				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
+				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
+				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id), access.box);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();

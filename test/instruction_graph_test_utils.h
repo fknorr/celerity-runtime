@@ -268,20 +268,25 @@ class instruction_query {
 
 	static bool matches(const Record& instr, const task_id tid) {
 		return matchbox::match(
-		    instr,                                                                                        //
-		    [=](const launch_instruction_record& linstr) { return linstr.command_group_task_id == tid; }, //
-		    [=](const fence_instruction_record& finstr) { return finstr.tid == tid; },                    //
-		    [=](const horizon_instruction_record& hinstr) { return hinstr.horizon_task_id == tid; },      //
-		    [=](const epoch_instruction_record& einstr) { return einstr.epoch_task_id == tid; },          //
+		    instr,                                                                                                 //
+		    [=](const device_kernel_instruction_record& dkinstr) { return dkinstr.command_group_task_id == tid; }, //
+		    [=](const host_task_instruction_record& htinstr) { return htinstr.command_group_task_id == tid; },     //
+		    [=](const fence_instruction_record& finstr) { return finstr.tid == tid; },                             //
+		    [=](const horizon_instruction_record& hinstr) { return hinstr.horizon_task_id == tid; },               //
+		    [=](const epoch_instruction_record& einstr) { return einstr.epoch_task_id == tid; },                   //
 		    [](const auto& /* other */) { return false; });
 	}
 
 	static bool matches(const Record& instr, const device_id did) {
-		return utils::isa<launch_instruction_record>(&instr) && utils::as<launch_instruction_record>(&instr)->device_id == did;
+		return utils::isa<device_kernel_instruction_record>(&instr) && utils::as<device_kernel_instruction_record>(&instr)->device_id == did;
 	}
 
 	static bool matches(const Record& instr, const std::string& debug_name) {
-		return utils::isa<launch_instruction_record>(&instr) && utils::as<launch_instruction_record>(&instr)->debug_name == debug_name;
+		return matchbox::match(
+		    instr,                                                                                             //
+		    [&](const device_kernel_instruction_record& dkinstr) { return dkinstr.debug_name == debug_name; }, //
+		    [&](const host_task_instruction_record& htinstr) { return htinstr.debug_name == debug_name; },     //
+		    [](const auto& /* other */) { return false; });
 	}
 
 	template <typename Predicate, std::enable_if_t<std::is_invocable_r_v<bool, const Predicate&, const Record&>, int> = 0>

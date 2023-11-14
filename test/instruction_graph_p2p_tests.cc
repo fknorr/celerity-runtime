@@ -52,10 +52,10 @@ TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push a
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	const auto writer = all_instrs.select_unique<launch_instruction_record>("writer");
+	const auto writer = all_instrs.select_unique<device_kernel_instruction_record>("writer");
 	const auto send = all_instrs.select_unique<send_instruction_record>();
 	const auto recv = all_instrs.select_unique<receive_instruction_record>();
-	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 
 	const transfer_id expected_trid(reader_tid, buf.get_id(), no_reduction_id);
 
@@ -107,7 +107,7 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 
 	const transfer_id expected_trid(reader_tid, buf.get_id(), no_reduction_id);
 
-	const auto all_writers = all_instrs.select_all<launch_instruction_record>("writer");
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
 	CHECK(all_writers.count() == 2);
 	CHECK(all_writers.all_concurrent());
 
@@ -122,7 +122,7 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 		CAPTURE(send);
 
 		const auto associated_writer =
-		    intersection_of(send.transitive_predecessors_across<copy_instruction_record>(), all_writers).assert_unique<launch_instruction_record>();
+		    intersection_of(send.transitive_predecessors_across<copy_instruction_record>(), all_writers).assert_unique<device_kernel_instruction_record>();
 		REQUIRE(associated_writer->access_map.size() == 1);
 		const auto& write = associated_writer->access_map.front();
 
@@ -138,7 +138,7 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 
 	const auto split_recv = all_instrs.select_unique<split_receive_instruction_record>();
 	const auto all_await_recvs = all_instrs.select_all<await_receive_instruction_record>();
-	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
+	const auto all_readers = all_instrs.select_all<device_kernel_instruction_record>("reader");
 
 	// There is one split-receive instruction which binds the allocation to a transfer id, because we don't know the shape / stride of incoming messages until
 	// we receive pilots at runtime, and messages might either match our awaited subregions (and complete them independently), cover both (and need the
@@ -157,7 +157,7 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 		CAPTURE(await_recv);
 
 		const auto associated_reader =
-		    intersection_of(await_recv.transitive_successors_across<copy_instruction_record>(), all_readers).assert_unique<launch_instruction_record>();
+		    intersection_of(await_recv.transitive_successors_across<copy_instruction_record>(), all_readers).assert_unique<device_kernel_instruction_record>();
 		REQUIRE(associated_reader->access_map.size() == 1);
 		const auto& read = associated_reader->access_map.front();
 
@@ -166,8 +166,8 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 	}
 }
 
-TEMPLATE_TEST_CASE_SIG("overlapping requirements generate split-receives with one await per reader-set", "[instruction_graph_generator][instruction-graph][p2p]",
-    ((int Dims), Dims), 1, 2, 3) //
+TEMPLATE_TEST_CASE_SIG("overlapping requirements generate split-receives with one await per reader-set",
+    "[instruction_graph_generator][instruction-graph][p2p]", ((int Dims), Dims), 1, 2, 3) //
 {
 	const auto test_range = test_utils::truncate_range<Dims>({256, 256, 256});
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 4 /* devices */);
@@ -196,7 +196,7 @@ TEMPLATE_TEST_CASE_SIG("overlapping requirements generate split-receives with on
 
 	// Each reader instruction sources its input data from multiple await-receive instructions, and by extension, the await-receives operating on the overlap
 	// service multiple reader chunks.
-	const auto all_readers = all_instrs.select_all<launch_instruction_record>("reader");
+	const auto all_readers = all_instrs.select_all<device_kernel_instruction_record>("reader");
 	for(const auto& reader : all_readers.iterate()) {
 		const auto all_pred_awaits = reader.transitive_predecessors_across<copy_instruction_record>().select_all<await_receive_instruction_record>();
 		CHECK(all_pred_awaits.count() > 1);
@@ -242,6 +242,6 @@ TEST_CASE("an await-push of disconnected subregions does not allocate their boun
 		CHECK(region(alloc->buffer_allocation->box) == recv->requested_region);
 	}
 
-	const auto reader = all_instrs.select_unique<launch_instruction_record>("reader");
+	const auto reader = all_instrs.select_unique<host_task_instruction_record>("reader");
 	CHECK(reader.predecessors() == all_recvs);
 }

@@ -143,10 +143,11 @@ using instruction_dependency_list = std::vector<dependency_record<instruction_id
 
 struct instruction_record
     : matchbox::acceptor<struct clone_collective_group_instruction_record, struct alloc_instruction_record, struct free_instruction_record,
-          struct init_buffer_instruction_record, struct export_instruction_record, struct copy_instruction_record, struct launch_instruction_record,
-          struct send_instruction_record, struct receive_instruction_record, struct split_receive_instruction_record, struct await_receive_instruction_record,
-          struct gather_receive_instruction_record, struct fill_identity_instruction_record, struct reduce_instruction_record, struct fence_instruction_record,
-          struct destroy_host_object_instruction_record, struct horizon_instruction_record, struct epoch_instruction_record> //
+          struct init_buffer_instruction_record, struct export_instruction_record, struct copy_instruction_record, struct device_kernel_instruction_record,
+          struct host_task_instruction_record, struct send_instruction_record, struct receive_instruction_record, struct split_receive_instruction_record,
+          struct await_receive_instruction_record, struct gather_receive_instruction_record, struct fill_identity_instruction_record,
+          struct reduce_instruction_record, struct fence_instruction_record, struct destroy_host_object_instruction_record, struct horizon_instruction_record,
+          struct epoch_instruction_record> //
 {
 	instruction_id id;
 	instruction_dependency_list dependencies;
@@ -256,10 +257,8 @@ struct buffer_allocation_reduction_record : access_allocation, buffer_memory_red
 	    : access_allocation(aa), buffer_memory_reduction_record(bmrr) {}
 };
 
-struct launch_instruction_record : matchbox::implement_acceptor<instruction_record, launch_instruction_record> {
-	execution_target target;
-	std::optional<detail::device_id> device_id;
-	std::optional<detail::collective_group_id> collective_group_id;
+struct device_kernel_instruction_record : matchbox::implement_acceptor<instruction_record, device_kernel_instruction_record> {
+	detail::device_id device_id;
 	subrange<3> execution_range;
 	std::vector<buffer_allocation_access_record> access_map;
 	std::vector<buffer_allocation_reduction_record> reduction_map;
@@ -267,9 +266,21 @@ struct launch_instruction_record : matchbox::implement_acceptor<instruction_reco
 	command_id execution_command_id;
 	std::string debug_name;
 
-	launch_instruction_record(const launch_instruction& linstr, task_id cg_tid, command_id execution_cid, const std::string& debug_name,
+	device_kernel_instruction_record(const device_kernel_instruction& dkinstr, task_id cg_tid, command_id execution_cid, const std::string& debug_name,
 	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map,
 	    const std::vector<buffer_memory_reduction_record>& buffer_memory_reduction_map);
+};
+
+struct host_task_instruction_record : matchbox::implement_acceptor<instruction_record, host_task_instruction_record> {
+	detail::collective_group_id collective_group_id;
+	subrange<3> execution_range;
+	std::vector<buffer_allocation_access_record> access_map;
+	task_id command_group_task_id;
+	command_id execution_command_id;
+	std::string debug_name;
+
+	host_task_instruction_record(const host_task_instruction& htinstr, task_id cg_tid, command_id execution_cid, const std::string& debug_name,
+	    const std::vector<buffer_memory_allocation_record>& buffer_memory_allocation_map);
 };
 
 struct send_instruction_record : matchbox::implement_acceptor<instruction_record, send_instruction_record> {

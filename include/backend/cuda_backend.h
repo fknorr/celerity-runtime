@@ -47,7 +47,7 @@ class cuda_queue final : public queue {
 	    const range<3>& copy_range) override;
 
 	std::unique_ptr<event> launch_kernel(
-	    device_id did, const sycl_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) override;
+	    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) override;
 
   private:
 	struct impl;

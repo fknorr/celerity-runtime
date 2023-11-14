@@ -916,28 +916,30 @@ void instruction_graph_generator::compile_execution_command(const execution_comm
 			}
 		}
 
-		launch_instruction* launch_instr;
 		if(tsk.get_execution_target() == execution_target::device) {
 			assert(instr.subrange.range.size() > 0);
 			assert(instr.memory_id != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			launch_instr = &create<sycl_kernel_instruction>(
-			    instr.did, tsk.get_launcher<sycl_kernel_launcher>(), instr.subrange, std::move(allocation_map), std::move(reduction_map));
+			const auto device_kernel_instr = &create<device_kernel_instruction>(
+			    instr.did, tsk.get_launcher<device_kernel_launcher>(), instr.subrange, std::move(allocation_map), std::move(reduction_map));
+			if(m_recorder != nullptr) {
+				*m_recorder << device_kernel_instruction_record(
+				    *device_kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map, buffer_memory_reduction_map);
+			}
+			instr.instruction = device_kernel_instr;
 		} else {
 			assert(tsk.get_execution_target() == execution_target::host);
 			assert(instr.memory_id == host_memory_id);
 			assert(reduction_map.empty());
-			launch_instr = &create<host_task_instruction>(
+			const auto host_task_instr = &create<host_task_instruction>(
 			    tsk.get_launcher<host_task_launcher>(), instr.subrange, tsk.get_global_size(), std::move(allocation_map), tsk.get_collective_group_id());
+			if(m_recorder != nullptr) {
+				*m_recorder << host_task_instruction_record(*host_task_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map);
+			}
+			instr.instruction = host_task_instr;
 		}
-
-		if(m_recorder != nullptr) {
-			*m_recorder << launch_instruction_record(
-			    *launch_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map, buffer_memory_reduction_map);
-		}
-
-		instr.instruction = launch_instr;
 	}
+
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
 	// TODO this will not work correctly for oversubscription
