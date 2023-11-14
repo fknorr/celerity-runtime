@@ -198,6 +198,106 @@ TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruc
 	CHECK(ho_fence_info.hoid == ho.get_id());
 }
 
+TEST_CASE("epochs serialize execution and compact dependency tracking", "[instruction_graph_generator][instruction-graph][compaction]") {
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	ictx.set_horizon_step(999);
+
+	auto buf = ictx.create_buffer(range(256));
+	auto ho = ictx.create_host_object();
+	// we initialize the buffer on the device to get a single source allocation for the d2h copy after the barrier
+	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::all()).submit();
+	// there are two concurrent writers to `buf` on D0, which would generate two concurrent d2h copies if there were no epoch before the read
+	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({0, 128})).submit();
+	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({128, 256})).submit();
+	ictx.master_node_host_task().name("producer").affect(ho).submit();
+	const auto barrier_epoch_tid = ictx.epoch(epoch_action::barrier);
+	ictx.master_node_host_task().name("consumer").read(buf, acc::all()).affect(ho).submit();
+	ictx.finish();
+
+	// this test is very explicit about each instuction in the graph - things might easily break when touching IDAG generation.
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto init_epoch = all_instrs.select_unique<epoch_instruction_record>(task_manager::initial_epoch_task);
+	CHECK(init_epoch.predecessors().count() == 0);
+
+	const auto all_device_allocs =
+	    all_instrs.select_all<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id != host_memory_id; });
+	CHECK(all_device_allocs.predecessors() == init_epoch);
+
+	const auto all_producers = all_instrs.select_all("producer");
+
+	// the barrier epoch (aka slow_full_sync) will transitively depend on all previous instructions
+	const auto barrier_epoch = all_instrs.select_unique<epoch_instruction_record>(barrier_epoch_tid);
+	CHECK(barrier_epoch->epoch_action == epoch_action::barrier);
+	CHECK(barrier_epoch.transitive_predecessors() == union_of(init_epoch, all_device_allocs, all_producers));
+
+	// There will only be a single d2h copy, since inserting the epoch will compact the last-writer tracking structures, replacing the two concurrent device
+	// kernels with the single epoch.
+	const auto host_alloc =
+	    all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id == host_memory_id; });
+	CHECK(host_alloc.predecessors() == barrier_epoch);
+	const auto d2h_copy = host_alloc.successors().select_unique<copy_instruction_record>();
+
+	const auto consumer = all_instrs.select_unique<launch_instruction_record>("consumer");
+	const auto all_frees = all_instrs.select_all<free_instruction_record>();
+	const auto destroy_ho = all_instrs.select_unique<destroy_host_object_instruction_record>();
+	const auto shutdown_epoch = consumer.transitive_successors().select_unique<epoch_instruction_record>();
+	CHECK(shutdown_epoch->epoch_action == epoch_action::shutdown);
+	CHECK(shutdown_epoch.successors().count() == 0);
+
+	// all instructions generated after the barrier epoch must transitively depend on it
+	CHECK(barrier_epoch.transitive_successors() == union_of(host_alloc, d2h_copy, consumer, all_frees, destroy_ho, shutdown_epoch));
+
+	// there can be no dependencies from instructions after the epoch
+	CHECK(union_of(all_device_allocs, all_producers, barrier_epoch).contains(union_of(init_epoch, all_device_allocs, all_producers).successors()));
+
+	// there can be no dependencies to instructions before the epoch
+	CHECK(union_of(barrier_epoch, host_alloc, d2h_copy, consumer, all_frees, destroy_ho)
+	          .contains(union_of(host_alloc, d2h_copy, consumer, all_frees, destroy_ho, shutdown_epoch).predecessors()));
+}
+
+TEST_CASE("horizon application serializes execution and compacts dependency tracking", "[instruction_graph_generator][instruction-graph][compaction]") {
+	const bool apply_horizon = GENERATE(values<int>({false, true})); // int: Catch2 cannot deal with values<bool> because of vector<bool>
+	CAPTURE(apply_horizon);
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	ictx.set_horizon_step(3);
+
+	auto buf = ictx.create_buffer(range(256)); // we test dependencies on this buffer
+	auto test_ho = ictx.create_host_object();
+	auto age_ho = ictx.create_host_object();
+
+	ictx.master_node_host_task().name("producer").affect(age_ho).submit();
+	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::all()).submit();
+	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({0, 128})).submit();
+	ictx.device_compute(range(1)).name("producer").discard_write(buf, acc::fixed<1>({128, 128})).submit();
+
+	for(int i = 0; i < (apply_horizon ? 5 : 2); ++i) {
+		ictx.master_node_host_task().name("age").affect(age_ho).submit();
+	}
+
+	ictx.master_node_host_task().name("consumer").read(buf, acc::all()).affect(test_ho).affect(age_ho).submit();
+	ictx.finish();
+
+	// this test is very explicit about each instuction in the graph - things might easily break when touching IDAG generation.
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto all_device_allocs =
+	    all_instrs.select_all<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id != host_memory_id; });
+
+	const auto all_producers = all_instrs.select_all("producer");
+
+	// There will only be a single d2h copy, since inserting the epoch will compact the last-writer tracking structures, replacing the two concurrent device
+	// kernels with the single epoch.
+	const auto host_alloc =
+	    all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id == host_memory_id; });
+	const auto d2h_copy = host_alloc.successors().select_unique<copy_instruction_record>();
+
+	const auto consumer = all_instrs.select_unique<launch_instruction_record>("consumer");
+	const auto all_frees = all_instrs.select_all<free_instruction_record>();
+	const auto destroy_ho = all_instrs.select_unique<destroy_host_object_instruction_record>();
+}
+
 TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitialized read", "[instruction_graph_generator]") {
 	const size_t num_devices = 2;
 	const range<1> device_range{num_devices};
