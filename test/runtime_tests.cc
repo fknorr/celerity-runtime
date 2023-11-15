@@ -36,10 +36,6 @@ namespace detail {
 	using celerity::access::slice;
 	using celerity::experimental::access::even_split;
 
-	struct scheduler_testspy {
-		static std::thread& get_thread(scheduler& schdlr) { return schdlr.m_thread; }
-	};
-
 	struct executor_testspy {
 		static std::thread& get_thread(instruction_executor& exec) { return exec.m_thread; }
 	};
@@ -1164,7 +1160,7 @@ namespace detail {
 
 		// intial epoch + master-node task + 1 push per node + host task + sync epoch
 		// (dry runs currently always simulate node 0, hence the master-node task)
-		CHECK(runtime_testspy::get_command_count(rt) == 4 + num_nodes);
+		CHECK(scheduler_testspy::get_command_count(runtime_testspy::get_schdlr(rt)) == 4 + num_nodes);
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "dry run generates commands for an arbitrary number of simulated worker nodes", "[dryrun]") {

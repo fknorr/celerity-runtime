@@ -195,7 +195,8 @@ struct instruction_graph_generator_benchmark_context {
 	command_recorder crec;
 	distributed_graph_generator dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr};
 	instruction_recorder irec;
-	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_device_map(num_devices), test_utils::print_graphs ? &irec : nullptr};
+	instruction_graph idag;
+	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_device_map(num_devices), idag, test_utils::print_graphs ? &irec : nullptr};
 	test_utils::mock_buffer_factory mbf{tm, dggen, iggen};
 
 	explicit instruction_graph_generator_benchmark_context(const size_t num_nodes, const size_t num_devices) : num_nodes(num_nodes), num_devices(num_devices) {
@@ -275,8 +276,10 @@ class restartable_thread {
 
 class benchmark_scheduler final : public abstract_scheduler {
   public:
-	benchmark_scheduler(restartable_thread& thread, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen)
-	    : abstract_scheduler(false, std::move(dggen), std::move(iggen)), m_thread(&thread) {
+	benchmark_scheduler(restartable_thread& thread, const size_t num_nodes, const node_id local_node_id,
+	    std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm, delegate* const delegate, command_recorder* const crec,
+	    instruction_recorder* const irec)
+	    : abstract_scheduler(num_nodes, local_node_id, std::move(local_devices), tm, delegate, crec, irec), m_thread(&thread) {
 		m_thread->start([this] { schedule(); });
 	}
 
@@ -297,16 +300,15 @@ class benchmark_scheduler final : public abstract_scheduler {
 struct scheduler_benchmark_context {
 	const size_t num_nodes;
 	command_graph cdag;
-	task_manager tm{num_nodes, nullptr, {}};
+	task_manager tm;
 	benchmark_scheduler schdlr;
 	test_utils::mock_buffer_factory mbf;
 
-	explicit scheduler_benchmark_context(restartable_thread& thrd, size_t num_nodes)
-	    : num_nodes{num_nodes}, //
-	      schdlr{thrd, std::make_unique<distributed_graph_generator>(num_nodes, 0 /* local_nid */, cdag, tm, nullptr),
-	          std::make_unique<instruction_graph_generator>(
-	              tm, num_nodes, 0 /* local_nid */, std::vector<instruction_graph_generator::device_info>(/* TODO */), nullptr /* recorder */)}, //
-	      mbf{tm, schdlr} {
+	explicit scheduler_benchmark_context(restartable_thread& thrd, const size_t num_nodes, const size_t num_devices_per_node)
+	    : num_nodes(num_nodes), tm(num_nodes, nullptr, {}),
+	      schdlr(thrd, num_nodes, 0 /* local_nid */, make_device_map(num_devices_per_node), tm, nullptr /* delegate */, nullptr /* crec */, nullptr /* irec */),
+	      mbf(tm, schdlr) //
+	{
 		tm.register_task_callback([this](const task* tsk) { schdlr.notify_task_created(tsk); });
 	}
 
@@ -336,7 +338,7 @@ struct submission_throttle_benchmark_context : public BaseBenchmarkContext {
 
 	template <typename... BaseCtorParams>
 	explicit submission_throttle_benchmark_context(std::chrono::steady_clock::duration delay_per_submission, BaseCtorParams&&... args)
-	    : BaseBenchmarkContext{std::forward<BaseCtorParams>(args)...}, delay_per_submission{delay_per_submission} {}
+	    : BaseBenchmarkContext(std::forward<BaseCtorParams>(args)...), delay_per_submission(delay_per_submission) {}
 
 	template <int KernelDims, typename CGF>
 	void create_task(range<KernelDims> global_range, CGF cgf) {
@@ -494,18 +496,18 @@ TEMPLATE_TEST_CASE_SIG(
 TEMPLATE_TEST_CASE_SIG(
     "building command graphs in a dedicated scheduler thread for N nodes", "[benchmark][group:scheduler]", ((size_t NumNodes), NumNodes), 1, 4) {
 	SECTION("reference: single-threaded immediate graph generation") {
-		run_benchmarks([&] { return command_graph_generator_benchmark_context{NumNodes}; });
+		run_benchmarks([&] { return command_graph_generator_benchmark_context(NumNodes); });
 	}
 	SECTION("immediate submission to a scheduler thread") {
 		restartable_thread thrd;
-		run_benchmarks([&] { return scheduler_benchmark_context{thrd, NumNodes}; });
+		run_benchmarks([&] { return scheduler_benchmark_context(thrd, NumNodes, 1 /* num_devices */); });
 	}
 	SECTION("reference: throttled single-threaded graph generation at 10 us per task") {
-		run_benchmarks([] { return submission_throttle_benchmark_context<command_graph_generator_benchmark_context>{10us, NumNodes}; });
+		run_benchmarks([] { return submission_throttle_benchmark_context<command_graph_generator_benchmark_context>(10us, NumNodes); });
 	}
 	SECTION("throttled submission to a scheduler thread at 10 us per task") {
 		restartable_thread thrd;
-		run_benchmarks([&] { return submission_throttle_benchmark_context<scheduler_benchmark_context>{10us, thrd, NumNodes}; });
+		run_benchmarks([&] { return submission_throttle_benchmark_context<scheduler_benchmark_context>(10us, thrd, NumNodes, 1 /* num_devices */); });
 	}
 }
 

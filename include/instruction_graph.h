@@ -6,6 +6,11 @@
 #include "ranges.h"
 #include "types.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <memory>
+#include <vector>
+
 #include <matchbox.hh>
 
 namespace celerity::detail {
@@ -33,6 +38,7 @@ class instruction : public intrusive_graph_node<instruction>,
 
 struct instruction_id_less {
 	bool operator()(const instruction* const lhs, const instruction* const rhs) const { return lhs->get_id() < rhs->get_id(); }
+	bool operator()(const std::unique_ptr<instruction>& lhs, const std::unique_ptr<instruction>& rhs) const { return lhs->get_id() < rhs->get_id(); }
 };
 
 /// Creates a new (MPI) collective group by cloning an existing one. The instuction is issued whenever the first host task on a new collective_group is compiled
@@ -434,27 +440,44 @@ class epoch_instruction final : public matchbox::implement_acceptor<instruction,
 	epoch_action m_epoch_action;
 };
 
+/// Keeps ownership of all instructions that have not yet been pruned by epoch or horizon application.
 class instruction_graph {
   public:
-	void insert(std::unique_ptr<instruction> instr) { m_instructions.push_back(std::move(instr)); }
-
-	template <typename Predicate>
-	void erase_if(Predicate&& p) {
-		const auto last = std::remove_if(m_instructions.begin(), m_instructions.end(),
-		    [&p](const std::unique_ptr<instruction>& item) { return p(static_cast<const instruction*>(item.get())); });
-		m_instructions.erase(last, m_instructions.end());
+	// Call this before pushing horizon or epoch instruction to be able to call erase_before_epoch on the same task id later.
+	void begin_epoch(const task_id tid) {
+		assert(m_epochs.empty() || (m_epochs.back().epoch_tid < tid && !m_epochs.back().instructions.empty()));
+		m_epochs.push_back({tid, {}});
 	}
 
-	template <typename Fn>
-	void for_each(Fn&& fn) const {
-		for(const auto& instr : m_instructions) {
-			fn(std::as_const(*instr));
-		}
+	// Add an instruction to the current epoch. Its instruction id must be higher than any instruction inserted into the graph before.
+	void push_instruction(std::unique_ptr<instruction> instr) {
+		assert(!m_epochs.empty());
+		auto& instructions = m_epochs.back().instructions;
+		assert(instructions.empty() || instruction_id_less{}(instructions.back().get(), instr.get()));
+		instructions.push_back(std::move(instr));
+	}
+
+	// Free all instructions that were pushed before begin_epoch(tid) was called.
+	void prune_before_epoch(const task_id tid) {
+		const auto first_retained =
+		    std::partition_point(m_epochs.begin(), m_epochs.end(), [=](const instruction_epoch& epoch) { return epoch.epoch_tid < tid; });
+		assert(first_retained != m_epochs.end() && first_retained->epoch_tid == tid);
+		m_epochs.erase(m_epochs.begin(), first_retained);
+	}
+
+	// The total number of instructions currently owned and not yet pruned, across all epochs.
+	size_t num_live_instructions() const {
+		return std::accumulate(
+		    m_epochs.begin(), m_epochs.end(), size_t{0}, [](const size_t acc, const instruction_epoch& epoch) { return acc + epoch.instructions.size(); });
 	}
 
   private:
-	// TODO split vector into epochs for cleanup phase
-	std::vector<std::unique_ptr<instruction>> m_instructions;
+	struct instruction_epoch {
+		task_id epoch_tid;
+		std::vector<std::unique_ptr<instruction>> instructions; // instruction pointers are stable, so it is safe to hand them to another thread
+	};
+
+	std::vector<instruction_epoch> m_epochs;
 };
 
 } // namespace celerity::detail

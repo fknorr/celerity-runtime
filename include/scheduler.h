@@ -6,22 +6,29 @@
 #include <thread>
 #include <variant>
 
-#include "instruction_graph.h"
 #include "instruction_graph_generator.h"
 #include "ranges.h"
 #include "types.h"
 
+
 namespace celerity {
 namespace detail {
 
+	class command_graph;
+	class command_recorder;
 	class distributed_graph_generator;
 	class instruction;
 	class instruction_executor;
+	class instruction_graph;
 	class instruction_graph_generator;
+	class instruction_recorder;
+	struct outbound_pilot;
 	class task;
 
 	// Abstract base class to allow different threading implementation in tests
 	class abstract_scheduler {
+		friend struct scheduler_testspy;
+
 	  public:
 		class delegate {
 		  protected:
@@ -37,9 +44,8 @@ namespace detail {
 			virtual void submit_pilot(const outbound_pilot& pilot) = 0;
 		};
 
-		abstract_scheduler(bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen,
-		    delegate* delegate = nullptr);
-
+		abstract_scheduler(size_t num_nodes, node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm,
+		    delegate* delegate, command_recorder* crec, instruction_recorder* irec);
 		abstract_scheduler(const abstract_scheduler&) = delete;
 		abstract_scheduler(abstract_scheduler&&) = delete;
 		abstract_scheduler& operator=(const abstract_scheduler&) = delete;
@@ -64,6 +70,8 @@ namespace detail {
 		void notify_host_object_created(const host_object_id hoid, const bool owns_instance) { notify(event_host_object_created{hoid, owns_instance}); }
 
 		void notify_host_object_destroyed(const host_object_id hoid) { notify(event_host_object_destroyed{hoid}); }
+
+		void notify_epoch_reached(const task_id tid) { notify(event_epoch_reached{tid}); }
 
 	  protected:
 		/**
@@ -97,11 +105,22 @@ namespace detail {
 		struct event_host_object_destroyed {
 			host_object_id hoid;
 		};
+		struct event_epoch_reached {
+			task_id tid;
+		};
+		struct event_signal_idle { // only used by scheduler_testspy
+			bool* idle;
+			std::mutex* mutex;
+			std::condition_variable* cond;
+		};
 		using event = std::variant<event_task_available, event_buffer_created, event_set_buffer_debug_name, event_buffer_destroyed, event_host_object_created,
-		    event_host_object_destroyed>;
+		    event_host_object_destroyed, event_epoch_reached, event_signal_idle>;
 
-		bool m_is_dry_run;
+		std::unique_ptr<command_graph> m_cdag;
+		command_recorder* m_crec;
 		std::unique_ptr<distributed_graph_generator> m_dggen;
+		std::unique_ptr<instruction_graph> m_idag;
+		instruction_recorder* m_irec;
 		std::unique_ptr<instruction_graph_generator> m_iggen;
 
 		delegate* m_delegate; // Pointer instead of reference so we can omit for tests / benchmarks
@@ -119,8 +138,8 @@ namespace detail {
 		friend struct scheduler_testspy;
 
 	  public:
-		scheduler(bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen,
-		    delegate* delegate = nullptr);
+		scheduler(size_t num_nodes, node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm,
+		    delegate* delegate, command_recorder* crec, instruction_recorder* irec);
 
 		scheduler(const scheduler&) = delete;
 		scheduler(scheduler&&) = delete;

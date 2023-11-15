@@ -425,7 +425,7 @@ class idag_test_context {
 	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_num_devices_per_node(num_devices_per_node),
 	      m_uncaught_exceptions_before(std::uncaught_exceptions()), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
 	      m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
-	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), &m_instr_recorder) //
+	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), m_idag, &m_instr_recorder) //
 	{
 		REQUIRE(local_nid < num_nodes);
 		REQUIRE(num_devices_per_node > 0);
@@ -581,6 +581,7 @@ class idag_test_context {
 	command_recorder m_cmd_recorder;
 	command_graph m_cdag;
 	distributed_graph_generator m_dggen;
+	instruction_graph m_idag;
 	instruction_recorder m_instr_recorder;
 	instruction_graph_generator m_iggen;
 	bool m_finished = false;

@@ -39,7 +39,7 @@ class instruction_executor {
 
 	void wait();
 
-	void submit_instruction(const instruction& instr);
+	void submit_instruction(const instruction& instr); // TODO should receive pointer
 	void submit_pilot(const outbound_pilot& pilot);
 
 	void announce_buffer_user_pointer(buffer_id bid, const void* ptr);

@@ -46,13 +46,42 @@ namespace detail {
 
 	const std::unordered_map<std::string, std::string> recording_enabled_env_setting{{"CELERITY_RECORDING", "1"}};
 
+	struct scheduler_testspy {
+		static std::thread& get_thread(scheduler& schdlr) { return schdlr.m_thread; }
+
+		static void wait_idle(scheduler& schdlr) {
+			bool idle = false;
+			std::mutex mutex;
+			std::condition_variable cond;
+			schdlr.notify(scheduler::event_signal_idle{&idle, &mutex, &cond});
+			std::unique_lock lock(mutex);
+			cond.wait(lock, [&] { return idle; });
+		}
+
+		static size_t get_command_count(scheduler& schdlr) {
+			wait_idle(schdlr);
+			return schdlr.m_cdag->command_count();
+		}
+	};
+
 	struct runtime_testspy {
 		static scheduler& get_schdlr(runtime& rt) { return *rt.m_schdlr; }
 		static instruction_executor& get_exec(runtime& rt) { return *rt.m_exec; }
-		static size_t get_command_count(runtime& rt) { return rt.m_cdag->command_count(); }
-		static command_graph& get_cdag(runtime& rt) { return *rt.m_cdag; }
-		static std::string print_task_graph(runtime& rt) { return detail::print_task_graph(*rt.m_task_recorder); }
-		static std::string print_command_graph(const node_id local_nid, runtime& rt) { return detail::print_command_graph(local_nid, *rt.m_command_recorder); }
+
+		static std::string print_task_graph(runtime& rt) {
+			scheduler_testspy::wait_idle(get_schdlr(rt));
+			return detail::print_task_graph(*rt.m_task_recorder);
+		}
+
+		static std::string print_command_graph(const node_id local_nid, runtime& rt) {
+			scheduler_testspy::wait_idle(get_schdlr(rt));
+			return detail::print_command_graph(local_nid, *rt.m_command_recorder);
+		}
+
+		static std::string print_instruction_graph(const node_id local_nid, runtime& rt) {
+			scheduler_testspy::wait_idle(get_schdlr(rt));
+			return detail::print_instruction_graph(*rt.m_instruction_recorder, *rt.m_command_recorder, *rt.m_task_recorder);
+		}
 	};
 
 	struct task_ring_buffer_testspy {

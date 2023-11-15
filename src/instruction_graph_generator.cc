@@ -21,7 +21,8 @@ namespace celerity::detail {
 
 class instruction_graph_generator::impl {
   public:
-	impl(const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_recorder* recorder);
+	impl(const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_graph& idag,
+	    instruction_recorder* recorder);
 
 	void set_uninitialized_read_policy(const error_policy policy) { m_uninitialized_read_policy = policy; }
 	void set_overlapping_write_policy(const error_policy policy) { m_overlapping_write_policy = policy; }
@@ -223,7 +224,7 @@ class instruction_graph_generator::impl {
 
 	inline static const box<3> scalar_reduction_box{zeros, ones};
 
-	instruction_graph m_idag;
+	instruction_graph& m_idag;
 	std::vector<outbound_pilot> m_pending_pilots;
 	instruction_id m_next_iid = 0;
 	allocation_id m_next_aid = null_allocation_id + 1;
@@ -250,7 +251,7 @@ class instruction_graph_generator::impl {
 		const auto id = m_next_iid++;
 		auto instr = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
 		const auto ptr = instr.get();
-		m_idag.insert(std::move(instr));
+		m_idag.push_instruction(std::move(instr));
 		m_execution_front.insert(ptr);
 		m_current_batch.push_back(ptr);
 		return *ptr;
@@ -386,11 +387,12 @@ box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) 
 	return bounding_boxes;
 }
 
-instruction_graph_generator::impl::impl(
-    const task_manager& tm, const size_t num_nodes, const node_id local_node_id, std::vector<device_info> devices, instruction_recorder* const recorder)
-    : m_tm(tm), m_num_nodes(num_nodes), m_local_node_id(local_node_id), m_devices(std::move(devices)), m_recorder(recorder) {
+instruction_graph_generator::impl::impl(const task_manager& tm, const size_t num_nodes, const node_id local_node_id, std::vector<device_info> devices,
+    instruction_graph& idag, instruction_recorder* const recorder)
+    : m_idag(idag), m_tm(tm), m_num_nodes(num_nodes), m_local_node_id(local_node_id), m_devices(std::move(devices)), m_recorder(recorder) {
 	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const device_info& info) { return info.native_memory < max_memories; }));
-	const auto initial_epoch = &create<epoch_instruction>(task_id(0 /* or so we assume */), epoch_action::none);
+	m_idag.begin_epoch(task_manager::initial_epoch_task);
+	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none);
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
 	m_collective_groups.emplace(root_collective_group_id, per_collective_group_data{initial_epoch});
@@ -1105,7 +1107,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 		buffer_access_allocation_map allocation_map(bam.get_num_accesses());
 		buffer_access_allocation_map reduction_map(tsk.get_reductions().size());
 
-		std::vector<buffer_memory_record> buffer_memory_access_map;   // if (m_recorder)
+		std::vector<buffer_memory_record> buffer_memory_access_map;       // if (m_recorder)
 		std::vector<buffer_reduction_record> buffer_memory_reduction_map; // if (m_recorder)
 		if(m_recorder != nullptr) {
 			buffer_memory_access_map.resize(bam.get_num_accesses());
@@ -1140,9 +1142,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 			assert(allocation_it != allocations.end());
 			const auto& alloc = *allocation_it;
 			reduction_map[i] = buffer_access_allocation{alloc.aid, alloc.box, scalar_reduction_box};
-			if(m_recorder != nullptr) {
-				buffer_memory_reduction_map[i] = buffer_reduction_record{rinfo.bid, instr.memory_id, rinfo.rid};
-			}
+			if(m_recorder != nullptr) { buffer_memory_reduction_map[i] = buffer_reduction_record{rinfo.bid, instr.memory_id, rinfo.rid}; }
 		}
 
 		if(tsk.get_execution_target() == execution_target::device) {
@@ -1585,6 +1585,7 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 	    [&](const push_command& pcmd) { compile_push_command(pcmd); },               //
 	    [&](const await_push_command& apcmd) { compile_await_push_command(apcmd); }, //
 	    [&](const horizon_command& hcmd) {
+		    m_idag.begin_epoch(hcmd.get_tid());
 		    const auto horizon = &create<horizon_instruction>(hcmd.get_tid());
 		    collapse_execution_front_to(horizon);
 		    if(m_last_horizon) { apply_epoch(m_last_horizon); }
@@ -1592,6 +1593,7 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 		    if(m_recorder != nullptr) { *m_recorder << horizon_instruction_record(*horizon, hcmd.get_cid()); }
 	    },
 	    [&](const epoch_command& ecmd) {
+		    m_idag.begin_epoch(ecmd.get_tid());
 		    const auto epoch = &create<epoch_instruction>(ecmd.get_tid(), ecmd.get_epoch_action());
 		    collapse_execution_front_to(epoch);
 		    apply_epoch(epoch);
@@ -1615,9 +1617,9 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 	return result;
 }
 
-instruction_graph_generator::instruction_graph_generator(
-    const task_manager& tm, const size_t num_nodes, const node_id local_node_id, std::vector<device_info> devices, instruction_recorder* const recorder)
-    : m_impl(new impl(tm, num_nodes, local_node_id, std::move(devices), recorder)) {}
+instruction_graph_generator::instruction_graph_generator(const task_manager& tm, const size_t num_nodes, const node_id local_node_id,
+    std::vector<device_info> devices, instruction_graph& idag, instruction_recorder* const recorder)
+    : m_impl(new impl(tm, num_nodes, local_node_id, std::move(devices), idag, recorder)) {}
 
 instruction_graph_generator::~instruction_graph_generator() = default;
 

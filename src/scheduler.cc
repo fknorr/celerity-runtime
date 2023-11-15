@@ -1,19 +1,23 @@
 #include "scheduler.h"
 
 #include "distributed_graph_generator.h"
+#include "instruction_graph.h"
 #include "instruction_graph_generator.h"
 #include "named_threads.h"
+#include "recorders.h"
 #include "task.h"
+
 
 namespace celerity {
 namespace detail {
 
-	abstract_scheduler::abstract_scheduler(
-	    bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen, delegate* const delegate)
-	    : m_is_dry_run(is_dry_run), m_dggen(std::move(dggen)), m_iggen(std::move(iggen)), m_delegate(delegate) {
-		assert(m_dggen != nullptr);
-		assert(m_iggen != nullptr);
-	}
+	abstract_scheduler::abstract_scheduler(const size_t num_nodes, const node_id local_node_id,
+	    std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm, delegate* const delegate, command_recorder* const crec,
+	    instruction_recorder* const irec)
+	    : m_cdag(std::make_unique<command_graph>()), m_crec(crec),
+	      m_dggen(std::make_unique<distributed_graph_generator>(num_nodes, local_node_id, *m_cdag, tm, crec)), m_idag(std::make_unique<instruction_graph>()),
+	      m_irec(irec), m_iggen(std::make_unique<instruction_graph_generator>(tm, num_nodes, local_node_id, std::move(local_devices), *m_idag, irec)),
+	      m_delegate(delegate) {}
 
 	abstract_scheduler::~abstract_scheduler() = default;
 
@@ -74,6 +78,16 @@ namespace detail {
 				    [&](const event_host_object_destroyed& e) {
 					    m_dggen->destroy_host_object(e.hoid);
 					    m_iggen->destroy_host_object(e.hoid);
+				    },
+				    [&](const event_epoch_reached& e) { //
+					    m_idag->prune_before_epoch(e.tid);
+				    },
+				    [&](const event_signal_idle& e) {
+					    {
+						    std::lock_guard lock(*e.mutex);
+						    *e.idle = true;
+					    }
+					    e.cond->notify_one();
 				    });
 			}
 		}
@@ -87,9 +101,9 @@ namespace detail {
 		m_events_cv.notify_one();
 	}
 
-	scheduler::scheduler(
-	    const bool is_dry_run, std::unique_ptr<distributed_graph_generator> dggen, std::unique_ptr<instruction_graph_generator> iggen, delegate* const delegate)
-	    : abstract_scheduler(is_dry_run, std::move(dggen), std::move(iggen), delegate), m_thread(&scheduler::thread_main, this) {
+	scheduler::scheduler(const size_t num_nodes, const node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices,
+	    const task_manager& tm, delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec)
+	    : abstract_scheduler(num_nodes, local_node_id, std::move(local_devices), tm, delegate, crec, irec), m_thread(&scheduler::thread_main, this) {
 		set_thread_name(m_thread.native_handle(), "cy-scheduler");
 	}
 

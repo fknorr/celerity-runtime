@@ -148,13 +148,6 @@ namespace detail {
 		// https://github.com/celerity/meta/issues/74).
 		m_task_mngr->set_uninitialized_read_policy(error_policy::log_warning);
 
-		m_cdag = std::make_unique<command_graph>();
-		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
-		auto dggen = std::make_unique<distributed_graph_generator>(m_num_nodes, m_local_nid, *m_cdag, *m_task_mngr, m_command_recorder.get());
-		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
-		dggen->set_uninitialized_read_policy(error_policy::ignore);
-		dggen->set_overlapping_write_policy(error_policy::log_error);
-
 		const auto devices =
 		    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });
 		assert(!devices.empty());
@@ -178,15 +171,21 @@ namespace detail {
 		m_exec = std::make_unique<instruction_executor>(backend::make_queue(backend_type, backend_devices), std::make_unique<mpi_communicator>(MPI_COMM_WORLD),
 		    static_cast<instruction_executor::delegate*>(this));
 
-		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
-		auto iggen =
-		    std::make_unique<instruction_graph_generator>(*m_task_mngr, m_num_nodes, m_local_nid, std::move(iggen_devices), m_instruction_recorder.get());
-		// Any uninitialized read that is observed on IDAG generation was already logged on task generation, unless we have a bug.
-		iggen->set_uninitialized_read_policy(error_policy::ignore);
-		// Since the iggen divides the iteration space of commands further, it can create overlaps that were not yet present in the CDAG.
-		iggen->set_overlapping_write_policy(error_policy::log_error);
+		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
+		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
+		// dggen->set_uninitialized_read_policy(error_policy::ignore);
+		// dggen->set_overlapping_write_policy(error_policy::log_error);
+		// TODO
 
-		m_schdlr = std::make_unique<scheduler>(is_dry_run(), std::move(dggen), std::move(iggen), static_cast<abstract_scheduler::delegate*>(this));
+		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
+		// Any uninitialized read that is observed on IDAG generation was already logged on task generation, unless we have a bug.
+		// iggen->set_uninitialized_read_policy(error_policy::ignore);
+		// Since the iggen divides the iteration space of commands further, it can create overlaps that were not yet present in the CDAG.
+		// iggen->set_overlapping_write_policy(error_policy::log_error);
+		// TODO
+
+		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, std::move(iggen_devices), *m_task_mngr,
+		    static_cast<abstract_scheduler::delegate*>(this), m_command_recorder.get(), m_instruction_recorder.get());
 
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
@@ -235,18 +234,20 @@ namespace detail {
 				CELERITY_TRACE("Command graph:\n\n{}\n", cmd_graph);
 
 				// IDAGs become unreadable when all nodes print them at the same time - TODO attempt gathering them as well?
+				// we are allowed to deref m_instruction_recorder / m_command_recorder because the scheduler thread has exited at this point
 				CELERITY_TRACE(
 				    "Instruction graph on node 0:\n\n{}\n", detail::print_instruction_graph(*m_instruction_recorder, *m_command_recorder, *m_task_recorder));
 			}
 		}
 
-		m_cdag.reset();
 		m_task_mngr.reset();
 
 		// all buffers and host objects should have unregistered themselves by now.
 		assert(m_live_buffers.empty());
 		assert(m_live_host_objects.empty());
 		m_h_queue.reset();
+
+		m_instruction_recorder.reset();
 		m_command_recorder.reset();
 		m_task_recorder.reset();
 
@@ -269,6 +270,7 @@ namespace detail {
 	}
 
 	std::string runtime::gather_command_graph() const {
+		assert(m_schdlr == nullptr && "race: cannot gather command graph while scheduler is running");
 		require_call_from_application_thread();
 
 		assert(m_command_recorder.get() != nullptr);
