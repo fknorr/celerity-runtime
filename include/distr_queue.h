@@ -6,6 +6,13 @@
 #include "runtime.h"
 #include "task_manager.h"
 
+namespace celerity::experimental {
+
+template <typename T>
+class host_object;
+
+}
+
 namespace celerity {
 
 struct [[deprecated("This tag type is no longer required to capture by reference")]] allow_by_ref_t{};
@@ -71,6 +78,35 @@ class distr_queue {
 	 * @warning { This is very slow, as it drains all queues and synchronizes across the entire cluster. }
 	 */
 	void slow_full_sync() { detail::runtime::get_instance().sync(detail::epoch_action::barrier); } // NOLINT(readability-convert-member-functions-to-static)
+
+	/**
+	 * Asynchronously captures the value of a host object by copy, introducing the same dependencies as a side-effect would.
+	 *
+	 * Waiting on the returned future in the application thread can stall scheduling of more work. To hide latency, either submit more command groups between
+	 * fence and wait operations or ensure that other independent command groups are eligible to run while the fence is executed.
+	 */
+	template <typename T>
+	[[nodiscard]] std::future<T> fence(const experimental::host_object<T>& obj);
+
+	/**
+	 * Asynchronously captures the contents of a buffer subrange, introducing the same dependencies as a read-accessor would.
+	 *
+	 * Waiting on the returned future in the application thread can stall scheduling of more work. To hide latency, either submit more command groups between
+	 * fence and wait operations or ensure that other independent command groups are eligible to run while the fence is executed.
+	 */
+	template <typename DataT, int Dims>
+	[[nodiscard]] std::future<buffer_snapshot<DataT, Dims>> fence(const buffer<DataT, Dims>& buf, const subrange<Dims>& sr);
+
+	/**
+	 * Asynchronously captures the contents of an entire buffer, introducing the same dependencies as a read-accessor would.
+	 *
+	 * Waiting on the returned future in the application thread can stall scheduling of more work. To hide latency, either submit more command groups between
+	 * fence and wait operations or ensure that other independent command groups are eligible to run while the fence is executed.
+	 */
+	template <typename DataT, int Dims>
+	[[nodiscard]] std::future<buffer_snapshot<DataT, Dims>> fence(const buffer<DataT, Dims>& buf) {
+		return fence(buf, {{}, buf.get_range()});
+	}
 
   private:
 	struct tracker {

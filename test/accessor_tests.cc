@@ -698,16 +698,16 @@ namespace detail {
 
 		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
 		const auto unnamed_error_message =
-		    fmt::format("Out-of-bounds access detected: accessor 0 attempted to access indices between {} which are outside of the mapped range {}",
-		        attempted_box, box_cast<3>(box(accessible_sr)));
+		    fmt::format("Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 0 for buffer B0 attempted to "
+		                "access indices between {} which are outside of mapped subrange {}",
+		        Dims, attempted_sr, subrange_cast<3>(accessible_sr));
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
 
-		// TODO
-		// const auto named_error_message =
-		//     fmt::format("Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 1 for buffer {} attempted to "
-		//                 "access indices between {} which are outside of mapped subrange {}",
-		//         Dims, buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
-		// CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
+		const auto named_error_message = fmt::format(
+		    "Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 1 for buffer B1 \"{}\" attempted to "
+		    "access indices between {} which are outside of mapped subrange {}",
+		    Dims, buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
+		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
 
 	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
@@ -747,17 +747,17 @@ namespace detail {
 			q.slow_full_sync();
 		}
 
-		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
-		const auto unnamed_error_message =
-		    fmt::format("Out-of-bounds access detected: accessor 0 attempted to access indices between {} which are outside of the mapped range {}",
-		        attempted_box, box_cast<3>(box(accessible_sr)));
+		const auto attempted_sr =
+		    subrange<3>{id_cast<3>(oob_idx_lo), range_cast<3>(oob_idx_hi - oob_idx_lo + id_cast<Dims>(range<Dims>(ones))) - range_cast<3>(range<Dims>(zeros))};
+		const auto unnamed_error_message = fmt::format("Out-of-bounds access in host task detected: Accessor 0 for buffer B0 attempted to "
+		                                               "access indices between {} which are outside of mapped subrange {}",
+		    attempted_sr, subrange_cast<3>(accessible_sr));
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
 
-		// TODO
-		// const auto named_error_message = fmt::format("Out-of-bounds access detected: accessor 1 attempted to access indices between {} which are outside of
-		// the mapped range {}",
-		//     buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
-		// CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
+		const auto named_error_message = fmt::format("Out-of-bounds access in host task detected: Accessor 1 for buffer B1 \"{}\" attempted to "
+		                                             "access indices between {} which are outside of mapped subrange {}",
+		    buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
+		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
 
 	TEST_CASE_METHOD(test_utils::sycl_queue_fixture, "accessor correctly handles backing buffer offsets", "[accessor]") {

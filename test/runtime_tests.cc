@@ -732,8 +732,7 @@ namespace detail {
 
 		buffer<int, 1> b{range<1>{1}};
 		distr_queue{}.submit([&](handler& cgh) {
-			cgh.parallel_for<class UKN(kernel)>(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}},
-			    reduction(b, cgh, sycl::plus<int>{}, property::reduction::initialize_to_identity()),
+			cgh.parallel_for<class UKN(kernel)>(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}}, reduction(b, cgh, cl::sycl::plus<>{}),
 			    [](nd_item<2> item, auto& sum) { sum += item.get_global_linear_id(); });
 		});
 	}
@@ -1184,7 +1183,7 @@ namespace detail {
 			cgh.host_task(on_master_node, [=] { acc = true; });
 		});
 
-		auto ret = experimental::fence(q, buf);
+		auto ret = q.fence(buf);
 		REQUIRE(ret.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
 		CHECK_FALSE(*ret.get()); // extra check that the task was not actually executed
 
@@ -1288,13 +1287,13 @@ namespace detail {
 			experimental::side_effect e(ho, cgh);
 			cgh.host_task(on_master_node, [=] { *e = 2; });
 		});
-		auto v2 = experimental::fence(q, ho);
+		auto v2 = q.fence(ho);
 
 		q.submit([&](handler& cgh) {
 			experimental::side_effect e(ho, cgh);
 			cgh.host_task(on_master_node, [=] { *e = 3; });
 		});
-		auto v3 = experimental::fence(q, ho);
+		auto v3 = q.fence(ho);
 
 		CHECK(v2.get() == 2);
 		CHECK(v3.get() == 3);
@@ -1310,7 +1309,7 @@ namespace detail {
 		});
 
 		const auto check_snapshot = [&](const subrange<2>& sr, const std::vector<int>& expected_data) {
-			const auto snapshot = experimental::fence(q, buf, sr).get();
+			const auto snapshot = q.fence(buf, sr).get();
 			CHECK(snapshot.get_subrange() == sr);
 			CHECK(memcmp(snapshot.get_data(), expected_data.data(), expected_data.size() * sizeof(int)) == 0);
 		};
@@ -1334,7 +1333,7 @@ namespace detail {
 			cgh.parallel_for<class UKN(init)>(buf.get_range(), [=](celerity::item<0> item) { *acc = 42; });
 		});
 
-		const auto snapshot = experimental::fence(q, buf).get();
+		const auto snapshot = q.fence(buf).get();
 		CHECK(*snapshot == 42);
 	}
 
@@ -1373,32 +1372,9 @@ namespace detail {
 		});
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime types throw when used from the wrong thread", "[runtime]") {
-		distr_queue q;
-		buffer<int, 1> buf(range<1>(1));
-		experimental::host_object<int> ho(42);
-
-		constexpr auto what = "Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destroyed from the "
-		                      "application thread. Make sure that you did not accidentally capture one of these types in a host_task.";
-		std::thread([&] {
-			CHECK_THROWS_WITH((distr_queue{}), what);
-			CHECK_THROWS_WITH((buffer<int, 1>{range<1>{1}}), what);
-			CHECK_THROWS_WITH((experimental::host_object<int>{}), what);
-
-			CHECK_THROWS_WITH(q.submit([&](handler& cgh) { (void)cgh; }), what);
-			CHECK_THROWS_WITH(q.slow_full_sync(), what);
-			CHECK_THROWS_WITH(experimental::fence(q, buf), what);
-			CHECK_THROWS_WITH(experimental::fence(q, ho), what);
-
-			// We can't easily test whether `~distr_queue()` et al. throw, because that would require marking the entire stack of destructors noexcept(false)
-			// including the ~shared_ptr we use internally for reference semantics. Instead we verify that the runtime operations their trackers call throw.
-			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_queue(), what);
-			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_buffer(get_buffer_id(buf)), what);
-			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_host_object(get_host_object_id(ho)), what);
-		}).join();
-	}
-
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime warns on uninitialized reads", "[runtime]") {
+	TEST_CASE_METHOD(
+	    test_utils::runtime_fixture, "runtime warns on uninitialized reads iff access pattern diagnostics are enabled", "[runtime][diagnostics]") //
+	{
 		buffer<int, 1> buf(1);
 
 		std::unique_ptr<celerity::test_utils::log_capture> lc;
@@ -1423,9 +1399,13 @@ namespace detail {
 			q.slow_full_sync();
 		}
 
-		const auto error_message = "Task declares a reading access on uninitialized buffer 0 region {[0,0,0] - [1,1,1]}. Make sure to construct the accessor "
-		                           "with no_init if possible.";
+		const auto error_message =
+		    "declares a reading access on uninitialized B0 {[0,0,0] - [1,1,1]}. Make sure to construct the accessor with no_init if possible.";
+#if CELERITY_ACCESS_PATTERN_DIAGNOSTICS
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+#else
+		CHECK_THAT(lc->get_log(), !Catch::Matchers::ContainsSubstring(error_message));
+#endif
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between instructions", "[runtime]") {
@@ -1448,6 +1428,31 @@ namespace detail {
 		const auto error_message = "has overlapping writes on N0 in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the write access or "
 		                           "constrain the split to make the access non-overlapping.";
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+	}
+
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime types throw when used from the wrong thread", "[runtime]") {
+		distr_queue q;
+		buffer<int, 1> buf(range<1>(1));
+		experimental::host_object<int> ho(42);
+
+		constexpr auto what = "Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destroyed from the "
+		                      "application thread. Make sure that you did not accidentally capture one of these types in a host_task.";
+		std::thread([&] {
+			CHECK_THROWS_WITH((distr_queue{}), what);
+			CHECK_THROWS_WITH((buffer<int, 1>{range<1>{1}}), what);
+			CHECK_THROWS_WITH((experimental::host_object<int>{}), what);
+
+			CHECK_THROWS_WITH(q.submit([&](handler& cgh) { (void)cgh; }), what);
+			CHECK_THROWS_WITH(q.slow_full_sync(), what);
+			CHECK_THROWS_WITH(experimental::fence(q, buf), what);
+			CHECK_THROWS_WITH(experimental::fence(q, ho), what);
+
+			// We can't easily test whether `~distr_queue()` et al. throw, because that would require marking the entire stack of destructors noexcept(false)
+			// including the ~shared_ptr we use internally for reference semantics. Instead we verify that the runtime operations their trackers call throw.
+			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_queue(), what);
+			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_buffer(get_buffer_id(buf)), what);
+			CHECK_THROWS_WITH(detail::runtime::get_instance().destroy_host_object(get_host_object_id(ho)), what);
+		}).join();
 	}
 
 } // namespace detail

@@ -140,13 +140,16 @@ namespace detail {
 		m_h_queue = std::make_unique<host_queue>();
 
 		if(m_cfg->is_recording()) m_task_recorder = std::make_unique<task_recorder>();
-		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get());
-		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
-		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
+
+		task_manager::policy_set task_mngr_policy;
 		// Merely _declaring_ an uninitialized read is legitimate as long as the kernel does not actually perform the read at runtime - this might happen in the
 		// first iteration of a submit-loop. We could get rid of this case by making access-modes a runtime property of accessors (cf
 		// https://github.com/celerity/meta/issues/74).
-		m_task_mngr->set_uninitialized_read_policy(error_policy::log_warning);
+		task_mngr_policy.uninitialized_read_error = CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_warning : error_policy::ignore;
+
+		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get(), task_mngr_policy);
+		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
+		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
 
 		const auto devices =
 		    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });
@@ -172,10 +175,11 @@ namespace detail {
 		    static_cast<instruction_executor::delegate*>(this));
 
 		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
+
+		distributed_graph_generator::policy_set dggen_policy;
 		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
-		// dggen->set_uninitialized_read_policy(error_policy::ignore);
-		// dggen->set_overlapping_write_policy(error_policy::log_error);
-		// TODO
+		dggen_policy.uninitialized_read_error = error_policy::ignore;
+		dggen_policy.overlapping_write_error = CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
 
 		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
 		// Any uninitialized read that is observed on IDAG generation was already logged on task generation, unless we have a bug.

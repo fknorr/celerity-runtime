@@ -6,8 +6,8 @@
 namespace celerity {
 namespace detail {
 
-	task_manager::task_manager(size_t num_collective_nodes, host_queue* queue, detail::task_recorder* recorder)
-	    : m_num_collective_nodes(num_collective_nodes), m_queue(queue), m_task_recorder(recorder) {
+	task_manager::task_manager(size_t num_collective_nodes, host_queue* queue, detail::task_recorder* recorder, const policy_set& error_policy)
+	    : m_num_collective_nodes(num_collective_nodes), m_queue(queue), m_policy(error_policy), m_task_recorder(recorder) {
 		// We manually generate the initial epoch task, which we treat as if it has been reached immediately.
 		auto reserve = m_task_buffer.reserve_task_entry(await_free_task_slot_callback());
 		auto initial_epoch = task::make_epoch(initial_epoch_task, epoch_action::none);
@@ -119,15 +119,15 @@ namespace detail {
 					// host-initialized buffers are last-written by the current epoch
 					if(writer.has_value()) {
 						add_dependency(tsk, *m_task_buffer.get_task(*writer), dependency_kind::true_dep, dependency_origin::dataflow);
-					} else {
+					} else if(m_policy.uninitialized_read_error != error_policy::ignore) {
 						uninitialized_reads.push_back(box);
 					}
 				}
 				if(!uninitialized_reads.empty()) {
-					// TODO buffer and task names
-					utils::report_error(m_uninitialized_read_policy,
-					    "Task declares a reading access on uninitialized buffer {} region {}. Make sure to construct the accessor with no_init if possible.",
-					    bid, region(std::move(uninitialized_reads)));
+					utils::report_error(m_policy.uninitialized_read_error,
+					    "Task T{}{} declares a reading access on uninitialized B{} {}. Make sure to construct the accessor with no_init if possible.",
+					    tsk.get_id(), !tsk.get_debug_name().empty() ? fmt::format(" \"{}\"", utils::simplify_task_name(tsk.get_debug_name())) : "", bid,
+					    region(std::move(uninitialized_reads)));
 				}
 			}
 

@@ -3,9 +3,16 @@
 #include "log.h"
 
 #include <cstdint>
+#include <functional>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <type_traits>
+
+#include "spdlog/fmt/fmt.h"
+
+#include "types.h"
+
 
 namespace celerity::detail::utils {
 

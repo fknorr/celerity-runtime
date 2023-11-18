@@ -219,7 +219,7 @@ TEST_CASE("reduction commands anti-depend on their partial-result push commands"
 	auto buf = dctx.create_buffer(range<1>(1));
 
 	const auto tid_producer = dctx.device_compute(range<1>(num_nodes)).reduce(buf, false /* include_current_buffer_value */).submit();
-	const auto tid_consumer = dctx.device_compute(range<1>(num_nodes)).read(buf, acc::all{}).submit();
+	/* const auto tid_consumer = */ dctx.device_compute(range<1>(num_nodes)).read(buf, acc::all{}).submit();
 
 	CHECK(dctx.query(tid_producer)
 	          .assert_count_per_node(1)

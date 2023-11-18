@@ -135,10 +135,20 @@ TEST_CASE("benchmark task handling", "[benchmark][group:task-graph]") {
 }
 
 
+// these policies are equivalent to the ones used by `runtime` (except that we throw exceptions here for benchmark-debugging purposes)
+static constexpr task_manager::policy_set benchmark_task_manager_policy = {
+    /* uninitialized_read_error */ CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::throw_exception : error_policy::ignore,
+};
+static constexpr distributed_graph_generator::policy_set benchmark_command_graph_generator_policy{
+    /* uninitialized_read_error */ error_policy::ignore, // uninitialized reads already detected by task manager
+    /* overlapping_write_error */ CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::throw_exception : error_policy::ignore,
+};
+
+
 struct task_manager_benchmark_context {
 	const size_t num_nodes = 1;
 	task_recorder trec;
-	task_manager tm{1, nullptr, test_utils::print_graphs ? &trec : nullptr};
+	task_manager tm{1, nullptr, test_utils::print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
 	test_utils::mock_buffer_factory mbf{tm};
 
 	~task_manager_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
@@ -156,12 +166,13 @@ struct command_graph_generator_benchmark_context {
 	const size_t num_nodes;
 	command_graph cdag;
 	task_recorder trec;
-	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr};
-	command_recorder crec;
-	distributed_graph_generator dggen;
-	test_utils::mock_buffer_factory mbf;
+	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
+	command_recorder crec{&tm};
+	distributed_graph_generator dggen{
+	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
+	test_utils::mock_buffer_factory mbf{tm, dggen};
 
-	explicit command_graph_generator_benchmark_context(size_t num_nodes)
+	explicit command_graph_generator_benchmark_context(const size_t num_nodes)
 	    : num_nodes{num_nodes}, crec(), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
 		tm.register_task_callback([this](const task* tsk) { dggen.build_task(*tsk); });
 	}

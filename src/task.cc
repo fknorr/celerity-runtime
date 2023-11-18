@@ -70,19 +70,22 @@ namespace detail {
 		emplace(hoid, order);
 	}
 
-	std::unordered_map<buffer_id, region<3>> detect_overlapping_writes(const task& tsk, const std::vector<chunk<3>>& chunks) {
+	std::unordered_map<buffer_id, region<3>> detect_overlapping_writes(const task& tsk, const box_vector<3>& chunks) {
 		const box<3> scalar_reduction_box({0, 0, 0}, {1, 1, 1});
 
 		auto& bam = tsk.get_buffer_access_map();
 
+		// track the union of writes we have checked so far in order to detect an overlap between that union and the next write
 		std::unordered_map<buffer_id, region<3>> buffer_write_accumulators;
+		// collect overlapping writes in order to report all of them before throwing
 		std::unordered_map<buffer_id, region<3>> overlapping_writes;
+
 		for(const auto bid : bam.get_accessed_buffers()) {
 			for(const auto& ck : chunks) {
 				region<3> writes;
 				for(const auto mode : bam.get_access_modes(bid)) {
 					if(access::mode_traits::is_producer(mode)) {
-						const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), subrange(ck.offset, ck.range), tsk.get_global_size());
+						const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), ck.get_subrange(), tsk.get_global_size());
 						writes = region_union(writes, req);
 					}
 				}
@@ -97,6 +100,7 @@ namespace detail {
 			}
 		}
 
+		// we already check for accessor-reduction overlaps on task generation, but we still repeat the sanity-check here
 		for(const auto& rinfo : tsk.get_reductions()) {
 			auto& write_accumulator = buffer_write_accumulators[rinfo.bid]; // allow default-insert
 			if(const auto overlap = region_intersection(write_accumulator, scalar_reduction_box); !overlap.empty()) {

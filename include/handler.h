@@ -11,6 +11,7 @@
 #include "buffer.h"
 #include "cgf_diagnostics.h"
 #include "closure_hydrator.h"
+#include "hint.h"
 #include "host_queue.h"
 #include "item.h"
 #include "range_mapper.h"
@@ -396,7 +397,8 @@ class handler {
 	friend void detail::add_reduction(handler& cgh, const detail::reduction_info& rinfo);
 	template <int Dims>
 	friend void experimental::constrain_split(handler& cgh, const range<Dims>& constraint);
-
+	template <typename Hint>
+	friend void experimental::hint(handler& cgh, Hint&& h);
 	friend void detail::set_task_name(handler& cgh, const std::string& debug_name);
 
 	detail::task_id m_tid;
@@ -409,6 +411,7 @@ class handler {
 	detail::hydration_id m_next_accessor_hydration_id = 1;
 	std::optional<std::string> m_usr_def_task_name;
 	range<3> m_split_constraint = detail::ones;
+	std::vector<std::unique_ptr<detail::hint_base>> m_hints;
 
 	handler(detail::task_id tid, size_t num_collective_nodes) : m_tid(tid), m_num_collective_nodes(num_collective_nodes) {}
 
@@ -459,6 +462,20 @@ class handler {
 	void experimental_constrain_split(const range<Dims>& constraint) {
 		assert(m_task == nullptr);
 		m_split_constraint = detail::range_cast<3>(constraint);
+	}
+
+	template <typename Hint>
+	void experimental_hint(Hint&& h) {
+		static_assert(std::is_base_of_v<detail::hint_base, std::decay_t<Hint>>, "Incompatible hint");
+		for(auto& hint : m_hints) {
+			// We currently don't allow more than one hint of the same type for simplicity; this could be loosened in the future.
+			// This assumes no deep class hierarchies.
+			if(dynamic_cast<std::decay_t<Hint>*>(hint.get()) != nullptr) {
+				throw std::runtime_error("Providing more than one hint of the same type is not allowed");
+			}
+			hint->validate(h);
+		}
+		m_hints.emplace_back(std::make_unique<std::decay_t<Hint>>(std::forward<Hint>(h)));
 	}
 
 	template <int Dims>
@@ -593,6 +610,9 @@ class handler {
 
 	std::unique_ptr<detail::task> into_task() && {
 		assert(m_task != nullptr);
+		for(auto& h : m_hints) {
+			m_task->add_hint(std::move(h));
+		}
 		return std::move(m_task);
 	}
 };
@@ -661,5 +681,10 @@ namespace celerity::experimental {
 template <int Dims>
 void constrain_split(handler& cgh, const range<Dims>& constraint) {
 	cgh.experimental_constrain_split(constraint);
+}
+
+template <typename Hint>
+void hint(handler& cgh, Hint&& h) {
+	cgh.experimental_hint(std::forward<Hint>(h));
 }
 } // namespace celerity::experimental

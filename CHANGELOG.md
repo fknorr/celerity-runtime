@@ -8,15 +8,24 @@ Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] - 2023-??-??
 
-## Added
+### Added
 
 - Introduce new experimental `for_each_item` utility to iterate over a celerity range (#199)
 - Add new environment variables `CELERITY_HORIZON_STEP` and `CELERITY_HORIZON_MAX_PARALLELISM` to control Horizon generation (#199)
 - Add new `experimental::constrain_split` API to limit how a kernel can be split (#?)
+- `distr_queue::fence` and `buffer_snapshot` are now stable, subsuming the `experimental::` APIs of the same name (#225)
+- Celerity now warns at runtime when a task declares reads from uninitialized buffers or writes with overlapping ranges between nodes (#224)
+- Introduce new `experimental::hint` API for providing the runtime with additional information on how to execute a task (#?)
+- Introduce new `experimental::hints::split_1d` and `experimental::hints::split_2d` task hints for controlling how a task is split into chunks (#?)
 
-## Changed
+### Changed
 
 - Added breadth-triggered Horizons. Improves performance in some scenarios, and prevents programs with many independent tasks from running out of task queue space (#199)
+
+### Fixed
+
+- In edge cases, command graph generation would fail to generate await-push commands when re-distributing reduction results (#223)
+- Command graph generation was missing an anti-dependency between push-commands of partial reduction results and the final reduction command (#223)
 
 ## [0.4.1] - 2023-09-08
 

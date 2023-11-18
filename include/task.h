@@ -8,6 +8,7 @@
 
 #include "bounding_box_set.h"
 #include "grid.h"
+#include "hint.h"
 #include "intrusive_graph.h"
 #include "launcher.h"
 #include "range_mapper.h"
@@ -168,6 +169,17 @@ namespace detail {
 			return std::get<Launcher>(m_launcher);
 		}
 
+		void add_hint(std::unique_ptr<hint_base>&& h) { m_hints.emplace_back(std::move(h)); }
+
+		template <typename Hint>
+		const Hint* get_hint() const {
+			static_assert(std::is_base_of_v<hint_base, Hint>, "Hint must extend hint_base");
+			for(auto& h : m_hints) {
+				if(auto* ptr = dynamic_cast<Hint*>(h.get()); ptr != nullptr) { return ptr; }
+			}
+			return nullptr;
+		}
+
 		static std::unique_ptr<task> make_epoch(task_id tid, detail::epoch_action action) {
 			return std::unique_ptr<task>(new task(tid, task_type::epoch, collective_group_id{}, task_geometry{}, {}, {}, {}, {}, action, nullptr));
 		}
@@ -221,6 +233,7 @@ namespace detail {
 		// TODO I believe that `struct task` should not store command_group_launchers, fence_promise or other state that is related to execution instead of
 		// abstract DAG building. For user-initialized buffers we already notify the runtime -> executor of this state directly. Maybe also do that for these.
 		std::unique_ptr<fence_promise> m_fence_promise;
+		std::vector<std::unique_ptr<hint_base>> m_hints;
 
 		task(task_id tid, task_type type, collective_group_id cgid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map,
 		    detail::side_effect_map side_effects, reduction_set reductions, detail::epoch_action epoch_action, std::unique_ptr<fence_promise> fence_promise)
@@ -233,8 +246,6 @@ namespace detail {
 			       || type == task_type::fence);
 		}
 	};
-
-	std::unordered_map<buffer_id, region<3>> detect_overlapping_writes(const task& tsk, const std::vector<chunk<3>>& chunks);
 
 } // namespace detail
 } // namespace celerity

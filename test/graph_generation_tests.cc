@@ -487,8 +487,10 @@ TEST_CASE("distributed_graph_generator throws in tests if it detects an uninitia
 	const size_t num_nodes = 2;
 	const range<1> node_range{num_nodes};
 
-	dist_cdag_test_context dctx(num_nodes);
-	dctx.get_task_manager().set_uninitialized_read_policy(error_policy::ignore); // otherwise we get task-level errors first
+	dist_cdag_test_context::policy_set policy;
+	policy.tm.uninitialized_read_error = error_policy::ignore; // otherwise we get task-level errors first
+
+	dist_cdag_test_context dctx(num_nodes, policy);
 
 	SECTION("on a fully uninitialized buffer") {
 		auto buf = dctx.create_buffer<1>({1});

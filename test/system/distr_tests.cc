@@ -343,8 +343,8 @@ namespace detail {
 			cgh.host_task(on_master_node, [=] { acc[{1, 2, 3}] = 42; });
 		});
 
-		const auto gathered_from_master = experimental::fence(q, buf, subrange<3>({1, 2, 3}, {1, 1, 1})).get();
-		const auto host_rank = experimental::fence(q, obj).get();
+		const auto gathered_from_master = q.fence(buf, subrange<3>({1, 2, 3}, {1, 1, 1})).get();
+		const auto host_rank = q.fence(obj).get();
 
 		REQUIRE(gathered_from_master.get_range() == range<3>{1, 1, 1});
 		CHECK(gathered_from_master[0][0][0] == 42);
@@ -390,16 +390,15 @@ namespace detail {
 			// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graphs are
 			// sane and complete, and if so, replace the `expected` values with the new dot graph.
 			const std::string expected =
-			    "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 "
-			    "(epoch)</font>>;color=darkgray;id_0_0[label=<C0 on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font "
-			    "color=\"#606060\">T1 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + "
-			    "[8,16,1]<br/><i>discard_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font "
-			    "color=\"#606060\">T2 (horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph "
-			    "cluster_id_0_3{label=<<font color=\"#606060\">T3 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on "
-			    "N0<br/><b>execution</b> [0,0,0] + [8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph "
-			    "cluster_id_0_4{label=<<font color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black "
-			    "shape=box];}subgraph cluster_id_0_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>epoch</b> "
-			    "(barrier)> fontcolor=black "
+			    "digraph G{label=\"Command Graph\" subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_0_0[label=<C0 "
+			    "on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font color=\"#606060\">T1 \"unnamed_kernel\" "
+			    "(device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [8,16,1]<br/><i>discard_write</i> B0 {[0,0,0] - "
+			    "[8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font color=\"#606060\">T2 "
+			    "(horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_3{label=<<font "
+			    "color=\"#606060\">T3 \"unnamed_kernel\" (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on N0<br/><b>execution</b> [0,0,0] + "
+			    "[8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font color=\"#606060\">T4 "
+			    "(horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_5{label=<<font "
+			    "color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>epoch</b> (barrier)> fontcolor=black "
 			    "shape=box];}id_0_0->id_0_1[color=orchid];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color="
 			    "orange];id_0_4->id_0_5[color=orange];subgraph cluster_id_1_0{label=<<font color=\"#606060\">T0 "
 			    "(epoch)</font>>;color=darkgray;id_1_0[label=<C0 on N1<br/><b>epoch</b>> fontcolor=crimson shape=box];}subgraph cluster_id_1_1{label=<<font "
@@ -420,7 +419,9 @@ namespace detail {
 		}
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between commands", "[runtime]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between commands iff access pattern diagnostics are enabled",
+	    "[runtime][diagnostics]") //
+	{
 		std::unique_ptr<celerity::test_utils::log_capture> lc;
 		{
 			distr_queue q;
@@ -450,7 +451,11 @@ namespace detail {
 
 		const auto error_message = "has overlapping writes between multiple nodes in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the "
 		                           "write access or constrain the split to make the access non-overlapping.";
+#if CELERITY_ACCESS_PATTERN_DIAGNOSTICS
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+#else
+		CHECK_THAT(lc->get_log(), !Catch::Matchers::ContainsSubstring(error_message));
+#endif
 	}
 
 } // namespace detail
