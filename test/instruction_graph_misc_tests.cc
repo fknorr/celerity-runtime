@@ -344,9 +344,11 @@ TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitia
 	const size_t num_devices = 2;
 	const range<1> device_range{num_devices};
 
-	test_utils::idag_test_context ictx(1, 0, num_devices);
-	ictx.get_task_manager().set_uninitialized_read_policy(error_policy::ignore);    // otherwise we get task-level errors first
-	ictx.get_graph_generator().set_uninitialized_read_policy(error_policy::ignore); // otherwise we get command-level errors first
+	test_utils::idag_test_context::policy_set policy;
+	policy.tm.uninitialized_read_error = error_policy::ignore;    // otherwise we get task-level errors first
+	policy.dggen.uninitialized_read_error = error_policy::ignore; // otherwise we get command-level errors first
+
+	test_utils::idag_test_context ictx(1, 0, num_devices, policy);
 
 	SECTION("on a fully uninitialized buffer") {
 		auto buf = ictx.create_buffer<1>({1});

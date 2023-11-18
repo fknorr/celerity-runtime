@@ -170,19 +170,6 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 	assert(chunks.size() <= num_chunks); // We may have created less than requested
 	assert(!chunks.empty());
 
-	if(m_overlapping_write_policy != error_policy::ignore) {
-		if(const auto overlapping_writes = detect_overlapping_writes(tsk, chunks); !overlapping_writes.empty()) {
-			auto error = fmt::format("Task T{}", tsk.get_id());
-			if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
-			error += " has overlapping writes between multiple nodes in";
-			for(const auto& [bid, overlap] : overlapping_writes) {
-				fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
-			}
-			error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
-			utils::report_error(m_overlapping_write_policy, "{}", error);
-		}
-	}
-
 	// Assign each chunk to a node
 	// We assign chunks next to each other to the same worker (if there is more chunks than workers), as this is likely to produce less
 	// transfers between tasks than a round-robin assignment (for typical stencil codes).
@@ -373,7 +360,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 						}
 					}
 
-					if(is_local_chunk && m_uninitialized_read_policy != error_policy::ignore) {
+					if(is_local_chunk && m_policy.uninitialized_read_error != error_policy::ignore) {
 						uninitialized_reads = region_union(uninitialized_reads, region_difference(req, buffer_state.initialized_region));
 					}
 				}

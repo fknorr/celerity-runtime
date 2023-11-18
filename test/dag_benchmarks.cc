@@ -143,6 +143,10 @@ static constexpr distributed_graph_generator::policy_set benchmark_command_graph
     /* uninitialized_read_error */ error_policy::ignore, // uninitialized reads already detected by task manager
     /* overlapping_write_error */ CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::throw_exception : error_policy::ignore,
 };
+static constexpr instruction_graph_generator::policy_set benchmark_instruction_graph_generator_policy{
+    /* uninitialized_read_error */ error_policy::ignore, // uninitialized reads already detected by task manager
+    /* overlapping_write_error */ CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::throw_exception : error_policy::ignore,
+};
 
 
 struct task_manager_benchmark_context {
@@ -167,7 +171,7 @@ struct command_graph_generator_benchmark_context {
 	command_graph cdag;
 	task_recorder trec;
 	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
-	command_recorder crec{&tm};
+	command_recorder crec;
 	distributed_graph_generator dggen{
 	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
 	test_utils::mock_buffer_factory mbf{tm, dggen};
@@ -202,12 +206,14 @@ struct instruction_graph_generator_benchmark_context {
 	const size_t num_devices;
 	command_graph cdag;
 	task_recorder trec;
-	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr};
+	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
 	command_recorder crec;
-	distributed_graph_generator dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr};
+	distributed_graph_generator dggen{
+	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
 	instruction_recorder irec;
 	instruction_graph idag;
-	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_device_map(num_devices), idag, test_utils::print_graphs ? &irec : nullptr};
+	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_device_map(num_devices), idag, test_utils::print_graphs ? &irec : nullptr,
+	    benchmark_instruction_graph_generator_policy};
 	test_utils::mock_buffer_factory mbf{tm, dggen, iggen};
 
 	explicit instruction_graph_generator_benchmark_context(const size_t num_nodes, const size_t num_devices) : num_nodes(num_nodes), num_devices(num_devices) {

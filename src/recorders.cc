@@ -225,8 +225,8 @@ send_instruction_record::send_instruction_record(
     const send_instruction& sinstr, const command_id push_cid, const detail::transfer_id& trid, const celerity::id<3>& offset_in_buffer)
     : acceptor_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()), source_memory_id(sinstr.get_source_memory_id()),
       source_allocation_id(sinstr.get_source_allocation_id()), source_allocation_range(sinstr.get_source_allocation_range()),
-      offset_in_source_allocation(sinstr.get_offset_in_source_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid),
-      transfer_id(trid), offset_in_buffer(offset_in_buffer) {}
+      offset_in_source_allocation(sinstr.get_offset_in_source_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()),
+      push_cid(push_cid), transfer_id(trid), offset_in_buffer(offset_in_buffer) {}
 
 receive_instruction_record_impl::receive_instruction_record_impl(const receive_instruction_impl& rinstr)
     : transfer_id(rinstr.get_transfer_id()), requested_region(rinstr.get_requested_region()), dest_memory_id(rinstr.get_dest_memory_id()),

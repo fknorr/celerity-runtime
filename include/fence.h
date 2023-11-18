@@ -3,7 +3,7 @@
 #include <memory>
 #include <type_traits>
 
-#include "accessor.h"
+#include "distr_queue.h"
 #include "host_object.h"
 #include "runtime.h"
 #include "task_manager.h"

@@ -264,7 +264,10 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	const auto end_node = [&] { fmt::format_to(back, ">];"); };
 
-	const auto get_buffer_label = [&](const buffer_id bid) { return detail::get_buffer_label(bid, irec.get_buffer_debug_name(bid)); };
+	const auto get_buffer_label = [&](const buffer_id bid) {
+		auto& name = irec.get_buffer_debug_name(bid);
+		return name.empty() ? fmt::format("B{}", bid) : fmt::format("B{} \"{}\"", bid, utils::escape_for_dot_label(name));
+	};
 
 	std::unordered_map<int, instruction_id> send_instructions_by_tag; // for connecting pilot messages to send instructions
 	for(const auto& instr : irec.get_instructions()) {
@@ -352,7 +355,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, get_buffer_label(access.buffer_id), access.accessed_box_in_buffer);
+				    fmt::format_to(
+				        back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, get_buffer_label(access.buffer_id), access.accessed_box_in_buffer);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();

@@ -15,6 +15,9 @@ class host_object;
 
 namespace celerity {
 
+template <typename T, int Dims>
+class buffer_snapshot;
+
 struct [[deprecated("This tag type is no longer required to capture by reference")]] allow_by_ref_t{};
 
 #pragma GCC diagnostic push

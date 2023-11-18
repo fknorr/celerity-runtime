@@ -5,6 +5,8 @@
 namespace celerity {
 namespace detail {
 
+	// TODO move to host_utils
+
 	void memcpy_strided_host(const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<0>& source_range, const id<0>& source_offset,
 	    const range<0>& target_range, const id<0>& target_offset, const range<0>& copy_range);
 

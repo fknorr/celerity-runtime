@@ -268,8 +268,7 @@ struct device_kernel_instruction_record : matchbox::implement_acceptor<instructi
 	std::string debug_name;
 
 	device_kernel_instruction_record(const device_kernel_instruction& dkinstr, task_id cg_tid, command_id execution_cid, const std::string& debug_name,
-	    const std::vector<buffer_memory_record>& buffer_memory_allocation_map,
-	    const std::vector<buffer_reduction_record>& buffer_memory_reduction_map);
+	    const std::vector<buffer_memory_record>& buffer_memory_allocation_map, const std::vector<buffer_reduction_record>& buffer_memory_reduction_map);
 };
 
 struct host_task_instruction_record : matchbox::implement_acceptor<instruction_record, host_task_instruction_record> {

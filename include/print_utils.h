@@ -73,6 +73,8 @@ struct fmt::formatter<celerity::chunk<Dims>> : fmt::formatter<celerity::subrange
 	}
 };
 
+// TODO implement formatters for all phantom types
+
 template <>
 struct fmt::formatter<celerity::detail::transfer_id> {
 	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }

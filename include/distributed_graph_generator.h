@@ -150,8 +150,6 @@ class distributed_graph_generator {
 	policy_set m_policy;
 	command_graph& m_cdag;
 	const task_manager& m_task_mngr;
-	error_policy m_uninitialized_read_policy = error_policy::throw_exception;
-	error_policy m_overlapping_write_policy = error_policy::throw_exception;
 	std::unordered_map<buffer_id, buffer_state> m_buffer_states;
 	std::unordered_map<host_object_id, host_object_state> m_host_objects;
 	command_id m_epoch_for_new_commands = 0;

@@ -732,8 +732,8 @@ namespace detail {
 
 		buffer<int, 1> b{range<1>{1}};
 		distr_queue{}.submit([&](handler& cgh) {
-			cgh.parallel_for<class UKN(kernel)>(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}}, reduction(b, cgh, cl::sycl::plus<>{}),
-			    [](nd_item<2> item, auto& sum) { sum += item.get_global_linear_id(); });
+			cgh.parallel_for<class UKN(kernel)>(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}}, reduction(b, cgh, sycl::plus<int>()),
+			    [](nd_item<2> item, auto& sum) { sum += static_cast<int>(item.get_global_linear_id()); });
 		});
 	}
 
@@ -1444,8 +1444,8 @@ namespace detail {
 
 			CHECK_THROWS_WITH(q.submit([&](handler& cgh) { (void)cgh; }), what);
 			CHECK_THROWS_WITH(q.slow_full_sync(), what);
-			CHECK_THROWS_WITH(experimental::fence(q, buf), what);
-			CHECK_THROWS_WITH(experimental::fence(q, ho), what);
+			CHECK_THROWS_WITH(q.fence(buf), what);
+			CHECK_THROWS_WITH(q.fence(ho), what);
 
 			// We can't easily test whether `~distr_queue()` et al. throw, because that would require marking the entire stack of destructors noexcept(false)
 			// including the ~shared_ptr we use internally for reference semantics. Instead we verify that the runtime operations their trackers call throw.

@@ -21,9 +21,14 @@ class instruction_graph_generator {
 		// - which backends / features are supported?
 	};
 
+	struct policy_set {
+		error_policy uninitialized_read_error = error_policy::throw_exception;
+		error_policy overlapping_write_error = error_policy::throw_exception;
+	};
+
 	// TODO should take unordered_map<device_id, device_info> (runtime is responsible for device id allocation, not IGGEN)
-	explicit instruction_graph_generator(
-	    const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_graph &idag, instruction_recorder* recorder);
+	explicit instruction_graph_generator(const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices,
+	    instruction_graph& idag, instruction_recorder* recorder, const policy_set& policy = default_policy_set());
 	instruction_graph_generator(const instruction_graph_generator&) = delete;
 	instruction_graph_generator(instruction_graph_generator&&) = default;
 	instruction_graph_generator& operator=(const instruction_graph_generator&) = delete;
@@ -47,6 +52,10 @@ class instruction_graph_generator {
 	std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> compile(const abstract_command& cmd);
 
   private:
+	// default-constructs a policy_set - this must be a function because we can't use the implicit default constructor of policy_set, which has member
+	// initializers, within its surrounding class (Clang)
+	constexpr static policy_set default_policy_set() { return {}; }
+
 	class impl;
 	std::unique_ptr<impl> m_impl;
 };

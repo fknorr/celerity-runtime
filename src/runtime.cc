@@ -139,7 +139,11 @@ namespace detail {
 
 		m_h_queue = std::make_unique<host_queue>();
 
-		if(m_cfg->is_recording()) m_task_recorder = std::make_unique<task_recorder>();
+		if(m_cfg->is_recording()) {
+			m_task_recorder = std::make_unique<task_recorder>();
+			m_command_recorder = std::make_unique<command_recorder>();
+			m_instruction_recorder = std::make_unique<instruction_recorder>();
+		}
 
 		task_manager::policy_set task_mngr_policy;
 		// Merely _declaring_ an uninitialized read is legitimate as long as the kernel does not actually perform the read at runtime - this might happen in the
@@ -174,23 +178,16 @@ namespace detail {
 		m_exec = std::make_unique<instruction_executor>(backend::make_queue(backend_type, backend_devices), std::make_unique<mpi_communicator>(MPI_COMM_WORLD),
 		    static_cast<instruction_executor::delegate*>(this));
 
-		if(m_cfg->is_recording()) m_command_recorder = std::make_unique<command_recorder>();
-
-		distributed_graph_generator::policy_set dggen_policy;
+		scheduler::policy_set schdlr_policy;
 		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
-		dggen_policy.uninitialized_read_error = error_policy::ignore;
-		dggen_policy.overlapping_write_error = CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
-
-		if(m_cfg->is_recording()) m_instruction_recorder = std::make_unique<instruction_recorder>();
-		// Any uninitialized read that is observed on IDAG generation was already logged on task generation, unless we have a bug.
-		// iggen->set_uninitialized_read_policy(error_policy::ignore);
-		// Since the iggen divides the iteration space of commands further, it can create overlaps that were not yet present in the CDAG.
-		// iggen->set_overlapping_write_policy(error_policy::log_error);
-		// TODO
+		schdlr_policy.command_graph_generator.uninitialized_read_error = error_policy::ignore;
+		schdlr_policy.instruction_graph_generator.uninitialized_read_error = error_policy::ignore;
+		schdlr_policy.command_graph_generator.overlapping_write_error = CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
+		schdlr_policy.instruction_graph_generator.overlapping_write_error =
+		    CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
 
 		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, std::move(iggen_devices), *m_task_mngr,
-		    static_cast<abstract_scheduler::delegate*>(this), m_command_recorder.get(), m_instruction_recorder.get());
-
+		    static_cast<abstract_scheduler::delegate*>(this), m_command_recorder.get(), m_instruction_recorder.get(), schdlr_policy);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
 		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),

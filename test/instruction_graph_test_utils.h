@@ -421,11 +421,17 @@ class idag_test_context {
 	}
 
   public:
-	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node)
+	struct policy_set {
+		task_manager::policy_set tm;
+		distributed_graph_generator::policy_set dggen;
+		instruction_graph_generator::policy_set iggen;
+	};
+
+	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node, const policy_set& policy = {})
 	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_num_devices_per_node(num_devices_per_node),
-	      m_uncaught_exceptions_before(std::uncaught_exceptions()), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder), m_cmd_recorder(), m_cdag(),
-	      m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder), m_instr_recorder(),
-	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), m_idag, &m_instr_recorder) //
+	      m_uncaught_exceptions_before(std::uncaught_exceptions()), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder, policy.tm), m_cmd_recorder(),
+	      m_cdag(), m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder, policy.dggen), m_instr_recorder(),
+	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), m_idag, &m_instr_recorder, policy.iggen) //
 	{
 		REQUIRE(local_nid < num_nodes);
 		REQUIRE(num_devices_per_node > 0);

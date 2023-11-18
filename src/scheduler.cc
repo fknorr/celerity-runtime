@@ -13,10 +13,12 @@ namespace detail {
 
 	abstract_scheduler::abstract_scheduler(const size_t num_nodes, const node_id local_node_id,
 	    std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm, delegate* const delegate, command_recorder* const crec,
-	    instruction_recorder* const irec)
+	    instruction_recorder* const irec, const policy_set& policy)
 	    : m_cdag(std::make_unique<command_graph>()), m_crec(crec),
-	      m_dggen(std::make_unique<distributed_graph_generator>(num_nodes, local_node_id, *m_cdag, tm, crec)), m_idag(std::make_unique<instruction_graph>()),
-	      m_irec(irec), m_iggen(std::make_unique<instruction_graph_generator>(tm, num_nodes, local_node_id, std::move(local_devices), *m_idag, irec)),
+	      m_dggen(std::make_unique<distributed_graph_generator>(num_nodes, local_node_id, *m_cdag, tm, crec, policy.command_graph_generator)),
+	      m_idag(std::make_unique<instruction_graph>()), m_irec(irec), //
+	      m_iggen(std::make_unique<instruction_graph_generator>(
+	          tm, num_nodes, local_node_id, std::move(local_devices), *m_idag, irec, policy.instruction_graph_generator)),
 	      m_delegate(delegate) {}
 
 	abstract_scheduler::~abstract_scheduler() = default;
@@ -102,8 +104,8 @@ namespace detail {
 	}
 
 	scheduler::scheduler(const size_t num_nodes, const node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices,
-	    const task_manager& tm, delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec)
-	    : abstract_scheduler(num_nodes, local_node_id, std::move(local_devices), tm, delegate, crec, irec), m_thread(&scheduler::thread_main, this) {
+	    const task_manager& tm, delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec, const policy_set& policy)
+	    : abstract_scheduler(num_nodes, local_node_id, std::move(local_devices), tm, delegate, crec, irec, policy), m_thread(&scheduler::thread_main, this) {
 		set_thread_name(m_thread.native_handle(), "cy-scheduler");
 	}
 

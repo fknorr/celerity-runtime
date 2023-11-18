@@ -13,12 +13,12 @@ int main() {
 	[[maybe_unused]] celerity::detail::reduction_id rid = 15;
 	[[maybe_unused]] celerity::detail::host_object_id hoid = 16;
 	[[maybe_unused]] celerity::detail::hydration_id hyid = 17;
-	[[maybe_unused]] celerity::detail::transfer_id trid{18, 19, 20};
-	[[maybe_unused]] celerity::detail::memory_id mid = 21;
-	[[maybe_unused]] celerity::detail::allocation_id aid = 22;
-	[[maybe_unused]] celerity::detail::device_id did = 23;
-	[[maybe_unused]] celerity::detail::instruction_id iid = 24;
-
+	[[maybe_unused]] celerity::detail::transfer_id trid{18, 19};
+	[[maybe_unused]] celerity::detail::transfer_id reduction_trid{20, 21, 22};
+	[[maybe_unused]] celerity::detail::memory_id mid = 23;
+	[[maybe_unused]] celerity::detail::allocation_id aid = 24;
+	[[maybe_unused]] celerity::detail::device_id did = 25;
+	[[maybe_unused]] celerity::detail::instruction_id iid = 26;
 
 	[[maybe_unused]] celerity::id<3> id(1, 2, 3);
 	[[maybe_unused]] celerity::range<3> range(1, 2, 3);

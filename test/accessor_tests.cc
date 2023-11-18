@@ -226,7 +226,7 @@ namespace detail {
 			});
 		}
 
-		const auto result = experimental::fence(q, buf_out).get();
+		const auto result = q.fence(buf_out).get();
 		for(size_t i = 0; i < range.size(); ++i) {
 			REQUIRE_LOOP(result.get_data()[i] == i);
 		}
@@ -696,17 +696,18 @@ namespace detail {
 			q.slow_full_sync();
 		}
 
+		const auto accessible_box = box(subrange_cast<3>(accessible_sr));
 		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
 		const auto unnamed_error_message =
 		    fmt::format("Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 0 for buffer B0 attempted to "
 		                "access indices between {} which are outside of mapped subrange {}",
-		        Dims, attempted_sr, subrange_cast<3>(accessible_sr));
+		        Dims, attempted_box, accessible_box);
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
 
 		const auto named_error_message = fmt::format(
 		    "Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 1 for buffer B1 \"{}\" attempted to "
 		    "access indices between {} which are outside of mapped subrange {}",
-		    Dims, buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
+		    Dims, buffer_name, attempted_box, accessible_box);
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
 

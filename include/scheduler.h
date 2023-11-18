@@ -6,6 +6,7 @@
 #include <thread>
 #include <variant>
 
+#include "distributed_graph_generator.h"
 #include "instruction_graph_generator.h"
 #include "ranges.h"
 #include "types.h"
@@ -16,11 +17,9 @@ namespace detail {
 
 	class command_graph;
 	class command_recorder;
-	class distributed_graph_generator;
 	class instruction;
 	class instruction_executor;
 	class instruction_graph;
-	class instruction_graph_generator;
 	class instruction_recorder;
 	struct outbound_pilot;
 	class task;
@@ -44,8 +43,13 @@ namespace detail {
 			virtual void submit_pilot(const outbound_pilot& pilot) = 0;
 		};
 
+		struct policy_set {
+			distributed_graph_generator::policy_set command_graph_generator;
+			instruction_graph_generator::policy_set instruction_graph_generator;
+		};
+
 		abstract_scheduler(size_t num_nodes, node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm,
-		    delegate* delegate, command_recorder* crec, instruction_recorder* irec);
+		    delegate* delegate, command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
 		abstract_scheduler(const abstract_scheduler&) = delete;
 		abstract_scheduler(abstract_scheduler&&) = delete;
 		abstract_scheduler& operator=(const abstract_scheduler&) = delete;
@@ -139,7 +143,7 @@ namespace detail {
 
 	  public:
 		scheduler(size_t num_nodes, node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm,
-		    delegate* delegate, command_recorder* crec, instruction_recorder* irec);
+		    delegate* delegate, command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
 
 		scheduler(const scheduler&) = delete;
 		scheduler(scheduler&&) = delete;

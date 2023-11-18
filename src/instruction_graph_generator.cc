@@ -7,6 +7,7 @@
 #include "intrusive_graph.h"
 #include "recorders.h"
 #include "region_map.h"
+#include "split.h"
 #include "task.h"
 #include "task_manager.h"
 #include "types.h"
@@ -22,10 +23,7 @@ namespace celerity::detail {
 class instruction_graph_generator::impl {
   public:
 	impl(const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_graph& idag,
-	    instruction_recorder* recorder);
-
-	void set_uninitialized_read_policy(const error_policy policy) { m_uninitialized_read_policy = policy; }
-	void set_overlapping_write_policy(const error_policy policy) { m_overlapping_write_policy = policy; }
+	    instruction_recorder* recorder, const policy_set& policy);
 
 	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, bool host_initialized);
 
@@ -233,8 +231,7 @@ class instruction_graph_generator::impl {
 	size_t m_num_nodes;
 	node_id m_local_node_id;
 	std::vector<device_info> m_devices;
-	error_policy m_uninitialized_read_policy = error_policy::throw_exception;
-	error_policy m_overlapping_write_policy = error_policy::throw_exception;
+	policy_set m_policy;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
 	std::unordered_set<instruction*> m_execution_front;
@@ -388,8 +385,8 @@ box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) 
 }
 
 instruction_graph_generator::impl::impl(const task_manager& tm, const size_t num_nodes, const node_id local_node_id, std::vector<device_info> devices,
-    instruction_graph& idag, instruction_recorder* const recorder)
-    : m_idag(idag), m_tm(tm), m_num_nodes(num_nodes), m_local_node_id(local_node_id), m_devices(std::move(devices)), m_recorder(recorder) {
+    instruction_graph& idag, instruction_recorder* const recorder, const policy_set& policy)
+    : m_idag(idag), m_tm(tm), m_num_nodes(num_nodes), m_local_node_id(local_node_id), m_devices(std::move(devices)), m_policy(policy), m_recorder(recorder) {
 	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const device_info& info) { return info.native_memory < max_memories; }));
 	m_idag.begin_epoch(task_manager::initial_epoch_task);
 	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none);
@@ -739,14 +736,14 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 		for(auto& reader_region : disjoint_reader_regions) {
 			const auto region_sources = buffer.newest_data_location.get_region_values(reader_region);
 
-			if(m_uninitialized_read_policy != error_policy::ignore) {
+			if(m_policy.uninitialized_read_error != error_policy::ignore) {
 				box_vector<3> uninitialized_reads;
 				for(const auto& [box, sources] : region_sources) {
 					if(!sources.any()) { uninitialized_reads.push_back(box); }
 				}
 				if(!uninitialized_reads.empty()) {
 					// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
-					utils::report_error(m_uninitialized_read_policy,
+					utils::report_error(m_policy.uninitialized_read_error,
 					    // TODO print task / buffer names
 					    "Instruction is trying to read B{} {}, which is neither found locally nor has been await-pushed before.", bid,
 					    detail::region(std::move(uninitialized_reads)));
@@ -928,10 +925,6 @@ int instruction_graph_generator::impl::create_pilot_message(const node_id target
 }
 
 
-// TODO HACK we're just pulling in the splitting logic from distributed_graph_generator here
-std::vector<chunk<3>> split_equal(const chunk<3>& full_chunk, const range<3>& granularity, const size_t num_chunks, const int dims);
-
-
 void instruction_graph_generator::impl::compile_execution_command(const execution_command& ecmd) {
 	const auto& tsk = *m_tm.get_task(ecmd.get_tid());
 	const auto& bam = tsk.get_buffer_access_map();
@@ -970,8 +963,8 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 	if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device) {
 		// one chunk per device
 		// TODO oversubscription
-		local_chunks =
-		    split_equal(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_devices.size(), tsk.get_dimensions());
+		// TODO split_2d (see dggen)
+		local_chunks = split_1d(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_devices.size());
 		for(device_id did = 0; did < m_devices.size() && did < local_chunks.size(); ++did) {
 			const auto& chunk = local_chunks[did];
 			auto& insn = cmd_instrs.emplace_back();
@@ -982,23 +975,26 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 	} else {
 		// TODO oversubscribe distributed host tasks (but not if they have side effects)
 		local_chunks = {chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size())};
-		auto& insn = cmd_instrs.emplace_back();
-		insn.subrange = command_sr;
+		auto& instr = cmd_instrs.emplace_back();
+		instr.subrange = command_sr;
 		if(tsk.get_execution_target() == execution_target::device) {
 			// Assign work to the first device - note this may lead to load imbalance if there's multiple independent unsplittable tasks.
 			//   - but at the same time, keeping work on one device minimizes data transfers => this can only truly be solved through profiling.
 			const device_id did = 0;
-			insn.did = did;
-			insn.memory_id = m_devices[did].native_memory;
+			instr.did = did;
+			instr.memory_id = m_devices[did].native_memory;
 		} else {
-			insn.memory_id = host_memory_id;
+			instr.memory_id = host_memory_id;
 		}
 	}
 
 	// detect overlapping writes
 
-	if(m_overlapping_write_policy != error_policy::ignore) {
-		if(const auto overlapping_writes = detect_overlapping_writes(tsk, local_chunks); !overlapping_writes.empty()) {
+	if(m_policy.overlapping_write_error != error_policy::ignore) {
+		box_vector<3> local_chunk_boxes(local_chunks.size(), box<3>());
+		std::transform(local_chunks.begin(), local_chunks.end(), local_chunk_boxes.begin(), [](const chunk<3>& ck) { return subrange(ck.offset, ck.range); });
+
+		if(const auto overlapping_writes = detect_overlapping_writes(tsk, local_chunk_boxes); !overlapping_writes.empty()) {
 			auto error = fmt::format("Task T{}", tsk.get_id());
 			if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
 			fmt::format_to(std::back_inserter(error), " has overlapping writes on N{} in", m_local_node_id);
@@ -1006,7 +1002,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 				fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
 			}
 			error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
-			utils::report_error(m_overlapping_write_policy, "{}", error);
+			utils::report_error(m_policy.overlapping_write_error, "{}", error);
 		}
 	}
 
@@ -1618,13 +1614,10 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 }
 
 instruction_graph_generator::instruction_graph_generator(const task_manager& tm, const size_t num_nodes, const node_id local_node_id,
-    std::vector<device_info> devices, instruction_graph& idag, instruction_recorder* const recorder)
-    : m_impl(new impl(tm, num_nodes, local_node_id, std::move(devices), idag, recorder)) {}
+    std::vector<device_info> devices, instruction_graph& idag, instruction_recorder* const recorder, const policy_set& policy)
+    : m_impl(new impl(tm, num_nodes, local_node_id, std::move(devices), idag, recorder, policy)) {}
 
 instruction_graph_generator::~instruction_graph_generator() = default;
-
-void instruction_graph_generator::set_uninitialized_read_policy(const error_policy policy) { m_impl->set_uninitialized_read_policy(policy); }
-void instruction_graph_generator::set_overlapping_write_policy(const error_policy policy) { m_impl->set_overlapping_write_policy(policy); }
 
 void instruction_graph_generator::create_buffer(
     const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
