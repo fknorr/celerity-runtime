@@ -114,6 +114,8 @@ namespace detail {
 		std::unique_ptr<task_manager> m_task_mngr;
 		std::unique_ptr<instruction_executor> m_exec;
 
+		std::optional<task_id> m_latest_horizon_reached; // only accessed by executor thread
+
 		std::unique_ptr<detail::task_recorder> m_task_recorder;
 		std::unique_ptr<detail::command_recorder> m_command_recorder;
 		std::unique_ptr<detail::instruction_recorder> m_instruction_recorder;

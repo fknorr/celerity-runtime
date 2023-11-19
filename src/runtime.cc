@@ -319,11 +319,17 @@ namespace detail {
 	void runtime::horizon_reached(const task_id horizon_tid) {
 		// thread-safe
 		m_task_mngr->notify_horizon_reached(horizon_tid);
+
+		// TODO duplicated from task_manager::notify_horizon_reached
+		if(m_latest_horizon_reached.has_value()) { m_schdlr->notify_epoch_reached(*m_latest_horizon_reached); }
+		m_latest_horizon_reached = horizon_tid;
 	}
 
 	void runtime::epoch_reached(const task_id epoch_tid) {
-		// thread-safe
-		m_task_mngr->notify_epoch_reached(epoch_tid);
+		m_task_mngr->notify_epoch_reached(epoch_tid); // thread-safe
+
+		m_schdlr->notify_epoch_reached(epoch_tid);
+		m_latest_horizon_reached = std::nullopt; // Any non-applied horizon is now behind the epoch and will therefore never become an epoch itself
 	}
 
 	void runtime::create_queue() {

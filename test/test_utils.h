@@ -53,7 +53,7 @@ namespace detail {
 			bool idle = false;
 			std::mutex mutex;
 			std::condition_variable cond;
-			schdlr.notify(scheduler::event_signal_idle{&idle, &mutex, &cond});
+			schdlr.notify(scheduler::test_event_signal_idle{&idle, &mutex, &cond});
 			std::unique_lock lock(mutex);
 			cond.wait(lock, [&] { return idle; });
 		}
@@ -61,6 +61,11 @@ namespace detail {
 		static size_t get_command_count(scheduler& schdlr) {
 			wait_idle(schdlr);
 			return schdlr.m_cdag->command_count();
+		}
+
+		static size_t get_num_live_instructions(scheduler& schdlr) {
+			wait_idle(schdlr);
+			return schdlr.m_idag->num_live_instructions();
 		}
 	};
 

@@ -86,9 +86,19 @@ namespace detail {
 					    // We might want to refactor this to match the IDAG behavior in the future.
 					    m_idag->prune_before_epoch(e.tid);
 				    },
-				    [&](const event_signal_idle& e) {
+				    [&](const test_event_signal_idle& e) {
+#ifndef NDEBUG
+					    // No thread must submit more events until signal has been awaited and all test inspections of the scheduler have taken place.
+					    // This check only catches some violations of that synchronization requirement; the test application must ensure that no thread
+					    // interacts with the scheduler until all inspections have completed.
+					    assert(in_flight_events.empty());
 					    {
-						    std::lock_guard lock(*e.mutex);
+						    std::lock_guard events_lock(m_events_mutex);
+						    assert(m_available_events.empty());
+					    }
+#endif
+					    {
+						    std::lock_guard signal_lock(*e.mutex);
 						    *e.idle = true;
 					    }
 					    e.cond->notify_one();

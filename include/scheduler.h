@@ -112,13 +112,13 @@ namespace detail {
 		struct event_epoch_reached {
 			task_id tid;
 		};
-		struct event_signal_idle { // only used by scheduler_testspy
+		struct test_event_signal_idle { // only used by scheduler_testspy
 			bool* idle;
 			std::mutex* mutex;
 			std::condition_variable* cond;
 		};
 		using event = std::variant<event_task_available, event_buffer_created, event_set_buffer_debug_name, event_buffer_destroyed, event_host_object_created,
-		    event_host_object_destroyed, event_epoch_reached, event_signal_idle>;
+		    event_host_object_destroyed, event_epoch_reached, test_event_signal_idle>;
 
 		std::unique_ptr<command_graph> m_cdag;
 		command_recorder* m_crec;

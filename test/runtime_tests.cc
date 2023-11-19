@@ -975,7 +975,7 @@ namespace detail {
 	}
 
 	// This test case requires actual command execution, which is why it is not in graph_compaction_tests
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "tasks behind the deletion horizon are deleted", "[task_manager][task-graph][task-horizon]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "tasks behind the applied horizon are deleted", "[task_manager][task-graph][task-horizon]") {
 		using namespace cl::sycl::access;
 
 		distr_queue q;
@@ -1007,7 +1007,13 @@ namespace detail {
 
 			// need to wait for commands to actually be executed, otherwise no tasks are deleted
 			q.slow_full_sync();
+
+			// TODO these checks are meaningless for horizons as the actual task deletion happens because of the epochs inserted on `slow_full_sync`
+
 			CHECK(tm.get_current_task_count() < task_limit);
+
+			auto &scheduler = runtime_testspy::get_schdlr(runtime::get_instance());
+			CHECK(scheduler_testspy::get_num_live_instructions(scheduler) < task_limit);
 		}
 	}
 
