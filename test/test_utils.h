@@ -78,7 +78,7 @@ namespace detail {
 			return detail::print_command_graph(local_nid, *rt.m_command_recorder);
 		}
 
-		static std::string print_instruction_graph(const node_id local_nid, runtime& rt) {
+		static std::string print_instruction_graph(runtime& rt) {
 			scheduler_testspy::wait_idle(get_schdlr(rt));
 			return detail::print_instruction_graph(*rt.m_instruction_recorder, *rt.m_command_recorder, *rt.m_task_recorder);
 		}

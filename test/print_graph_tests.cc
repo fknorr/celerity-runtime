@@ -4,6 +4,7 @@
 #include <libenvpp/env.hpp>
 
 #include "distributed_graph_generator_test_utils.h"
+#include "instruction_graph_test_utils.h"
 #include "test_utils.h"
 
 using namespace celerity;
@@ -21,18 +22,18 @@ TEST_CASE("task-graph printing is unchanged", "[print_graph][task-graph]") {
 
 	// graph copied from graph_gen_reduction_tests "distributed_graph_generator generates reduction command trees"
 
-	test_utils::add_compute_task<class UKN(task_initialize)>(
+	test_utils::add_compute_task(
 	    tt.tm, [&](handler& cgh) { buf_1.get_access<access_mode::discard_write>(cgh, acc::one_to_one{}); }, range);
-	test_utils::add_compute_task<class UKN(task_produce)>(
+	test_utils::add_compute_task(
 	    tt.tm, [&](handler& cgh) { buf_0.get_access<access_mode::discard_write>(cgh, acc::one_to_one{}); }, range);
-	test_utils::add_compute_task<class UKN(task_reduce)>(
+	test_utils::add_compute_task(
 	    tt.tm,
 	    [&](handler& cgh) {
 		    buf_0.get_access<access_mode::read>(cgh, acc::one_to_one{});
 		    test_utils::add_reduction(cgh, tt.mrf, buf_1, true /* include_current_buffer_value */);
 	    },
 	    range);
-	test_utils::add_compute_task<class UKN(task_consume)>(
+	test_utils::add_compute_task(
 	    tt.tm,
 	    [&](handler& cgh) {
 		    buf_1.get_access<access_mode::read>(cgh, acc::fixed<1>({0, 1}));
@@ -42,12 +43,12 @@ TEST_CASE("task-graph printing is unchanged", "[print_graph][task-graph]") {
 	// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graph is sane and
 	// replace the `expected` value with the new dot graph.
 	const std::string expected =
-	    "digraph G{label=<Task Graph>;pad=0.2;0[shape=ellipse label=<T0<br/><b>epoch</b>>];1[shape=box style=rounded label=<T1 \"task_initialize_2\" "
-	    "<br/><b>device-compute</b> [0,0,0] + [64,1,1]<br/><i>discard_write</i> B1 {[0,0,0] - [1,1,1]}>];0->1[color=orchid];2[shape=box style=rounded "
-	    "label=<T2 \"task_produce_3\" <br/><b>device-compute</b> [0,0,0] + [64,1,1]<br/><i>discard_write</i> B0 {[0,0,0] - "
-	    "[64,1,1]}>];0->2[color=orchid];3[shape=box style=rounded label=<T3 \"task_reduce_4\" <br/><b>device-compute</b> [0,0,0] + [64,1,1]<br/>(R1) "
-	    "<i>read_write</i> B1 {[0,0,0] - [1,1,1]}<br/><i>read</i> B0 {[0,0,0] - [64,1,1]}>];1->3[];2->3[];4[shape=box style=rounded label=<T4 "
-	    "\"task_consume_5\" <br/><b>device-compute</b> [0,0,0] + [64,1,1]<br/><i>read</i> B1 {[0,0,0] - [1,1,1]}>];3->4[];}";
+	    "digraph G{label=<Task Graph>;pad=0.2;0[shape=ellipse label=<T0<br/><b>epoch</b>>];1[shape=box style=rounded label=<T1<br/><b>device-compute</b> "
+	    "[0,0,0] + [64,1,1]<br/><i>discard_write</i> B1 {[0,0,0] - [1,1,1]}>];0->1[color=orchid];2[shape=box style=rounded label=<T2<br/><b>device-compute</b> "
+	    "[0,0,0] + [64,1,1]<br/><i>discard_write</i> B0 {[0,0,0] - [64,1,1]}>];0->2[color=orchid];3[shape=box style=rounded "
+	    "label=<T3<br/><b>device-compute</b> [0,0,0] + [64,1,1]<br/>(R1) <i>read_write</i> B1 {[0,0,0] - [1,1,1]}<br/><i>read</i> B0 {[0,0,0] - "
+	    "[64,1,1]}>];1->3[];2->3[];4[shape=box style=rounded label=<T4<br/><b>device-compute</b> [0,0,0] + [64,1,1]<br/><i>read</i> B1 {[0,0,0] - "
+	    "[1,1,1]}>];3->4[];}";
 
 	CHECK(print_task_graph(tt.trec) == expected);
 }
@@ -64,34 +65,30 @@ int count_occurences(const std::string& str, const std::string& substr) {
 }
 } // namespace
 
-TEST_CASE("command graph printing is unchanged", "[print_graph][command-graph]") {
+TEST_CASE("command-graph printing is unchanged", "[print_graph][command-graph]") {
 	size_t num_nodes = 4;
 	dist_cdag_test_context dctx(num_nodes);
 
 	auto buf_0 = dctx.create_buffer(range(1));
 	auto buf_1 = dctx.create_buffer(range(num_nodes));
 
-	dctx.device_compute<class UKN(reduce)>(range<1>(num_nodes)) //
+	dctx.device_compute(range<1>(num_nodes)) //
 	    .discard_write(buf_1, acc::one_to_one{})
 	    .reduce(buf_0, false)
 	    .submit();
-	dctx.device_compute<class UKN(consume)>(range<1>(num_nodes))
-	    .read(buf_0, acc::all{})
-	    .read_write(buf_1, acc::one_to_one{})
-	    .write(buf_1, acc::one_to_one{})
-	    .submit();
+	dctx.device_compute(range<1>(num_nodes)).read(buf_0, acc::all{}).read_write(buf_1, acc::one_to_one{}).write(buf_1, acc::one_to_one{}).submit();
 
 	// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graph is sane and
 	// replace the `expected` value with the new dot graph.
 	const std::string expected =
-	    "digraph G{label=<<br/>Command Graph<br/><b>command graph printing is unchanged</b>>;pad=0.2;subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 "
+	    "digraph G{label=<<br/>Command Graph<br/><b>command-graph printing is unchanged</b>>;pad=0.2;subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 "
 	    "(epoch)</font>>;color=darkgray;id_0_0[label=<C0 on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font "
-	    "color=\"#606060\">T1 \"reduce_8\" (device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [1,1,1]<br/>(R1) "
+	    "color=\"#606060\">T1 (device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [1,1,1]<br/>(R1) "
 	    "<i>discard_write</i> B0 {[0,0,0] - [1,1,1]}<br/><i>discard_write</i> B1 {[0,0,0] - [1,1,1]}> fontcolor=black shape=box];}subgraph "
-	    "cluster_id_0_2{label=<<font color=\"#606060\">T2 \"consume_9\" (device-compute)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>execution</b> "
-	    "[0,0,0] + [1,1,1]<br/><i>write</i> B1 {[0,0,0] - [1,1,1]}<br/><i>read_write</i> B1 {[0,0,0] - [1,1,1]}<br/><i>read</i> B0 {[0,0,0] - [1,1,1]}> "
-	    "fontcolor=black shape=box];}id_0_0->id_0_1[color=orchid];id_0_3->id_0_2[];id_0_1->id_0_2[];id_0_3[label=<C3 on N0<br/><b>reduction</b> R1<br/> B0 "
-	    "{[0,0,0] - [1,1,1]}> fontcolor=black "
+	    "cluster_id_0_2{label=<<font color=\"#606060\">T2 (device-compute)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>execution</b> [0,0,0] + "
+	    "[1,1,1]<br/><i>write</i> B1 {[0,0,0] - [1,1,1]}<br/><i>read_write</i> B1 {[0,0,0] - [1,1,1]}<br/><i>read</i> B0 {[0,0,0] - [1,1,1]}> fontcolor=black "
+	    "shape=box];}id_0_0->id_0_1[color=orchid];id_0_3->id_0_2[];id_0_1->id_0_2[];id_0_3[label=<C3 on N0<br/><b>reduction</b> R1<br/> B0 {[0,0,0] - "
+	    "[1,1,1]}> fontcolor=black "
 	    "shape=ellipse];id_0_1->id_0_3[];id_0_4->id_0_3[];id_0_5->id_0_3[color=limegreen];id_0_6->id_0_3[color=limegreen];id_0_7->id_0_3[color=limegreen];id_0_"
 	    "4[label=<C4 on N0<br/>(R1) <b>await push</b> T2.B0.R1 <br/>B0 {[0,0,0] - [1,1,1]}> fontcolor=black "
 	    "shape=ellipse];id_0_0->id_0_4[color=orchid];id_0_5[label=<C5 on N0<br/>(R1) <b>push</b> T2.B0.R1 to N1<br/>B0 [0,0,0] + [1,1,1]> fontcolor=black "
@@ -113,6 +110,77 @@ TEST_CASE("command graph printing is unchanged", "[print_graph][command-graph]")
 	}
 }
 
+TEST_CASE("instruction-graph printing is unchanged", "[print_graph][instruction-graph]") {
+	const size_t num_nodes = 4;
+	const node_id local_nid = 0;
+	const size_t num_local_devices = 2;
+	idag_test_context ictx(num_nodes, local_nid, num_local_devices);
+
+	auto buf_0 = ictx.create_buffer(range(1));
+	auto buf_1 = ictx.create_buffer(range(num_nodes * num_local_devices), true /* host initialized */);
+
+	ictx.device_compute(range<1>(num_nodes * num_local_devices)) //
+	    .read_write(buf_1, acc::one_to_one{})
+	    .reduce(buf_0, false)
+	    .submit();
+	ictx.fence(buf_0);
+	ictx.finish();
+
+	// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graph is sane and
+	// replace the `expected` value with the new dot graph.
+	const std::string expected =
+	    "digraph G{label=<<br/>Instruction Graph<br/><b>instruction-graph printing is unchanged</b><br/>for N0 out of 4 nodes, with 2 devices / "
+	    "node>;pad=0.2;I0[color=black,shape=box,margin=0.2,style=rounded,label=<I0 (T0, "
+	    "C0)<br/><b>epoch</b>>];I1[color=cyan3,shape=ellipse,label=<I1<br/>buffer <b>alloc</b> M0.A1<br/>for B1 [0,0,0] - [8,1,1]<br/>32%4 "
+	    "bytes>];I2[color=green3,shape=ellipse,label=<I2<br/><b>init buffer</b> B1<br/>via M0.A1, 32 bytes>];I3[color=cyan3,shape=ellipse,label=<I3<br/>buffer "
+	    "<b>alloc</b> M0.A2<br/>for B0 [0,0,0] - [1,1,1]<br/>4%4 bytes>];I4[color=cyan3,shape=ellipse,label=<I4<br/>buffer <b>alloc</b> M2.A3<br/>for B0 "
+	    "[0,0,0] - [1,1,1]<br/>4%4 bytes>];I5[color=cyan3,shape=ellipse,label=<I5<br/>buffer <b>alloc</b> M1.A4<br/>for B0 [0,0,0] - [1,1,1]<br/>4%4 "
+	    "bytes>];I6[color=cyan3,shape=ellipse,label=<I6<br/>buffer <b>alloc</b> M2.A5<br/>for B1 [1,0,0] - [2,1,1]<br/>4%4 "
+	    "bytes>];I7[color=cyan3,shape=ellipse,label=<I7<br/>buffer <b>alloc</b> M1.A6<br/>for B1 [0,0,0] - [1,1,1]<br/>4%4 "
+	    "bytes>];I8[color=green3,shape=ellipse,label=<I8<br/>1D coherence <b>copy</b><br/>on B1 [1,0,0] - [2,1,1]<br/>from M0.A1 [1,0,0] - [2,1,1]<br/>to "
+	    "M2.A5 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I9[color=green3,shape=ellipse,label=<I9<br/>1D coherence <b>copy</b><br/>on B1 [0,0,0] - "
+	    "[1,1,1]<br/>from M0.A1 [0,0,0] - [1,1,1]<br/>to M1.A6 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I10[color=cyan3,shape=ellipse,label=<I10<br/>gather "
+	    "<b>alloc</b> M0.A7<br/>for B0 [0,0,0] - [1,1,1] x2<br/>8%4 bytes>];I11[color=darkorange2,shape=box,margin=0.2,style=rounded,label=<I11 "
+	    "(device-compute T1, execution C1)<br/><b>device kernel</b><br/>on D0 [0,0,0] + [1,1,1]<br/>+ access B1 [0,0,0] - [1,1,1]<br/>via M1.A6 [0,0,0] - "
+	    "[1,1,1]<br/>+ (R1) reduce into B0 [0,0,0] - [1,1,1]<br/>via M1.A4 [0,0,0] - "
+	    "[1,1,1]>];I12[color=darkorange2,shape=box,margin=0.2,style=rounded,label=<I12 (device-compute T1, execution C1)<br/><b>device kernel</b><br/>on D1 "
+	    "[1,0,0] + [1,1,1]<br/>+ access B1 [1,0,0] - [2,1,1]<br/>via M2.A5 [0,0,0] - [1,1,1]<br/>+ (R1) reduce into B0 [0,0,0] - [1,1,1]<br/>via M2.A3 [0,0,0] "
+	    "- [1,1,1]>];I13[color=green3,shape=ellipse,label=<I13<br/>1D gather <b>copy</b><br/>on B0 [0,0,0] - [1,1,1]<br/>from M1.A4 [0,0,0] - [1,1,1]<br/>to "
+	    "M0.A7 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I14[color=green3,shape=ellipse,label=<I14<br/>1D gather <b>copy</b><br/>on B0 [0,0,0] - "
+	    "[1,1,1]<br/>from M2.A3 [0,0,0] - [1,1,1]<br/>to M0.A7 [1,0,0] - [2,1,1]<br/>[1,1,1]x4 bytes>];I15[color=blue,shape=ellipse,label=<I15<br/>local "
+	    "<b>reduce</b> B0.R1<br/>B0 [0,0,0] - [1,1,1]<br/>from M0.A7 x2<br/>to M0.A2 x1>];I16[color=cyan3,shape=ellipse,label=<I16<br/><b>free</b> M0.A7 "
+	    "<br/>8 bytes>];I17[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I17 (push C5)<br/><b>send</b> T2.B0.R1<br/>to N1 tag 10<br/>B0 [0,0,0] - "
+	    "[1,1,1]<br/>via M0.A2 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I18[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I18 (push "
+	    "C6)<br/><b>send</b> T2.B0.R1<br/>to N2 tag 11<br/>B0 [0,0,0] - [1,1,1]<br/>via M0.A2 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 "
+	    "bytes>];I19[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I19 (push C7)<br/><b>send</b> T2.B0.R1<br/>to N3 tag 12<br/>B0 [0,0,0] - "
+	    "[1,1,1]<br/>via M0.A2 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I20[color=cyan3,shape=ellipse,label=<I20<br/>gather <b>alloc</b> M0.A8<br/>for B0 "
+	    "[0,0,0] - [1,1,1] x4<br/>16%4 bytes>];I21[color=blue,shape=ellipse,label=<I21<br/><b>fill identity</b> for R1<br/>M0.A8 "
+	    "x4>];I22[color=green3,shape=ellipse,label=<I22<br/>1D gather <b>copy</b><br/>on B0 [0,0,0] - [1,1,1]<br/>from M0.A2 [0,0,0] - [1,1,1]<br/>to M0.A8 "
+	    "[0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I23[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I23 (await-push C4)<br/><b>gather receive</b> "
+	    "T2.B0.R1<br/>B0 [0,0,0] - [1,1,1] x4<br/>into M0.A8>];I24[color=blue,shape=box,margin=0.2,style=rounded,label=<I24 (reduction C3)<br/>global "
+	    "<b>reduce</b> B0.R1<br/>B0 [0,0,0] - [1,1,1]<br/>from M0.A8 x4<br/>to M0.A2 x1>];I25[color=cyan3,shape=ellipse,label=<I25<br/><b>free</b> M0.A8 "
+	    "<br/>16 bytes>];I26[color=green3,shape=ellipse,label=<I26<br/>1D <b>export</b><br/>B0 [0,0,0] - [1,1,1]<br/>via M0.A2 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 "
+	    "bytes>];I27[color=darkorange,shape=box,margin=0.2,style=rounded,label=<I27 (T2, C2)<br/><b>fence</b><br/>B0 [0,0,0] - "
+	    "[1,1,1]>];I28[color=cyan3,shape=ellipse,label=<I28<br/><b>free</b> M0.A1<br/>B1 [0,0,0] - [8,1,1] <br/>32 "
+	    "bytes>];I29[color=cyan3,shape=ellipse,label=<I29<br/><b>free</b> M1.A6<br/>B1 [0,0,0] - [1,1,1] <br/>4 "
+	    "bytes>];I30[color=cyan3,shape=ellipse,label=<I30<br/><b>free</b> M2.A5<br/>B1 [1,0,0] - [2,1,1] <br/>4 "
+	    "bytes>];I31[color=cyan3,shape=ellipse,label=<I31<br/><b>free</b> M0.A2<br/>B0 [0,0,0] - [1,1,1] <br/>4 "
+	    "bytes>];I32[color=cyan3,shape=ellipse,label=<I32<br/><b>free</b> M1.A4<br/>B0 [0,0,0] - [1,1,1] <br/>4 "
+	    "bytes>];I33[color=cyan3,shape=ellipse,label=<I33<br/><b>free</b> M2.A3<br/>B0 [0,0,0] - [1,1,1] <br/>4 "
+	    "bytes>];I34[color=black,shape=box,margin=0.2,style=rounded,label=<I34 (T3, C8)<br/><b>epoch</b> "
+	    "(shutdown)>];I0->I1[];I1->I2[];I0->I3[];I0->I4[];I0->I5[];I0->I6[];I0->I7[];I2->I8[];I6->I8[];I2->I9[];I7->I9[];I0->I10[];I9->I11[];I5->I11[];I8->I12["
+	    "];I4->I12[];I10->I13[];I11->I13[];I10->I14[];I12->I14[];I13->I15[];I14->I15[];I3->I15[];I15->I16[];I15->I17[];I15->I18[];I15->I19[];I0->I20[];I20->"
+	    "I21[];I21->I22[];I15->I22[];I21->I23[];I23->I24[];I22->I24[];I17->I24[];I18->I24[];I19->I24[];I24->I25[];I24->I26[];I26->I27[];I9->I28[];I2->I28[];I8-"
+	    ">I28[];I11->I29[];I12->I30[];I26->I31[];I13->I32[];I14->I33[];I33->I34[];I32->I34[];I30->I34[];I31->I34[];I28->I34[];I27->I34[];I25->I34[];I29->I34[];"
+	    "I16->I34[];P10[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N1 tag 10<br/>T2.B0.R1<br/>for B0 [0,0,0] - "
+	    "[1,1,1]</font>>];P10->I17[dir=none,style=dashed,color=\"#606060\"];P11[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
+	    "color=\"#606060\"><b>pilot</b> to N2 tag 11<br/>T2.B0.R1<br/>for B0 [0,0,0] - "
+	    "[1,1,1]</font>>];P11->I18[dir=none,style=dashed,color=\"#606060\"];P12[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
+	    "color=\"#606060\"><b>pilot</b> to N3 tag 12<br/>T2.B0.R1<br/>for B0 [0,0,0] - [1,1,1]</font>>];P12->I19[dir=none,style=dashed,color=\"#606060\"];}";
+
+	CHECK(ictx.print_instruction_graph() == expected);
+}
+
 TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer debug names show up in the generated graph", "[print_graph]") {
 	env::scoped_test_environment tenv(recording_enabled_env_setting);
 
@@ -125,7 +193,7 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer debug names show up in the
 
 	q.submit([&](handler& cgh) {
 		celerity::accessor acc_a{buff_a, cgh, acc::one_to_one{}, celerity::write_only, celerity::no_init};
-		cgh.parallel_for<class UKN(print_graph_buffer_name)>(range, [=](item<1> item) { (void)acc_a; });
+		cgh.parallel_for(range, [=](item<1> item) { (void)acc_a; });
 	});
 
 	// wait for commands to be generated in the scheduler thread
@@ -139,6 +207,10 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer debug names show up in the
 	}
 	SECTION("in the command graph") {
 		const auto dot = runtime_testspy::print_command_graph(0, celerity::detail::runtime::get_instance());
+		REQUIRE_THAT(dot, ContainsSubstring(expected_substring));
+	}
+	SECTION("in the instruction graph") {
+		const auto dot = runtime_testspy::print_instruction_graph(celerity::detail::runtime::get_instance());
 		REQUIRE_THAT(dot, ContainsSubstring(expected_substring));
 	}
 }
@@ -157,8 +229,9 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 
 	for(int i = 0; i < 3; ++i) {
 		q.submit([&](handler& cgh) {
-			celerity::accessor acc_a{buff_a, cgh, acc::one_to_one{}, celerity::read_write};
-			cgh.parallel_for<class UKN(full_graph_printing)>(range, [=](item<1> item) { (void)acc_a; });
+			celerity::accessor acc_a{buff_a, cgh, acc::one_to_one{}, celerity::read_write_host_task};
+			// we're launching distributed host tasks instead of device kernels so that the schedule is independent from available devices on the system
+			cgh.host_task(range, [=](partition<1> item) { (void)acc_a; });
 		});
 	}
 
@@ -169,12 +242,12 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 
 	SECTION("task graph") {
 		const auto* expected =
-		    "digraph G{label=<Task Graph>;pad=0.2;0[shape=ellipse label=<T0<br/><b>epoch</b>>];1[shape=box style=rounded label=<T1 \"full_graph_printing_18\" "
-		    "<br/><b>device-compute</b> [0,0,0] + [16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}>];0->1[];2[shape=ellipse "
-		    "label=<T2<br/><b>horizon</b>>];1->2[color=orange];3[shape=box style=rounded label=<T3 \"full_graph_printing_18\" <br/><b>device-compute</b> "
-		    "[0,0,0] + [16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}>];1->3[];4[shape=ellipse "
-		    "label=<T4<br/><b>horizon</b>>];3->4[color=orange];2->4[color=orange];5[shape=box style=rounded label=<T5 \"full_graph_printing_18\" "
-		    "<br/><b>device-compute</b> [0,0,0] + [16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}>];3->5[];6[shape=ellipse "
+		    "digraph G{label=<Task Graph>;pad=0.2;0[shape=ellipse label=<T0<br/><b>epoch</b>>];1[shape=box style=rounded label=<T1<br/><b>host-compute</b> "
+		    "[0,0,0] + [16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}>];0->1[];2[shape=ellipse "
+		    "label=<T2<br/><b>horizon</b>>];1->2[color=orange];3[shape=box style=rounded label=<T3<br/><b>host-compute</b> [0,0,0] + "
+		    "[16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}>];1->3[];4[shape=ellipse "
+		    "label=<T4<br/><b>horizon</b>>];3->4[color=orange];2->4[color=orange];5[shape=box style=rounded label=<T5<br/><b>host-compute</b> [0,0,0] + "
+		    "[16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}>];3->5[];6[shape=ellipse "
 		    "label=<T6<br/><b>horizon</b>>];5->6[color=orange];4->6[color=orange];7[shape=ellipse label=<T7<br/><b>epoch</b>>];6->7[color=orange];}";
 
 		CHECK(runtime_testspy::print_task_graph(celerity::detail::runtime::get_instance()) == expected);
@@ -183,15 +256,15 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 	SECTION("command graph") {
 		const auto* expected =
 		    "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_0_0[label=<C0 "
-		    "on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font color=\"#606060\">T1 \"full_graph_printing_18\" "
-		    "(device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - "
+		    "on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font color=\"#606060\">T1 "
+		    "(host-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - "
 		    "[16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font color=\"#606060\">T2 "
 		    "(horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_3{label=<<font "
-		    "color=\"#606060\">T3 \"full_graph_printing_18\" (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on N0<br/><b>execution</b> [0,0,0] + "
-		    "[16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font color=\"#606060\">T4 "
+		    "color=\"#606060\">T3 (host-compute)</font>>;color=darkgray;id_0_3[label=<C3 on N0<br/><b>execution</b> [0,0,0] + [16,1,1]<br/><i>read_write</i> "
+		    "B0 {[0,0,0] - [16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font color=\"#606060\">T4 "
 		    "(horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_5{label=<<font "
-		    "color=\"#606060\">T5 \"full_graph_printing_18\" (device-compute)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>execution</b> [0,0,0] + "
-		    "[16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_6{label=<<font color=\"#606060\">T6 "
+		    "color=\"#606060\">T5 (host-compute)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>execution</b> [0,0,0] + [16,1,1]<br/><i>read_write</i> "
+		    "B0 {[0,0,0] - [16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_6{label=<<font color=\"#606060\">T6 "
 		    "(horizon)</font>>;color=darkgray;id_0_6[label=<C6 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_7{label=<<font "
 		    "color=\"#606060\">T7 (epoch)</font>>;color=darkgray;id_0_7[label=<C7 on N0<br/><b>epoch</b> (barrier)> fontcolor=black "
 		    "shape=box];}id_0_0->id_0_1[];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color=orange];id_0_3->id_0_"
@@ -202,22 +275,22 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 
 	SECTION("instruction graph") {
 		const auto* expected =
-		    "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 (epoch)</font>>;color=darkgray;id_0_0[label=<C0 "
-		    "on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font color=\"#606060\">T1 \"full_graph_printing_18\" "
-		    "(device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + [16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - "
-		    "[16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font color=\"#606060\">T2 "
-		    "(horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_3{label=<<font "
-		    "color=\"#606060\">T3 \"full_graph_printing_18\" (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on N0<br/><b>execution</b> [0,0,0] + "
-		    "[16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font color=\"#606060\">T4 "
-		    "(horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_5{label=<<font "
-		    "color=\"#606060\">T5 \"full_graph_printing_18\" (device-compute)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>execution</b> [0,0,0] + "
-		    "[16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_6{label=<<font color=\"#606060\">T6 "
-		    "(horizon)</font>>;color=darkgray;id_0_6[label=<C6 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph cluster_id_0_7{label=<<font "
-		    "color=\"#606060\">T7 (epoch)</font>>;color=darkgray;id_0_7[label=<C7 on N0<br/><b>epoch</b> (barrier)> fontcolor=black "
-		    "shape=box];}id_0_0->id_0_1[];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color=orange];id_0_3->id_0_"
-		    "5[];id_0_5->id_0_6[color=orange];id_0_4->id_0_6[color=orange];id_0_6->id_0_7[color=orange];}";
+		    "digraph G{label=<Instruction Graph>;pad=0.2;I0[color=black,shape=box,margin=0.2,style=rounded,label=<I0 (T0, C0)<br/><b>epoch</b>>];I1[color="
+		    "cyan3,shape=ellipse,label=<I1<br/>buffer <b>alloc</b> M0.A1<br/>for B0 [0,0,0] - [16,1,1]<br/>64%4 "
+		    "bytes>];I2[color=green3,shape=ellipse,label=<I2<br/><b>init buffer</b> B0<br/>via M0.A1, 64 "
+		    "bytes>];I3[color=darkorange2,shape=box,margin=0.2,style=rounded,label=<I3 (host-compute T1, execution C1)<br/><b>host task</b><br/>on host "
+		    "[0,0,0] + [16,1,1]<br/>+ access B0 [0,0,0] - [16,1,1]<br/>via M0.A1 [0,0,0] - "
+		    "[16,1,1]>];I4[color=black,shape=box,margin=0.2,style=rounded,label=<I4 (T2, "
+		    "C2)<br/><b>horizon</b>>];I5[color=darkorange2,shape=box,margin=0.2,style=rounded,label=<I5 (host-compute T3, execution C3)<br/><b>host "
+		    "task</b><br/>on host [0,0,0] + [16,1,1]<br/>+ access B0 [0,0,0] - [16,1,1]<br/>via M0.A1 [0,0,0] - "
+		    "[16,1,1]>];I6[color=black,shape=box,margin=0.2,style=rounded,label=<I6 (T4, "
+		    "C4)<br/><b>horizon</b>>];I7[color=darkorange2,shape=box,margin=0.2,style=rounded,label=<I7 (host-compute T5, execution C5)<br/><b>host "
+		    "task</b><br/>on host [0,0,0] + [16,1,1]<br/>+ access B0 [0,0,0] - [16,1,1]<br/>via M0.A1 [0,0,0] - "
+		    "[16,1,1]>];I8[color=black,shape=box,margin=0.2,style=rounded,label=<I8 (T6, "
+		    "C6)<br/><b>horizon</b>>];I9[color=black,shape=box,margin=0.2,style=rounded,label=<I9 (T7, C7)<br/><b>epoch</b> "
+		    "(barrier)>];I0->I1[];I1->I2[];I2->I3[];I3->I4[];I3->I5[];I5->I6[];I4->I6[];I5->I7[];I7->I8[];I6->I8[];I8->I9[];}";
 
-		CHECK(runtime_testspy::print_command_graph(0, celerity::detail::runtime::get_instance()) == expected);
+		CHECK(runtime_testspy::print_instruction_graph(celerity::detail::runtime::get_instance()) == expected);
 	}
 }
 

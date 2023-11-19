@@ -66,8 +66,15 @@ namespace detail {
 
 	void set_task_name(handler& cgh, const std::string& debug_name);
 
+	struct unnamed_kernel {};
+
+	template <typename KernelName>
+	constexpr bool is_unnamed_kernel = std::is_same_v<KernelName, unnamed_kernel>;
+
 	template <typename Name>
 	std::string kernel_debug_name() {
+		if(is_unnamed_kernel<Name>) { return ""; }
+
 		// we need to typeid a pointer, since the name is often undefined
 		std::string name = typeid(Name*).name();
 #if !defined(_MSC_VER)
@@ -77,11 +84,6 @@ namespace detail {
 		// get rid of the pointer "*"
 		return name.substr(0, name.length() - 1);
 	}
-
-	struct unnamed_kernel {};
-
-	template <typename KernelName>
-	constexpr bool is_unnamed_kernel = std::is_same_v<KernelName, unnamed_kernel>;
 
 	struct simple_kernel_flavor {};
 	struct nd_range_kernel_flavor {};

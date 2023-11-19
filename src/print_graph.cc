@@ -79,7 +79,7 @@ void format_requirements(std::string& label, const reduction_list& reductions, c
 std::string get_task_label(const task_record& tsk) {
 	std::string label;
 	fmt::format_to(std::back_inserter(label), "T{}", tsk.tid);
-	if(!tsk.debug_name.empty()) { fmt::format_to(std::back_inserter(label), " \"{}\" ", utils::escape_for_dot_label(tsk.debug_name)); }
+	if(!tsk.debug_name.empty()) { fmt::format_to(std::back_inserter(label), " \"{}\"", utils::escape_for_dot_label(tsk.debug_name)); }
 
 	fmt::format_to(std::back_inserter(label), "<br/><b>{}</b>", task_type_string(tsk.type));
 	if(tsk.type == task_type::host_compute || tsk.type == task_type::device_compute) {
@@ -244,9 +244,9 @@ std::string combine_command_graphs(const std::vector<std::string>& graphs, const
 
 std::string print_task_reference_label(const task_record& task) {
 	std::string task_label;
-	fmt::format_to(std::back_inserter(task_label), "T{} ", task.tid);
-	if(!task.debug_name.empty()) { fmt::format_to(std::back_inserter(task_label), "\"{}\" ", task.debug_name); }
-	task_label += "(";
+	fmt::format_to(std::back_inserter(task_label), "T{}", task.tid);
+	if(!task.debug_name.empty()) { fmt::format_to(std::back_inserter(task_label), " \"{}\"", task.debug_name); }
+	task_label += " (";
 	task_label += task_type_string(task.type);
 	if(task.type == task_type::collective) { fmt::format_to(std::back_inserter(task_label), " on CG{}", task.cgid); }
 	task_label += ")";
