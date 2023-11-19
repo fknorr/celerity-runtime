@@ -4,6 +4,7 @@
 #include "command.h"
 #include "grid.h"
 #include "instruction_graph.h"
+#include "print_utils.h"
 #include "recorders.h"
 #include "task.h"
 #include "task_manager.h"
@@ -48,12 +49,6 @@ const char* command_type_string(const command_type ct) {
 	case command_type::reduction: return "reduction";
 	default: return "unknown";
 	}
-}
-
-std::string get_buffer_label(const buffer_id bid, const std::string& name = "") {
-	// if there is no name defined, the name will be the buffer id.
-	// if there is a name we want "id name"
-	return !name.empty() ? fmt::format("B{} \"{}\"", bid, name) : fmt::format("B{}", bid);
 }
 
 void format_requirements(std::string& label, const reduction_list& reductions, const access_list& accesses, const side_effect_map& side_effects,

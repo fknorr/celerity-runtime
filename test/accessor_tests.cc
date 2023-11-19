@@ -669,7 +669,8 @@ namespace detail {
 		const auto accessible_sr = test_utils::truncate_subrange<Dims>({{5, 10, 15}, {1, 2, 3}});
 		const auto oob_idx_lo = test_utils::truncate_id<Dims>({1, 2, 3});
 		const auto oob_idx_hi = test_utils::truncate_id<Dims>({7, 13, 25});
-		const auto buffer_name = "oob";
+		const auto buffer_name = "oob_buffer";
+		const auto task_name = "oob_task";
 
 		celerity::debug::set_buffer_name(named_buff, buffer_name);
 
@@ -682,6 +683,7 @@ namespace detail {
 			lc = std::make_unique<celerity::test_utils::log_capture>();
 
 			q.submit([&](handler& cgh) {
+				debug::set_task_name(cgh, task_name);
 				accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
 				accessor named_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
 
@@ -698,16 +700,14 @@ namespace detail {
 
 		const auto accessible_box = box(subrange_cast<3>(accessible_sr));
 		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
-		const auto unnamed_error_message =
-		    fmt::format("Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 0 for buffer B0 attempted to "
-		                "access indices between {} which are outside of mapped subrange {}",
-		        Dims, attempted_box, accessible_box);
+		const auto unnamed_error_message = fmt::format("Out-of-bounds access detected in device kernel T1 \"{}\": accessor 0 attempted to access buffer B0 "
+		                                               "indicies between {} and outside the declared range {}.",
+		    task_name, attempted_box, accessible_box);
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
 
-		const auto named_error_message = fmt::format(
-		    "Out-of-bounds access in kernel 'celerity::detail::acc_out_of_bounds_kernel<{}>' detected: Accessor 1 for buffer B1 \"{}\" attempted to "
-		    "access indices between {} which are outside of mapped subrange {}",
-		    Dims, buffer_name, attempted_box, accessible_box);
+		const auto named_error_message = fmt::format("Out-of-bounds access detected in device kernel T1 \"{}\": accessor 1 attempted to access buffer B1 "
+		                                             "\"{}\" indicies between {} and outside the declared range {}.",
+		    task_name, buffer_name, attempted_box, accessible_box);
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
 
@@ -720,7 +720,8 @@ namespace detail {
 		const auto accessible_sr = test_utils::truncate_subrange<Dims>({{5, 10, 15}, {1, 2, 3}});
 		const auto oob_idx_lo = test_utils::truncate_id<Dims>({1, 2, 3});
 		const auto oob_idx_hi = test_utils::truncate_id<Dims>({7, 13, 25});
-		const auto buffer_name = "oob";
+		const auto buffer_name = "oob_buffer";
+		const auto task_name = "oob_task";
 
 		celerity::debug::set_buffer_name(named_buff, buffer_name);
 
@@ -733,6 +734,7 @@ namespace detail {
 			lc = std::make_unique<celerity::test_utils::log_capture>();
 
 			q.submit([&](handler& cgh) {
+				debug::set_task_name(cgh, task_name);
 				accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
 				accessor nambed_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
 
@@ -748,16 +750,16 @@ namespace detail {
 			q.slow_full_sync();
 		}
 
-		const auto attempted_sr =
-		    subrange<3>{id_cast<3>(oob_idx_lo), range_cast<3>(oob_idx_hi - oob_idx_lo + id_cast<Dims>(range<Dims>(ones))) - range_cast<3>(range<Dims>(zeros))};
-		const auto unnamed_error_message = fmt::format("Out-of-bounds access in host task detected: Accessor 0 for buffer B0 attempted to "
-		                                               "access indices between {} which are outside of mapped subrange {}",
-		    attempted_sr, subrange_cast<3>(accessible_sr));
+		const auto accessible_box = box(subrange_cast<3>(accessible_sr));
+		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
+		const auto unnamed_error_message = fmt::format("Out-of-bounds access detected in host task T1 \"{}\": accessor 0 attempted to access buffer B0 "
+		                                               "indicies between {} and outside the declared range {}.",
+		    task_name, attempted_box, accessible_box);
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
 
-		const auto named_error_message = fmt::format("Out-of-bounds access in host task detected: Accessor 1 for buffer B1 \"{}\" attempted to "
-		                                             "access indices between {} which are outside of mapped subrange {}",
-		    buffer_name, attempted_sr, subrange_cast<3>(accessible_sr));
+		const auto named_error_message = fmt::format("Out-of-bounds access detected in host task T1 \"{}\": accessor 1 attempted to access buffer B1 \"{}\" "
+		                                             "indicies between {} and outside the declared range {}.",
+		    task_name, buffer_name, attempted_box, accessible_box);
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
 	}
 

@@ -172,6 +172,11 @@ struct buffer_access_allocation {
 	allocation_id allocation_id = null_allocation_id;
 	box<3> allocated_box_in_buffer;
 	box<3> accessed_box_in_buffer;
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	buffer_id oob_buffer_id;
+	std::string oob_buffer_name;
+#endif
 };
 
 /// Allocation-equivalent of a buffer_access_map. The runtime hydration and reduction mechanism are keyed by zero-based indices per instruction.
@@ -181,10 +186,12 @@ using buffer_access_allocation_map = std::vector<buffer_access_allocation>;
 class device_kernel_instruction final : public matchbox::implement_acceptor<instruction, device_kernel_instruction> {
   public:
 	explicit device_kernel_instruction(const instruction_id iid, const device_id did, device_kernel_launcher launcher, const subrange<3>& execution_range,
-	    buffer_access_allocation_map access_allocations, buffer_access_allocation_map reduction_allocations)
-	    : acceptor_base(iid), m_device_id(did), m_launcher(std::move(launcher)),
-
-	      m_execution_range(execution_range), m_access_allocations(std::move(access_allocations)), m_reduction_allocations(std::move(reduction_allocations)) {}
+	    buffer_access_allocation_map access_allocations,
+	    buffer_access_allocation_map reduction_allocations CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const task_id oob_task_id, std::string oob_task_name))
+	    : acceptor_base(iid), m_device_id(did), m_launcher(std::move(launcher)), m_execution_range(execution_range),
+	      m_access_allocations(std::move(access_allocations)),
+	      m_reduction_allocations(std::move(reduction_allocations))
+	          CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, m_oob_task_id(oob_task_id), m_oob_task_name(std::move(oob_task_name))) {}
 
 	device_id get_device_id() const { return m_device_id; }
 	const device_kernel_launcher& get_launcher() const { return m_launcher; }
@@ -192,21 +199,33 @@ class device_kernel_instruction final : public matchbox::implement_acceptor<inst
 	const buffer_access_allocation_map& get_access_allocations() const { return m_access_allocations; }
 	const buffer_access_allocation_map& get_reduction_allocations() const { return m_reduction_allocations; }
 
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	task_id get_oob_task_id() const { return m_oob_task_id; }
+	const std::string& get_oob_task_name() const { return m_oob_task_name; }
+#endif
+
   private:
 	device_id m_device_id;
 	device_kernel_launcher m_launcher;
 	subrange<3> m_execution_range;
 	buffer_access_allocation_map m_access_allocations;
 	buffer_access_allocation_map m_reduction_allocations;
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	task_id m_oob_task_id;
+	std::string m_oob_task_name;
+#endif
 };
 
 /// Launches a host task in a thread pool. Bound accessors are hydrated through a buffer_access_allocation_map.
 class host_task_instruction final : public matchbox::implement_acceptor<instruction, host_task_instruction> {
   public:
 	host_task_instruction(const instruction_id iid, host_task_launcher launcher, const subrange<3>& execution_range, const range<3>& global_range,
-	    buffer_access_allocation_map access_allocations, const collective_group_id cgid)
+	    buffer_access_allocation_map access_allocations,
+	    const collective_group_id cgid CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const task_id oob_task_id, std::string oob_task_name))
 	    : acceptor_base(iid), m_launcher(std::move(launcher)), m_global_range(global_range), m_execution_range(execution_range),
-	      m_access_allocations(std::move(access_allocations)), m_cgid(cgid) {}
+	      m_access_allocations(std::move(access_allocations)),
+	      m_cgid(cgid) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, m_oob_task_id(oob_task_id), m_oob_task_name(std::move(oob_task_name))) {}
 
 	const range<3>& get_global_range() const { return m_global_range; }
 	const host_task_launcher& get_launcher() const { return m_launcher; }
@@ -214,12 +233,22 @@ class host_task_instruction final : public matchbox::implement_acceptor<instruct
 	const subrange<3>& get_execution_range() const { return m_execution_range; }
 	const buffer_access_allocation_map& get_access_allocations() const { return m_access_allocations; }
 
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	task_id get_oob_task_id() const { return m_oob_task_id; }
+	const std::string& get_oob_task_name() const { return m_oob_task_name; }
+#endif
+
   private:
 	host_task_launcher m_launcher;
 	range<3> m_global_range;
 	subrange<3> m_execution_range;
 	buffer_access_allocation_map m_access_allocations;
 	collective_group_id m_cgid;
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	task_id m_oob_task_id;
+	std::string m_oob_task_name;
+#endif
 };
 
 /// Metadata exchanged in preparation for a peer-to-peer data transfer with send_instruction / receive_instruction (and cousins). Pilots allow the receiving

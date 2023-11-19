@@ -284,12 +284,6 @@ void instruction_recorder::record_await_push_command_id(const transfer_id& trid,
 
 command_id instruction_recorder::get_await_push_command_id(const transfer_id& trid) const { return m_await_push_cids.at(trid); }
 
-const std::string& instruction_recorder::get_buffer_name(const buffer_id bid) const {
-	if(const auto it = m_buffer_debug_names.find(bid); it != m_buffer_debug_names.end()) { return it->second; }
-	static const std::string m_empty_debug_name;
-	return m_empty_debug_name;
-}
-
 void instruction_recorder::record_dependencies(const instruction& instr) {
 	auto& record = const_cast<instruction_record&>(get_instruction(instr.get_id()));
 	for(auto& d : instr.get_dependencies()) {

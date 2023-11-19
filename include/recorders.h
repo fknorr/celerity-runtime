@@ -422,7 +422,6 @@ class instruction_recorder {
 	using outbound_pilots = std::vector<outbound_pilot>;
 
 	void record_await_push_command_id(const transfer_id& trid, const command_id cid);
-	void record_buffer_name(const buffer_id bid, const std::string& name) { m_buffer_debug_names.emplace(bid, name); }
 	void record_instruction(std::unique_ptr<instruction_record> record) { m_recorded_instructions.push_back(std::move(record)); }
 	void record_outbound_pilot(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
 	void record_dependencies(const instruction& instr);
@@ -449,7 +448,6 @@ class instruction_recorder {
 
 	const outbound_pilots& get_outbound_pilots() const { return m_recorded_pilots; }
 	command_id get_await_push_command_id(const transfer_id& trid) const;
-	const std::string& get_buffer_name(buffer_id bid) const;
 
   private:
 	std::vector<std::unique_ptr<instruction_record>> m_recorded_instructions;

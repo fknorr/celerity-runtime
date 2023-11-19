@@ -5,6 +5,7 @@
 #include "host_object.h"
 #include "instruction_graph.h"
 #include "mpi_communicator.h" // TODO
+#include "print_utils.h"
 #include "receive_arbiter.h"
 #include "types.h"
 
@@ -177,34 +178,38 @@ void instruction_executor::loop() {
 	assert(m_host_object_instances.empty());
 }
 
-instruction_executor::accessor_aux_info instruction_executor::prepare_accessor_hydration(target target, const buffer_access_allocation_map& amap) {
-	accessor_aux_info aux_info;
-#if CELERITY_ACCESSOR_BOUNDARY_CHECK
-	if(!amap.empty()) {
-		aux_info.out_of_bounds_box_per_accessor =
-		    static_cast<oob_bounding_box*>(m_backend_queue->malloc(host_memory_id, amap.size() * sizeof(oob_bounding_box), alignof(oob_bounding_box)));
-		std::uninitialized_default_construct_n(aux_info.out_of_bounds_box_per_accessor, amap.size());
-	}
-#endif
-
+void instruction_executor::prepare_accessor_hydration(
+    target target, const buffer_access_allocation_map& amap CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const boundary_check_info& oob_info)) {
 	std::vector<closure_hydrator::accessor_info> accessor_infos;
 	accessor_infos.reserve(amap.size());
 	for(size_t i = 0; i < amap.size(); ++i) {
 		const auto ptr = m_allocations.at(amap[i].allocation_id);
-
 		accessor_infos.push_back(closure_hydrator::accessor_info{ptr, amap[i].allocated_box_in_buffer,
-		    amap[i].accessed_box_in_buffer CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, &aux_info.out_of_bounds_box_per_accessor[i])});
-#if CELERITY_ACCESSOR_BOUNDARY_CHECK
-		aux_info.declared_box_per_accessor.push_back(amap[i].accessed_box_in_buffer);
-#endif
+		    amap[i].accessed_box_in_buffer CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, &oob_info.illegal_access_bounding_boxes[i])});
 	}
 
 	closure_hydrator::get_instance().arm(target, std::move(accessor_infos));
-
-	return aux_info;
 }
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
+
+instruction_executor::boundary_check_info instruction_executor::prepare_accessor_boundary_check(
+    const buffer_access_allocation_map& amap, const task_id tid, const std::string& task_name, const target target) {
+	boundary_check_info info;
+	if(!amap.empty()) {
+		info.illegal_access_bounding_boxes =
+		    static_cast<oob_bounding_box*>(m_backend_queue->malloc(host_memory_id, amap.size() * sizeof(oob_bounding_box), alignof(oob_bounding_box)));
+		std::uninitialized_default_construct_n(info.illegal_access_bounding_boxes, amap.size());
+	}
+	for(size_t i = 0; i < amap.size(); ++i) {
+		info.accessors.push_back({amap[i].oob_buffer_id, amap[i].oob_buffer_name, amap[i].accessed_box_in_buffer});
+	}
+	info.task_id = tid;
+	info.task_name = task_name;
+	info.target = target;
+	return info;
+}
+
 bool instruction_executor::boundary_checked_event::is_complete() const {
 	if(!state.has_value()) return true; // we clear `state` completion to make is_complete() idempotent
 
@@ -214,23 +219,27 @@ bool instruction_executor::boundary_checked_event::is_complete() const {
 	    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
 	if(!is_complete) return false;
 
-	for(size_t i = 0; i < state->aux_info.declared_box_per_accessor.size(); ++i) {
-		if(const auto oob_box = state->aux_info.out_of_bounds_box_per_accessor[i].into_box(); !oob_box.empty()) {
-			// This does not print task and buffer debug names as we used to prior to the IDAG transition. Including this info would require us to conditionally
-			// integrate debug info into kernel / host task instructions. TODO
-			CELERITY_ERROR("Out-of-bounds access detected: accessor {} attempted to access indices between {} which are outside of the mapped range {}", i,
-			    oob_box, state->aux_info.declared_box_per_accessor[i]);
+	const auto& info = state->oob_info;
+	for(size_t i = 0; i < info.accessors.size(); ++i) {
+		if(const auto oob_box = info.illegal_access_bounding_boxes[i].into_box(); !oob_box.empty()) {
+			const auto& accessor_info = info.accessors[i];
+			CELERITY_ERROR(
+			    "Out-of-bounds access detected in {} T{}{}: accessor {} attempted to access buffer {} indicies between {} and outside the declared range {}.",
+			    info.target == target::device ? "device kernel" : "host task", info.task_id,
+			    (!info.task_name.empty() ? fmt::format(" \"{}\"", info.task_name) : ""), i,
+			    get_buffer_label(accessor_info.buffer_id, accessor_info.buffer_name), oob_box, accessor_info.accessible_box);
 		}
 	}
 
-	if(state->aux_info.out_of_bounds_box_per_accessor != nullptr /* i.e. there is at least one accessor */) {
-		state->executor->m_backend_queue->free(host_memory_id, state->aux_info.out_of_bounds_box_per_accessor);
+	if(info.illegal_access_bounding_boxes != nullptr /* i.e. there is at least one accessor */) {
+		state->executor->m_backend_queue->free(host_memory_id, info.illegal_access_bounding_boxes);
 	}
 
 	state = {}; // make is_complete() idempotent
 	return true;
 }
-#endif
+
+#endif // CELERITY_ACCESSOR_BOUNDARY_CHECK
 
 instruction_executor::event instruction_executor::begin_executing(const instruction& instr) {
 	static constexpr auto log_accesses = [](const buffer_access_allocation_map& map) {
@@ -341,7 +350,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
 		        log_accesses(dkinstr.get_access_allocations()));
 
-		    [[maybe_unused]] auto aux_info = prepare_accessor_hydration(target::device, dkinstr.get_access_allocations());
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+		    auto oob_info =
+		        prepare_accessor_boundary_check(dkinstr.get_access_allocations(), dkinstr.get_oob_task_id(), dkinstr.get_oob_task_name(), target::device);
+#endif
+		    prepare_accessor_hydration(target::device, dkinstr.get_access_allocations() CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, oob_info));
 
 		    std::vector<void*> reduction_ptrs;
 		    reduction_ptrs.reserve(dkinstr.get_reduction_allocations().size());
@@ -352,7 +365,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    auto evt = m_backend_queue->launch_kernel(dkinstr.get_device_id(), dkinstr.get_launcher(), dkinstr.get_execution_range(), reduction_ptrs);
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
-		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(aux_info)}};
+		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(oob_info)}};
 #else
 		    return evt;
 #endif
@@ -361,7 +374,11 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG(
 		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_access_allocations()));
 
-		    [[maybe_unused]] auto aux_info = prepare_accessor_hydration(target::host_task, htinstr.get_access_allocations());
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+		    auto oob_info =
+		        prepare_accessor_boundary_check(htinstr.get_access_allocations(), htinstr.get_oob_task_id(), htinstr.get_oob_task_name(), target::host_task);
+#endif
+		    prepare_accessor_hydration(target::host_task, htinstr.get_access_allocations() CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, oob_info));
 
 		    // TODO executor must not have any direct dependency on MPI!
 		    MPI_Comm mpi_comm = MPI_COMM_NULL;
@@ -374,7 +391,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    auto evt = launch(m_host_queue, htinstr.get_execution_range(), mpi_comm);
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
-		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(aux_info)}};
+		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(oob_info)}};
 #else
 		    return evt;
 #endif
