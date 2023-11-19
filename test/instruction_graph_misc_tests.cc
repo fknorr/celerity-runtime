@@ -350,24 +350,30 @@ TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitia
 
 	test_utils::idag_test_context ictx(1, 0, num_devices, policy);
 
-	SECTION("on a fully uninitialized buffer") {
+	SECTION("from a read-accessor on a fully uninitialized buffer") {
 		auto buf = ictx.create_buffer<1>({1});
 		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::all()).submit()),
 		    "Instruction is trying to read B0 {[0,0,0] - [1,1,1]}, which is neither found locally nor has been await-pushed before.");
 	}
 
-	SECTION("on a partially, locally initialized buffer") {
+	SECTION("from a read-accessor on a partially, locally initialized buffer") {
 		auto buf = ictx.create_buffer<1>(device_range);
 		ictx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
 		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::all()).submit()),
 		    "Instruction is trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
 	}
 
-	SECTION("on a partially, remotely initialized buffer") {
+	SECTION("from a read-accessor on a partially, remotely initialized buffer") {
 		auto buf = ictx.create_buffer<1>(device_range);
 		ictx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
 		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::one_to_one()).submit()),
 		    "Instruction is trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
+	}
+
+	SECTION("from a reduction including the current value of an uninitialized buffer") {
+		auto buf = ictx.create_buffer<1>({1});
+		CHECK_THROWS_WITH((ictx.device_compute(device_range).reduce(buf, true /* include current buffer value */).submit()),
+		    "Instruction is trying to read B0 {[0,0,0] - [1,1,1]}, which is neither found locally nor has been await-pushed before.");
 	}
 }
 
@@ -378,13 +384,48 @@ TEST_CASE("instruction_graph_generator throws in tests if it detects overlapping
 
 	SECTION("on all-write") {
 		CHECK_THROWS_WITH((ictx.device_compute(buf.get_range()).discard_write(buf, acc::all()).submit()),
-		    "Task T1 \"celerity::detail::unnamed_kernel\" has overlapping writes on N0 in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping range mapper for "
-		    "the write access or constrain the split to make the access non-overlapping.");
+		    "Task T1 has overlapping writes on N0 in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping range mapper for the write access or constrain the "
+		    "split to make the access non-overlapping.");
 	}
 
 	SECTION("on neighborhood-write") {
 		CHECK_THROWS_WITH((ictx.device_compute(buf.get_range()).discard_write(buf, acc::neighborhood(1, 1)).submit()),
-		    "Task T1 \"celerity::detail::unnamed_kernel\" has overlapping writes on N0 in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping range mapper for "
-		    "the write access or constrain the split to make the access non-overlapping.");
+		    "Task T1 has overlapping writes on N0 in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping range mapper for the write access or constrain the "
+		    "split to make the access non-overlapping.");
 	}
+}
+
+TEST_CASE("instruction_graph_generator gracefully handles uninitialized reads when check is disabled", "[instruction_graph_generator]") {
+	test_utils::idag_test_context::policy_set policy;
+	policy.tm.uninitialized_read_error = error_policy::ignore;
+	policy.dggen.uninitialized_read_error = error_policy::ignore;
+	policy.iggen.uninitialized_read_error = error_policy::ignore;
+
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, policy);
+	auto buf = ictx.create_buffer<1>({1});
+
+	SECTION("from a read-accessor") { //
+		ictx.device_compute(range(1)).read(buf, acc::all()).submit();
+	}
+	SECTION("from a reduction including the current buffer value") {
+		ictx.device_compute(range(1)).reduce(buf, true /* include current buffer value */).submit();
+	}
+
+	ictx.finish();
+	SUCCEED();
+}
+
+TEST_CASE("instruction_graph_generator gracefully handles overlapping writes when check is disabled", "[instruction_graph_generator]") {
+	const size_t num_devices = 2;
+
+	test_utils::idag_test_context::policy_set policy;
+	policy.dggen.overlapping_write_error = error_policy::ignore;
+	policy.iggen.overlapping_write_error = error_policy::ignore;
+
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, num_devices, policy);
+
+	auto buf = ictx.create_buffer<1>({1});
+	ictx.device_compute(range(num_devices)).discard_write(buf, acc::all()).submit();
+	ictx.finish();
+	SUCCEED();
 }

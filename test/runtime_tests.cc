@@ -732,7 +732,8 @@ namespace detail {
 
 		buffer<int, 1> b{range<1>{1}};
 		distr_queue{}.submit([&](handler& cgh) {
-			cgh.parallel_for<class UKN(kernel)>(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}}, reduction(b, cgh, sycl::plus<int>()),
+			cgh.parallel_for(celerity::nd_range{range<2>{8, 8}, range<2>{4, 4}},
+			    reduction(b, cgh, sycl::plus<int>(), property::reduction::initialize_to_identity()),
 			    [](nd_item<2> item, auto& sum) { sum += static_cast<int>(item.get_global_linear_id()); });
 		});
 	}

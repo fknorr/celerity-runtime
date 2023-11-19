@@ -519,13 +519,13 @@ TEST_CASE("distributed_graph_generator throws in tests if it detects overlapping
 
 	SECTION("on all-write") {
 		CHECK_THROWS_WITH((dctx.device_compute(buf.get_range()).discard_write(buf, acc::all()).submit()),
-		    "Task T1 \"celerity::detail::unnamed_kernel\" has overlapping writes between multiple nodes in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping "
-		    "range mapper for the write access or constrain the split to make the access non-overlapping.");
+		    "Task T1 has overlapping writes between multiple nodes in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping range mapper for the write access or "
+		    "constrain the split to make the access non-overlapping.");
 	}
 
 	SECTION("on neighborhood-write") {
 		CHECK_THROWS_WITH((dctx.device_compute(buf.get_range()).discard_write(buf, acc::neighborhood(1, 1)).submit()),
-		    "Task T1 \"celerity::detail::unnamed_kernel\" has overlapping writes between multiple nodes in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping "
-		    "range mapper for the write access or constrain the split to make the access non-overlapping.");
+		    "Task T1 has overlapping writes between multiple nodes in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping range mapper for the write access or "
+		    "constrain the split to make the access non-overlapping.");
 	}
 }

@@ -739,11 +739,9 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 
 		auto& buffer = m_buffers.at(bid);
 		for(auto& reader_region : disjoint_reader_regions) {
-			const auto region_sources = buffer.newest_data_location.get_region_values(reader_region);
-
 			if(m_policy.uninitialized_read_error != error_policy::ignore) {
 				box_vector<3> uninitialized_reads;
-				for(const auto& [box, sources] : region_sources) {
+				for(const auto& [box, sources] : buffer.newest_data_location.get_region_values(reader_region)) {
 					if(!sources.any()) { uninitialized_reads.push_back(box); }
 				}
 				if(!uninitialized_reads.empty()) {
@@ -758,6 +756,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 			// split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region
 			std::unordered_map<const instruction*, region<3>> writer_regions;
 			for(const auto& [writer_box, original_writer] : buffer.original_writers.get_region_values(reader_region)) {
+				if(original_writer == nullptr) { continue /* gracefully handle an uninitialized read */; }
 				auto& region = writer_regions[original_writer]; // allow default-insert
 				region = region_union(region, writer_box);
 			}
@@ -852,7 +851,6 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(const buffer
 
 	const auto reduction = std::find_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; });
 	if(reduction != tsk.get_reductions().end()) {
-		discarded = region_union(discarded, scalar_reduction_box); // TODO this currently breaks reduction-initialization from buffer
 		for(const auto& chunk : local_chunks) {
 			contiguous_allocations[chunk.memory_id].insert(scalar_reduction_box);
 		}
