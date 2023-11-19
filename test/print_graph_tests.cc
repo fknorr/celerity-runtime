@@ -50,7 +50,9 @@ TEST_CASE("task-graph printing is unchanged", "[print_graph][task-graph]") {
 	    "[64,1,1]}>];1->3[];2->3[];4[shape=box style=rounded label=<T4<br/><b>device-compute</b> [0,0,0] + [64,1,1]<br/><i>read</i> B1 {[0,0,0] - "
 	    "[1,1,1]}>];3->4[];}";
 
-	CHECK(print_task_graph(tt.trec) == expected);
+	const auto dot = print_task_graph(tt.trec);
+	CHECK(dot == expected);
+	if(dot != expected) { fmt::print("\n{}:\n\ngot:\n\n{}\n\nexpected:\n\n{}\n\n", Catch::getResultCapture().getCurrentTestName(), dot, expected); }
 }
 
 namespace {
@@ -99,6 +101,7 @@ TEST_CASE("command-graph printing is unchanged", "[print_graph][command-graph]")
 	// fully check node 0
 	const auto dot0 = dctx.print_command_graph(0);
 	CHECK(dot0 == expected);
+	if(dot0 != expected) { fmt::print("\n{}:\n\ngot:\n\n{}\n\nexpected:\n\n{}\n\n", Catch::getResultCapture().getCurrentTestName(), dot0, expected); }
 
 	// only check the rough string length and occurence count of N1/N2... for other nodes
 	const int expected_occurences = count_occurences(expected, "N0");
@@ -171,14 +174,16 @@ TEST_CASE("instruction-graph printing is unchanged", "[print_graph][instruction-
 	    "(shutdown)>];I0->I1[];I1->I2[];I0->I3[];I0->I4[];I0->I5[];I0->I6[];I0->I7[];I2->I8[];I6->I8[];I2->I9[];I7->I9[];I0->I10[];I9->I11[];I5->I11[];I8->I12["
 	    "];I4->I12[];I10->I13[];I11->I13[];I10->I14[];I12->I14[];I13->I15[];I14->I15[];I3->I15[];I15->I16[];I15->I17[];I15->I18[];I15->I19[];I0->I20[];I20->"
 	    "I21[];I21->I22[];I15->I22[];I21->I23[];I23->I24[];I22->I24[];I17->I24[];I18->I24[];I19->I24[];I24->I25[];I24->I26[];I26->I27[];I9->I28[];I2->I28[];I8-"
-	    ">I28[];I11->I29[];I12->I30[];I26->I31[];I13->I32[];I14->I33[];I33->I34[];I32->I34[];I30->I34[];I31->I34[];I28->I34[];I27->I34[];I25->I34[];I29->I34[];"
+	    ">I28[];I11->I29[];I12->I30[];I26->I31[];I13->I32[];I14->I33[];I33->I34[];I31->I34[];I30->I34[];I29->I34[];I28->I34[];I27->I34[];I25->I34[];I32->I34[];"
 	    "I16->I34[];P10[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N1 tag 10<br/>T2.B0.R1<br/>for B0 [0,0,0] - "
 	    "[1,1,1]</font>>];P10->I17[dir=none,style=dashed,color=\"#606060\"];P11[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
 	    "color=\"#606060\"><b>pilot</b> to N2 tag 11<br/>T2.B0.R1<br/>for B0 [0,0,0] - "
 	    "[1,1,1]</font>>];P11->I18[dir=none,style=dashed,color=\"#606060\"];P12[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
 	    "color=\"#606060\"><b>pilot</b> to N3 tag 12<br/>T2.B0.R1<br/>for B0 [0,0,0] - [1,1,1]</font>>];P12->I19[dir=none,style=dashed,color=\"#606060\"];}";
 
-	CHECK(ictx.print_instruction_graph() == expected);
+	const auto dot = ictx.print_instruction_graph();
+	CHECK(dot == expected);
+	if(dot != expected) { fmt::print("\n{}:\n\ngot:\n\n{}\n\nexpected:\n\n{}\n\n", Catch::getResultCapture().getCurrentTestName(), dot, expected); }
 }
 
 TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer debug names show up in the generated graph", "[print_graph]") {
@@ -250,7 +255,9 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 		    "[16,1,1]<br/><i>read_write</i> B0 {[0,0,0] - [16,1,1]}>];3->5[];6[shape=ellipse "
 		    "label=<T6<br/><b>horizon</b>>];5->6[color=orange];4->6[color=orange];7[shape=ellipse label=<T7<br/><b>epoch</b>>];6->7[color=orange];}";
 
-		CHECK(runtime_testspy::print_task_graph(celerity::detail::runtime::get_instance()) == expected);
+		const auto dot = runtime_testspy::print_task_graph(celerity::detail::runtime::get_instance());
+		CHECK(dot == expected);
+		if(dot != expected) { fmt::print("\n{} (TDAG):\n\ngot:\n\n{}\n\nexpected:\n\n{}\n\n", Catch::getResultCapture().getCurrentTestName(), dot, expected); }
 	}
 
 	SECTION("command graph") {
@@ -270,7 +277,9 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 		    "shape=box];}id_0_0->id_0_1[];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color=orange];id_0_3->id_0_"
 		    "5[];id_0_5->id_0_6[color=orange];id_0_4->id_0_6[color=orange];id_0_6->id_0_7[color=orange];}";
 
-		CHECK(runtime_testspy::print_command_graph(0, celerity::detail::runtime::get_instance()) == expected);
+		const auto dot = runtime_testspy::print_command_graph(0, celerity::detail::runtime::get_instance());
+		CHECK(dot == expected);
+		if(dot != expected) { fmt::print("\n{} (CDAG):\n\ngot:\n\n{}\n\nexpected:\n\n{}\n\n", Catch::getResultCapture().getCurrentTestName(), dot, expected); }
 	}
 
 	SECTION("instruction graph") {
@@ -290,7 +299,9 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 		    "C6)<br/><b>horizon</b>>];I9[color=black,shape=box,margin=0.2,style=rounded,label=<I9 (T7, C7)<br/><b>epoch</b> "
 		    "(barrier)>];I0->I1[];I1->I2[];I2->I3[];I3->I4[];I3->I5[];I5->I6[];I4->I6[];I5->I7[];I7->I8[];I6->I8[];I8->I9[];}";
 
-		CHECK(runtime_testspy::print_instruction_graph(celerity::detail::runtime::get_instance()) == expected);
+		const auto dot = runtime_testspy::print_instruction_graph(celerity::detail::runtime::get_instance());
+		CHECK(dot == expected);
+		if(dot != expected) { fmt::print("\n{} (IDAG):\n\ngot:\n\n{}\n\nexpected:\n\n{}\n\n", Catch::getResultCapture().getCurrentTestName(), dot, expected); }
 	}
 }
 
