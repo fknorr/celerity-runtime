@@ -286,7 +286,7 @@ TEMPLATE_TEST_CASE_SIG("local copies are split on writers to facilitate compute-
 		REQUIRE(writer->access_map.size() == 1);
 
 		const auto& write = writer->access_map.front();
-		CHECK(write.buffer_id == this_copy->buffer);
+		CHECK(write.buffer_id == this_copy->buffer_id);
 		CHECK(write.accessed_box_in_buffer == this_copy->box);
 		this_copy.successors().contains(reader);
 

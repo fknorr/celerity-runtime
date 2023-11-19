@@ -82,6 +82,8 @@ namespace detail {
 					    m_iggen->destroy_host_object(e.hoid);
 				    },
 				    [&](const event_epoch_reached& e) { //
+					    // The dggen automatically prunes the CDAG on generation, which is safe because it's not used across threads.
+					    // We might want to refactor this to match the IDAG behavior in the future.
 					    m_idag->prune_before_epoch(e.tid);
 				    },
 				    [&](const event_signal_idle& e) {

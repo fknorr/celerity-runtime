@@ -316,7 +316,7 @@ TEST_CASE("local reductions can be initialized to a buffer value that is not pre
 		const auto gather_copies = all_instrs.select_all<copy_instruction_record>();
 		for(const auto& copy : gather_copies.iterate()) {
 			CHECK(copy->origin == copy_instruction_record::copy_origin::gather);
-			CHECK(copy->buffer == buf.get_id());
+			CHECK(copy->buffer_id == buf.get_id());
 			CHECK(copy->copy_range == ones);
 			CHECK(copy->box == box<3>(zeros, ones));
 		}
