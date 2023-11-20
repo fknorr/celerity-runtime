@@ -40,6 +40,7 @@ namespace detail {
 				matchbox::match(
 				    event,
 				    [&](const event_task_available& e) {
+						assert(!shutdown);
 					    assert(e.tsk != nullptr);
 					    const auto commands = m_dggen->build_task(*e.tsk);
 					    for(const auto cmd : commands) {
@@ -55,29 +56,33 @@ namespace detail {
 						    }
 
 						    if(e.tsk->get_type() == task_type::epoch && e.tsk->get_epoch_action() == epoch_action::shutdown) {
-							    assert(in_flight_events.empty());
 							    shutdown = true;
 							    // m_delegate must be considered dangling as soon as the instructions for the shutdown epoch have been emitted
 						    }
 					    }
 				    },
 				    [&](const event_buffer_created& e) {
+						assert(!shutdown);
 					    m_dggen->create_buffer(e.bid, e.dims, e.range, e.host_initialized);
 					    m_iggen->create_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.host_initialized);
 				    },
 				    [&](const event_set_buffer_debug_name& e) {
+						assert(!shutdown);
 					    m_dggen->set_buffer_debug_name(e.bid, e.debug_name);
 					    m_iggen->set_buffer_debug_name(e.bid, e.debug_name);
 				    },
 				    [&](const event_buffer_destroyed& e) {
+						assert(!shutdown);
 					    m_dggen->destroy_buffer(e.bid);
 					    m_iggen->destroy_buffer(e.bid);
 				    },
 				    [&](const event_host_object_created& e) {
+						assert(!shutdown);
 					    m_dggen->create_host_object(e.hoid);
 					    m_iggen->create_host_object(e.hoid, e.owns_instance);
 				    },
 				    [&](const event_host_object_destroyed& e) {
+						assert(!shutdown);
 					    m_dggen->destroy_host_object(e.hoid);
 					    m_iggen->destroy_host_object(e.hoid);
 				    },
@@ -87,21 +92,12 @@ namespace detail {
 					    m_idag->prune_before_epoch(e.tid);
 				    },
 				    [&](const test_event_signal_idle& e) {
-#ifndef NDEBUG
 					    // No thread must submit more events until signal has been awaited and all test inspections of the scheduler have taken place.
 					    // This check only catches some violations of that synchronization requirement; the test application must ensure that no thread
 					    // interacts with the scheduler until all inspections have completed.
 					    assert(in_flight_events.empty());
-					    {
-						    std::lock_guard events_lock(m_events_mutex);
-						    assert(m_available_events.empty());
-					    }
-#endif
-					    {
-						    std::lock_guard signal_lock(*e.mutex);
-						    *e.idle = true;
-					    }
-					    e.cond->notify_one();
+
+						*e.idle = true;
 				    });
 			}
 		}

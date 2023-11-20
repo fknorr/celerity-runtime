@@ -157,7 +157,7 @@ class distributed_graph_generator {
 	command_id m_current_horizon = no_command;
 
 	// Batch of commands currently being generated. Returned (and thereby emptied) by build_task().
-	std::unordered_set<abstract_command*> m_current_cmd_batch;
+	std::unordered_set<abstract_command*, command_hash_by_id> m_current_cmd_batch;
 
 	// For proper handling of anti-dependencies we also have to store for each command which buffer regions it reads.
 	// We do this because we cannot reconstruct the requirements from a command within the graph alone (e.g. for compute commands).

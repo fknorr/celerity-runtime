@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -113,9 +114,7 @@ namespace detail {
 			task_id tid;
 		};
 		struct test_event_signal_idle { // only used by scheduler_testspy
-			bool* idle;
-			std::mutex* mutex;
-			std::condition_variable* cond;
+			std::atomic<bool>* idle;
 		};
 		using event = std::variant<event_task_available, event_buffer_created, event_set_buffer_debug_name, event_buffer_destroyed, event_host_object_created,
 		    event_host_object_destroyed, event_epoch_reached, test_event_signal_idle>;
@@ -130,7 +129,6 @@ namespace detail {
 		delegate* m_delegate; // Pointer instead of reference so we can omit for tests / benchmarks
 
 		std::queue<event> m_available_events;
-		std::queue<event> m_in_flight_events;
 
 		mutable std::mutex m_events_mutex;
 		std::condition_variable m_events_cv;

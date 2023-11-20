@@ -50,12 +50,9 @@ namespace detail {
 		static std::thread& get_thread(scheduler& schdlr) { return schdlr.m_thread; }
 
 		static void wait_idle(scheduler& schdlr) {
-			bool idle = false;
-			std::mutex mutex;
-			std::condition_variable cond;
-			schdlr.notify(scheduler::test_event_signal_idle{&idle, &mutex, &cond});
-			std::unique_lock lock(mutex);
-			cond.wait(lock, [&] { return idle; });
+			std::atomic<bool> idle = false;
+			schdlr.notify(scheduler::test_event_signal_idle{&idle});
+			while(!idle) {} // busy-wait
 		}
 
 		static size_t get_command_count(scheduler& schdlr) {
@@ -410,7 +407,7 @@ namespace test_utils {
 		mock_host_object_factory mhof;
 		mock_reduction_factory mrf;
 
-		explicit task_test_context(const detail::task_manager::policy_set& policy = {}) : tm(1, nullptr, &trec, policy), mbf(tm) {}
+		explicit task_test_context(const detail::task_manager::policy_set& policy = {}) : tm(1, nullptr, &trec, policy), mbf(tm), mhof(tm) {}
 		~task_test_context() { maybe_print_task_graph(trec); }
 	};
 

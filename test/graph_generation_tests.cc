@@ -32,7 +32,7 @@ TEST_CASE("command_graph keeps track of created commands", "[command_graph][comm
 
 TEST_CASE("command_graph allows to iterate over all raw command pointers", "[command_graph][command-graph]") {
 	command_graph cdag;
-	std::unordered_set<abstract_command*> cmds;
+	std::unordered_set<abstract_command*, command_hash_by_id> cmds;
 	cmds.insert(cdag.create<execution_command>(0, subrange<3>{}));
 	cmds.insert(cdag.create<epoch_command>(task_manager::initial_epoch_task, epoch_action::none));
 	cmds.insert(cdag.create<push_command>(0, transfer_id(0, 0, 0), subrange<3>{}));
@@ -46,7 +46,7 @@ TEST_CASE("command_graph allows to iterate over all raw command pointers", "[com
 TEST_CASE("command_graph keeps track of execution front", "[command_graph][command-graph]") {
 	command_graph cdag;
 
-	std::unordered_set<abstract_command*> expected_front;
+	std::unordered_set<abstract_command*, command_hash_by_id> expected_front;
 
 	auto* const t0 = cdag.create<execution_command>(0, subrange<3>{});
 	expected_front.insert(t0);

@@ -471,18 +471,12 @@ class epoch_instruction final : public matchbox::implement_acceptor<instruction,
 
 // Standard map / set collections of pointers have non-deterministic behavior because addresses change with every run of the program. Unordered types also have
 // implicit state based on insertion order and previous re-hashes and have generally implementation-dependent order. To at least guarantee consistency between
-// multiple runs of the same binary, we use unordered_map<..., instruction_hash_by_id, instruction_equality_by_id> or map<..., instruction_order_by_id>.
+// multiple runs of the same binary, we use unordered_map<..., instruction_hash_by_id> or map<..., instruction_order_by_id>. Equality continues to be
+// well-defined on pointers.
 struct instruction_hash_by_id {
 	template <typename Pointer>
 	constexpr size_t operator()(const Pointer instr) const {
 		return std::hash<instruction_id>()(instr->get_id());
-	}
-};
-
-struct instruction_equality_by_id {
-	template <typename Pointer>
-	constexpr bool operator()(const Pointer lhs, const Pointer rhs) const {
-		return lhs->get_id() == rhs->get_id();
 	}
 };
 

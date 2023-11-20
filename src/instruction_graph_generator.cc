@@ -236,7 +236,7 @@ class instruction_graph_generator::impl {
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
 	// we iterate over m_execution_front, so to keep IDAG generation deterministic, its internal order must not depend on pointer values
-	std::unordered_set<instruction*, instruction_hash_by_id, instruction_equality_by_id> m_execution_front;
+	std::unordered_set<instruction*, instruction_hash_by_id> m_execution_front;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;

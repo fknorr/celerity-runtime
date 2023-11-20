@@ -139,5 +139,20 @@ namespace detail {
 		command_type get_type() const override { return command_type::fence; }
 	};
 
+	// See the equivalent instruction_hash_by_id for documentation.
+	struct command_hash_by_id {
+		template <typename Pointer>
+		constexpr size_t operator()(const Pointer instr) const {
+			return std::hash<command_id>()(instr->get_cid());
+		}
+	};
+
+	struct command_order_by_id {
+		template <typename Pointer>
+		constexpr bool operator()(const Pointer lhs, const Pointer rhs) const {
+			return lhs->get_cid() < rhs->get_cid();
+		}
+	};
+
 } // namespace detail
 } // namespace celerity

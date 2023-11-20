@@ -69,9 +69,9 @@ static buffer_requirements_map get_buffer_requirements_for_mapped_access(const t
 }
 
 // According to Wikipedia https://en.wikipedia.org/wiki/Topological_sorting#Depth-first_search
-std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*> unmarked) {
-	std::unordered_set<abstract_command*> temporary_marked;
-	std::unordered_set<abstract_command*> permanent_marked;
+std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*, command_hash_by_id> unmarked) {
+	std::unordered_set<abstract_command*, command_hash_by_id> temporary_marked;
+	std::unordered_set<abstract_command*, command_hash_by_id> permanent_marked;
 	std::vector<abstract_command*> sorted(unmarked.size());
 	auto sorted_front = sorted.rbegin();
 
@@ -91,6 +91,7 @@ std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*> unm
 	while(!unmarked.empty()) {
 		visit(*unmarked.begin(), visit);
 	}
+
 	return sorted;
 }
 
