@@ -2,10 +2,9 @@
 
 #include <cuda_runtime.h>
 
-#include "log.h"
 #include "ranges.h"
-#include "types.h"
 #include "utils.h"
+#include "workaround.h"
 
 
 #define CELERITY_STRINGIFY2(f) #f
@@ -170,6 +169,14 @@ class cuda_host_event final : public event {
 	bool is_complete() const override { return true; }
 };
 
+cuda_queue::cuda_device_id get_cuda_device_id(const sycl::device& device) {
+#if CELERITY_WORKAROUND(HIPSYCL)
+	return hipsycl::sycl::detail::extract_rt_device(device).get_id();
+#else
+	utils::panic("not implemented");
+#endif
+}
+
 struct cuda_queue::impl {
 	struct device {
 		cuda_device_id cuda_id;
@@ -191,7 +198,7 @@ cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::
 		assert(m_impl->devices.count(config.device_id) == 0);
 		assert(m_impl->memories.count(config.native_memory) == 0); // TODO handle devices that share memory
 
-		const cuda_device_id cuda_id = config.sycl_device.hipSYCL_device_id().get_id();
+		const cuda_device_id cuda_id = get_cuda_device_id(config.sycl_device);
 		backend_detail::cuda_set_device_guard set_device(cuda_id);
 
 		impl::device dev{cuda_id, sycl::queue(config.sycl_device, backend::handle_sycl_errors)};
