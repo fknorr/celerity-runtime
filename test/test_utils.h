@@ -63,9 +63,9 @@ namespace detail {
 			return schdlr.m_cdag->command_count();
 		}
 
-		static size_t get_num_live_instructions(scheduler& schdlr) {
+		static size_t get_live_instruction_count(scheduler& schdlr) {
 			wait_idle(schdlr);
-			return schdlr.m_idag->num_live_instructions();
+			return schdlr.m_idag->get_live_instruction_count();
 		}
 	};
 

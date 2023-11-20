@@ -469,10 +469,34 @@ class epoch_instruction final : public matchbox::implement_acceptor<instruction,
 	epoch_action m_epoch_action;
 };
 
+// Standard map / set collections of pointers have non-deterministic behavior because addresses change with every run of the program. Unordered types also have
+// implicit state based on insertion order and previous re-hashes and have generally implementation-dependent order. To at least guarantee consistency between
+// multiple runs of the same binary, we use unordered_map<..., instruction_hash_by_id, instruction_equality_by_id> or map<..., instruction_order_by_id>.
+struct instruction_hash_by_id {
+	template <typename Pointer>
+	constexpr size_t operator()(const Pointer instr) const {
+		return std::hash<instruction_id>()(instr->get_id());
+	}
+};
+
+struct instruction_equality_by_id {
+	template <typename Pointer>
+	constexpr bool operator()(const Pointer lhs, const Pointer rhs) const {
+		return lhs->get_id() == rhs->get_id();
+	}
+};
+
+struct instruction_order_by_id {
+	template <typename Pointer>
+	constexpr bool operator()(const Pointer lhs, const Pointer rhs) const {
+		return lhs->get_id() < rhs->get_id();
+	}
+};
+
 /// Keeps ownership of all instructions that have not yet been pruned by epoch or horizon application.
 class instruction_graph {
   public:
-	// Call this before pushing horizon or epoch instruction to be able to call erase_before_epoch on the same task id later.
+	// Call this before pushing horizon or epoch instruction in order to be able to call erase_before_epoch on the same task id later.
 	void begin_epoch(const task_id tid) {
 		assert(m_epochs.empty() || (m_epochs.back().epoch_tid < tid && !m_epochs.back().instructions.empty()));
 		m_epochs.push_back({tid, {}});
@@ -495,7 +519,7 @@ class instruction_graph {
 	}
 
 	// The total number of instructions currently owned and not yet pruned, across all epochs.
-	size_t num_live_instructions() const {
+	size_t get_live_instruction_count() const {
 		return std::accumulate(
 		    m_epochs.begin(), m_epochs.end(), size_t{0}, [](const size_t acc, const instruction_epoch& epoch) { return acc + epoch.instructions.size(); });
 	}

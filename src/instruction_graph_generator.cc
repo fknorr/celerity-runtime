@@ -235,7 +235,8 @@ class instruction_graph_generator::impl {
 	policy_set m_policy;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
-	std::unordered_set<instruction*> m_execution_front;
+	// we iterate over m_execution_front, so to keep IDAG generation deterministic, its internal order must not depend on pointer values
+	std::unordered_set<instruction*, instruction_hash_by_id, instruction_equality_by_id> m_execution_front;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;
@@ -441,8 +442,8 @@ void instruction_graph_generator::impl::set_buffer_debug_name(const buffer_id bi
 void instruction_graph_generator::impl::destroy_buffer(const buffer_id bid) {
 	const auto iter = m_buffers.find(bid);
 	assert(iter != m_buffers.end());
-
 	auto& buffer = iter->second;
+
 	for(memory_id mid = 0; mid < buffer.memories.size(); ++mid) {
 		auto& memory = buffer.memories[mid];
 		for(auto& allocation : memory.allocations) {
@@ -749,11 +750,11 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 				}
 			}
 
-			// split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region
-			std::unordered_map<const instruction*, region<3>> writer_regions;
+			// Split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region.
+			std::unordered_map<instruction_id, region<3>> writer_regions;
 			for(const auto& [writer_box, original_writer] : buffer.original_writers.get_region_values(reader_region)) {
 				if(original_writer == nullptr) { continue /* gracefully handle an uninitialized read */; }
-				auto& region = writer_regions[original_writer]; // allow default-insert
+				auto& region = writer_regions[original_writer->get_id()]; // allow default-insert
 				region = region_union(region, writer_box);
 			}
 
@@ -1341,9 +1342,9 @@ void instruction_graph_generator::impl::compile_push_command(const push_command&
 
 	// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same
 	// command that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
-	std::unordered_map<instruction*, region<3>> writer_regions;
+	std::unordered_map<instruction_id, region<3>> writer_regions;
 	for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
-		auto& region = writer_regions[writer]; // allow default-insert
+		auto& region = writer_regions[writer->get_id()]; // allow default-insert
 		region = region_union(region, box);
 	}
 

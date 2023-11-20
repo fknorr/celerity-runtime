@@ -1013,7 +1013,7 @@ namespace detail {
 			CHECK(tm.get_current_task_count() < task_limit);
 
 			auto &scheduler = runtime_testspy::get_schdlr(runtime::get_instance());
-			CHECK(scheduler_testspy::get_num_live_instructions(scheduler) < task_limit);
+			CHECK(scheduler_testspy::get_live_instruction_count(scheduler) < task_limit);
 		}
 	}
 
