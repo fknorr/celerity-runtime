@@ -9,6 +9,7 @@
 
 using namespace celerity;
 using namespace celerity::detail;
+using namespace celerity::experimental;
 
 namespace acc = celerity::access;
 

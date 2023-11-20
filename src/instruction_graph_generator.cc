@@ -972,18 +972,23 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 
 	size_t oversubscribe_factor = 1;
 	if(const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>(); oversubscribe != nullptr) {
-		if(is_splittable_locally) {
+		// Our local reduction setup uses the normal per-device backing buffer allocation as the reduction output of each device. Since we can't track
+		// overlapping allocations at the moment, we have no way of oversubscribing reduction kernels without introducing a data race between multiple "fine
+		// chunks" on the final write. This could be solved by creating separate reduction-output allocations for each device chunk and not touching the actual
+		// buffer allocation. This is left as *future work* for a general overhaul of reductions.
+		if(is_splittable_locally && tsk.get_reductions().empty()) {
 			oversubscribe_factor = oversubscribe->get_factor();
 		} else if(m_policy.unsafe_oversubscription_error != error_policy::ignore) {
-			utils::report_error(m_policy.unsafe_oversubscription_error, "Refusing to oversubscribe{} T{}{}{}",
+			utils::report_error(m_policy.unsafe_oversubscription_error, "Refusing to oversubscribe{} T{}{}{}.",
 			    tsk.get_execution_target() == execution_target::device ? " device kernel"
 			    : tsk.get_execution_target() == execution_target::host ? " host task"
 			                                                           : "",
 			    tsk.get_id(), //
 			    !tsk.get_debug_name().empty() ? fmt::format(" \"{}\"", tsk.get_debug_name()) : "",
-			    !tsk.get_side_effect_map().empty()                         ? " because it has side effects."
-			    : tsk.get_collective_group_id() != non_collective_group_id ? " because it participates in a collective group."
-			    : !tsk.has_variable_split()                                ? " because its iteration space cannot be split."
+			    !tsk.get_reductions().empty()                              ? " because it performs a reduction"
+			    : !tsk.get_side_effect_map().empty()                       ? " because it has side effects"
+			    : tsk.get_collective_group_id() != non_collective_group_id ? " because it participates in a collective group"
+			    : !tsk.has_variable_split()                                ? " because its iteration space cannot be split"
 			                                                               : "");
 		}
 	}

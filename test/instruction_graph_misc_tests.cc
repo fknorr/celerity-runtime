@@ -493,19 +493,25 @@ TEMPLATE_TEST_CASE_SIG("oversubscription splits local chunks recursively", "[ins
 
 TEST_CASE("instruction_graph_generator throws in tests when detecting unsafe oversubscription", "[instruction_graph_generator]") {
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */);
+	auto buf = ictx.create_buffer(range(1));
 	auto ho = ictx.create_host_object();
 
-	SECTION("on master-node host tasks") {
+	SECTION("in device-kernels with reductions") {
+		CHECK_THROWS_WITH(ictx.device_compute(range(256)).hint(hints::oversubscribe(2)).reduce(buf, false /* include_current_buffer_value */).submit(),
+		    "Refusing to oversubscribe device kernel T1 because it performs a reduction.");
+	}
+
+	SECTION("in master-node host tasks") {
 		CHECK_THROWS_WITH(ictx.master_node_host_task().hint(hints::oversubscribe(2)).submit(),
 		    "Refusing to oversubscribe host task T1 because its iteration space cannot be split.");
 	}
 
-	SECTION("on collective tasks") {
+	SECTION("in collective tasks") {
 		CHECK_THROWS_WITH(ictx.collective_host_task().hint(hints::oversubscribe(2)).submit(),
 		    "Refusing to oversubscribe host task T1 because it participates in a collective group.");
 	}
 
-	SECTION("on host tasks with side effects") {
+	SECTION("in host tasks with side effects") {
 		CHECK_THROWS_WITH(ictx.host_task(range(256)).hint(hints::oversubscribe(2)).affect(ho).submit(),
 		    "Refusing to oversubscribe host task T1 because it has side effects.");
 	}
@@ -516,14 +522,27 @@ TEST_CASE("instruction_graph_generator gracefully handles unsafe oversubscriptio
 	policy.iggen.unsafe_oversubscription_error = error_policy::ignore;
 
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, policy);
+	auto buf = ictx.create_buffer(range(1));
 	auto ho = ictx.create_host_object();
 
-	SECTION("on master-node host tasks") { ictx.master_node_host_task().hint(hints::oversubscribe(2)).submit(); }
-	SECTION("on collective tasks") { ictx.collective_host_task().hint(hints::oversubscribe(2)).submit(); }
-	SECTION("on host tasks with side effects") { ictx.host_task(range(256)).hint(hints::oversubscribe(2)).affect(ho).submit(); }
+	SECTION("in device-kernels with reductions") {
+		ictx.device_compute(range(256)).hint(hints::oversubscribe(2)).reduce(buf, false /* include_current_buffer_value */).submit();
+	}
+
+	SECTION("on master-node host tasks") { //
+		ictx.master_node_host_task().hint(hints::oversubscribe(2)).submit();
+	}
+
+	SECTION("on collective tasks") { //
+		ictx.collective_host_task().hint(hints::oversubscribe(2)).submit();
+	}
+
+	SECTION("on host tasks with side effects") { //
+		ictx.host_task(range(256)).hint(hints::oversubscribe(2)).affect(ho).submit();
+	}
 
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	CHECK(all_instrs.count<host_task_instruction_record>() == 1);
+	CHECK(all_instrs.count<device_kernel_instruction_record>() + all_instrs.count<host_task_instruction_record>() == 1);
 }
