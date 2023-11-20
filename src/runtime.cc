@@ -185,6 +185,7 @@ namespace detail {
 		schdlr_policy.command_graph_generator.overlapping_write_error = CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
 		schdlr_policy.instruction_graph_generator.overlapping_write_error =
 		    CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
+		schdlr_policy.instruction_graph_generator.unsafe_oversubscription_error = error_policy::log_warning;
 
 		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, std::move(iggen_devices), *m_task_mngr,
 		    static_cast<abstract_scheduler::delegate*>(this), m_command_recorder.get(), m_instruction_recorder.get(), schdlr_policy);

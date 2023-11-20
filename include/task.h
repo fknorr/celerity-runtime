@@ -113,7 +113,7 @@ namespace detail {
 
 	struct task_geometry {
 		int dimensions = 0;
-		range<3> global_size{0, 0, 0};
+		range<3> global_size{1, 1, 1};
 		id<3> global_offset{};
 		range<3> granularity{1, 1, 1};
 	};

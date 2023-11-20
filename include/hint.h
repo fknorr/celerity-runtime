@@ -59,7 +59,9 @@ inline void split_2d::validate(const hint_base& other) const {
 
 class oversubscribe final : public detail::hint_base {
   public:
-	explicit oversubscribe(const size_t factor) : m_factor(factor) {}
+	explicit oversubscribe(const size_t factor) : m_factor(factor) {
+		if(factor == 0) throw std::runtime_error("Oversubscription cannot be 0");
+	}
 
 	[[nodiscard]] size_t get_factor() const { return m_factor; }
 

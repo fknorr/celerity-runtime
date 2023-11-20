@@ -22,6 +22,7 @@ class instruction_graph_generator {
 	};
 
 	struct policy_set {
+		error_policy unsafe_oversubscription_error = error_policy::throw_exception;
 		error_policy uninitialized_read_error = error_policy::throw_exception;
 		error_policy overlapping_write_error = error_policy::throw_exception;
 	};

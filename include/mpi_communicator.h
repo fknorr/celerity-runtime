@@ -28,6 +28,9 @@ class mpi_communicator final : public communicator {
 		mutable MPI_Request m_req;
 	};
 
+	// TODO reconsider the collective_group inner class - maybe the communicator itself should be cloned instead, that way we can rely on MPI for thread safety.
+	// Divergence block chain also needs a communicator in a thread foreign to the executor, and sharing the instance (which we need to do at least for the
+	// MPI_comm_dup call?) would require us to add locks to make the class thread safe.
 	class collective_group final : public communicator::collective_group {
 	  public:
 		collective_group(const collective_group&) = delete;

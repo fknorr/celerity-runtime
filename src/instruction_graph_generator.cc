@@ -929,8 +929,6 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 	const auto& tsk = *m_tm.get_task(ecmd.get_tid());
 	const auto& bam = tsk.get_buffer_access_map();
 
-	if(tsk.get_execution_target() == execution_target::device && m_devices.empty()) { utils::panic("no device on which to execute device kernel"); }
-
 	// 0) collectively generate any non-existing collective group
 
 	if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id && m_collective_groups.count(cgid) == 0) {
@@ -955,44 +953,61 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 		side_effect_map se_map;
 		instruction* instruction = nullptr;
 	};
-	// TODO deduplicate these two structures
-	std::vector<chunk<3>> local_chunks;
-	std::vector<partial_instruction> cmd_instrs;
+
+	if(tsk.get_execution_target() == execution_target::device && m_devices.empty()) { utils::panic("no device on which to execute device kernel"); }
+
+	const bool is_splittable_locally =
+	    tsk.has_variable_split() && tsk.get_side_effect_map().empty() && tsk.get_collective_group_id() == non_collective_group_id;
+	const auto split = tsk.get_hint<experimental::hints::split_2d>() != nullptr ? split_2d : split_1d;
 
 	const auto command_sr = ecmd.get_execution_range();
-	if(tsk.has_variable_split() && tsk.get_execution_target() == execution_target::device) {
-		// one chunk per device
-		// TODO oversubscription
-		// TODO split_2d (see dggen)
-		local_chunks = split_1d(chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size()), tsk.get_granularity(), m_devices.size());
-		for(device_id did = 0; did < m_devices.size() && did < local_chunks.size(); ++did) {
-			const auto& chunk = local_chunks[did];
-			auto& insn = cmd_instrs.emplace_back();
-			insn.subrange = subrange<3>(chunk.offset, chunk.range);
-			insn.did = did;
-			insn.memory_id = m_devices[did].native_memory;
-		}
+	const auto command_chunk = chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size());
+
+	std::vector<chunk<3>> coarse_chunks;
+	if(is_splittable_locally && tsk.get_execution_target() == execution_target::device) {
+		coarse_chunks = split(command_chunk, tsk.get_granularity(), m_devices.size());
 	} else {
-		// TODO oversubscribe distributed host tasks (but not if they have side effects)
-		local_chunks = {chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size())};
-		auto& instr = cmd_instrs.emplace_back();
-		instr.subrange = command_sr;
-		if(tsk.get_execution_target() == execution_target::device) {
-			// Assign work to the first device - note this may lead to load imbalance if there's multiple independent unsplittable tasks.
-			//   - but at the same time, keeping work on one device minimizes data transfers => this can only truly be solved through profiling.
-			const device_id did = 0;
-			instr.did = did;
-			instr.memory_id = m_devices[did].native_memory;
-		} else {
-			instr.memory_id = host_memory_id;
+		coarse_chunks = {command_chunk};
+	}
+
+	size_t oversubscribe_factor = 1;
+	if(const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>(); oversubscribe != nullptr) {
+		if(is_splittable_locally) {
+			oversubscribe_factor = oversubscribe->get_factor();
+		} else if(m_policy.unsafe_oversubscription_error != error_policy::ignore) {
+			utils::report_error(m_policy.unsafe_oversubscription_error, "Refusing to oversubscribe{} T{}{}{}",
+			    tsk.get_execution_target() == execution_target::device ? " device kernel"
+			    : tsk.get_execution_target() == execution_target::host ? " host task"
+			                                                           : "",
+			    tsk.get_id(), //
+			    !tsk.get_debug_name().empty() ? fmt::format(" \"{}\"", tsk.get_debug_name()) : "",
+			    !tsk.get_side_effect_map().empty()                         ? " because it has side effects."
+			    : tsk.get_collective_group_id() != non_collective_group_id ? " because it participates in a collective group."
+			    : !tsk.has_variable_split()                                ? " because its iteration space cannot be split."
+			                                                               : "");
+		}
+	}
+
+	std::vector<partial_instruction> cmd_instrs;
+	for(size_t i = 0; i < coarse_chunks.size(); ++i) {
+		for(const auto& fine_chunk : split(coarse_chunks[i], tsk.get_granularity(), oversubscribe_factor)) {
+			auto& instr = cmd_instrs.emplace_back();
+			instr.subrange = subrange<3>(fine_chunk.offset, fine_chunk.range);
+			if(tsk.get_execution_target() == execution_target::device) {
+				assert(i < m_devices.size());
+				instr.did = device_id(i);
+				instr.memory_id = m_devices[i].native_memory;
+			} else {
+				instr.memory_id = host_memory_id;
+			}
 		}
 	}
 
 	// detect overlapping writes
 
 	if(m_policy.overlapping_write_error != error_policy::ignore) {
-		box_vector<3> local_chunk_boxes(local_chunks.size(), box<3>());
-		std::transform(local_chunks.begin(), local_chunks.end(), local_chunk_boxes.begin(), [](const chunk<3>& ck) { return subrange(ck.offset, ck.range); });
+		box_vector<3> local_chunk_boxes(cmd_instrs.size(), box<3>());
+		std::transform(cmd_instrs.begin(), cmd_instrs.end(), local_chunk_boxes.begin(), [](const partial_instruction& pi) { return pi.subrange; });
 
 		if(const auto overlapping_writes = detect_overlapping_writes(tsk, local_chunk_boxes); !overlapping_writes.empty()) {
 			auto error = fmt::format("Task T{}", tsk.get_id());

@@ -429,3 +429,101 @@ TEST_CASE("instruction_graph_generator gracefully handles overlapping writes whe
 	ictx.finish();
 	SUCCEED();
 }
+
+TEMPLATE_TEST_CASE_SIG("oversubscription splits local chunks recursively", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) {
+	const size_t num_nodes = 1;
+	const node_id local_nid = 0;
+	const size_t num_devices = 2;
+	const size_t oversub_factor = 4;
+
+	test_utils::idag_test_context ictx(num_nodes, local_nid, num_devices);
+	auto buf = ictx.create_buffer(test_utils::truncate_range<Dims>({256, 256, 256}));
+
+	// This code is duck-typing identical for {device_kernel and host_task}_instruction_record, so we use a generic lambda to DRY it
+	const auto check_is_box_tiling = [&](const auto& all_device_kernels_or_host_tasks) {
+		box_vector<3> kernel_boxes;
+		for(const auto& kernel : all_device_kernels_or_host_tasks.iterate()) {
+			const auto kernel_box = detail::box(kernel->execution_range);
+			REQUIRE(kernel->access_map.size() == 1);
+			const auto& write = kernel->access_map.front();
+			CHECK(write.accessed_box_in_buffer == kernel_box);
+			kernel_boxes.push_back(kernel_box);
+		}
+		CHECK(region(std::move(kernel_boxes)) == box(subrange(id<3>(), range_cast<3>(buf.get_range()))));
+	};
+
+	SECTION("for device kernels") {
+		SECTION("with a 1d split") {
+			ictx.device_compute(buf.get_range())
+			    .hint(hints::split_1d())
+			    .hint(hints::oversubscribe(oversub_factor))
+			    .discard_write(buf, acc::one_to_one())
+			    .submit();
+		}
+		SECTION("with a 2d split") {
+			ictx.device_compute(buf.get_range())
+			    .hint(hints::split_2d())
+			    .hint(hints::oversubscribe(oversub_factor))
+			    .discard_write(buf, acc::one_to_one())
+			    .submit();
+		}
+
+		const auto all_instrs = ictx.query_instructions();
+		const auto all_kernels = all_instrs.select_all<device_kernel_instruction_record>();
+		CHECK(all_kernels.count() == num_devices * oversub_factor);
+		CHECK(all_kernels.count(device_id(0)) == oversub_factor);
+		CHECK(all_kernels.count(device_id(1)) == oversub_factor);
+		check_is_box_tiling(all_kernels);
+	}
+
+	SECTION("for host tasks kernels") {
+		SECTION("with a 1d split") {
+			ictx.host_task(buf.get_range()).hint(hints::split_1d()).hint(hints::oversubscribe(oversub_factor)).discard_write(buf, acc::one_to_one()).submit();
+		}
+		SECTION("with a 2d split") {
+			ictx.host_task(buf.get_range()).hint(hints::split_2d()).hint(hints::oversubscribe(oversub_factor)).discard_write(buf, acc::one_to_one()).submit();
+		}
+
+		const auto all_instrs = ictx.query_instructions();
+		const auto all_host_tasks = all_instrs.select_all<host_task_instruction_record>();
+		CHECK(all_host_tasks.count() == oversub_factor);
+		check_is_box_tiling(all_host_tasks);
+	}
+}
+
+TEST_CASE("instruction_graph_generator throws in tests when detecting unsafe oversubscription", "[instruction_graph_generator]") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */);
+	auto ho = ictx.create_host_object();
+
+	SECTION("on master-node host tasks") {
+		CHECK_THROWS_WITH(ictx.master_node_host_task().hint(hints::oversubscribe(2)).submit(),
+		    "Refusing to oversubscribe host task T1 because its iteration space cannot be split.");
+	}
+
+	SECTION("on collective tasks") {
+		CHECK_THROWS_WITH(ictx.collective_host_task().hint(hints::oversubscribe(2)).submit(),
+		    "Refusing to oversubscribe host task T1 because it participates in a collective group.");
+	}
+
+	SECTION("on host tasks with side effects") {
+		CHECK_THROWS_WITH(ictx.host_task(range(256)).hint(hints::oversubscribe(2)).affect(ho).submit(),
+		    "Refusing to oversubscribe host task T1 because it has side effects.");
+	}
+}
+
+TEST_CASE("instruction_graph_generator gracefully handles unsafe oversubscription when check is disabled", "[instruction_graph_generator]") {
+	test_utils::idag_test_context::policy_set policy;
+	policy.iggen.unsafe_oversubscription_error = error_policy::ignore;
+
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, policy);
+	auto ho = ictx.create_host_object();
+
+	SECTION("on master-node host tasks") { ictx.master_node_host_task().hint(hints::oversubscribe(2)).submit(); }
+	SECTION("on collective tasks") { ictx.collective_host_task().hint(hints::oversubscribe(2)).submit(); }
+	SECTION("on host tasks with side effects") { ictx.host_task(range(256)).hint(hints::oversubscribe(2)).affect(ho).submit(); }
+
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	CHECK(all_instrs.count<host_task_instruction_record>() == 1);
+}

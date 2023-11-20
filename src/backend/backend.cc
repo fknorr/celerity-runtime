@@ -31,7 +31,7 @@ void handle_sycl_errors(const sycl::exception_list& errors) {
 			CELERITY_CRITICAL("SYCL error: {}", e.what());
 		}
 	}
-	if(!errors.empty()) { abort(); }
+	if(errors.size() == 0) { abort(); } // NOLINT(readability-container-size-empty)
 }
 
 type get_type(const sycl::device& device) {
