@@ -1,9 +1,14 @@
 #include "buffer_storage.h" // for memcpy_strided_host
 #include "host_utils.h"
 #include "receive_arbiter.h"
+#include "test_utils.h"
+
+#include <algorithm>
+#include <map>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 using namespace celerity;
 using namespace celerity::detail;
@@ -67,6 +72,67 @@ class mock_recv_communicator : public communicator {
 	std::vector<inbound_pilot> m_inbound_pilots;
 	std::unordered_map<std::pair<node_id, int>, std::tuple<void*, stride, completion_flag>, utils::pair_hash> m_pending_recvs;
 };
+
+// from https://en.cppreference.com/w/cpp/algorithm/next_permutation - replace with std::next_permutation for C++20
+template <class BidirIt>
+bool next_permutation(BidirIt first, BidirIt last) {
+	auto r_first = std::make_reverse_iterator(last);
+	auto r_last = std::make_reverse_iterator(first);
+	auto left = std::is_sorted_until(r_first, r_last);
+
+	if(left != r_last) {
+		auto right = std::upper_bound(r_first, left, *left);
+		std::iter_swap(left, right);
+	}
+
+	std::reverse(left.base(), last);
+	return left != r_last;
+}
+
+enum class receive_event { call_to_receive, incoming_pilot, incoming_data };
+
+template <>
+struct Catch::StringMaker<receive_event> {
+	static std::string convert(const receive_event& event) {
+		switch(event) {
+		case receive_event::call_to_receive: return "call_to_receive";
+		case receive_event::incoming_pilot: return "incoming_pilot";
+		case receive_event::incoming_data: return "incoming_data";
+		default: abort();
+		}
+	}
+};
+
+std::vector<std::vector<std::pair<receive_event, node_id>>> enumerate_receive_event_orders(const std::vector<node_id>& peers) {
+	constexpr auto permutation_order = [](const std::pair<receive_event, node_id>& lhs, const std::pair<receive_event, node_id>& rhs) {
+		if(lhs.first < rhs.first) return true;
+		if(lhs.first > rhs.first) return false;
+		return lhs.second < rhs.second;
+	};
+
+	// start with the first permutation according to permutation_order
+	std::vector<std::pair<receive_event, node_id>> current_permutation;
+	for(const auto event : {receive_event::call_to_receive, receive_event::incoming_pilot, receive_event::incoming_data}) {
+		for(const auto nid : peers) {
+			current_permutation.emplace_back(event, nid);
+		}
+	}
+	const auto index_of = [&](const receive_event event, const node_id nid) {
+		return std::find(current_permutation.begin(), current_permutation.end(), std::pair{event, nid}) - current_permutation.begin();
+	};
+
+	std::vector<std::vector<std::pair<receive_event, node_id>>> event_orders;
+	for(;;) {
+		bool is_valid_order = true;
+		for(const auto nid : peers) {
+			is_valid_order &= index_of(receive_event::call_to_receive, nid) < index_of(receive_event::incoming_data, nid);
+			is_valid_order &= index_of(receive_event::incoming_pilot, nid) < index_of(receive_event::incoming_data, nid);
+		}
+		if(is_valid_order) { event_orders.push_back(current_permutation); }
+		if(!next_permutation(current_permutation.begin(), current_permutation.end(), permutation_order)) return event_orders;
+	}
+}
+
 
 TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]") {
 	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
@@ -279,6 +345,64 @@ TEST_CASE("receive_arbiter::gather_receive works", "[receive_arbiter]") {
 		}
 	}
 	CHECK(gather_allocation == expected_allocation);
+}
+
+TEST_CASE("receive_arbiter handles multiple receive instructions for the same transfer id", "[receive_arbiter]") {
+	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
+	const range<3> buffer_range = {20, 20, 1};
+	const box<3> alloc_box = {{0, 0, 0}, {20, 20, 1}};
+	const std::map<node_id, box<3>> receives{
+	    {node_id(1), box<3>({2, 2, 0}, {8, 18, 1})},
+	    {node_id(2), box<3>({12, 2, 0}, {18, 18, 1})},
+	};
+	const size_t elem_size = sizeof(int);
+
+	const auto& event_order = GENERATE(from_range(enumerate_receive_event_orders({node_id(1), node_id(2)})));
+	CAPTURE(event_order);
+
+	mock_recv_communicator comm(3, 0);
+	receive_arbiter ra(comm);
+
+	std::vector<int> allocation(alloc_box.get_range().size());
+	std::map<node_id, receive_arbiter::event> events;
+
+	for(const auto& [event, from] : event_order) {
+		CAPTURE(event, from);
+
+		switch(event) {
+		case receive_event::call_to_receive: {
+			events.emplace(from, ra.receive(trid, receives.at(from), allocation.data(), alloc_box, elem_size));
+			break;
+		}
+		case receive_event::incoming_pilot: {
+			comm.push_inbound_pilot(inbound_pilot{from, pilot_message{static_cast<int>(from), trid, receives.at(from)}});
+			break;
+		}
+		case receive_event::incoming_data: {
+			std::vector<int> fragment(receives.at(from).get_range().size(), static_cast<int>(from));
+			comm.complete_receiving_payload(from, static_cast<int>(from), fragment.data(), receives.at(from).get_range());
+			break;
+		}
+		}
+		ra.poll_communicator();
+
+		if(events.count(from) > 0) { CHECK(events.at(from).is_complete() == (event == receive_event::incoming_data)); }
+	}
+
+	for(auto& [from, event] : events) {
+		CAPTURE(from);
+		CHECK(event.is_complete());
+	}
+
+	std::vector<int> expected(alloc_box.get_range().size());
+	for(const auto& [from, box] : receives) {
+		experimental::for_each_item(box.get_range(), [&, from = from, box = box](const item<3>& it) {
+			const auto id_in_allocation = box.get_offset() - alloc_box.get_offset() + it.get_id();
+			const auto linear_index = get_linear_index(alloc_box.get_range(), id_in_allocation);
+			expected[linear_index] = static_cast<int>(from);
+		});
+	}
+	CHECK(allocation == expected);
 }
 
 // peers will send a pilot with an empty box to signal that they don't contribute to a reduction

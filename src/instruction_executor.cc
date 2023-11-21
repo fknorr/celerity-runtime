@@ -170,6 +170,8 @@ void instruction_executor::loop() {
 				    std::chrono::duration_cast<std::chrono::duration<double>>(elapsed_since_last_progress).count(),
 				    active_instructions.empty() ? "none" : instr_list);
 				progress_warning_emitted = true;
+				abort();
+
 			}
 		}
 	}

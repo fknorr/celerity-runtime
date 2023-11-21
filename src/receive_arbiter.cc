@@ -39,12 +39,19 @@ receive_arbiter::stable_region_request& receive_arbiter::begin_receive_region(
 	}
 
 	assert(std::all_of(mrt->active_requests.begin(), mrt->active_requests.end(),
-	    [&](const stable_region_request& rr) { return box_intersection(rr->allocated_box, allocated_box).empty(); }));
+	    [&](const stable_region_request& rr) { return region_intersection(rr->incomplete_region, request).empty(); }));
 	auto& rr = mrt->active_requests.emplace_back(std::make_shared<region_request>(request, allocation, allocated_box));
 
-	for(auto& pilot : mrt->unassigned_pilots) {
-		if(rr->allocated_box.covers(pilot.message.box)) { handle_region_request_pilot(*rr, pilot, elem_size); }
-	}
+	const auto last_unassigned_pilot = std::remove_if(mrt->unassigned_pilots.begin(), mrt->unassigned_pilots.end(), [&](const inbound_pilot& pilot) {
+		assert((region_intersection(rr->incomplete_region, pilot.message.box) != pilot.message.box)
+		       == region_intersection(rr->incomplete_region, pilot.message.box).empty());
+		if(region_intersection(rr->incomplete_region, pilot.message.box) == pilot.message.box) {
+			handle_region_request_pilot(*rr, pilot, elem_size);
+			return true;
+		}
+		return false;
+	});
+	mrt->unassigned_pilots.erase(last_unassigned_pilot, mrt->unassigned_pilots.end());
 
 	return rr;
 }
@@ -70,7 +77,7 @@ receive_arbiter::event receive_arbiter::await_split_receive_subregion(const tran
 #endif
 
 	const auto req_it = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
-	    [&](const stable_region_request& rr) { return rr->allocated_box.covers(bounding_box(subregion)); });
+	    [&](const stable_region_request& rr) { return !region_intersection(rr->incomplete_region, subregion).empty(); });
 	if(req_it == mrt.active_requests.end()) { return event(event::complete); }
 
 	return event(*req_it, subregion);
@@ -103,13 +110,14 @@ bool receive_arbiter::region_request::complete() {
 		return is_complete;
 	});
 	incoming_fragments.erase(incomplete_fragments_end, incoming_fragments.end());
+	assert(!incomplete_region.empty() || incoming_fragments.empty());
 	return incomplete_region.empty();
 }
 
 bool receive_arbiter::multi_region_transfer::complete() {
 	const auto incomplete_req_end = std::remove_if(active_requests.begin(), active_requests.end(), [&](stable_region_request& rr) { return rr->complete(); });
 	active_requests.erase(incomplete_req_end, active_requests.end());
-	return active_requests.empty();
+	return active_requests.empty() && unassigned_pilots.empty();
 }
 
 bool receive_arbiter::gather_request::complete() {
@@ -127,8 +135,9 @@ bool receive_arbiter::gather_request::complete() {
 
 bool receive_arbiter::gather_transfer::complete() { return request->complete(); }
 
-bool receive_arbiter::unassigned_transfer::complete() { // NOLINT(readability-convert-member-functions-to-static)
+bool receive_arbiter::unassigned_transfer::complete() { // NOLINT(readability-make-member-function-const)
 	// an unassigned_transfer inside receive_arbiter::m_transfers is never empty.
+	assert(!pilots.empty());
 	return false;
 }
 
@@ -147,10 +156,16 @@ void receive_arbiter::poll_communicator() {
 			    entry->second, //
 			    [&](unassigned_transfer& ut) { ut.pilots.push_back(pilot); },
 			    [&](multi_region_transfer& mrt) {
-				    const auto rr = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
-				        [&](const stable_region_request& rr) { return rr->allocated_box.covers(pilot.message.box); });
-				    assert(rr != mrt.active_requests.end());
-				    handle_region_request_pilot(**rr, pilot, mrt.elem_size); // elem_size is set when transfer_region is inserted
+				    const auto rr = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(), [&](const stable_region_request& rr) {
+					    assert((region_intersection(rr->incomplete_region, pilot.message.box) != pilot.message.box)
+					           == region_intersection(rr->incomplete_region, pilot.message.box).empty());
+					    return region_intersection(rr->incomplete_region, pilot.message.box) == pilot.message.box;
+				    });
+				    if(rr != mrt.active_requests.end()) {
+					    handle_region_request_pilot(**rr, pilot, mrt.elem_size); // elem_size is set when transfer_region is inserted
+				    } else {
+					    mrt.unassigned_pilots.push_back(pilot);
+				    }
 			    },
 			    [&](gather_transfer& gt) { handle_gather_request_pilot(*gt.request, pilot); });
 		} else {

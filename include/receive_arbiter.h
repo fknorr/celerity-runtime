@@ -28,14 +28,14 @@ class receive_arbiter {
 
 		struct completed_state {};
 		struct region_transfer_state {
-			const std::weak_ptr<region_request> request;
+			std::weak_ptr<const region_request> request;
 		};
 		struct subregion_transfer_state {
-			const std::weak_ptr<region_request> request;
+			std::weak_ptr<const region_request> request;
 			region<3> awaited_region;
 		};
 		struct gather_transfer_state {
-			const std::weak_ptr<gather_request> request;
+			std::weak_ptr<const gather_request> request;
 		};
 		using state = std::variant<completed_state, region_transfer_state, subregion_transfer_state, gather_transfer_state>;
 

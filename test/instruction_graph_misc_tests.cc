@@ -546,3 +546,51 @@ TEST_CASE("instruction_graph_generator gracefully handles unsafe oversubscriptio
 	const auto all_instrs = ictx.query_instructions();
 	CHECK(all_instrs.count<device_kernel_instruction_record>() + all_instrs.count<host_task_instruction_record>() == 1);
 }
+
+
+TEST_CASE("wave_sim on 4 nodes") {
+	test_utils::idag_test_context ictx(4 /* num nodes */, GENERATE(values<node_id>({0, 1, 2, 3})) /* local nid */, 1 /* num devices */);
+
+	auto setup_wave = [&](test_utils::mock_buffer<2>& u) {
+		ictx.device_compute(u.get_range()).name("setup_wave").discard_write(u, acc::one_to_one()).submit();
+	};
+	auto zero = [&](test_utils::mock_buffer<2>& buf) { ictx.device_compute(buf.get_range()).name("zero").discard_write(buf, acc::one_to_one()).submit(); };
+
+	auto step = [&](test_utils::mock_buffer<2>& up, test_utils::mock_buffer<2>& u) {
+		ictx.device_compute(up.get_range()).name("step").read_write(up, acc::one_to_one()).read(u, acc::neighborhood(1, 1)).submit();
+	};
+
+	struct wave_sim_config {
+		int N = 512;   // Grid size
+		float T = 10; // Time at end of simulation
+		float dt = 0.25f;
+		float dx = 1.f;
+		float dy = 1.f;
+
+		// "Sample" a frame every X iterations
+		// (0 = don't produce any output)
+		unsigned output_sample_rate = 0;
+	} const cfg;
+
+	const size_t num_steps = cfg.T / cfg.dt;
+	// Sample (if enabled) every n-th frame, +1 for initial state
+	const size_t num_samples = cfg.output_sample_rate != 0 ? num_steps / cfg.output_sample_rate + 1 : 0;
+	if(cfg.output_sample_rate != 0 && num_steps % cfg.output_sample_rate != 0) {
+		std::cerr << "Warning: Number of time steps (" << num_steps << ") is not a multiple of the output sample rate (wasted frames)" << std::endl;
+	}
+
+	auto up = ictx.create_buffer(celerity::range<2>(cfg.N, cfg.N)); // next
+	auto u = ictx.create_buffer(celerity::range<2>(cfg.N, cfg.N));  // current
+
+	setup_wave(u);
+	zero(up);
+	step(up, u);
+
+	auto t = 0.0;
+	size_t i = 0;
+	while(t < cfg.T) {
+		step(up, u);
+		std::swap(u, up);
+		t += cfg.dt;
+	}
+}
