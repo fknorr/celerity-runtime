@@ -272,7 +272,6 @@ namespace detail {
 	}
 
 	std::string runtime::gather_command_graph() const {
-		assert(m_schdlr == nullptr && "race: cannot gather command graph while scheduler is running");
 		require_call_from_application_thread();
 
 		assert(m_command_recorder.get() != nullptr);

@@ -171,9 +171,9 @@ class cuda_host_event final : public event {
 
 cuda_queue::cuda_device_id get_cuda_device_id(const sycl::device& device) {
 #if CELERITY_WORKAROUND(HIPSYCL)
-	return hipsycl::sycl::detail::extract_rt_device(device).get_id();
+	return sycl::get_native<sycl::backend::cuda>(device);
 #else
-	utils::panic("not implemented");
+	return sycl::get_native<sycl::backend::ext_oneapi_cuda>(device);
 #endif
 }
 

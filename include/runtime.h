@@ -72,7 +72,8 @@ namespace detail {
 
 		reduction_id create_reduction(std::unique_ptr<runtime_reduction> reduction);
 
-		// returns the combined command graph of all nodes on node 0, an empty string on other nodes
+		// Returns the combined command graph of all nodes on node 0, an empty string on other nodes
+		// Call *must* be preceded by a scheduler shutdown or a call to slow_full_sync() / scheduler_testspy::wait_idle()
 		std::string gather_command_graph() const;
 
 		bool is_dry_run() const { return m_cfg->is_dry_run(); }
