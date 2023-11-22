@@ -83,7 +83,7 @@ generic_queue::generic_queue(const std::vector<device_config>& devices) {
 }
 
 void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
-	auto& queue = m_memory_queues.at(host_memory_id);
+	auto& queue = m_memory_queues.at(where);
 	void* ptr;
 	if(where == host_memory_id) {
 		ptr = sycl::aligned_alloc_host(alignment, size, queue);
