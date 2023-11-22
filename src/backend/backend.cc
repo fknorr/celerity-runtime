@@ -63,13 +63,16 @@ bool enable_copy_between_peer_memories(sycl::device& a, sycl::device& b) {
 	if(type_a == type::cuda) return true; // detection in oneAPI (see below) is broken for CUDA devices as of 2023-11-22
 #endif
 #if CELERITY_WORKAROUND(DPCPP)
-	if(!a.ext_oneapi_can_access_peer(b)) return false;
-	if(!b.ext_oneapi_can_access_peer(a)) return false;
-	try {
-		a.ext_oneapi_enable_peer_access(b);
-		b.ext_oneapi_enable_peer_access(a);
-		return true;
-	} catch(sycl::exception& e) { return false; }
+	constexpr auto enable_direction = [](sycl::device& u, sycl::device& v) {
+		if(!u.ext_oneapi_can_access_peer(v)) return false;
+		try {
+			u.ext_oneapi_enable_peer_access(v);
+			return true;
+		} catch(sycl::exception& e) {
+			return e.code() == sycl::errc::invalid; // thrown if already enabled
+		}
+	};
+	return enable_direction(a, b) && enable_direction(b, a);
 #endif
 	return false;
 }
