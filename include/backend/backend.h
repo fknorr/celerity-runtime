@@ -42,6 +42,8 @@ type get_type(const sycl::device& device);
  */
 type get_effective_type(const sycl::device& device);
 
+[[nodiscard]] bool enable_copy_between_peer_memories(sycl::device& a, sycl::device& b);
+
 inline std::string_view get_name(type type) {
 	return backend_detail::specialize_for_backend<backend_detail::name>(type, [](auto op) { return decltype(op)::value; });
 }

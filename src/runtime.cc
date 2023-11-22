@@ -155,7 +155,7 @@ namespace detail {
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
 
-		const auto devices =
+		auto devices =
 		    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });
 		assert(!devices.empty());
 		const auto backend_type = backend::get_effective_type(devices.front());
@@ -167,23 +167,29 @@ namespace detail {
 		instruction_graph_generator::system_info system_info;
 		system_info.devices.resize(devices.size());
 		system_info.memories.resize(1 + devices.size());
-		for(size_t i = 0; i < devices.size(); ++i) {
-			const auto native_memory = memory_id(1 + i); // TODO query the backend about how memory is attached to devices
-			backend_devices[i].device_id = i;
-			backend_devices[i].native_memory = native_memory;
-			backend_devices[i].sycl_device = devices[i];
-			system_info.devices[i].native_memory = native_memory;
-			CELERITY_DEBUG("Device D{} with native memory M{} is {}", backend_devices[i].device_id, backend_devices[i].native_memory,
-			    backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
+		system_info.memories[host_memory_id].copy_peers.set(host_memory_id);
+		for(device_id did = 0; did < devices.size(); ++did) {
+			const auto native_memory = memory_id(1 + did); // TODO query the backend about how memory is attached to devices
+			backend_devices[did].device_id = did;
+			backend_devices[did].native_memory = native_memory;
+			backend_devices[did].sycl_device = devices[did];
+			system_info.devices[did].native_memory = native_memory;
+			system_info.memories[native_memory].copy_peers.set(host_memory_id);
+			system_info.memories[native_memory].copy_peers.set(native_memory);
+			CELERITY_DEBUG("Device D{} with native memory M{} is {}", backend_devices[did].device_id, backend_devices[did].native_memory,
+			    backend_devices[did].sycl_device.get_info<sycl::info::device::name>());
 		}
-		for(memory_id mid = 0; mid < system_info.memories.size(); ++mid) {
-			// TODO query backend (oneAPI extension) about this
-#if CELERITY_WORKAROUND(DPCPP)
-			system_info.memories[mid].copy_peers.set(mid);
-			system_info.memories[mid].copy_peers.set(host_memory_id);
-#else
-			system_info.memories[mid].copy_peers.set();
-#endif
+		for(device_id did_a = 0; did_a < devices.size(); ++did_a) {
+			const auto mid_a = system_info.devices[did_a].native_memory;
+			for(device_id did_b = did_a + 1; did_b < devices.size(); ++did_b) {
+				const auto mid_b = system_info.devices[did_b].native_memory;
+				if(backend::enable_copy_between_peer_memories(devices[did_a], devices[did_b])) {
+					system_info.memories[mid_a].copy_peers.set(mid_b);
+					system_info.memories[mid_b].copy_peers.set(mid_a);
+				} else {
+					CELERITY_DEBUG("No peer copies possible between D{} and D{}, will stage through host memory", did_a, did_b);
+				}
+			}
 		}
 		m_num_local_devices = devices.size();
 
@@ -199,8 +205,8 @@ namespace detail {
 		    CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
 		schdlr_policy.instruction_graph_generator.unsafe_oversubscription_error = error_policy::log_warning;
 
-		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, std::move(system_info), *m_task_mngr,
-		    static_cast<abstract_scheduler::delegate*>(this), m_command_recorder.get(), m_instruction_recorder.get(), schdlr_policy);
+		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, std::move(system_info), *m_task_mngr, static_cast<abstract_scheduler::delegate*>(this),
+		    m_command_recorder.get(), m_instruction_recorder.get(), schdlr_policy);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
 		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),

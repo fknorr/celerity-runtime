@@ -54,6 +54,26 @@ type get_effective_type(const sycl::device& device) {
 	return type::generic;
 }
 
+bool enable_copy_between_peer_memories(sycl::device& a, sycl::device& b) {
+	if(a == b) return true;
+	const auto type_a = get_type(a);
+	const auto type_b = get_type(b);
+	if(type_a != type_b || type_a == type::unknown) return false;
+#if defined(CELERITY_DETAIL_BACKEND_CUDA_ENABLED)
+	if(type_a == type::cuda) return true; // detection in oneAPI (see below) is broken for CUDA devices as of 2023-11-22
+#endif
+#if CELERITY_WORKAROUND(DPCPP)
+	if(!a.ext_oneapi_can_access_peer(b)) return false;
+	if(!b.ext_oneapi_can_access_peer(a)) return false;
+	try {
+		a.ext_oneapi_enable_peer_access(b);
+		b.ext_oneapi_enable_peer_access(a);
+		return true;
+	} catch(sycl::exception& e) { return false; }
+#endif
+	return false;
+}
+
 std::unique_ptr<queue> make_queue(type t, const std::vector<device_config>& devices) {
 	assert(t != type::unknown);
 
