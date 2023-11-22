@@ -348,7 +348,7 @@ TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitia
 	policy.tm.uninitialized_read_error = error_policy::ignore;    // otherwise we get task-level errors first
 	policy.dggen.uninitialized_read_error = error_policy::ignore; // otherwise we get command-level errors first
 
-	test_utils::idag_test_context ictx(1, 0, num_devices, policy);
+	test_utils::idag_test_context ictx(1, 0, num_devices, true /* supports d2d copies */, policy);
 
 	SECTION("from a read-accessor on a fully uninitialized buffer") {
 		auto buf = ictx.create_buffer<1>({1});
@@ -401,7 +401,7 @@ TEST_CASE("instruction_graph_generator gracefully handles uninitialized reads wh
 	policy.dggen.uninitialized_read_error = error_policy::ignore;
 	policy.iggen.uninitialized_read_error = error_policy::ignore;
 
-	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, policy);
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, true /* supports d2d copies */, policy);
 	auto buf = ictx.create_buffer<1>({1});
 
 	SECTION("from a read-accessor") { //
@@ -422,7 +422,7 @@ TEST_CASE("instruction_graph_generator gracefully handles overlapping writes whe
 	policy.dggen.overlapping_write_error = error_policy::ignore;
 	policy.iggen.overlapping_write_error = error_policy::ignore;
 
-	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, num_devices, policy);
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, num_devices, true /* supports d2d copies */, policy);
 
 	auto buf = ictx.create_buffer<1>({1});
 	ictx.device_compute(range(num_devices)).discard_write(buf, acc::all()).submit();
@@ -521,7 +521,7 @@ TEST_CASE("instruction_graph_generator gracefully handles unsafe oversubscriptio
 	test_utils::idag_test_context::policy_set policy;
 	policy.iggen.unsafe_oversubscription_error = error_policy::ignore;
 
-	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, policy);
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, true /* supports d2d copies */, policy);
 	auto buf = ictx.create_buffer(range(1));
 	auto ho = ictx.create_host_object();
 

@@ -3,6 +3,7 @@
 #include "ranges.h"
 #include "types.h"
 
+#include <bitset>
 #include <vector>
 
 namespace celerity::detail {
@@ -16,9 +17,17 @@ class task_manager;
 
 class instruction_graph_generator {
   public:
+	static constexpr size_t max_num_memories = 64;
+
 	struct device_info {
 		memory_id native_memory;
-		// - which backends / features are supported?
+	};
+	struct memory_info {
+		std::bitset<max_num_memories> copy_peers;
+	};
+	struct system_info {
+		std::vector<device_info> devices;  // indexed by device_id
+		std::vector<memory_info> memories; // indexed by memory_id
 	};
 
 	struct policy_set {
@@ -28,8 +37,8 @@ class instruction_graph_generator {
 	};
 
 	// TODO should take unordered_map<device_id, device_info> (runtime is responsible for device id allocation, not IGGEN)
-	explicit instruction_graph_generator(const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices,
-	    instruction_graph& idag, instruction_recorder* recorder, const policy_set& policy = default_policy_set());
+	explicit instruction_graph_generator(const task_manager& tm, size_t num_nodes, node_id local_nid, system_info system, instruction_graph& idag,
+	    instruction_recorder* recorder, const policy_set& policy = default_policy_set());
 	instruction_graph_generator(const instruction_graph_generator&) = delete;
 	instruction_graph_generator(instruction_graph_generator&&) = default;
 	instruction_graph_generator& operator=(const instruction_graph_generator&) = delete;

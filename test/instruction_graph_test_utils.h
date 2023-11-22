@@ -412,12 +412,23 @@ class idag_test_context {
 		int m_uncaught_exceptions_before;
 	};
 
-	static auto make_device_map(const size_t num_devices) {
-		std::vector<instruction_graph_generator::device_info> devices;
+	static auto make_system_info(const size_t num_devices, bool supports_d2d_copies) {
+		instruction_graph_generator::system_info info;
+		info.devices.resize(num_devices);
+		info.memories.resize(1 + num_devices);
 		for(device_id did = 0; did < num_devices; ++did) {
-			devices.push_back(instruction_graph_generator::device_info{get_native_memory(did)});
+			info.devices[did].native_memory = memory_id(1 + did);
 		}
-		return devices;
+		for(memory_id mid = 0; mid < info.memories.size(); ++mid) {
+			info.memories[mid].copy_peers.set(host_memory_id);
+			info.memories[mid].copy_peers.set(mid);
+			if(supports_d2d_copies) {
+				for(memory_id peer = 0; peer < info.memories.size(); ++peer) {
+					info.memories[mid].copy_peers.set(peer);
+				}
+			}
+		}
+		return info;
 	}
 
   public:
@@ -427,11 +438,12 @@ class idag_test_context {
 		instruction_graph_generator::policy_set iggen;
 	};
 
-	idag_test_context(const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node, const policy_set& policy = {})
+	idag_test_context(
+	    const size_t num_nodes, const node_id local_nid, const size_t num_devices_per_node, bool supports_d2d_copies = true, const policy_set& policy = {})
 	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_num_devices_per_node(num_devices_per_node),
 	      m_uncaught_exceptions_before(std::uncaught_exceptions()), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder, policy.tm), m_cmd_recorder(),
-	      m_cdag(), m_dggen(m_num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder, policy.dggen), m_instr_recorder(),
-	      m_iggen(m_tm, num_nodes, local_nid, make_device_map(num_devices_per_node), m_idag, &m_instr_recorder, policy.iggen) //
+	      m_cdag(), m_dggen(num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder, policy.dggen), m_instr_recorder(),
+	      m_iggen(m_tm, num_nodes, local_nid, make_system_info(num_devices_per_node, supports_d2d_copies), m_idag, &m_instr_recorder, policy.iggen) //
 	{
 		REQUIRE(local_nid < num_nodes);
 		REQUIRE(num_devices_per_node > 0);

@@ -133,6 +133,8 @@ std::vector<std::vector<std::pair<receive_event, node_id>>> enumerate_receive_ev
 	}
 }
 
+// TODO use this -^ in more tests instead of the `pilots_before` hack
+
 
 TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]") {
 	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);

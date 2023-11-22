@@ -22,8 +22,8 @@ namespace celerity::detail {
 
 class instruction_graph_generator::impl {
   public:
-	impl(const task_manager& tm, size_t num_nodes, node_id local_node_id, std::vector<device_info> devices, instruction_graph& idag,
-	    instruction_recorder* recorder, const policy_set& policy);
+	impl(const task_manager& tm, size_t num_nods, node_id local_nid, system_info system, instruction_graph& idag, instruction_recorder* recorder,
+	    const policy_set& policy);
 
 	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, bool host_initialized);
 
@@ -39,8 +39,7 @@ class instruction_graph_generator::impl {
 	std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> compile(const abstract_command& cmd);
 
   private:
-	static constexpr size_t max_memories = 32; // The maximum number of distinct memories (RAM, GPU RAM) supported by the buffer manager
-	using data_location = std::bitset<max_memories>;
+	using data_location = std::bitset<max_num_memories>;
 
 	struct buffer_memory_per_allocation_data {
 		struct access_front {
@@ -230,8 +229,8 @@ class instruction_graph_generator::impl {
 	int m_next_p2p_tag = 10; // TODO
 	const task_manager& m_tm;
 	size_t m_num_nodes;
-	node_id m_local_node_id;
-	std::vector<device_info> m_devices;
+	node_id m_local_nid;
+	system_info m_system;
 	policy_set m_policy;
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
@@ -386,10 +385,14 @@ box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) 
 	return bounding_boxes;
 }
 
-instruction_graph_generator::impl::impl(const task_manager& tm, const size_t num_nodes, const node_id local_node_id, std::vector<device_info> devices,
-    instruction_graph& idag, instruction_recorder* const recorder, const policy_set& policy)
-    : m_idag(idag), m_tm(tm), m_num_nodes(num_nodes), m_local_node_id(local_node_id), m_devices(std::move(devices)), m_policy(policy), m_recorder(recorder) {
-	assert(std::all_of(m_devices.begin(), m_devices.end(), [](const device_info& info) { return info.native_memory < max_memories; }));
+instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes, node_id local_nid, system_info system, instruction_graph& idag,
+    instruction_recorder* const recorder, const policy_set& policy)
+    : m_idag(idag), m_tm(tm), m_num_nodes(num_nodes), m_local_nid(local_nid), m_system(std::move(system)), m_policy(policy), m_recorder(recorder) //
+{
+	assert(m_system.memories.size() <= max_num_memories);
+	assert(std::all_of(
+	    m_system.devices.begin(), m_system.devices.end(), [&](const device_info& device) { return device.native_memory < m_system.memories.size(); }));
+
 	m_idag.begin_epoch(task_manager::initial_epoch_task);
 	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none);
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
@@ -398,9 +401,10 @@ instruction_graph_generator::impl::impl(const task_manager& tm, const size_t num
 }
 
 void instruction_graph_generator::impl::create_buffer(
-    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
-	const auto n_memories = m_devices.size() + 1; // + host_memory_id -- this is faulty just like device_to_memory_id()!
-	const auto [iter, inserted] = m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, n_memories));
+    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) //
+{
+	const auto [iter, inserted] =
+	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_system.memories.size()));
 	assert(inserted);
 
 	if(host_initialized) {
@@ -483,8 +487,8 @@ void instruction_graph_generator::impl::destroy_host_object(const host_object_id
 }
 
 memory_id instruction_graph_generator::impl::next_location(const data_location& location, memory_id first) {
-	for(size_t i = 0; i < max_memories; ++i) {
-		const memory_id mem = (first + i) % max_memories;
+	for(size_t i = 0; i < max_num_memories; ++i) {
+		const memory_id mem = (first + i) % max_num_memories;
 		if(location[mem]) { return mem; }
 	}
 	utils::panic("data is requested to be read, but not located in any memory");
@@ -954,7 +958,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 		instruction* instruction = nullptr;
 	};
 
-	if(tsk.get_execution_target() == execution_target::device && m_devices.empty()) { utils::panic("no device on which to execute device kernel"); }
+	if(tsk.get_execution_target() == execution_target::device && m_system.devices.empty()) { utils::panic("no device on which to execute device kernel"); }
 
 	const bool is_splittable_locally =
 	    tsk.has_variable_split() && tsk.get_side_effect_map().empty() && tsk.get_collective_group_id() == non_collective_group_id;
@@ -965,7 +969,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 
 	std::vector<chunk<3>> coarse_chunks;
 	if(is_splittable_locally && tsk.get_execution_target() == execution_target::device) {
-		coarse_chunks = split(command_chunk, tsk.get_granularity(), m_devices.size());
+		coarse_chunks = split(command_chunk, tsk.get_granularity(), m_system.devices.size());
 	} else {
 		coarse_chunks = {command_chunk};
 	}
@@ -999,9 +1003,9 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 			auto& instr = cmd_instrs.emplace_back();
 			instr.subrange = subrange<3>(fine_chunk.offset, fine_chunk.range);
 			if(tsk.get_execution_target() == execution_target::device) {
-				assert(i < m_devices.size());
+				assert(i < m_system.devices.size());
 				instr.did = device_id(i);
-				instr.memory_id = m_devices[i].native_memory;
+				instr.memory_id = m_system.devices[i].native_memory;
 			} else {
 				instr.memory_id = host_memory_id;
 			}
@@ -1017,7 +1021,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 		if(const auto overlapping_writes = detect_overlapping_writes(tsk, local_chunk_boxes); !overlapping_writes.empty()) {
 			auto error = fmt::format("Task T{}", tsk.get_id());
 			if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
-			fmt::format_to(std::back_inserter(error), " has overlapping writes on N{} in", m_local_node_id);
+			fmt::format_to(std::back_inserter(error), " has overlapping writes on N{} in", m_local_nid);
 			for(const auto& [bid, overlap] : overlapping_writes) {
 				fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
 			}
@@ -1482,7 +1486,7 @@ void instruction_graph_generator::impl::compile_reduction_command(const reductio
 
 		local_gather_copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), source_mid, source_alloc->aid, source_alloc->box.get_range(),
 		    scalar_reduction_box.get_offset() - source_alloc->box.get_offset(), host_memory_id, gather_aid, range_cast<3>(range<1>(m_num_nodes)),
-		    id_cast<3>(id<1>(m_local_node_id)), scalar_reduction_box.get_range(), buffer.elem_size);
+		    id_cast<3>(id<1>(m_local_nid)), scalar_reduction_box.get_range(), buffer.elem_size);
 		if(m_recorder != nullptr) {
 			*m_recorder << copy_instruction_record(
 			    *local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name, scalar_reduction_box);
@@ -1638,9 +1642,9 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 	return result;
 }
 
-instruction_graph_generator::instruction_graph_generator(const task_manager& tm, const size_t num_nodes, const node_id local_node_id,
-    std::vector<device_info> devices, instruction_graph& idag, instruction_recorder* const recorder, const policy_set& policy)
-    : m_impl(new impl(tm, num_nodes, local_node_id, std::move(devices), idag, recorder, policy)) {}
+instruction_graph_generator::instruction_graph_generator(const task_manager& tm, const size_t num_nodes, const node_id local_nid, system_info system,
+    instruction_graph& idag, instruction_recorder* const recorder, const policy_set& policy)
+    : m_impl(new impl(tm, num_nodes, local_nid, std::move(system), idag, recorder, policy)) {}
 
 instruction_graph_generator::~instruction_graph_generator() = default;
 

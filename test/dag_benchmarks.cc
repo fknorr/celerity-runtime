@@ -193,12 +193,17 @@ struct command_graph_generator_benchmark_context {
 	}
 };
 
-auto make_device_map(const size_t num_devices) {
-	std::vector<instruction_graph_generator::device_info> devices;
+instruction_graph_generator::system_info make_system_info(const size_t num_devices) {
+	instruction_graph_generator::system_info system;
+	system.devices.resize(num_devices);
+	system.memories.resize(1 + num_devices);
 	for(device_id did = 0; did < num_devices; ++did) {
-		devices.push_back(instruction_graph_generator::device_info{memory_id(did + 1)});
+		system.devices[did].native_memory = memory_id(did + 1);
 	}
-	return devices;
+	for(auto& memory : system.memories) {
+		memory.copy_peers.set();
+	}
+	return system;
 }
 
 struct instruction_graph_generator_benchmark_context {
@@ -212,7 +217,7 @@ struct instruction_graph_generator_benchmark_context {
 	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
 	instruction_recorder irec;
 	instruction_graph idag;
-	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_device_map(num_devices), idag, test_utils::print_graphs ? &irec : nullptr,
+	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_system_info(num_devices), idag, test_utils::print_graphs ? &irec : nullptr,
 	    benchmark_instruction_graph_generator_policy};
 	test_utils::mock_buffer_factory mbf{tm, dggen, iggen};
 
@@ -294,9 +299,9 @@ class restartable_thread {
 class benchmark_scheduler final : public abstract_scheduler {
   public:
 	benchmark_scheduler(restartable_thread& thread, const size_t num_nodes, const node_id local_node_id,
-	    std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm, delegate* const delegate, command_recorder* const crec,
+	    instruction_graph_generator::system_info system_info, const task_manager& tm, delegate* const delegate, command_recorder* const crec,
 	    instruction_recorder* const irec)
-	    : abstract_scheduler(num_nodes, local_node_id, std::move(local_devices), tm, delegate, crec, irec), m_thread(&thread) {
+	    : abstract_scheduler(num_nodes, local_node_id, std::move(system_info), tm, delegate, crec, irec), m_thread(&thread) {
 		m_thread->start([this] { schedule(); });
 	}
 
@@ -323,7 +328,7 @@ struct scheduler_benchmark_context {
 
 	explicit scheduler_benchmark_context(restartable_thread& thrd, const size_t num_nodes, const size_t num_devices_per_node)
 	    : num_nodes(num_nodes), tm(num_nodes, nullptr, {}),
-	      schdlr(thrd, num_nodes, 0 /* local_nid */, make_device_map(num_devices_per_node), tm, nullptr /* delegate */, nullptr /* crec */, nullptr /* irec */),
+	      schdlr(thrd, num_nodes, 0 /* local_nid */, make_system_info(num_devices_per_node), tm, nullptr /* delegate */, nullptr /* crec */, nullptr /* irec */),
 	      mbf(tm, schdlr) //
 	{
 		tm.register_task_callback([this](const task* tsk) { schdlr.notify_task_created(tsk); });

@@ -49,7 +49,7 @@ namespace detail {
 			instruction_graph_generator::policy_set instruction_graph_generator;
 		};
 
-		abstract_scheduler(size_t num_nodes, node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm,
+		abstract_scheduler(size_t num_nodes, node_id local_node_id, instruction_graph_generator::system_info system_info, const task_manager& tm,
 		    delegate* delegate, command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
 		abstract_scheduler(const abstract_scheduler&) = delete;
 		abstract_scheduler(abstract_scheduler&&) = delete;
@@ -140,7 +140,7 @@ namespace detail {
 		friend struct scheduler_testspy;
 
 	  public:
-		scheduler(size_t num_nodes, node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm,
+		scheduler(size_t num_nodes, node_id local_node_id, instruction_graph_generator::system_info system_info, const task_manager& tm,
 		    delegate* delegate, command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
 
 		scheduler(const scheduler&) = delete;

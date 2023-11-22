@@ -11,14 +11,13 @@
 namespace celerity {
 namespace detail {
 
-	abstract_scheduler::abstract_scheduler(const size_t num_nodes, const node_id local_node_id,
-	    std::vector<instruction_graph_generator::device_info> local_devices, const task_manager& tm, delegate* const delegate, command_recorder* const crec,
-	    instruction_recorder* const irec, const policy_set& policy)
+	abstract_scheduler::abstract_scheduler(const size_t num_nodes, const node_id local_node_id, instruction_graph_generator::system_info system_info,
+	    const task_manager& tm, delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec, const policy_set& policy)
 	    : m_cdag(std::make_unique<command_graph>()), m_crec(crec),
 	      m_dggen(std::make_unique<distributed_graph_generator>(num_nodes, local_node_id, *m_cdag, tm, crec, policy.command_graph_generator)),
 	      m_idag(std::make_unique<instruction_graph>()), m_irec(irec), //
 	      m_iggen(std::make_unique<instruction_graph_generator>(
-	          tm, num_nodes, local_node_id, std::move(local_devices), *m_idag, irec, policy.instruction_graph_generator)),
+	          tm, num_nodes, local_node_id, std::move(system_info), *m_idag, irec, policy.instruction_graph_generator)),
 	      m_delegate(delegate) {}
 
 	abstract_scheduler::~abstract_scheduler() = default;
@@ -40,7 +39,7 @@ namespace detail {
 				matchbox::match(
 				    event,
 				    [&](const event_task_available& e) {
-						assert(!shutdown);
+					    assert(!shutdown);
 					    assert(e.tsk != nullptr);
 					    const auto commands = m_dggen->build_task(*e.tsk);
 					    for(const auto cmd : commands) {
@@ -62,27 +61,27 @@ namespace detail {
 					    }
 				    },
 				    [&](const event_buffer_created& e) {
-						assert(!shutdown);
+					    assert(!shutdown);
 					    m_dggen->create_buffer(e.bid, e.dims, e.range, e.host_initialized);
 					    m_iggen->create_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.host_initialized);
 				    },
 				    [&](const event_set_buffer_debug_name& e) {
-						assert(!shutdown);
+					    assert(!shutdown);
 					    m_dggen->set_buffer_debug_name(e.bid, e.debug_name);
 					    m_iggen->set_buffer_debug_name(e.bid, e.debug_name);
 				    },
 				    [&](const event_buffer_destroyed& e) {
-						assert(!shutdown);
+					    assert(!shutdown);
 					    m_dggen->destroy_buffer(e.bid);
 					    m_iggen->destroy_buffer(e.bid);
 				    },
 				    [&](const event_host_object_created& e) {
-						assert(!shutdown);
+					    assert(!shutdown);
 					    m_dggen->create_host_object(e.hoid);
 					    m_iggen->create_host_object(e.hoid, e.owns_instance);
 				    },
 				    [&](const event_host_object_destroyed& e) {
-						assert(!shutdown);
+					    assert(!shutdown);
 					    m_dggen->destroy_host_object(e.hoid);
 					    m_iggen->destroy_host_object(e.hoid);
 				    },
@@ -97,7 +96,7 @@ namespace detail {
 					    // interacts with the scheduler until all inspections have completed.
 					    assert(in_flight_events.empty());
 
-						*e.idle = true;
+					    *e.idle = true;
 				    });
 			}
 		}
@@ -111,9 +110,9 @@ namespace detail {
 		m_events_cv.notify_one();
 	}
 
-	scheduler::scheduler(const size_t num_nodes, const node_id local_node_id, std::vector<instruction_graph_generator::device_info> local_devices,
-	    const task_manager& tm, delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec, const policy_set& policy)
-	    : abstract_scheduler(num_nodes, local_node_id, std::move(local_devices), tm, delegate, crec, irec, policy), m_thread(&scheduler::thread_main, this) {
+	scheduler::scheduler(const size_t num_nodes, const node_id local_node_id, instruction_graph_generator::system_info system_info, const task_manager& tm,
+	    delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec, const policy_set& policy)
+	    : abstract_scheduler(num_nodes, local_node_id, std::move(system_info), tm, delegate, crec, irec, policy), m_thread(&scheduler::thread_main, this) {
 		set_thread_name(m_thread.native_handle(), "cy-scheduler");
 	}
 

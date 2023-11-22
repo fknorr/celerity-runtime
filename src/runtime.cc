@@ -161,17 +161,29 @@ namespace detail {
 		const auto backend_type = backend::get_effective_type(devices.front());
 		assert(std::all_of(devices.begin(), devices.end(), [=](const sycl::device& d) { return backend::get_effective_type(d) == backend_type; }));
 
+		// TODO refactor / rename frontend_system_info / backend_system_info?
+		// Or maybe should the backend ingest the config and then provide a list of devices / the correct frontend config?
 		std::vector<backend::device_config> backend_devices(devices.size());
-		std::vector<instruction_graph_generator::device_info> iggen_devices(devices.size());
+		instruction_graph_generator::system_info system_info;
+		system_info.devices.resize(devices.size());
+		system_info.memories.resize(1 + devices.size());
 		for(size_t i = 0; i < devices.size(); ++i) {
-			const auto native_memory = memory_id(1 + i); // TODO don't assume distinct native memories for each GPU
+			const auto native_memory = memory_id(1 + i); // TODO query the backend about how memory is attached to devices
 			backend_devices[i].device_id = i;
 			backend_devices[i].native_memory = native_memory;
 			backend_devices[i].sycl_device = devices[i];
-			iggen_devices[i].native_memory = native_memory;
-
+			system_info.devices[i].native_memory = native_memory;
 			CELERITY_DEBUG("Device D{} with native memory M{} is {}", backend_devices[i].device_id, backend_devices[i].native_memory,
 			    backend_devices[i].sycl_device.get_info<sycl::info::device::name>());
+		}
+		for(memory_id mid = 0; mid < system_info.memories.size(); ++mid) {
+			// TODO query backend (oneAPI extension) about this
+#if CELERITY_WORKAROUND(DPCPP)
+			system_info.memories[mid].copy_peers.set(mid);
+			system_info.memories[mid].copy_peers.set(host_memory_id);
+#else
+			system_info.memories[mid].copy_peers.set();
+#endif
 		}
 		m_num_local_devices = devices.size();
 
@@ -187,7 +199,7 @@ namespace detail {
 		    CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_error : error_policy::ignore;
 		schdlr_policy.instruction_graph_generator.unsafe_oversubscription_error = error_policy::log_warning;
 
-		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, std::move(iggen_devices), *m_task_mngr,
+		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, std::move(system_info), *m_task_mngr,
 		    static_cast<abstract_scheduler::delegate*>(this), m_command_recorder.get(), m_instruction_recorder.get(), schdlr_policy);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
 
