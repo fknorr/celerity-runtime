@@ -221,6 +221,14 @@ namespace detail {
 	}
 
 	runtime::~runtime() {
+		if(!is_unreferenced()) {
+			// this call might originate from static destruction - we cannot assume spdlog to still be around
+			fputs("[CRITICAL] Detected an attempt to destroy runtime while at least one distr_queue, buffer or host_object was still alive. This likely means "
+			      "that one of these objects was leaked, or at least its lifetime extended beyond the scope of main(). This is undefined.\n",
+			    stderr);
+			abort();
+		}
+
 		require_call_from_application_thread();
 
 		// create a shutdown epoch and pass it to the scheduler via callback
@@ -426,10 +434,11 @@ namespace detail {
 		return rid;
 	}
 
-	void runtime::destroy_instance_if_unreferenced() const {
-		if(!m_has_live_queue && m_live_buffers.empty() && m_live_host_objects.empty()) { //
-			s_instance.reset();
-		}
+	bool runtime::is_unreferenced() const { return !m_has_live_queue && m_live_buffers.empty() && m_live_host_objects.empty(); }
+
+	void runtime::destroy_instance_if_unreferenced() {
+		if(s_instance == nullptr) return;
+		if(s_instance->is_unreferenced()) { s_instance.reset(); }
 	}
 
 } // namespace detail

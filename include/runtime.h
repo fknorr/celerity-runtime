@@ -137,10 +137,12 @@ namespace detail {
 		void horizon_reached(task_id horizon_tid) override;
 		void epoch_reached(task_id epoch_tid) override;
 
+		bool is_unreferenced() const;
+
 		/**
 		 * @brief Destroys the runtime if it is no longer active and all buffers and host objects have been unregistered.
 		 */
-		void destroy_instance_if_unreferenced() const;
+		static void destroy_instance_if_unreferenced();
 
 		// ------------------------------------------ TESTING UTILS ------------------------------------------
 		// We have to jump through some hoops to be able to re-initialize the runtime for unit testing.
