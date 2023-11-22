@@ -24,11 +24,12 @@ std::vector<sycl::event> memcpy_strided_device_generic(sycl::queue& queue, const
 	const auto source_base_offset = get_linear_index(source_range, source_offset);
 	const auto target_base_offset = get_linear_index(target_range, target_offset);
 	const size_t line_size = elem_size * copy_range[1];
-	std::vector<sycl::event> wait_list{copy_range[0]};
+	std::vector<sycl::event> wait_list;
+	wait_list.reserve(copy_range[0]);
 	for(size_t i = 0; i < copy_range[0]; ++i) {
 		auto e = queue.memcpy(static_cast<char*>(target_base_ptr) + elem_size * (target_base_offset + i * target_range[1]),
 		    static_cast<const char*>(source_base_ptr) + elem_size * (source_base_offset + i * source_range[1]), line_size);
-		wait_list[i] = std::move(e);
+		wait_list.push_back(std::move(e));
 	}
 	return wait_list;
 }
@@ -102,14 +103,18 @@ void generic_queue::free(const memory_id where, void* const allocation) { sycl::
 
 std::unique_ptr<event> generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id target, const void* const source_base_ptr,
     void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
-    const id<3>& target_offset, const range<3>& copy_range) {
+    const id<3>& target_offset, const range<3>& copy_range) //
+{
 	assert(source != host_memory_id || target != host_memory_id);
+
 	auto& queue = m_memory_queues.at(source == host_memory_id ? target : source);
 	const auto dispatch_memcpy = [&](const auto dims) {
-		return std::make_unique<sycl_event>(backend_detail::memcpy_strided_device_generic(queue, source_base_ptr, target_base_ptr, elem_size,
-		    range_cast<dims.value>(source_range), id_cast<dims.value>(source_offset), range_cast<dims.value>(target_range), id_cast<dims.value>(target_offset),
-		    range_cast<dims.value>(copy_range)));
+		auto wait_list = backend_detail::memcpy_strided_device_generic(queue, source_base_ptr, target_base_ptr, elem_size, range_cast<dims.value>(source_range),
+		    id_cast<dims.value>(source_offset), range_cast<dims.value>(target_range), id_cast<dims.value>(target_offset), range_cast<dims.value>(copy_range));
+		flush_sycl_queue(queue);
+		return std::make_unique<sycl_event>(std::move(wait_list));
 	};
+
 	switch(dims) {
 	case 0: return dispatch_memcpy(std::integral_constant<int, 0>());
 	case 1: return dispatch_memcpy(std::integral_constant<int, 1>());

@@ -60,6 +60,8 @@ class queue {
 std::unique_ptr<event> launch_sycl_kernel(
     sycl::queue& queue, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs);
 
+void flush_sycl_queue(sycl::queue& queue);
+
 void handle_sycl_errors(const sycl::exception_list& errors);
 
 #if CELERITY_DETAIL_ENABLE_DEBUG
