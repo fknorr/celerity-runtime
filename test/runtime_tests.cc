@@ -1012,7 +1012,7 @@ namespace detail {
 
 			CHECK(tm.get_current_task_count() < task_limit);
 
-			auto &scheduler = runtime_testspy::get_schdlr(runtime::get_instance());
+			auto& scheduler = runtime_testspy::get_schdlr(runtime::get_instance());
 			CHECK(scheduler_testspy::get_live_instruction_count(scheduler) < task_limit);
 		}
 	}
@@ -1415,7 +1415,9 @@ namespace detail {
 #endif
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between instructions", "[runtime]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between instructions iff access pattern diagnostics are enabled",
+	    "[runtime]") //
+	{
 		std::unique_ptr<celerity::test_utils::log_capture> lc;
 		{
 			distr_queue q;
@@ -1434,7 +1436,11 @@ namespace detail {
 
 		const auto error_message = "has overlapping writes on N0 in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the write access or "
 		                           "constrain the split to make the access non-overlapping.";
+#if CELERITY_ACCESS_PATTERN_DIAGNOSTICS
 		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+#else
+		CHECK_THAT(lc->get_log(), !Catch::Matchers::ContainsSubstring(error_message));
+#endif
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime types throw when used from the wrong thread", "[runtime]") {
