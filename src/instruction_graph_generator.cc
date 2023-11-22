@@ -734,6 +734,12 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 		region<3> region;
 	};
 
+	// TODO host copy staging if p2p is not enabled. This must be a separate pass altogether, because, in case of a broadcast from one device to multiple
+	// devices, we only want to generate a single d2h followed by any number of h2ds.
+	//    1. find regions that need to be copied through the host but are not yet present on the host (disjoint like `reads`)
+	//    2. perform d2h copies, update access fronts / last writers
+	//    3. in the actual copy loop, use the last-host-writer instead of the original writer as copy source
+
 	std::vector<copy_template> pending_copies;
 	for(auto& [dest_mid, disjoint_reader_regions] : unsatisfied_reads) {
 		if(disjoint_reader_regions.empty()) continue; // if fully satisfied by incoming transfers
