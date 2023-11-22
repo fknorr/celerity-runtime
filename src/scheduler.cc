@@ -6,6 +6,7 @@
 #include "named_threads.h"
 #include "recorders.h"
 #include "task.h"
+#include "tracy.h"
 
 
 namespace celerity {
@@ -41,9 +42,16 @@ namespace detail {
 				    [&](const event_task_available& e) {
 					    assert(!shutdown);
 					    assert(e.tsk != nullptr);
-					    const auto commands = m_dggen->build_task(*e.tsk);
+					    const auto commands = [&] {
+						    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Blue, "CDAG");
+						    return m_dggen->build_task(*e.tsk);
+					    }();
+
 					    for(const auto cmd : commands) {
-						    const auto [instructions, pilots] = m_iggen->compile(*cmd);
+						    const auto [instructions, pilots] = [&] {
+							    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Lime, "IDAG");
+							    return m_iggen->compile(*cmd);
+						    }();
 
 						    if(m_delegate != nullptr) {
 							    for(const auto instr : instructions) {

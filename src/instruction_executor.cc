@@ -7,6 +7,7 @@
 #include "mpi_communicator.h" // TODO
 #include "print_utils.h"
 #include "receive_arbiter.h"
+#include "tracy.h"
 #include "types.h"
 
 #include <matchbox.hh>
@@ -259,7 +260,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const clone_collective_group_instruction& ccginstr) {
 		    const auto new_cgid = ccginstr.get_new_collective_group_id();
 		    const auto origin_cgid = ccginstr.get_original_collective_group_id();
+
 		    CELERITY_DEBUG("[executor] I{}: clone collective group CG{} -> CG{}", ccginstr.get_id(), origin_cgid, new_cgid);
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Brown, "I{} clone collective", ccginstr.get_id());
 
 		    assert(m_collective_groups.count(new_cgid) == 0);
 		    const auto new_group = m_collective_groups.at(origin_cgid)->clone();
@@ -271,6 +274,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
 		        ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Cyan, "I{} alloc", ainstr.get_id());
 		    auto ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
 
@@ -281,16 +285,18 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    const auto it = m_allocations.find(finstr.get_allocation_id());
 		    assert(it != m_allocations.end());
 		    const auto ptr = it->second;
+		    m_allocations.erase(it);
 
 		    CELERITY_DEBUG("[executor] I{}: free M{}.A{}", finstr.get_id(), finstr.get_memory_id(), finstr.get_allocation_id());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Cyan, "I{} free", finstr.get_id());
 
-		    m_allocations.erase(it);
 		    m_backend_queue->free(finstr.get_memory_id(), ptr);
 		    return completed_synchronous();
 	    },
 	    [&](const init_buffer_instruction& ibinstr) {
 		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
 		        ibinstr.get_size_bytes());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Lime, "I{} init buffer", ibinstr.get_id());
 
 		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
 		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id());
@@ -300,6 +306,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const export_instruction& einstr) {
 		    CELERITY_DEBUG("[executor] I{}: export M0.A{} ({})+{}, {}x{} bytes", einstr.get_id(), einstr.get_host_allocation_id(),
 		        einstr.get_allocation_range(), einstr.get_offset_in_allocation(), einstr.get_copy_range(), einstr.get_element_size());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Lime, "I{} export", einstr.get_id());
 
 		    const auto dest_ptr = einstr.get_out_pointer(); // TODO very naughty
 		    const auto source_base_ptr = m_allocations.at(einstr.get_host_allocation_id());
@@ -323,6 +330,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: copy M{}.A{}+{} -> M{}.A{}+{}, {}x{} bytes", cinstr.get_id(), cinstr.get_source_memory_id(),
 		        cinstr.get_source_allocation_id(), cinstr.get_offset_in_source(), cinstr.get_dest_memory_id(), cinstr.get_dest_allocation_id(),
 		        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Lime, "I{} copy", cinstr.get_id());
 
 		    const auto source_base_ptr = m_allocations.at(cinstr.get_source_allocation_id());
 		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation_id());
@@ -349,6 +357,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const device_kernel_instruction& dkinstr) {
 		    CELERITY_DEBUG("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
 		        log_accesses(dkinstr.get_access_allocations()));
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Orange, "I{} device kernel", dkinstr.get_id());
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 		    auto oob_info =
@@ -373,6 +382,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const host_task_instruction& htinstr) {
 		    CELERITY_DEBUG(
 		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_access_allocations()));
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Orange, "I{} host task", htinstr.get_id());
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 		    auto oob_info =
@@ -400,6 +410,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), host_memory_id /* TODO RDMA */,
 		        sinstr.get_source_allocation_id(), sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(),
 		        sinstr.get_dest_node_id(), sinstr.get_tag());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Violet, "I{} send", sinstr.get_id());
 
 		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id());
 		    const communicator::stride stride{
@@ -413,6 +424,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: receive {} {} into M{}.A{} ({}), x{} bytes", rinstr.get_id(), rinstr.get_transfer_id(),
 		        rinstr.get_requested_region(), rinstr.get_dest_memory_id(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(),
 		        rinstr.get_element_size());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Violet, "I{} receive", rinstr.get_id());
 
 		    const auto allocation = m_allocations.at(rinstr.get_dest_allocation_id());
 		    return m_recv_arbiter.receive(
@@ -422,6 +434,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    CELERITY_DEBUG("[executor] I{}: split receive {} {} into M{}.A{} ({}), x{} bytes", srinstr.get_id(), srinstr.get_transfer_id(),
 		        srinstr.get_requested_region(), srinstr.get_dest_memory_id(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(),
 		        srinstr.get_element_size());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Violet, "I{} split receive", srinstr.get_id());
 
 		    const auto allocation = m_allocations.at(srinstr.get_dest_allocation_id());
 		    m_recv_arbiter.begin_split_receive(
@@ -430,12 +443,14 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    },
 	    [&](const await_receive_instruction& arinstr) {
 		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Violet, "I{} await receive", arinstr.get_id());
 
 		    return m_recv_arbiter.await_split_receive_subregion(arinstr.get_transfer_id(), arinstr.get_received_region());
 	    },
 	    [&](const gather_receive_instruction& grinstr) {
 		    CELERITY_DEBUG("[executor] I{}: gather receive {} into M{}.A{}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
 		        grinstr.get_dest_memory_id(), grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Violet, "I{} gather receive", grinstr.get_id());
 
 		    const auto allocation = m_allocations.at(grinstr.get_dest_allocation_id());
 		    return m_recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
@@ -443,6 +458,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const fill_identity_instruction& fiinstr) {
 		    CELERITY_DEBUG("[executor] I{}: fill identity M{}.A{} x{} for R{}", fiinstr.get_id(), fiinstr.get_memory_id(), fiinstr.get_allocation_id(),
 		        fiinstr.get_num_values(), fiinstr.get_reduction_id());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Blue, "I{} fill identity", fiinstr.get_id());
 
 		    const auto allocation = m_allocations.at(fiinstr.get_allocation_id());
 		    const auto& reduction = *m_reductions.at(fiinstr.get_reduction_id());
@@ -452,6 +468,7 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 	    [&](const reduce_instruction& rinstr) {
 		    CELERITY_DEBUG("[executor] I{}: reduce M{}.A{} x{} into M{}.A{} as R{}", rinstr.get_id(), rinstr.get_memory_id(), rinstr.get_source_allocation_id(),
 		        rinstr.get_num_source_values(), rinstr.get_memory_id(), rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Blue, "I{} reduce", rinstr.get_id());
 
 		    const auto gather_allocation = m_allocations.at(rinstr.get_source_allocation_id());
 		    const auto dest_allocation = m_allocations.at(rinstr.get_dest_allocation_id());
@@ -462,7 +479,9 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return completed_synchronous();
 	    },
 	    [&](const fence_instruction& finstr) {
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Blue, "fence");
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
+
 		    finstr.get_promise()->fulfill();
 		    return completed_synchronous();
 	    },
@@ -473,12 +492,15 @@ instruction_executor::event instruction_executor::begin_executing(const instruct
 		    return completed_synchronous();
 	    },
 	    [&](const horizon_instruction& hinstr) {
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Gray, "horizon");
 		    CELERITY_DEBUG("[executor] I{}: horizon", hinstr.get_id());
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
 		    return completed_synchronous();
 	    },
 	    [&](const epoch_instruction& einstr) {
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Gray, "epoch");
+
 		    switch(einstr.get_epoch_action()) {
 		    case epoch_action::none: CELERITY_DEBUG("[executor] I{}: epoch", einstr.get_id()); break;
 		    case epoch_action::barrier:
