@@ -97,7 +97,7 @@ class instruction_graph_generator::impl {
 				    [epoch](instruction* const instr) { return instr->get_id() < epoch->get_id(); });
 				if(new_front_end != record.front.end()) {
 					record.front.erase(new_front_end, record.front.end());
-					record.front.push_back(epoch);
+					record.front.insert(record.front.begin(), epoch);
 				}
 				assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
 				return record;
