@@ -10,6 +10,8 @@
 #include "tracy.h"
 #include "types.h"
 
+#include <queue>
+
 #include <matchbox.hh>
 
 namespace celerity::detail {
@@ -76,6 +78,27 @@ void instruction_executor::thread_main() {
 	}
 }
 
+// Heuristic: prioritize instructions with small launch overhead and long async completion times
+int instruction_priority(const instruction* instr) {
+	return matchbox::match(
+	    *instr,                                             //
+	    [](const device_kernel_instruction&) { return 4; }, //
+	    [](const host_task_instruction&) { return 4; },     //
+	    [](const fence_instruction&) { return 3; },         //
+	    [](const send_instruction&) { return 2; },          //
+	    [](const receive_instruction&) { return 2; },       //
+	    [](const split_receive_instruction&) { return 2; }, //
+	    [](const await_receive_instruction&) { return 2; }, //
+	    [](const copy_instruction&) { return 2; },          //
+	    [](const alloc_instruction&) { return 1; },         //
+	    [](const free_instruction&) { return 1; },          //
+	    [](const auto&) { return 0; });                     //
+}
+
+struct instruction_priority_less {
+	bool operator()(const instruction* lhs, const instruction* rhs) const { return instruction_priority(lhs) < instruction_priority(rhs); }
+};
+
 void instruction_executor::loop() {
 	closure_hydrator::make_available();
 
@@ -85,11 +108,12 @@ void instruction_executor::loop() {
 
 	std::vector<submission> loop_submission_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
-	std::vector<const instruction*> ready_instructions;
+	std::priority_queue<const instruction*, std::vector<const instruction*>, instruction_priority_less> ready_instructions;
 	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
+	std::unordered_set<const instruction*> incomplete_instructions;
 	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp;
 	bool progress_warning_emitted = false;
-	while(m_expecting_more_submissions || !pending_instructions.empty() || !active_instructions.empty()) {
+	while(m_expecting_more_submissions || !pending_instructions.empty() || !ready_instructions.empty() || !active_instructions.empty()) {
 		m_recv_arbiter.poll_communicator();
 
 		bool made_progress = false;
@@ -100,13 +124,14 @@ void instruction_executor::loop() {
 				CELERITY_DEBUG("[executor] completed I{}", active_instr->get_id());
 				CELERITY_DETAIL_TRACY_ASYNC_ZONE_END(active_info.tracy_lane);
 				made_progress = true;
+				incomplete_instructions.erase(active_instr);
 				for(const auto& dep : active_instr->get_dependents()) {
 					if(const auto pending_it = pending_instructions.find(dep.node); pending_it != pending_instructions.end()) {
 						auto& [pending_instr, pending_info] = *pending_it;
 						assert(pending_info.n_unmet_dependencies > 0);
 						pending_info.n_unmet_dependencies -= 1;
 						if(pending_info.n_unmet_dependencies == 0) {
-							ready_instructions.push_back(pending_instr);
+							ready_instructions.push(pending_instr);
 							pending_instructions.erase(pending_it);
 						}
 					}
@@ -118,21 +143,19 @@ void instruction_executor::loop() {
 		}
 
 		if(m_submission_queue.swap_if_nonempty(loop_submission_queue)) {
+			CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "process submissions");
 			for(auto& submission : loop_submission_queue) {
 				matchbox::match(
 				    submission,
 				    [&](const instruction* incoming_instr) {
-					    const auto n_unmet_dependencies = static_cast<size_t>(std::count_if(
-					        incoming_instr->get_dependencies().begin(), incoming_instr->get_dependencies().end(), [&](const instruction::dependency& dep) {
-						        // TODO we really should have another unordered_set for the union of these
-						        return pending_instructions.count(dep.node) != 0
-						               || std::find(ready_instructions.begin(), ready_instructions.end(), dep.node) != ready_instructions.end()
-						               || active_instructions.count(dep.node) != 0;
-					        }));
+					    const auto n_unmet_dependencies =
+					        static_cast<size_t>(std::count_if(incoming_instr->get_dependencies().begin(), incoming_instr->get_dependencies().end(),
+					            [&](const instruction::dependency& dep) { return incomplete_instructions.count(dep.node) != 0; }));
+					    incomplete_instructions.insert(incoming_instr);
 					    if(n_unmet_dependencies > 0) {
 						    pending_instructions.emplace(incoming_instr, pending_instruction_info{n_unmet_dependencies});
 					    } else {
-						    ready_instructions.push_back(incoming_instr);
+						    ready_instructions.push(incoming_instr);
 					    }
 				    },
 				    [&](const outbound_pilot& pilot) { //
@@ -154,12 +177,12 @@ void instruction_executor::loop() {
 			loop_submission_queue.clear();
 		}
 
-		for(const auto ready_instr : ready_instructions) {
-			// TODO insert tracy async lane here
-			active_instructions.emplace(ready_instr, active_instruction_info{begin_executing(*ready_instr)});
+		if(!ready_instructions.empty()) {
+			const auto ready_instr = ready_instructions.top();
+			ready_instructions.pop();
+			active_instructions.emplace(ready_instr, begin_executing(*ready_instr));
 			made_progress = true;
 		}
-		ready_instructions.clear();
 
 		// TODO consider rate-limiting this (e.g. with an overflow counter) if steady_clock::now() turns out to have measurable latency
 		if(made_progress) {
@@ -281,8 +304,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    [&](const alloc_instruction& ainstr) {
 		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
 		        ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
-
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} alloc", ainstr.get_id());
+
 		    auto ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
 
@@ -366,8 +389,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    [&](const device_kernel_instruction& dkinstr) {
 		    CELERITY_DEBUG("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
 		        log_accesses(dkinstr.get_access_allocations()));
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
-		        active_instruction.tracy_lane, "cy-executor", Orange, "I{} device kernel", dkinstr.get_id());
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Orange, "I{} device kernel", dkinstr.get_id());
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 		    auto oob_info =
@@ -392,8 +414,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    [&](const host_task_instruction& htinstr) {
 		    CELERITY_DEBUG(
 		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_access_allocations()));
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
-		        active_instruction.tracy_lane, "cy-executor", Orange, "I{} host task", htinstr.get_id());
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Orange, "I{} host task", htinstr.get_id());
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 		    auto oob_info =
@@ -445,8 +466,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DEBUG("[executor] I{}: split receive {} {} into M{}.A{} ({}), x{} bytes", srinstr.get_id(), srinstr.get_transfer_id(),
 		        srinstr.get_requested_region(), srinstr.get_dest_memory_id(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(),
 		        srinstr.get_element_size());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
-		        active_instruction.tracy_lane, "cy-executor", Violet, "I{} split receive", srinstr.get_id());
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} split receive", srinstr.get_id());
 
 		    const auto allocation = m_allocations.at(srinstr.get_dest_allocation_id());
 		    m_recv_arbiter.begin_split_receive(
@@ -455,16 +475,14 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    },
 	    [&](const await_receive_instruction& arinstr) {
 		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
-		        active_instruction.tracy_lane, "cy-executor", Violet, "I{} await receive", arinstr.get_id());
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} await receive", arinstr.get_id());
 
 		    return m_recv_arbiter.await_split_receive_subregion(arinstr.get_transfer_id(), arinstr.get_received_region());
 	    },
 	    [&](const gather_receive_instruction& grinstr) {
 		    CELERITY_DEBUG("[executor] I{}: gather receive {} into M{}.A{}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
 		        grinstr.get_dest_memory_id(), grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
-		        active_instruction.tracy_lane, "cy-executor", Violet, "I{} gather receive", grinstr.get_id());
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} gather receive", grinstr.get_id());
 
 		    const auto allocation = m_allocations.at(grinstr.get_dest_allocation_id());
 		    return m_recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
@@ -502,12 +520,14 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    [&](const destroy_host_object_instruction& dhoinstr) {
 		    assert(m_host_object_instances.count(dhoinstr.get_host_object_id()) != 0);
 		    CELERITY_DEBUG("[executor] I{}: destroy H{}", dhoinstr.get_id(), dhoinstr.get_host_object_id());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "destroy host object");
+
 		    m_host_object_instances.erase(dhoinstr.get_host_object_id());
 		    return completed_synchronous();
 	    },
 	    [&](const horizon_instruction& hinstr) {
-		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "horizon");
 		    CELERITY_DEBUG("[executor] I{}: horizon", hinstr.get_id());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "horizon");
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
 		    return completed_synchronous();
