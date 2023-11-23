@@ -10,6 +10,7 @@
 #include "split.h"
 #include "task.h"
 #include "task_manager.h"
+#include "tracy.h"
 #include "types.h"
 
 #include <bitset>
@@ -1656,19 +1657,39 @@ instruction_graph_generator::~instruction_graph_generator() = default;
 
 void instruction_graph_generator::create_buffer(
     const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("create buffer B{}", bid);
 	m_impl->create_buffer(bid, dims, range, elem_size, elem_align, host_initialized);
 }
 
-void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, const std::string& name) { m_impl->set_buffer_debug_name(bid, name); }
+void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, const std::string& name) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("set buffer name B{} \"{}\"", bid, name);
+	m_impl->set_buffer_debug_name(bid, name);
+}
 
-void instruction_graph_generator::destroy_buffer(const buffer_id bid) { m_impl->destroy_buffer(bid); }
+void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("destroy buffer B{}", bid);
+	m_impl->destroy_buffer(bid);
+}
 
-void instruction_graph_generator::create_host_object(const host_object_id hoid, const bool owns_instance) { m_impl->create_host_object(hoid, owns_instance); }
+void instruction_graph_generator::create_host_object(const host_object_id hoid, const bool owns_instance) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("create host object H{}", hoid);
+	m_impl->create_host_object(hoid, owns_instance);
+}
 
-void instruction_graph_generator::destroy_host_object(const host_object_id hoid) { m_impl->destroy_host_object(hoid); }
+void instruction_graph_generator::destroy_host_object(const host_object_id hoid) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("destroy host object H{}", hoid);
+	m_impl->destroy_host_object(hoid);
+}
 
 // Resulting instructions are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
 std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruction_graph_generator::compile(const abstract_command& cmd) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("compile C{}", cmd.get_cid());
 	return m_impl->compile(cmd);
 }
 

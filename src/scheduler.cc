@@ -42,16 +42,10 @@ namespace detail {
 				    [&](const event_task_available& e) {
 					    assert(!shutdown);
 					    assert(e.tsk != nullptr);
-					    const auto commands = [&] {
-						    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Blue, "CDAG");
-						    return m_dggen->build_task(*e.tsk);
-					    }();
+					    const auto commands = m_dggen->build_task(*e.tsk);
 
 					    for(const auto cmd : commands) {
-						    const auto [instructions, pilots] = [&] {
-							    CELERITY_DETAIL_TRACY_SCOPED_ZONE(tracy::Color::Lime, "IDAG");
-							    return m_iggen->compile(*cmd);
-						    }();
+						    const auto [instructions, pilots] = m_iggen->compile(*cmd);
 
 						    if(m_delegate != nullptr) {
 							    for(const auto instr : instructions) {
@@ -130,6 +124,7 @@ namespace detail {
 	}
 
 	void scheduler::thread_main() {
+		CELERITY_DETAIL_TRACY_SET_CURRENT_THREAD_NAME("cy-scheduler")
 		try {
 			schedule();
 		} catch(const std::exception& e) {

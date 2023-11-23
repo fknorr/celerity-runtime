@@ -7,6 +7,7 @@
 #include "split.h"
 #include "task.h"
 #include "task_manager.h"
+#include "tracy.h"
 
 namespace celerity::detail {
 
@@ -96,6 +97,9 @@ std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*, com
 }
 
 std::vector<abstract_command*> distributed_graph_generator::build_task(const task& tsk) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE(WebMaroon, "CDAG");
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("build T{}", tsk.get_id());
+
 	assert(m_current_cmd_batch.empty());
 	[[maybe_unused]] const auto cmd_count_before = m_cdag.command_count();
 

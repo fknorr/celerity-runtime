@@ -96,6 +96,9 @@ class instruction_executor {
 	using submission =
 	    std::variant<const instruction*, outbound_pilot, buffer_user_pointer_announcement, host_object_instance_announcement, reduction_announcement>;
 
+	struct pending_instruction_info;
+	struct active_instruction_info;
+
 	// immutable
 	delegate* m_delegate;
 	std::unique_ptr<communicator> m_communicator;
@@ -119,7 +122,7 @@ class instruction_executor {
 	void loop();
 	void thread_main();
 
-	[[nodiscard]] event begin_executing(const instruction& instr);
+	[[nodiscard]] active_instruction_info begin_executing(const instruction& instr);
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 	boundary_check_info prepare_accessor_boundary_check(const buffer_access_allocation_map& amap, task_id tid, const std::string& task_name, target target);
