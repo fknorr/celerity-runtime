@@ -1620,7 +1620,7 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 		    m_idag.begin_epoch(hcmd.get_tid());
 		    const auto horizon = &create<horizon_instruction>(hcmd.get_tid());
 		    collapse_execution_front_to(horizon);
-		    if(m_last_horizon) { apply_epoch(m_last_horizon); }
+		    if(m_last_horizon != nullptr) { apply_epoch(m_last_horizon); }
 		    m_last_horizon = horizon;
 		    if(m_recorder != nullptr) { *m_recorder << horizon_instruction_record(*horizon, hcmd.get_cid()); }
 	    },

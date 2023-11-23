@@ -80,8 +80,13 @@ void instruction_executor::thread_main() {
 
 // Heuristic: prioritize instructions with small launch overhead and long async completion times
 int instruction_priority(const instruction* instr) {
+	// - execute horizons first to unblock task generation, otherwise they are postponed indefinitely unless new alloc_instructions explicitly depend on them
+	// - execute free_instructions last because nothing ever depends on them (TODO except horizons!)
+	// TODO consider increasing instruction priority with age (where age = the instruction's epoch?)
 	return matchbox::match(
 	    *instr,                                             //
+	    [](const horizon_instruction&) { return 5; },       //
+	    [](const epoch_instruction&) { return 5; },         //
 	    [](const device_kernel_instruction&) { return 4; }, //
 	    [](const host_task_instruction&) { return 4; },     //
 	    [](const fence_instruction&) { return 3; },         //
@@ -91,8 +96,9 @@ int instruction_priority(const instruction* instr) {
 	    [](const await_receive_instruction&) { return 2; }, //
 	    [](const copy_instruction&) { return 2; },          //
 	    [](const alloc_instruction&) { return 1; },         //
-	    [](const free_instruction&) { return 1; },          //
-	    [](const auto&) { return 0; });                     //
+	    [](const auto&) { return 0; },                      //
+	    [](const free_instruction&) { return -1; }          //
+	);
 }
 
 struct instruction_priority_less {
