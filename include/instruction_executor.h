@@ -9,6 +9,9 @@
 
 #include <unordered_map>
 
+#include <ctpl_stl.h>
+
+
 namespace celerity::detail {
 
 struct host_object_instance;
@@ -118,6 +121,8 @@ class instruction_executor {
 	host_queue m_host_queue;
 
 	std::thread m_thread;
+
+	ctpl::thread_pool m_alloc_pool;
 
 	void loop();
 	void thread_main();
