@@ -7,11 +7,12 @@
 
 namespace celerity::detail {
 
+
 receive_arbiter::receive_arbiter(communicator& comm) : m_comm(&comm), m_num_nodes(comm.get_num_nodes()) { assert(m_num_nodes > 0); }
 
 receive_arbiter::~receive_arbiter() { assert(std::uncaught_exceptions() > 0 || m_transfers.empty()); }
 
-bool receive_arbiter::event::is_complete() const {
+bool receive_arbiter::receive_event::is_complete() const {
 	return matchbox::match(
 	    m_state,                                     //
 	    [](const completed_state&) { return true; }, //
@@ -61,9 +62,9 @@ void receive_arbiter::begin_split_receive(
 	begin_receive_region(trid, request, allocation, allocated_box, elem_size);
 }
 
-receive_arbiter::event receive_arbiter::await_split_receive_subregion(const transfer_id& trid, const region<3>& subregion) {
+async_event receive_arbiter::await_split_receive_subregion(const transfer_id& trid, const region<3>& subregion) {
 	const auto transfer_it = m_transfers.find(trid);
-	if(transfer_it == m_transfers.end()) { return event(event::complete); }
+	if(transfer_it == m_transfers.end()) { return make_complete_event(); }
 
 	auto& mrt = std::get<multi_region_transfer>(transfer_it->second);
 
@@ -78,19 +79,18 @@ receive_arbiter::event receive_arbiter::await_split_receive_subregion(const tran
 
 	const auto req_it = std::find_if(mrt.active_requests.begin(), mrt.active_requests.end(),
 	    [&](const stable_region_request& rr) { return !region_intersection(rr->incomplete_region, subregion).empty(); });
-	if(req_it == mrt.active_requests.end()) { return event(event::complete); }
+	if(req_it == mrt.active_requests.end()) { return make_complete_event(); }
 
-	return event(*req_it, subregion);
+	return make_async_event<receive_event>(*req_it, subregion);
 }
 
-receive_arbiter::event receive_arbiter::receive(
-    const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size) {
-	return event(begin_receive_region(trid, request, allocation, allocated_box, elem_size));
+async_event receive_arbiter::receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size) {
+	return make_async_event<receive_event>(begin_receive_region(trid, request, allocation, allocated_box, elem_size));
 }
 
-receive_arbiter::event receive_arbiter::gather_receive(const transfer_id& trid, void* allocation, size_t node_chunk_size) {
+async_event receive_arbiter::gather_receive(const transfer_id& trid, void* allocation, size_t node_chunk_size) {
 	auto gr = std::make_shared<gather_request>(allocation, node_chunk_size, m_num_nodes - 1 /* number of peers */);
-	auto event = receive_arbiter::event(gr);
+	auto event = make_async_event<receive_event>(gr);
 	if(const auto entry = m_transfers.find(trid); entry != m_transfers.end()) {
 		auto& ut = std::get<unassigned_transfer>(entry->second);
 		for(auto& pilot : ut.pilots) {
@@ -103,9 +103,9 @@ receive_arbiter::event receive_arbiter::gather_receive(const transfer_id& trid, 
 	return event;
 }
 
-bool receive_arbiter::region_request::complete() {
+bool receive_arbiter::region_request::do_complete() {
 	const auto incomplete_fragments_end = std::remove_if(incoming_fragments.begin(), incoming_fragments.end(), [&](const incoming_region_fragment& fragment) {
-		const bool is_complete = fragment.done->is_complete();
+		const bool is_complete = fragment.communication.is_complete();
 		if(is_complete) { incomplete_region = region_difference(incomplete_region, fragment.box); }
 		return is_complete;
 	});
@@ -114,15 +114,16 @@ bool receive_arbiter::region_request::complete() {
 	return incomplete_region.empty();
 }
 
-bool receive_arbiter::multi_region_transfer::complete() {
-	const auto incomplete_req_end = std::remove_if(active_requests.begin(), active_requests.end(), [&](stable_region_request& rr) { return rr->complete(); });
+bool receive_arbiter::multi_region_transfer::do_complete() {
+	const auto incomplete_req_end =
+	    std::remove_if(active_requests.begin(), active_requests.end(), [&](stable_region_request& rr) { return rr->do_complete(); });
 	active_requests.erase(incomplete_req_end, active_requests.end());
 	return active_requests.empty() && unassigned_pilots.empty();
 }
 
-bool receive_arbiter::gather_request::complete() {
+bool receive_arbiter::gather_request::do_complete() {
 	const auto incomplete_chunks_end = std::remove_if(incoming_chunks.begin(), incoming_chunks.end(), [&](const incoming_gather_chunk& chunk) {
-		const bool is_complete = chunk.done->is_complete();
+		const bool is_complete = chunk.communication.is_complete();
 		if(is_complete) {
 			assert(num_incomplete_chunks > 0);
 			num_incomplete_chunks -= 1;
@@ -133,9 +134,9 @@ bool receive_arbiter::gather_request::complete() {
 	return num_incomplete_chunks == 0;
 }
 
-bool receive_arbiter::gather_transfer::complete() { return request->complete(); }
+bool receive_arbiter::gather_transfer::do_complete() { return request->do_complete(); }
 
-bool receive_arbiter::unassigned_transfer::complete() { // NOLINT(readability-make-member-function-const)
+bool receive_arbiter::unassigned_transfer::do_complete() { // NOLINT(readability-make-member-function-const)
 	// an unassigned_transfer inside receive_arbiter::m_transfers is never empty.
 	assert(!pilots.empty());
 	return false;
@@ -143,7 +144,7 @@ bool receive_arbiter::unassigned_transfer::complete() { // NOLINT(readability-ma
 
 void receive_arbiter::poll_communicator() {
 	for(auto entry = m_transfers.begin(); entry != m_transfers.end();) {
-		if(std::visit([](auto& transfer) { return transfer.complete(); }, entry->second)) {
+		if(std::visit([](auto& transfer) { return transfer.do_complete(); }, entry->second)) {
 			entry = m_transfers.erase(entry);
 		} else {
 			++entry;

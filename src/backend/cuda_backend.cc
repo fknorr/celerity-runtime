@@ -141,14 +141,14 @@ unique_cuda_event make_cuda_event() {
 
 namespace celerity::detail::backend {
 
-class cuda_event final : public event {
+class cuda_event final : public async_event_base {
   public:
 	cuda_event(backend_detail::unique_cuda_event evt) : m_evt(std::move(evt)) {}
 
-	static std::unique_ptr<cuda_event> record(const cudaStream_t stream) {
+	static async_event record(const cudaStream_t stream) {
 		auto event = backend_detail::make_cuda_event();
 		CELERITY_CUDA_CHECK(cudaEventRecord, event.get(), stream);
-		return std::make_unique<cuda_event>(std::move(event));
+		return make_async_event<cuda_event>(std::move(event));
 	}
 
 	bool is_complete() const override {
@@ -164,7 +164,7 @@ class cuda_event final : public event {
 };
 
 // TODO dispatch "host" operations to thread queue and replace this type's implementation with a std::future
-class cuda_host_event final : public event {
+class cuda_host_event final : public async_event_base {
   public:
 	bool is_complete() const override { return true; }
 };
@@ -253,7 +253,7 @@ void cuda_queue::free(const memory_id where, void* const allocation) {
 	}
 }
 
-std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,
+async_event cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,
     void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
     const id<3>& target_offset, const range<3>& copy_range) {
 	const impl::memory* memory = nullptr;
@@ -290,7 +290,7 @@ std::unique_ptr<event> cuda_queue::memcpy_strided_device(const int dims, const m
 	return cuda_event::record(stream);
 }
 
-std::unique_ptr<event> cuda_queue::launch_kernel(
+async_event cuda_queue::launch_kernel(
     device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
 	return launch_sycl_kernel(m_impl->devices.at(did).sycl_queue, launcher, execution_range, reduction_ptrs);
 }

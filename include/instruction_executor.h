@@ -63,23 +63,23 @@ class instruction_executor {
 		celerity::target target;
 	};
 
-	struct boundary_checked_event {
+	class boundary_checked_event final : public async_event_base {
+	  public:
 		struct incomplete {
 			instruction_executor* executor;
-			std::variant<std::unique_ptr<backend::event>, std::future<host_queue::execution_info>> event;
+			async_event launch_event;
 			boundary_check_info oob_info;
 		};
-		mutable std::optional<incomplete> state;
 
-		bool is_complete() const;
+		boundary_checked_event(instruction_executor* const executor, async_event&& launch_event, boundary_check_info&& oob_info)
+		    : m_state(incomplete{executor, std::move(launch_event), std::move(oob_info)}) {}
+
+		bool is_complete() const override;
+
+	  private:
+		mutable std::optional<incomplete> m_state;
 	};
 #endif
-
-	struct completed_synchronous {};
-
-	using event =
-	    std::variant<std::unique_ptr<backend::event>, CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(boundary_checked_event, ) std::unique_ptr<communicator::event>,
-	        receive_arbiter::event, std::future<host_queue::execution_info>, completed_synchronous>;
 
 	struct buffer_user_pointer_announcement {
 		buffer_id bid;

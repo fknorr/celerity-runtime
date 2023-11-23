@@ -13,21 +13,6 @@ namespace celerity::detail {
 
 class mpi_communicator final : public communicator {
   public:
-	class event final : public communicator::event {
-	  public:
-		event(MPI_Request req);
-		event(const event&) = delete;
-		event(event&&) = delete;
-		event& operator=(const event&) = delete;
-		event& operator=(event&&) = delete;
-		~event() override;
-
-		bool is_complete() const override;
-
-	  private:
-		mutable MPI_Request m_req;
-	};
-
 	// TODO reconsider the collective_group inner class - maybe the communicator itself should be cloned instead, that way we can rely on MPI for thread safety.
 	// Divergence block chain also needs a communicator in a thread foreign to the executor, and sharing the instance (which we need to do at least for the
 	// MPI_comm_dup call?) would require us to add locks to make the class thread safe.
@@ -65,8 +50,8 @@ class mpi_communicator final : public communicator {
 	node_id get_local_node_id() const override;
 	void send_outbound_pilot(const outbound_pilot& pilot) override;
 	[[nodiscard]] std::vector<inbound_pilot> poll_inbound_pilots() override;
-	[[nodiscard]] std::unique_ptr<communicator::event> send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) override;
-	[[nodiscard]] std::unique_ptr<communicator::event> receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) override;
+	[[nodiscard]] async_event send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) override;
+	[[nodiscard]] async_event receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) override;
 
 	collective_group* get_collective_root() override;
 

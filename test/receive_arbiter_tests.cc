@@ -28,18 +28,17 @@ class mock_recv_communicator : public communicator {
 
 	[[nodiscard]] std::vector<inbound_pilot> poll_inbound_pilots() override { return std::move(m_inbound_pilots); }
 
-	[[nodiscard]] std::unique_ptr<communicator::event> send_payload(
+	[[nodiscard]] async_event send_payload(
 	    const node_id /* to */, const int /* outbound_pilot_tag */, const void* const /* base */, const stride& /* stride */) override {
 		utils::panic("unimplemented");
 	}
 
-	[[nodiscard]] std::unique_ptr<communicator::event> receive_payload(
-	    const node_id from, const int inbound_pilot_tag, void* const base, const stride& stride) override {
+	[[nodiscard]] async_event receive_payload(const node_id from, const int inbound_pilot_tag, void* const base, const stride& stride) override {
 		const auto key = std::pair(from, inbound_pilot_tag);
 		REQUIRE(m_pending_recvs.count(key) == 0);
 		completion_flag flag = std::make_shared<bool>(false);
 		m_pending_recvs.emplace(key, std::tuple(base, stride, flag));
-		return std::make_unique<event>(flag);
+		return make_async_event<mock_event>(flag);
 	}
 
 	void push_inbound_pilot(const inbound_pilot& pilot) { m_inbound_pilots.push_back(pilot); }
@@ -58,9 +57,9 @@ class mock_recv_communicator : public communicator {
   private:
 	using completion_flag = std::shared_ptr<bool>;
 
-	class event final : public communicator::event {
+	class mock_event final : public async_event_base {
 	  public:
-		explicit event(const completion_flag& flag) : m_flag(flag) {}
+		explicit mock_event(const completion_flag& flag) : m_flag(flag) {}
 		bool is_complete() const override { return *m_flag; }
 
 	  private:
@@ -366,7 +365,7 @@ TEST_CASE("receive_arbiter handles multiple receive instructions for the same tr
 	receive_arbiter ra(comm);
 
 	std::vector<int> allocation(alloc_box.get_range().size());
-	std::map<node_id, receive_arbiter::event> events;
+	std::map<node_id, async_event> events;
 
 	for(const auto& [event, from] : event_order) {
 		CAPTURE(event, from);

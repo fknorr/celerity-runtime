@@ -1,27 +1,15 @@
 #pragma once
 
+#include "async_event.h"
 #include "launcher.h"
 #include "ranges.h"
 #include "types.h"
-#include "workaround.h"
 
 #include <vector>
 
 namespace celerity::detail::backend {
 
-class event {
-  public:
-	event() = default;
-	event(const event&) = delete;
-	event(event&&) = delete;
-	event& operator=(const event&) = delete;
-	event& operator=(event&&) = delete;
-	virtual ~event() = default;
-
-	virtual bool is_complete() const = 0;
-};
-
-class sycl_event : public event {
+class sycl_event final : public async_event_base {
   public:
 	sycl_event() = default;
 	sycl_event(std::vector<sycl::event> wait_list);
@@ -49,15 +37,15 @@ class queue {
 
 	virtual void free(memory_id where, void* allocation) = 0;
 
-	[[nodiscard]] virtual std::unique_ptr<event> memcpy_strided_device(int dims, memory_id source, memory_id dest, const void* source_base_ptr,
-	    void* target_base_ptr, size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
-	    const id<3>& target_offset, const range<3>& copy_range) = 0;
+	[[nodiscard]] virtual async_event memcpy_strided_device(int dims, memory_id source, memory_id dest, const void* source_base_ptr, void* target_base_ptr,
+	    size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset,
+	    const range<3>& copy_range) = 0;
 
-	[[nodiscard]] virtual std::unique_ptr<event> launch_kernel(
+	[[nodiscard]] virtual async_event launch_kernel(
 	    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) = 0;
 };
 
-std::unique_ptr<event> launch_sycl_kernel(
+async_event launch_sycl_kernel(
     sycl::queue& queue, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs);
 
 void flush_sycl_queue(sycl::queue& queue);

@@ -8,6 +8,7 @@
 #include <ctpl_stl.h>
 #include <mpi.h>
 
+#include "async_event.h"
 #include "log.h"
 #include "named_threads.h"
 #include "types.h"
@@ -101,14 +102,18 @@ namespace detail {
 	/**
 	 * The @p host_queue provides a thread pool to submit host tasks.
 	 */
+	// TODO (IDAG) rework this entire class:
+	//	- got rid of execution_info (we just remove CELERITY_PROFILE_KERNEL)
+	//	- create a thread_pool class that can also be used by for memory alloctation etc
 	class host_queue {
 	  public:
-		struct execution_info {
-			using time_point = std::chrono::steady_clock::time_point;
+		class future_event final : public async_event_base {
+		  public:
+			future_event(std::future<void> future) : m_future(std::move(future)) {}
+			bool is_complete() const override { return m_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }
 
-			time_point submit_time{};
-			time_point start_time{};
-			time_point end_time{};
+		  private:
+			std::future<void> m_future;
 		};
 
 		host_queue() {
@@ -123,22 +128,21 @@ namespace detail {
 		}
 
 		template <typename Fn>
-		std::future<execution_info> submit(Fn&& fn) {
+		async_event submit(Fn&& fn) {
 			return submit(collective_group_id{0}, std::forward<Fn>(fn));
 		}
 
 		template <typename Fn>
-		std::future<execution_info> submit(collective_group_id cgid, Fn&& fn) {
-			return m_pools.at(cgid).pool.push([fn = std::forward<Fn>(fn), submit_time = std::chrono::steady_clock::now()](int) {
-				auto start_time = std::chrono::steady_clock::now();
+		async_event submit(collective_group_id cgid, Fn&& fn) {
+			auto future = m_pools.at(cgid).pool.push([fn = std::forward<Fn>(fn)](int) {
 				try {
 					fn();
 				} catch(std::exception& e) { CELERITY_ERROR("exception in thread pool: {}", e.what()); } catch(...) {
+					// TODO (IDAG) this should probably abort?
 					CELERITY_ERROR("unknown exception in thread pool");
 				}
-				auto end_time = std::chrono::steady_clock::now();
-				return execution_info{submit_time, start_time, end_time};
 			});
+			return make_async_event<future_event>(std::move(future));
 		}
 
 	  private:

@@ -298,9 +298,8 @@ class restartable_thread {
 
 class benchmark_scheduler final : public abstract_scheduler {
   public:
-	benchmark_scheduler(restartable_thread& thread, const size_t num_nodes, const node_id local_node_id,
-	    instruction_graph_generator::system_info system_info, const task_manager& tm, delegate* const delegate, command_recorder* const crec,
-	    instruction_recorder* const irec)
+	benchmark_scheduler(restartable_thread& thread, const size_t num_nodes, const node_id local_node_id, instruction_graph_generator::system_info system_info,
+	    const task_manager& tm, delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec)
 	    : abstract_scheduler(num_nodes, local_node_id, std::move(system_info), tm, delegate, crec, irec), m_thread(&thread) {
 		m_thread->start([this] { schedule(); });
 	}
@@ -327,8 +326,8 @@ struct scheduler_benchmark_context {
 	test_utils::mock_buffer_factory mbf;
 
 	explicit scheduler_benchmark_context(restartable_thread& thrd, const size_t num_nodes, const size_t num_devices_per_node)
-	    : num_nodes(num_nodes), tm(num_nodes, nullptr, {}),
-	      schdlr(thrd, num_nodes, 0 /* local_nid */, make_system_info(num_devices_per_node), tm, nullptr /* delegate */, nullptr /* crec */, nullptr /* irec */),
+	    : num_nodes(num_nodes), tm(num_nodes, nullptr, {}), schdlr(thrd, num_nodes, 0 /* local_nid */, make_system_info(num_devices_per_node), tm,
+	                                                            nullptr /* delegate */, nullptr /* crec */, nullptr /* irec */),
 	      mbf(tm, schdlr) //
 	{
 		tm.register_task_callback([this](const task* tsk) { schdlr.notify_task_created(tsk); });

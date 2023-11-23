@@ -42,11 +42,11 @@ class cuda_queue final : public queue {
 
 	void free(memory_id where, void* allocation) override;
 
-	std::unique_ptr<event> memcpy_strided_device(int dims, memory_id source, memory_id dest, const void* source_base_ptr, void* target_base_ptr,
-	    size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset,
+	async_event memcpy_strided_device(int dims, memory_id source, memory_id dest, const void* source_base_ptr, void* target_base_ptr, size_t elem_size,
+	    const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset,
 	    const range<3>& copy_range) override;
 
-	std::unique_ptr<event> launch_kernel(
+	async_event launch_kernel(
 	    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) override;
 
   private:

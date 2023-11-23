@@ -23,19 +23,8 @@ struct instruction_executor::pending_instruction_info {
 };
 
 struct instruction_executor::active_instruction_info {
-	event completion_event;
+	async_event operation;
 	CELERITY_DETAIL_TRACY_DECLARE_ASYNC_LANE(tracy_lane)
-
-	bool is_complete() const {
-		return matchbox::match(
-		    completion_event, //
-		    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
-		    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK([](const boundary_checked_event& e) { return e.is_complete(); }, )[](
-		        const std::unique_ptr<communicator::event>& evt) { return evt->is_complete(); },
-		    [](const receive_arbiter::event& evt) { return evt.is_complete(); },
-		    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; },
-		    [](const completed_synchronous) { return true; });
-	};
 };
 
 instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, std::unique_ptr<communicator> comm, delegate* dlg)
@@ -126,7 +115,7 @@ void instruction_executor::loop() {
 
 		for(auto active_it = active_instructions.begin(); active_it != active_instructions.end();) {
 			auto& [active_instr, active_info] = *active_it;
-			if(active_info.is_complete()) {
+			if(active_info.operation.is_complete()) {
 				CELERITY_DEBUG("[executor] completed I{}", active_instr->get_id());
 				CELERITY_DETAIL_TRACY_ASYNC_ZONE_END(active_info.tracy_lane);
 				made_progress = true;
@@ -248,15 +237,10 @@ instruction_executor::boundary_check_info instruction_executor::prepare_accessor
 }
 
 bool instruction_executor::boundary_checked_event::is_complete() const {
-	if(!state.has_value()) return true; // we clear `state` completion to make is_complete() idempotent
+	if(!m_state.has_value()) return true; // we clear `state` completion to make is_complete() idempotent
+	if(!m_state->launch_event.is_complete()) return false;
 
-	const bool is_complete = matchbox::match(
-	    state->event, //
-	    [](const std::unique_ptr<backend::event>& evt) { return evt->is_complete(); },
-	    [](const std::future<host_queue::execution_info>& future) { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
-	if(!is_complete) return false;
-
-	const auto& info = state->oob_info;
+	const auto& info = m_state->oob_info;
 	for(size_t i = 0; i < info.accessors.size(); ++i) {
 		if(const auto oob_box = info.illegal_access_bounding_boxes[i].into_box(); !oob_box.empty()) {
 			const auto& accessor_info = info.accessors[i];
@@ -269,10 +253,10 @@ bool instruction_executor::boundary_checked_event::is_complete() const {
 	}
 
 	if(info.illegal_access_bounding_boxes != nullptr /* i.e. there is at least one accessor */) {
-		state->executor->m_backend_queue->free(host_memory_id, info.illegal_access_bounding_boxes);
+		m_state->executor->m_backend_queue->free(host_memory_id, info.illegal_access_bounding_boxes);
 	}
 
-	state = {}; // make is_complete() idempotent
+	m_state = {}; // make is_complete() idempotent
 	return true;
 }
 
@@ -291,7 +275,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	};
 
 	active_instruction_info active_instruction;
-	active_instruction.completion_event = matchbox::match<event>(
+	active_instruction.operation = matchbox::match<async_event>(
 	    instr,
 	    // TODO submit synchronous operations to thread pool
 	    [&](const clone_collective_group_instruction& ccginstr) {
@@ -305,7 +289,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto new_group = m_collective_groups.at(origin_cgid)->clone();
 		    m_collective_groups.emplace(new_cgid, new_group);
 		    m_host_queue.require_collective_group(new_cgid);
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const alloc_instruction& ainstr) {
 		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
@@ -316,7 +300,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
 
 		    CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const free_instruction& finstr) {
 		    const auto it = m_allocations.find(finstr.get_allocation_id());
@@ -328,7 +312,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} free", finstr.get_id());
 
 		    m_backend_queue->free(finstr.get_memory_id(), ptr);
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const init_buffer_instruction& ibinstr) {
 		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
@@ -338,7 +322,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
 		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id());
 		    memcpy(host_ptr, user_ptr, ibinstr.get_size_bytes());
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const export_instruction& einstr) {
 		    CELERITY_DEBUG("[executor] I{}: export M0.A{} ({})+{}, {}x{} bytes", einstr.get_id(), einstr.get_host_allocation_id(),
@@ -361,9 +345,9 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    case 3: dispatch_copy(std::integral_constant<int, 3>()); break;
 		    default: abort();
 		    }
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
-	    [&](const copy_instruction& cinstr) -> event {
+	    [&](const copy_instruction& cinstr) -> async_event {
 		    CELERITY_DEBUG("[executor] I{}: copy M{}.A{}+{} -> M{}.A{}+{}, {}x{} bytes", cinstr.get_id(), cinstr.get_source_memory_id(),
 		        cinstr.get_source_allocation_id(), cinstr.get_offset_in_source(), cinstr.get_dest_memory_id(), cinstr.get_dest_allocation_id(),
 		        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
@@ -384,7 +368,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 			    case 3: dispatch_copy(std::integral_constant<int, 3>()); break;
 			    default: abort();
 			    }
-			    return completed_synchronous();
+			    return make_complete_event();
 		    } else {
 			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Lime, "I{} copy", cinstr.get_id());
 			    return m_backend_queue->memcpy_strided_device(cinstr.get_dimensions(), cinstr.get_source_memory_id(), cinstr.get_dest_memory_id(),
@@ -412,7 +396,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    auto evt = m_backend_queue->launch_kernel(dkinstr.get_device_id(), dkinstr.get_launcher(), dkinstr.get_execution_range(), reduction_ptrs);
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
-		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(oob_info)}};
+		    return make_async_event<boundary_checked_event>(this, std::move(evt), std::move(oob_info));
 #else
 		    return evt;
 #endif
@@ -439,7 +423,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    auto evt = launch(m_host_queue, htinstr.get_execution_range(), mpi_comm);
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
-		    return boundary_checked_event{boundary_checked_event::incomplete{this, std::move(evt), std::move(oob_info)}};
+		    return make_async_event<boundary_checked_event>(this, std::move(evt), std::move(oob_info));
 #else
 		    return evt;
 #endif
@@ -477,7 +461,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto allocation = m_allocations.at(srinstr.get_dest_allocation_id());
 		    m_recv_arbiter.begin_split_receive(
 		        srinstr.get_transfer_id(), srinstr.get_requested_region(), allocation, srinstr.get_allocated_box(), srinstr.get_element_size());
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const await_receive_instruction& arinstr) {
 		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
@@ -501,7 +485,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto allocation = m_allocations.at(fiinstr.get_allocation_id());
 		    const auto& reduction = *m_reductions.at(fiinstr.get_reduction_id());
 		    reduction.fill_identity(allocation, fiinstr.get_num_values());
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const reduce_instruction& rinstr) {
 		    CELERITY_DEBUG("[executor] I{}: reduce M{}.A{} x{} into M{}.A{} as R{}", rinstr.get_id(), rinstr.get_memory_id(), rinstr.get_source_allocation_id(),
@@ -514,14 +498,14 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto& reduction = *m_reductions.at(rinstr.get_reduction_id());
 		    reduction.reduce(dest_allocation, gather_allocation, rinstr.get_num_source_values(), include_dest);
 		    // TODO GC runtime_reduction at some point
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Blue, "fence");
 
 		    finstr.get_promise()->fulfill();
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const destroy_host_object_instruction& dhoinstr) {
 		    assert(m_host_object_instances.count(dhoinstr.get_host_object_id()) != 0);
@@ -529,14 +513,14 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "destroy host object");
 
 		    m_host_object_instances.erase(dhoinstr.get_host_object_id());
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const horizon_instruction& hinstr) {
 		    CELERITY_DEBUG("[executor] I{}: horizon", hinstr.get_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "horizon");
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
-		    return completed_synchronous();
+		    return make_complete_event();
 	    },
 	    [&](const epoch_instruction& einstr) {
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "epoch");
@@ -555,7 +539,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    if(m_delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO tm doesn't expect us to actually execute the init epoch */) {
 			    m_delegate->epoch_reached(einstr.get_epoch_task_id());
 		    }
-		    return completed_synchronous();
+		    return make_complete_event();
 	    });
 	return active_instruction;
 }

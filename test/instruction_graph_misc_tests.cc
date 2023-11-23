@@ -561,7 +561,7 @@ TEST_CASE("wave_sim on 4 nodes") {
 	};
 
 	struct wave_sim_config {
-		int N = 512;   // Grid size
+		int N = 512;  // Grid size
 		float T = 10; // Time at end of simulation
 		float dt = 0.25f;
 		float dx = 1.f;

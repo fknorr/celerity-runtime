@@ -8,19 +8,28 @@
 
 namespace celerity::detail {
 
-mpi_communicator::event::event(const MPI_Request req) : m_req(req) {}
+class mpi_event final : public async_event_base {
+  public:
+	mpi_event(MPI_Request req) : m_req(req) {}
+	mpi_event(const async_event&) = delete;
+	mpi_event(async_event&&) = delete;
+	mpi_event& operator=(const async_event&) = delete;
+	mpi_event& operator=(async_event&&) = delete;
+	~mpi_event() override {
+		// MPI_Request_free is always incorrect for our use case: events originate from an Isend or Irecv, which must ensure that the user-provided buffer
+		// remains until the operation has completed.
+		MPI_Wait(&m_req, MPI_STATUS_IGNORE);
+	}
 
-mpi_communicator::event::~event() {
-	// MPI_Request_free is always incorrect for our use case: events originate from an Isend or Irecv, which must ensure that the user-provided buffer remains
-	// until the operation has completed.
-	MPI_Wait(&m_req, MPI_STATUS_IGNORE);
-}
+	bool is_complete() const override {
+		int flag = -1;
+		MPI_Test(&m_req, &flag, MPI_STATUS_IGNORE);
+		return flag != 0;
+	}
 
-bool mpi_communicator::event::is_complete() const {
-	int flag = -1;
-	MPI_Test(&m_req, &flag, MPI_STATUS_IGNORE);
-	return flag != 0;
-}
+  private:
+	mutable MPI_Request m_req;
+};
 
 mpi_communicator::collective_group* mpi_communicator::collective_group::clone() {
 	MPI_Comm new_comm = MPI_COMM_NULL;
@@ -102,7 +111,7 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 	}
 }
 
-std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_id to, const int tag, const void* const base, const stride& stride) {
+async_event mpi_communicator::send_payload(const node_id to, const int tag, const void* const base, const stride& stride) {
 	CELERITY_DEBUG("[mpi] payload -> N{} (tag {}) from {} ({}) {}x{}", to, tag, base, stride.allocation, stride.subrange, stride.element_size);
 
 	assert(to < get_num_nodes());
@@ -111,10 +120,10 @@ std::unique_ptr<communicator::event> mpi_communicator::send_payload(const node_i
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
 	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_root_comm, &req);
-	return std::make_unique<event>(req);
+	return make_async_event<mpi_event>(req);
 }
 
-std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const node_id from, const int tag, void* const base, const stride& stride) {
+async_event mpi_communicator::receive_payload(const node_id from, const int tag, void* const base, const stride& stride) {
 	CELERITY_DEBUG("[mpi] payload <- N{} (tag {}) into {} ({}) {}x{}", from, tag, base, stride.allocation, stride.subrange, stride.element_size);
 
 	assert(from < get_num_nodes());
@@ -123,7 +132,7 @@ std::unique_ptr<communicator::event> mpi_communicator::receive_payload(const nod
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
 	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), tag, m_root_comm, &req);
-	return std::make_unique<event>(req);
+	return make_async_event<mpi_event>(req);
 }
 
 mpi_communicator::collective_group* mpi_communicator::get_collective_root() { return m_collective_groups.front(); }

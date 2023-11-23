@@ -16,15 +16,35 @@ class receive_arbiter {
 	using stable_gather_request = std::shared_ptr<gather_request>;
 
   public:
-	class event {
+	explicit receive_arbiter(communicator& comm);
+	receive_arbiter(const receive_arbiter&) = delete;
+	receive_arbiter(receive_arbiter&&) = default;
+	receive_arbiter& operator=(const receive_arbiter&) = delete;
+	receive_arbiter& operator=(receive_arbiter&&) = default;
+	~receive_arbiter();
+
+	[[nodiscard]] async_event receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
+
+	void begin_split_receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
+	[[nodiscard]] async_event await_split_receive_subregion(const transfer_id& trid, const region<3>& subregion);
+
+	// "gather receives" are a temporary solution until we implement inter-node reductions through MPI collectives.
+	[[nodiscard]] async_event gather_receive(const transfer_id& trid, void* allocation, size_t node_chunk_size);
+
+	void poll_communicator();
+
+  private:
+	class receive_event final : public async_event_base {
 	  public:
-		bool is_complete() const;
+		explicit receive_event(const stable_region_request& rr) : m_state(region_transfer_state{rr}) {}
+		explicit receive_event(const stable_region_request& rr, const region<3>& awaited_subregion)
+		    : m_state(subregion_transfer_state{rr, awaited_subregion}) {}
+		explicit receive_event(const stable_gather_request& gr) : m_state(gather_transfer_state{gr}) {}
+
+		bool is_complete() const override;
 
 	  private:
 		friend class receive_arbiter;
-
-		struct complete_tag {
-		} inline static constexpr complete;
 
 		struct completed_state {};
 		struct region_transfer_state {
@@ -37,37 +57,14 @@ class receive_arbiter {
 		struct gather_transfer_state {
 			std::weak_ptr<const gather_request> request;
 		};
-		using state = std::variant<completed_state, region_transfer_state, subregion_transfer_state, gather_transfer_state>;
+		using state = std::variant<region_transfer_state, subregion_transfer_state, gather_transfer_state>;
 
 		state m_state;
-
-		explicit event(const complete_tag /* tag */) : m_state(completed_state{}) {}
-		explicit event(const stable_region_request& rr) : m_state(region_transfer_state{rr}) {}
-		explicit event(const stable_region_request& rr, const region<3>& awaited_subregion) : m_state(subregion_transfer_state{rr, awaited_subregion}) {}
-		explicit event(const stable_gather_request& gr) : m_state(gather_transfer_state{gr}) {}
 	};
 
-	explicit receive_arbiter(communicator& comm);
-	receive_arbiter(const receive_arbiter&) = delete;
-	receive_arbiter(receive_arbiter&&) = default;
-	receive_arbiter& operator=(const receive_arbiter&) = delete;
-	receive_arbiter& operator=(receive_arbiter&&) = default;
-	~receive_arbiter();
-
-	[[nodiscard]] event receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
-
-	void begin_split_receive(const transfer_id& trid, const region<3>& request, void* allocation, const box<3>& allocated_box, size_t elem_size);
-	[[nodiscard]] event await_split_receive_subregion(const transfer_id& trid, const region<3>& subregion);
-
-	// "gather receives" are a temporary solution until we implement inter-node reductions through MPI collectives.
-	[[nodiscard]] event gather_receive(const transfer_id& trid, void* allocation, size_t node_chunk_size);
-
-	void poll_communicator();
-
-  private:
 	struct incoming_region_fragment {
 		box<3> box;
-		std::unique_ptr<communicator::event> done;
+		async_event communication;
 	};
 
 	struct region_request {
@@ -78,7 +75,7 @@ class receive_arbiter {
 
 		region_request(region<3> requested_region, void* const allocation, const box<3>& allocated_bounding_box)
 		    : allocation(allocation), allocated_box(allocated_bounding_box), incomplete_region(std::move(requested_region)) {}
-		bool complete();
+		bool do_complete();
 	};
 
 	struct multi_region_transfer {
@@ -88,11 +85,11 @@ class receive_arbiter {
 		explicit multi_region_transfer(const size_t elem_size) : elem_size(elem_size) {}
 		explicit multi_region_transfer(const size_t elem_size, std::vector<inbound_pilot>&& unassigned_pilots)
 		    : elem_size(elem_size), unassigned_pilots(std::move(unassigned_pilots)) {}
-		bool complete();
+		bool do_complete();
 	};
 
 	struct incoming_gather_chunk {
-		std::unique_ptr<communicator::event> done;
+		async_event communication;
 	};
 
 	struct gather_request {
@@ -103,17 +100,17 @@ class receive_arbiter {
 
 		gather_request(void* const allocation, const size_t chunk_size, const size_t num_total_chunks)
 		    : allocation(allocation), chunk_size(chunk_size), num_incomplete_chunks(num_total_chunks) {}
-		bool complete();
+		bool do_complete();
 	};
 
 	struct gather_transfer {
 		stable_gather_request request;
-		bool complete();
+		bool do_complete();
 	};
 
 	struct unassigned_transfer {
 		std::vector<inbound_pilot> pilots;
-		bool complete();
+		bool do_complete();
 	};
 
 	using transfer = std::variant<unassigned_transfer, multi_region_transfer, gather_transfer>;

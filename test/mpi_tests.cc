@@ -60,7 +60,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 
 	std::vector<std::vector<int>> send_buffers;
 	std::vector<std::vector<int>> receive_buffers;
-	std::vector<std::unique_ptr<communicator::event>> events;
+	std::vector<async_event> events;
 	for(node_id other = 0; other < comm.get_num_nodes(); ++other) {
 		if(other == comm.get_local_node_id()) continue;
 
@@ -72,7 +72,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 	}
 
 	while(!events.empty()) {
-		const auto end_incomplete = std::remove_if(events.begin(), events.end(), [](const auto& evt) { return evt->is_complete(); });
+		const auto end_incomplete = std::remove_if(events.begin(), events.end(), std::mem_fn(&async_event::is_complete));
 		events.erase(end_incomplete, events.end());
 	}
 
@@ -114,14 +114,14 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator correctly transfers 
 	const auto& recv_stride = dim_strides[recv_dims];
 
 	std::vector<int> buf(dim_strides[3].allocation.size());
-	std::unique_ptr<communicator::event> evt;
+	async_event evt;
 	if(comm.get_local_node_id() == 1) {
 		buf[get_linear_index(send_stride.allocation, send_stride.subrange.offset)] = 42;
 		evt = comm.send_payload(0, 99, buf.data(), send_stride);
 	} else {
 		evt = comm.receive_payload(1, 99, buf.data(), recv_stride);
 	}
-	while(!evt->is_complete()) {}
+	while(!evt.is_complete()) {}
 
 	if(comm.get_local_node_id() == 0) {
 		std::vector<int> expected(dim_strides[3].allocation.size());
@@ -158,13 +158,13 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator correctly transfers 
 
 	std::iota(send_buf.begin(), send_buf.end(), 0);
 
-	std::unique_ptr<communicator::event> evt;
+	async_event evt;
 	if(comm.get_local_node_id() == 1) {
 		evt = comm.send_payload(0, 99, send_buf.data(), communicator::stride{sender_allocation, subrange{sender_offset, box_range}, sizeof(int)});
 	} else {
 		evt = comm.receive_payload(1, 99, recv_buf.data(), communicator::stride{receiver_allocation, subrange{receiver_offset, box_range}, sizeof(int)});
 	}
-	while(!evt->is_complete()) {}
+	while(!evt.is_complete()) {}
 
 	if(comm.get_local_node_id() == 0) {
 		std::vector<int> expected(receiver_allocation.size());

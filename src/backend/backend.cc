@@ -11,11 +11,11 @@ bool sycl_event::is_complete() const {
 	return m_incomplete.empty();
 }
 
-std::unique_ptr<event> launch_sycl_kernel(
+async_event launch_sycl_kernel(
     sycl::queue& queue, const device_kernel_launcher& launch, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
 	auto event = queue.submit([&](sycl::handler& sycl_cgh) { launch(sycl_cgh, execution_range, reduction_ptrs); });
 	flush_sycl_queue(queue);
-	return std::make_unique<sycl_event>(std::vector{std::move(event)});
+	return make_async_event<sycl_event>(std::vector{std::move(event)});
 }
 
 void flush_sycl_queue(sycl::queue& queue) {

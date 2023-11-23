@@ -140,8 +140,8 @@ namespace detail {
 		friend struct scheduler_testspy;
 
 	  public:
-		scheduler(size_t num_nodes, node_id local_node_id, instruction_graph_generator::system_info system_info, const task_manager& tm,
-		    delegate* delegate, command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
+		scheduler(size_t num_nodes, node_id local_node_id, instruction_graph_generator::system_info system_info, const task_manager& tm, delegate* delegate,
+		    command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
 
 		scheduler(const scheduler&) = delete;
 		scheduler(scheduler&&) = delete;
