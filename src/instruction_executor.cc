@@ -113,7 +113,7 @@ void instruction_executor::loop() {
 	std::unordered_set<const instruction*> incomplete_instructions;
 	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp;
 	bool progress_warning_emitted = false;
-	while(m_expecting_more_submissions || !pending_instructions.empty() || !ready_instructions.empty() || !active_instructions.empty()) {
+	while(m_expecting_more_submissions || !incomplete_instructions.empty()) {
 		m_recv_arbiter.poll_communicator();
 
 		bool made_progress = false;
