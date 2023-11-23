@@ -1,7 +1,6 @@
 #include <cstdio>
 
 #include <celerity.h>
-#include <tracy/Tracy.hpp>
 
 #if !defined(NDEBUG)
 const size_t MAT_SIZE = 128;
