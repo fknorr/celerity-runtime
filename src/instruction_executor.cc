@@ -119,6 +119,8 @@ class future_event final : public async_event_base {
 
 
 void instruction_executor::loop() {
+	m_backend_queue->init();
+
 	closure_hydrator::make_available();
 
 	m_allocations.emplace(null_allocation_id, nullptr);
@@ -308,7 +310,6 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	active_instruction_info active_instruction;
 	active_instruction.operation = matchbox::match<async_event>(
 	    instr,
-	    // TODO submit synchronous operations to thread pool
 	    [&](const clone_collective_group_instruction& ccginstr) {
 		    const auto new_cgid = ccginstr.get_new_collective_group_id();
 		    const auto origin_cgid = ccginstr.get_original_collective_group_id();
@@ -325,13 +326,16 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    [&](const alloc_instruction& ainstr) {
 		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
 		        ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Turquoise, "I{} alloc", ainstr.get_id());
 
-		    auto future = m_alloc_pool.push([this, &ainstr](int) {
-			    const auto ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
-			    return alloc_result{ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr};
-		    });
-		    return make_async_event<future_event<alloc_result>>(std::move(future));
+		    void* ptr;
+		    {
+			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} alloc", ainstr.get_id());
+			    ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
+		    }
+
+		    CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
+		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
+		    return make_complete_event();
 	    },
 	    [&](const free_instruction& finstr) {
 		    const auto it = m_allocations.find(finstr.get_allocation_id());
@@ -340,10 +344,10 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    m_allocations.erase(it);
 
 		    CELERITY_DEBUG("[executor] I{}: free M{}.A{}", finstr.get_id(), finstr.get_memory_id(), finstr.get_allocation_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Turquoise, "I{} free", finstr.get_id());
+		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} free", finstr.get_id());
 
-		    auto future = m_alloc_pool.push([this, &finstr, ptr](int) { m_backend_queue->free(finstr.get_memory_id(), ptr); });
-		    return make_async_event<future_event<>>(std::move(future));
+		    m_backend_queue->free(finstr.get_memory_id(), ptr);
+		    return make_complete_event();
 	    },
 	    [&](const init_buffer_instruction& ibinstr) {
 		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),

@@ -38,6 +38,8 @@ class cuda_queue final : public queue {
 	explicit cuda_queue(const std::vector<device_config>& devices);
 	~cuda_queue() override;
 
+	void init() override;
+
 	void* malloc(memory_id where, size_t size, size_t alignment) override;
 
 	void free(memory_id where, void* allocation) override;

@@ -33,6 +33,8 @@ class queue {
 	queue& operator=(const queue&) = delete;
 	virtual ~queue() = default;
 
+	virtual void init() {}
+
 	virtual void* malloc(memory_id where, size_t size, size_t alignment) = 0;
 
 	virtual void free(memory_id where, void* allocation) = 0;
