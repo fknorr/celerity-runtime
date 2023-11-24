@@ -27,6 +27,12 @@ struct instruction_executor::active_instruction_info {
 	CELERITY_DETAIL_TRACY_DECLARE_ASYNC_LANE(tracy_lane)
 };
 
+struct instruction_executor::incomplete_instruction_info {
+	// we need to track successors ourselves, because the intrusive_graph dependents are still being updated in the scheduler thread after we start processing
+	// the instruction, so calling get_dependents() would cause a data race
+	std::vector<const instruction*> dependents;
+};
+
 instruction_executor::instruction_executor(std::unique_ptr<backend::queue> backend_queue, std::unique_ptr<communicator> comm, delegate* dlg)
     : m_delegate(dlg), m_communicator(std::move(comm)), m_backend_queue(std::move(backend_queue)), m_recv_arbiter(*m_communicator),
       m_thread(&instruction_executor::loop, this), m_alloc_pool(4) {
@@ -130,8 +136,8 @@ void instruction_executor::loop() {
 	std::vector<submission> loop_submission_queue;
 	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
 	std::priority_queue<const instruction*, std::vector<const instruction*>, instruction_priority_less> ready_instructions;
-	std::unordered_map<const instruction*, active_instruction_info> active_instructions;
-	std::unordered_set<const instruction*> incomplete_instructions;
+	std::unordered_map<const instruction*, active_instruction_info> active_instructions; // TODO why is this a map and not a set?
+	std::unordered_map<const instruction*, incomplete_instruction_info> incomplete_instructions;
 	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp;
 	bool progress_warning_emitted = false;
 	while(m_expecting_more_submissions || !incomplete_instructions.empty()) {
@@ -151,8 +157,10 @@ void instruction_executor::loop() {
 					CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", alloc->mid, alloc->aid, alloc->ptr);
 				}
 
-				for(const auto& dep : active_instr->get_dependents()) {
-					if(const auto pending_it = pending_instructions.find(dep.node); pending_it != pending_instructions.end()) {
+				const auto incomplete_it = incomplete_instructions.find(active_instr);
+				assert(incomplete_it != incomplete_instructions.end());
+				for(const auto successor : incomplete_it->second.dependents) {
+					if(const auto pending_it = pending_instructions.find(successor); pending_it != pending_instructions.end()) {
 						auto& [pending_instr, pending_info] = *pending_it;
 						assert(pending_info.n_unmet_dependencies > 0);
 						pending_info.n_unmet_dependencies -= 1;
@@ -176,15 +184,21 @@ void instruction_executor::loop() {
 				matchbox::match(
 				    submission,
 				    [&](const instruction* incoming_instr) {
-					    const auto n_unmet_dependencies =
-					        static_cast<size_t>(std::count_if(incoming_instr->get_dependencies().begin(), incoming_instr->get_dependencies().end(),
-					            [&](const instruction::dependency& dep) { return incomplete_instructions.count(dep.node) != 0; }));
-					    incomplete_instructions.insert(incoming_instr);
+					    incomplete_instruction_info incomplete_info;
+					    size_t n_unmet_dependencies = 0;
+					    for(const auto& dep : incoming_instr->get_dependencies()) {
+						    const auto predecessor = incomplete_instructions.find(dep.node);
+						    if(predecessor != incomplete_instructions.end()) {
+							    predecessor->second.dependents.push_back(incoming_instr);
+							    ++n_unmet_dependencies;
+						    }
+					    }
 					    if(n_unmet_dependencies > 0) {
 						    pending_instructions.emplace(incoming_instr, pending_instruction_info{n_unmet_dependencies});
 					    } else {
 						    ready_instructions.push(incoming_instr);
 					    }
+					    incomplete_instructions.emplace(incoming_instr, incomplete_instruction_info{});
 				    },
 				    [&](const outbound_pilot& pilot) { //
 					    m_communicator->send_outbound_pilot(pilot);

@@ -88,13 +88,10 @@ class instruction_graph_generator::impl {
 		}
 
 		void apply_epoch(instruction* const epoch) {
-			last_writers.apply_to_values([epoch](instruction* const instr) -> instruction* {
-				if(instr == nullptr) return nullptr;
-				return instr->get_id() > epoch->get_id() ? instr : epoch;
-			});
+			last_writers.apply_to_values([epoch](instruction* const instr) { return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr; });
 			access_fronts.apply_to_values([epoch](access_front record) {
 				const auto new_front_end = std::remove_if(record.front.begin(), record.front.end(), //
-				    [epoch](instruction* const instr) { return instr->get_id() < epoch->get_id(); });
+				    [epoch](instruction* const instr) { return instr->get_id() <= epoch->get_id(); });
 				if(new_front_end != record.front.end()) {
 					record.front.erase(new_front_end, record.front.end());
 					record.front.insert(record.front.begin(), epoch);
@@ -181,13 +178,8 @@ class instruction_graph_generator::impl {
 			for(auto& memory : memories) {
 				memory.apply_epoch(epoch);
 			}
-			original_writers.apply_to_values([epoch](instruction* const instr) -> instruction* {
-				if(instr != nullptr && instr->get_id() < epoch->get_id()) {
-					return epoch;
-				} else {
-					return instr;
-				}
-			});
+			original_writers.apply_to_values(
+			    [epoch](instruction* const instr) -> instruction* { return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr; });
 
 			// This is an opportune point to verify that all await-pushes are fully consumed eventually. On epoch application,
 			// original_writers[*].await_receives potentially points to instructions before the new epoch, but when compiling a horizon or epoch command, all
@@ -212,7 +204,7 @@ class instruction_graph_generator::impl {
 		instruction* last_host_task = nullptr;
 
 		void apply_epoch(instruction* const epoch) {
-			if(last_host_task && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
+			if(last_host_task != nullptr && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
 		}
 	};
 
@@ -274,10 +266,6 @@ class instruction_graph_generator::impl {
 			collective_group.apply_epoch(epoch);
 		}
 		m_last_epoch = epoch;
-
-		// TODO prune graph. Should we re-write node dependencies?
-		//	 - pro: No accidentally following stale pointers
-		//   - con: Thread safety (but how would a consumer know which dependency edges can be followed)?
 	}
 
 	void collapse_execution_front_to(instruction* const horizon) {

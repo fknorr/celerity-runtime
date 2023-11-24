@@ -101,6 +101,7 @@ class instruction_executor {
 
 	struct pending_instruction_info;
 	struct active_instruction_info;
+	struct incomplete_instruction_info;
 
 	// immutable
 	delegate* m_delegate;
