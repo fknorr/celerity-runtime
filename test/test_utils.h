@@ -459,6 +459,29 @@ namespace test_utils {
 		return detail::box<Dims>(truncate_id<Dims>(b3.get_min()), truncate_id<Dims>(b3.get_max()));
 	}
 
+	struct reverse_one_to_one {
+		template <int Dims>
+		subrange<Dims> operator()(chunk<Dims> ck) const {
+			subrange<Dims> sr;
+			for(int d = 0; d < Dims; ++d) {
+				sr.offset[d] = ck.global_size[d] - ck.range[d] - ck.offset[d];
+				sr.range[d] = ck.range[d];
+			}
+			return sr;
+		}
+	};
+
+	template <int Dims>
+	static access::neighborhood<Dims> make_neighborhood(const size_t border) {
+		if constexpr(Dims == 1) {
+			return access::neighborhood<1>(border);
+		} else if constexpr(Dims == 2) {
+			return access::neighborhood<2>(border, border);
+		} else if constexpr(Dims == 3) {
+			return access::neighborhood<3>(border, border, border);
+		}
+	}
+
 } // namespace test_utils
 } // namespace celerity
 

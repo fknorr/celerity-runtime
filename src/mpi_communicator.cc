@@ -161,6 +161,11 @@ MPI_Datatype mpi_communicator::get_array_type(const stride& stride) {
 
 	if(dims == 0) { return get_scalar_type(stride.element_size); }
 
+	// TODO - for 1D, use pointer adjustment and MPI_Type_contiguous to allow pointing inside allocations with > INT_MAX extents
+	// TODO - for any dimensionality, do pointer adjustment to re-use MPI data types
+	// TODO - can we get runaway behavior by constructing too many MPI data types?
+	// TODO - have an explicit call for creating cached MPI types? These can be invoked whenever we send or receive a pilot
+
 	int size_array[3];
 	int subsize_array[3];
 	int start_array[3];

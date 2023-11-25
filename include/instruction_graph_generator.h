@@ -18,12 +18,13 @@ class task_manager;
 class instruction_graph_generator {
   public:
 	static constexpr size_t max_num_memories = 64;
+	using memory_mask = std::bitset<max_num_memories>;
 
 	struct device_info {
 		memory_id native_memory;
 	};
 	struct memory_info {
-		std::bitset<max_num_memories> copy_peers;
+		memory_mask copy_peers;
 	};
 	struct system_info {
 		std::vector<device_info> devices;  // indexed by device_id

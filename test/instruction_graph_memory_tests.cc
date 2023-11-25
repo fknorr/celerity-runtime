@@ -408,3 +408,36 @@ TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer fro
 	CHECK(init->buffer_id == buf.get_id());
 	CHECK(init->host_allocation_id == alloc->allocation_id);
 }
+
+TEST_CASE("copies are staged through host memory for devices that are not peer-copy capable", "[instruction_graph_generator][instruction-graph][memory]") {
+	const auto buffer_range = range(256);
+	const size_t num_devices = 2;
+
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, num_devices, false /* supports d2d copies */);
+	auto buf = ictx.create_buffer<int>(buffer_range);
+	ictx.device_compute(buffer_range).name("writer").discard_write(buf, acc::one_to_one()).submit();
+	ictx.device_compute(buffer_range).name("reader").read(buf, test_utils::reverse_one_to_one()).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
+	const auto all_copies_to_host = all_writers.successors().select_all<copy_instruction_record>();
+	const auto all_copies_from_host = all_copies_to_host.successors().select_all<copy_instruction_record>();
+	const auto all_readers = all_copies_from_host.successors().select_all<device_kernel_instruction_record>("reader");
+
+	CHECK(all_writers.count() == num_devices);
+	CHECK(all_copies_to_host.count() == num_devices);
+	CHECK(all_copies_from_host.count() == num_devices);
+	CHECK(all_readers.count() == num_devices);
+
+	for (const auto &writer: all_writers.iterate()) {
+		const auto copy_to_host = intersection_of(all_copies_to_host, writer.successors()).assert_unique();
+		const auto copy_from_host = intersection_of(all_copies_from_host, copy_to_host.successors()).assert_unique();
+		const auto reader = intersection_of(all_readers, copy_from_host.successors()).assert_unique();
+
+		CHECK(copy_to_host->source_memory_id == ictx.get_native_memory(writer->device_id));
+		CHECK(copy_to_host->dest_memory_id == host_memory_id);
+		CHECK(copy_from_host->source_memory_id == host_memory_id);
+		CHECK(copy_from_host->dest_memory_id == ictx.get_native_memory(reader->device_id));
+	}
+}

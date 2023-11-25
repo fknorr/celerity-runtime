@@ -12,29 +12,6 @@ using namespace celerity::detail;
 
 namespace acc = celerity::access;
 
-struct reverse_one_to_one {
-	template <int Dims>
-	subrange<Dims> operator()(chunk<Dims> ck) const {
-		subrange<Dims> sr;
-		for(int d = 0; d < Dims; ++d) {
-			sr.offset[d] = ck.global_size[d] - ck.range[d] - ck.offset[d];
-			sr.range[d] = ck.range[d];
-		}
-		return sr;
-	}
-};
-
-template <int Dims>
-static acc::neighborhood<Dims> make_neighborhood(const size_t border) {
-	if constexpr(Dims == 1) {
-		return acc::neighborhood<1>(border);
-	} else if constexpr(Dims == 2) {
-		return acc::neighborhood<2>(border, border);
-	} else if constexpr(Dims == 3) {
-		return acc::neighborhood<3>(border, border, border);
-	}
-}
-
 
 TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push and await-push commands",
     "[instruction_graph_generator][instruction-graph][p2p]", ((int Dims), Dims), 1, 2, 3) //
@@ -99,7 +76,7 @@ TEMPLATE_TEST_CASE_SIG("send and receive instructions are split on multi-device 
 	test_utils::idag_test_context ictx(2 /* nodes */, 0 /* my nid */, 2 /* devices */);
 	auto buf = ictx.create_buffer<int>(test_range);
 	ictx.device_compute(test_range).name("writer").discard_write(buf, acc::one_to_one()).submit();
-	const auto reader_tid = ictx.device_compute(test_range).name("reader").read(buf, reverse_one_to_one()).submit();
+	const auto reader_tid = ictx.device_compute(test_range).name("reader").read(buf, test_utils::reverse_one_to_one()).submit();
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
@@ -173,7 +150,7 @@ TEMPLATE_TEST_CASE_SIG("overlapping requirements generate split-receives with on
 	test_utils::idag_test_context ictx(2 /* nodes */, 1 /* my nid */, 4 /* devices */);
 	auto buf = ictx.create_buffer<int>(test_range);
 	ictx.device_compute(range(1)).name("writer").discard_write(buf, acc::all()).submit();
-	ictx.device_compute(test_range).name("reader").read(buf, make_neighborhood<Dims>(1)).submit();
+	ictx.device_compute(test_range).name("reader").read(buf, test_utils::make_neighborhood<Dims>(1)).submit();
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();

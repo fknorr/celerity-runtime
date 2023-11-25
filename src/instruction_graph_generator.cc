@@ -40,8 +40,6 @@ class instruction_graph_generator::impl {
 	std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> compile(const abstract_command& cmd);
 
   private:
-	using data_location = std::bitset<max_num_memories>;
-
 	struct buffer_memory_per_allocation_data {
 		struct access_front {
 			gch::small_vector<instruction*> front; // sorted by id to allow equality comparison
@@ -161,7 +159,7 @@ class instruction_graph_generator::impl {
 		size_t elem_size;
 		size_t elem_align;
 		std::vector<buffer_per_memory_data> memories;
-		region_map<data_location> newest_data_location; // TODO rename for vs original_write_memories?
+		region_map<memory_mask> newest_data_location; // TODO rename for vs original_write_memories?
 		region_map<instruction*> original_writers;
 		region_map<memory_id> original_write_memories; // only meaningful if newest_data_location[box] is non-empty
 
@@ -235,7 +233,7 @@ class instruction_graph_generator::impl {
 	std::vector<const instruction*> m_current_batch; // TODO this should NOT be a member but an output parameter to compile_*()
 	instruction_recorder* m_recorder;
 
-	static memory_id next_location(const data_location& location, memory_id first);
+	static memory_id next_location(const memory_mask& locations, memory_id first);
 
 	template <typename Instruction, typename... CtorParams>
 	Instruction& create(CtorParams&&... ctor_args) {
@@ -418,7 +416,7 @@ void instruction_graph_generator::impl::create_buffer(
 		auto& allocation = host_memory.allocations.emplace_back(buffer.dims, host_aid, entire_buffer, buffer.range);
 		allocation.record_write(entire_buffer, &init_instr);
 		buffer.original_writers.update_region(entire_buffer, &init_instr);
-		buffer.newest_data_location.update_region(entire_buffer, data_location().set(host_memory_id));
+		buffer.newest_data_location.update_region(entire_buffer, memory_mask().set(host_memory_id));
 		buffer.original_write_memories.update_region(entire_buffer, host_memory_id);
 
 		if(m_recorder != nullptr) {
@@ -477,7 +475,7 @@ void instruction_graph_generator::impl::destroy_host_object(const host_object_id
 	m_host_objects.erase(iter);
 }
 
-memory_id instruction_graph_generator::impl::next_location(const data_location& location, memory_id first) {
+memory_id instruction_graph_generator::impl::next_location(const memory_mask& location, memory_id first) {
 	for(size_t i = 0; i < max_num_memories; ++i) {
 		const memory_id mem = (first + i) % max_num_memories;
 		if(location[mem]) { return mem; }
@@ -701,7 +699,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 	}
 
 	buffer.original_write_memories.update_region(receive.received_region, mid);
-	buffer.newest_data_location.update_region(receive.received_region, data_location().set(mid));
+	buffer.newest_data_location.update_region(receive.received_region, memory_mask().set(mid));
 }
 
 void instruction_graph_generator::impl::locally_satisfy_read_requirements(const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads) {
@@ -739,7 +737,10 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 	//    2. perform d2h copies, update access fronts / last writers
 	//    3. in the actual copy loop, use the last-host-writer instead of the original writer as copy source
 
-	std::vector<copy_template> pending_copies;
+	constexpr auto stage_mid = host_memory_id;
+	std::vector<copy_template> pending_staging_copies;
+	std::vector<copy_template> pending_final_copies;
+	bounding_box_set required_staging_allocation;
 	for(auto& [dest_mid, disjoint_reader_regions] : unsatisfied_reads) {
 		if(disjoint_reader_regions.empty()) continue; // if fully satisfied by incoming transfers
 
@@ -770,60 +771,88 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 			}
 
 			for(const auto& [_, original_writer_region] : writer_regions) {
+				std::unordered_map<memory_id, region<3>> staging_copy_sources;
+				std::unordered_map<memory_id, region<3>> final_copy_sources;
 				// there can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon
-				std::unordered_map<memory_id, region<3>> source_memory_regions; // TODO rename
 				for(const auto& [copy_box, source_mid] : buffer.original_write_memories.get_region_values(original_writer_region)) {
-					auto& memory = source_memory_regions[source_mid]; // allow default-insert
-					memory = region_union(memory, copy_box);
+					if(m_system.memories[source_mid].copy_peers.test(dest_mid)) {
+						auto& final_source_region = final_copy_sources[source_mid]; // allow default-insert
+						final_source_region = region_union(final_source_region, copy_box);
+					} else {
+						assert(m_system.memories[source_mid].copy_peers.test(stage_mid));
+						assert(m_system.memories[dest_mid].copy_peers.test(stage_mid));
+
+						required_staging_allocation.insert(copy_box);
+
+						box_vector<3> unsatisfied_boxes_on_host;
+						for(const auto& [box, location] : buffer.newest_data_location.get_region_values(copy_box)) {
+							if(!location.test(stage_mid)) { unsatisfied_boxes_on_host.push_back(box); }
+						}
+						region<3> unsatisfied_region_on_host(std::move(unsatisfied_boxes_on_host));
+
+						auto& staging_source_region = staging_copy_sources[source_mid]; // allow default-insert
+						staging_source_region = region_union(staging_source_region, unsatisfied_region_on_host);
+
+						auto& final_source_region = final_copy_sources[stage_mid]; // allow default-insert
+						final_source_region = region_union(final_source_region, copy_box);
+					}
 				}
-				for(auto& [source_mid, copy_region] : source_memory_regions) {
-					pending_copies.push_back({source_mid, dest_mid, std::move(copy_region)});
+				for(auto& [source_mid, copy_region] : staging_copy_sources) {
+					pending_staging_copies.push_back({source_mid, stage_mid, std::move(copy_region)});
+				}
+				for(auto& [source_mid, copy_region] : final_copy_sources) {
+					pending_final_copies.push_back({source_mid, dest_mid, std::move(copy_region)});
 				}
 			}
 		}
 	}
 
-	for(auto& copy : pending_copies) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(LightSteelBlue, "apply");
+	// TODO move this allocation outside to avoid resize-chains
+	allocate_contiguously(bid, stage_mid, required_staging_allocation);
 
-		assert(copy.dest_mid != copy.source_mid);
-		// TODO iterating over boxes here could mean that we generate excess copy instructions if region normalization produces more boxes within the
-		// box_intersection below than is necessary. Instead try working on a region_intersection and resolving the matching allocation boxes afterwards.
-		for(const box<3>& box : copy.region.get_boxes()) {
-			for(auto& source : buffer.memories[copy.source_mid].allocations) {
-				const auto read_box = box_intersection(box, source.box);
-				if(read_box.empty()) continue;
+	for(auto& stage : {pending_staging_copies, pending_final_copies}) {
+		for(auto& copy : stage) {
+			CELERITY_DETAIL_TRACY_SCOPED_ZONE(LightSteelBlue, "apply");
 
-				for(auto& dest : buffer.memories[copy.dest_mid].allocations) {
-					const auto copy_box = box_intersection(read_box, dest.box);
-					if(copy_box.empty()) continue;
+			assert(copy.dest_mid != copy.source_mid);
+			// TODO iterating over boxes here could mean that we generate excess copy instructions if region normalization produces more boxes within the
+			// box_intersection below than is necessary. Instead try working on a region_intersection and resolving the matching allocation boxes afterwards.
+			for(const box<3>& box : copy.region.get_boxes()) {
+				for(auto& source : buffer.memories[copy.source_mid].allocations) {
+					const auto read_box = box_intersection(box, source.box);
+					if(read_box.empty()) continue;
 
-					const auto [source_offset, source_range] = source.box.get_subrange();
-					const auto [dest_offset, dest_range] = dest.box.get_subrange();
-					const auto [copy_offset, copy_range] = copy_box.get_subrange();
+					for(auto& dest : buffer.memories[copy.dest_mid].allocations) {
+						const auto copy_box = box_intersection(read_box, dest.box);
+						if(copy_box.empty()) continue;
 
-					const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
-					    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+						const auto [source_offset, source_range] = source.box.get_subrange();
+						const auto [dest_offset, dest_range] = dest.box.get_subrange();
+						const auto [copy_offset, copy_range] = copy_box.get_subrange();
 
-					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
-						assert(last_writer_instr != nullptr);
-						add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
-					}
-					source.record_read(copy_box, copy_instr);
+						const auto copy_instr = &create<copy_instruction>(buffer.dims, copy.source_mid, source.aid, source_range, copy_offset - source_offset,
+						    copy.dest_mid, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
-					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
-						for(const auto dep_instr : front.front) {
-							add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
+						for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
+							assert(last_writer_instr != nullptr);
+							add_dependency(*copy_instr, *last_writer_instr, dependency_kind::true_dep);
 						}
-					}
-					dest.record_write(copy_box, copy_instr);
+						source.record_read(copy_box, copy_instr);
 
-					for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy_box)) {
-						buffer.newest_data_location.update_region(box, data_location(location).set(copy.dest_mid));
-					}
+						for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_box)) { // TODO copy-pasta
+							for(const auto dep_instr : front.front) {
+								add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
+							}
+						}
+						dest.record_write(copy_box, copy_instr);
 
-					if(m_recorder != nullptr) {
-						*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.name, copy_box);
+						for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy_box)) {
+							buffer.newest_data_location.update_region(box, memory_mask(location).set(copy.dest_mid));
+						}
+
+						if(m_recorder != nullptr) {
+							*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.name, copy_box);
+						}
 					}
 				}
 			}
@@ -900,7 +929,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(const buffer
 	}
 
 	// do not preserve any received or overwritten region across receives
-	buffer.newest_data_location.update_region(discarded, data_location());
+	buffer.newest_data_location.update_region(discarded, memory_mask());
 
 	for(const auto& chunk : local_chunks) {
 		const auto chunk_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
@@ -1265,7 +1294,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 		for(const auto& [bid, rw] : instr.rw_map) {
 			assert(instr.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
-			buffer.newest_data_location.update_region(rw.writes, data_location().set(instr.memory_id));
+			buffer.newest_data_location.update_region(rw.writes, memory_mask().set(instr.memory_id));
 			buffer.original_write_memories.update_region(rw.writes, instr.memory_id);
 			buffer.original_writers.update_region(rw.writes, instr.instruction);
 
@@ -1311,7 +1340,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 			}
 			buffer.original_writers.update_box(scalar_reduction_box, instr.instruction);
 			buffer.original_write_memories.update_box(scalar_reduction_box, instr.memory_id);
-			buffer.newest_data_location.update_box(scalar_reduction_box, data_location().set(instr.memory_id));
+			buffer.newest_data_location.update_box(scalar_reduction_box, memory_mask().set(instr.memory_id));
 			continue;
 		}
 
@@ -1363,7 +1392,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 		dest->record_write(scalar_reduction_box, reduce_instr);
 		buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
 		buffer.original_write_memories.update_region(scalar_reduction_box, host_memory_id);
-		buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(host_memory_id));
+		buffer.newest_data_location.update_region(scalar_reduction_box, memory_mask().set(host_memory_id));
 
 		// free local gather space
 
@@ -1393,20 +1422,20 @@ void instruction_graph_generator::impl::compile_push_command(const push_command&
 
 	// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same
 	// command that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
-	std::unordered_map<instruction_id, region<3>> writer_regions;
+	std::unordered_map<instruction_id, region<3>> send_regions;
 	for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
-		auto& region = writer_regions[writer->get_id()]; // allow default-insert
+		auto& region = send_regions[writer->get_id()]; // allow default-insert
 		region = region_union(region, box);
 	}
 
-	for(auto& [_, region] : writer_regions) {
+	for(auto& [_, region] : send_regions) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
 		// writer without any effect from the order of operations
 		allocate_contiguously(trid.bid, host_memory_id, bounding_box_set(region.get_boxes()));
 		locally_satisfy_read_requirements(trid.bid, {{host_memory_id, region}});
 	}
 
-	for(auto& [_, region] : writer_regions) {
+	for(auto& [_, region] : send_regions) {
 		for(const auto& box : region.get_boxes()) {
 			const int tag = create_pilot_message(pcmd.get_target(), trid, box);
 
@@ -1432,8 +1461,8 @@ void instruction_graph_generator::impl::compile_push_command(const push_command&
 
 	// If not all nodes contribute partial results to a global reductions, the remaining ones need to notify their peers that they should not expect any data.
 	// This is done by announcing an empty box through the pilot message.
-	assert(push_box.empty() == writer_regions.empty());
-	if(writer_regions.empty()) {
+	assert(push_box.empty() == send_regions.empty());
+	if(send_regions.empty()) {
 		assert(trid.rid != no_reduction_id);
 		create_pilot_message(pcmd.get_target(), trid, box<3>());
 	}
@@ -1556,7 +1585,7 @@ void instruction_graph_generator::impl::compile_reduction_command(const reductio
 	dest_alloc->record_write(scalar_reduction_box, reduce_instr);
 	buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
 	buffer.original_write_memories.update_region(scalar_reduction_box, host_memory_id);
-	buffer.newest_data_location.update_region(scalar_reduction_box, data_location().set(host_memory_id));
+	buffer.newest_data_location.update_region(scalar_reduction_box, memory_mask().set(host_memory_id));
 
 	// free the gather space
 
