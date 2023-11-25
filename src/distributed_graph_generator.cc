@@ -22,7 +22,7 @@ distributed_graph_generator::distributed_graph_generator(
 	// We manually generate the first command, this will be replaced by applied horizons or explicit epochs down the line (see
 	// set_epoch_for_new_commands).
 	const auto epoch_tsk = tm.get_task(task_manager::initial_epoch_task);
-	auto* const epoch_cmd = cdag.create<epoch_command>(epoch_tsk->get_id(), epoch_action::none);
+	auto* const epoch_cmd = cdag.create<epoch_command>(epoch_tsk->get_id(), epoch_action::none, std::vector<reduction_id>{});
 	if(m_recorder != nullptr) { *m_recorder << command_record(*epoch_cmd, *epoch_tsk, {}); }
 	m_epoch_for_new_commands = epoch_cmd->get_cid();
 }
@@ -465,7 +465,9 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 	// For buffers that were in a pending reduction state and a reduction was generated
 	// (i.e., the result was not discarded), set their new state.
 	for(auto& [bid, new_state] : post_reduction_buffer_states) {
-		m_buffer_states.insert_or_assign(bid, std::move(new_state));
+		auto& buffer_state = m_buffer_states.at(bid);
+		if(buffer_state.pending_reduction.has_value()) { m_completed_reductions.push_back(buffer_state.pending_reduction->rid); }
+		buffer_state = std::move(new_state);
 	}
 
 	// Update per-buffer last writers
@@ -476,8 +478,12 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 			buffer_state.local_last_writer.update_region(req, cid);
 			buffer_state.replicated_regions.update_region(req, node_bitset{});
 		}
+
 		// In case this buffer was in a pending reduction state but the result was discarded, remove the pending reduction.
-		buffer_state.pending_reduction = std::nullopt;
+		if(buffer_state.pending_reduction.has_value()) {
+			m_completed_reductions.push_back(buffer_state.pending_reduction->rid);
+			buffer_state.pending_reduction = std::nullopt;
+		}
 	}
 
 	// Mark any buffers that now are in a pending reduction state as such.
@@ -485,8 +491,8 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 	// to properly support chained reductions.
 	// If there is only one chunk/command, it already implicitly generates the final reduced value
 	// and the buffer does not need to be flagged as a pending reduction.
-	if(chunks.size() > 1) {
-		for(const auto& reduction : tsk.get_reductions()) {
+	for(const auto& reduction : tsk.get_reductions()) {
+		if(chunks.size() > 1) {
 			m_buffer_states.at(reduction.bid).pending_reduction = reduction;
 
 			// In some cases this node may not actually participate in the computation of the
@@ -502,6 +508,8 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 				});
 				assert(num_entries == 1);
 			}
+		} else {
+			m_completed_reductions.push_back(reduction.rid);
 		}
 	}
 
@@ -667,7 +675,7 @@ void distributed_graph_generator::reduce_execution_front_to(abstract_command* co
 
 void distributed_graph_generator::generate_epoch_command(const task& tsk) {
 	assert(tsk.get_type() == task_type::epoch);
-	auto* const epoch = create_command<epoch_command>(tsk.get_id(), tsk.get_epoch_action());
+	auto* const epoch = create_command<epoch_command>(tsk.get_id(), tsk.get_epoch_action(), std::move(m_completed_reductions));
 	set_epoch_for_new_commands(epoch);
 	m_current_horizon = no_command;
 	// Make the epoch depend on the previous execution front
@@ -676,7 +684,7 @@ void distributed_graph_generator::generate_epoch_command(const task& tsk) {
 
 void distributed_graph_generator::generate_horizon_command(const task& tsk) {
 	assert(tsk.get_type() == task_type::horizon);
-	auto* const horizon = create_command<horizon_command>(tsk.get_id());
+	auto* const horizon = create_command<horizon_command>(tsk.get_id(), std::move(m_completed_reductions));
 
 	if(m_current_horizon != static_cast<command_id>(no_command)) {
 		// Apply the previous horizon

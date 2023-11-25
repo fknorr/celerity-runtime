@@ -9,7 +9,7 @@
 #include <tuple>
 #include <type_traits>
 
-#include "spdlog/fmt/fmt.h"
+#include "fmt/format.h"
 
 #include "types.h"
 
@@ -90,6 +90,8 @@ std::string simplify_task_name(const std::string& demangled_type_name);
 
 // escapes "<", ">", and "&" with their corresponding HTML escape sequences
 std::string escape_for_dot_label(std::string str);
+
+std::string get_buffer_label(const buffer_id bid, const std::string& name = "");
 
 template <typename... FmtArgs>
 [[noreturn]] void panic(const FmtArgs&... fmt_args) {

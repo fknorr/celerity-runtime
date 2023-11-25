@@ -430,7 +430,7 @@ TEST_CASE("copies are staged through host memory for devices that are not peer-c
 	CHECK(all_copies_from_host.count() == num_devices);
 	CHECK(all_readers.count() == num_devices);
 
-	for (const auto &writer: all_writers.iterate()) {
+	for(const auto& writer : all_writers.iterate()) {
 		const auto copy_to_host = intersection_of(all_copies_to_host, writer.successors()).assert_unique();
 		const auto copy_from_host = intersection_of(all_copies_from_host, copy_to_host.successors()).assert_unique();
 		const auto reader = intersection_of(all_readers, copy_from_host.successors()).assert_unique();

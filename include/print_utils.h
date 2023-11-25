@@ -90,14 +90,3 @@ struct fmt::formatter<celerity::detail::transfer_id> {
 		return ctx.out();
 	}
 };
-
-
-namespace celerity::detail {
-
-inline std::string get_buffer_label(const buffer_id bid, const std::string& name = "") {
-	// if there is no name defined, the name will be the buffer id.
-	// if there is a name we want "id name"
-	return !name.empty() ? fmt::format("B{} \"{}\"", bid, name) : fmt::format("B{}", bid);
-}
-
-} // namespace celerity::detail

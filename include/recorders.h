@@ -102,6 +102,7 @@ struct command_record {
 	std::string task_name;
 	std::optional<task_type> task_type;
 	std::optional<collective_group_id> collective_group_id;
+	std::vector<detail::reduction_id> completed_reductions;
 
 	command_record(const abstract_command& cmd, const task& tsk, const buffer_name_map& accessed_buffer_names);
 };
@@ -405,6 +406,7 @@ struct destroy_host_object_instruction_record : matchbox::implement_acceptor<ins
 struct horizon_instruction_record : matchbox::implement_acceptor<instruction_record, horizon_instruction_record> {
 	task_id horizon_task_id;
 	command_id horizon_command_id;
+	std::vector<detail::reduction_id> completed_reductions;
 
 	horizon_instruction_record(const horizon_instruction& hinstr, command_id horizon_cid);
 };
@@ -413,6 +415,7 @@ struct epoch_instruction_record : matchbox::implement_acceptor<instruction_recor
 	task_id epoch_task_id;
 	command_id epoch_command_id;
 	epoch_action epoch_action;
+	std::vector<detail::reduction_id> completed_reductions;
 
 	epoch_instruction_record(const epoch_instruction& einstr, command_id epoch_cid);
 };

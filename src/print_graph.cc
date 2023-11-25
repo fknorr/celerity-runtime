@@ -56,12 +56,12 @@ void format_requirements(std::string& label, const reduction_list& reductions, c
 	for(const auto& [rid, bid, buffer_name, init_from_buffer] : reductions) {
 		auto rmode = init_from_buffer ? reduction_init_mode : cl::sycl::access::mode::discard_write;
 		const region scalar_region(box<3>({0, 0, 0}, {1, 1, 1}));
-		const std::string bl = get_buffer_label(bid, buffer_name);
+		const std::string bl = utils::get_buffer_label(bid, buffer_name);
 		fmt::format_to(std::back_inserter(label), "<br/>(R{}) <i>{}</i> {} {}", rid, detail::access::mode_traits::name(rmode), bl, scalar_region);
 	}
 
 	for(const auto& [bid, buffer_name, mode, req] : accesses) {
-		const std::string bl = get_buffer_label(bid, buffer_name);
+		const std::string bl = utils::get_buffer_label(bid, buffer_name);
 		// While uncommon, we do support chunks that don't require access to a particular buffer at all.
 		if(!req.empty()) { fmt::format_to(std::back_inserter(label), "<br/><i>{}</i> {} {}", detail::access::mode_traits::name(mode), bl, req); }
 	}
@@ -123,7 +123,7 @@ std::string get_command_label(const node_id local_nid, const command_record& cmd
 	auto add_reduction_id_if_reduction = [&]() {
 		if(cmd.reduction_id.has_value() && cmd.reduction_id != 0) { fmt::format_to(std::back_inserter(label), "(R{}) ", cmd.reduction_id.value()); }
 	};
-	const std::string buffer_label = cmd.buffer_id.has_value() ? get_buffer_label(cmd.buffer_id.value(), cmd.buffer_name) : "";
+	const std::string buffer_label = cmd.buffer_id.has_value() ? utils::get_buffer_label(cmd.buffer_id.value(), cmd.buffer_name) : "";
 
 	switch(cmd.type) {
 	case command_type::epoch: {
@@ -160,6 +160,10 @@ std::string get_command_label(const node_id local_nid, const command_record& cmd
 
 		format_requirements(label, cmd.reductions.value_or(reduction_list{}), cmd.accesses.value_or(access_list{}),
 		    cmd.side_effects.value_or(side_effect_map{}), reduction_init_mode);
+	}
+
+	for(const auto rid : cmd.completed_reductions) {
+		fmt::format_to(std::back_inserter(label), "<br/>drop R{}", rid);
 	}
 
 	return label;
@@ -286,7 +290,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    }
 			    fmt::format_to(back, "<b>alloc</b> M{}.A{}", ainstr.memory_id, ainstr.allocation_id);
 			    if(ainstr.buffer_allocation.has_value()) {
-				    fmt::format_to(back, "<br/>for {} {}", get_buffer_label(ainstr.buffer_allocation->buffer_id, ainstr.buffer_allocation->buffer_name),
+				    fmt::format_to(back, "<br/>for {} {}", utils::get_buffer_label(ainstr.buffer_allocation->buffer_id, ainstr.buffer_allocation->buffer_name),
 				        ainstr.buffer_allocation->box);
 				    if(ainstr.num_chunks.has_value()) { fmt::format_to(back, " x{}", *ainstr.num_chunks); }
 			    }
@@ -298,7 +302,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{}<br/>", finstr.id);
 			    fmt::format_to(back, "<b>free</b> M{}.A{}", finstr.memory_id, finstr.allocation_id);
 			    if(finstr.buffer_allocation.has_value()) {
-				    fmt::format_to(back, "<br/>{} {}", get_buffer_label(finstr.buffer_allocation->buffer_id, finstr.buffer_allocation->buffer_name),
+				    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(finstr.buffer_allocation->buffer_id, finstr.buffer_allocation->buffer_name),
 				        finstr.buffer_allocation->box);
 			    }
 			    fmt::format_to(back, " <br/>{} bytes", finstr.size);
@@ -307,7 +311,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const init_buffer_instruction_record& ibinstr) {
 			    begin_node(ibinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", ibinstr.id);
-			    fmt::format_to(back, "<b>init buffer</b> {}<br/>via M0.A{}, {} bytes", get_buffer_label(ibinstr.buffer_id, ibinstr.buffer_name),
+			    fmt::format_to(back, "<b>init buffer</b> {}<br/>via M0.A{}, {} bytes", utils::get_buffer_label(ibinstr.buffer_id, ibinstr.buffer_name),
 			        ibinstr.host_allocation_id, ibinstr.size_bytes);
 			    end_node();
 		    },
@@ -315,8 +319,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(einstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}", einstr.id);
 			    fmt::format_to(back, "<br/>{}D <b>export</b>", einstr.dimensions);
-			    fmt::format_to(
-			        back, "<br/>{} {}", get_buffer_label(einstr.buffer_id, einstr.buffer_name), box(subrange(einstr.offset_in_buffer, einstr.copy_range)));
+			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(einstr.buffer_id, einstr.buffer_name),
+			        box(subrange(einstr.offset_in_buffer, einstr.copy_range)));
 			    fmt::format_to(back, "<br/>via M0.A{} {}<br/>{}x{} bytes", einstr.host_allocation_id,
 			        box(subrange(einstr.offset_in_allocation, einstr.copy_range)), einstr.copy_range, einstr.element_size);
 			    end_node();
@@ -331,7 +335,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case copy_instruction_record::copy_origin::coherence: dot += "coherence "; break;
 			    case copy_instruction_record::copy_origin::gather: dot += "gather "; break;
 			    }
-			    fmt::format_to(back, "<b>copy</b><br/>on {} {}", get_buffer_label(cinstr.buffer_id, cinstr.buffer_name), cinstr.box);
+			    fmt::format_to(back, "<b>copy</b><br/>on {} {}", utils::get_buffer_label(cinstr.buffer_id, cinstr.buffer_name), cinstr.box);
 			    fmt::format_to(back, "<br/>from M{}.A{} {}<br/>to M{}.A{} {}<br/>{}x{} bytes", cinstr.source_memory_id, cinstr.source_allocation_id,
 			        box(subrange(cinstr.offset_in_source, cinstr.copy_range)), cinstr.dest_memory_id, cinstr.dest_allocation_id,
 			        box(subrange(cinstr.offset_in_dest, cinstr.copy_range)), cinstr.copy_range, cinstr.element_size);
@@ -342,21 +346,21 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{}", dkinstr.id);
 			    fmt::format_to(
 			        back, " (device-compute T{}, execution C{})<br/><b>device kernel</b>", dkinstr.command_group_task_id, dkinstr.execution_command_id);
-			    if(!dkinstr.debug_name.empty()) { fmt::format_to(back, " {}", dkinstr.debug_name /* TODO escape? */); }
+			    if(!dkinstr.debug_name.empty()) { fmt::format_to(back, " {}", utils::escape_for_dot_label(dkinstr.debug_name)); }
 			    fmt::format_to(back, "<br/>on D{} {}", dkinstr.device_id, dkinstr.execution_range);
 
 			    for(const auto& access : dkinstr.access_map) {
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id, access.buffer_name), access.accessed_box_in_buffer);
+				    fmt::format_to(back, "<br/>+ access {} {}", utils::get_buffer_label(access.buffer_id, access.buffer_name), access.accessed_box_in_buffer);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    for(const auto& access : dkinstr.reduction_map) {
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, get_buffer_label(access.buffer_id, access.buffer_name),
+				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, utils::get_buffer_label(access.buffer_id, access.buffer_name),
 				        access.accessed_box_in_buffer);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
@@ -369,14 +373,14 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, " ({} T{}, execution C{})<br/><b>host task</b>",
 			        htinstr.collective_group_id != non_collective_group_id ? fmt::format("CG{} collective-host", htinstr.collective_group_id) : "host-compute",
 			        htinstr.command_group_task_id, htinstr.execution_command_id);
-			    if(!htinstr.debug_name.empty()) { fmt::format_to(back, " {}", htinstr.debug_name /* TODO escape? */); }
+			    if(!htinstr.debug_name.empty()) { fmt::format_to(back, " {}", utils::escape_for_dot_label(htinstr.debug_name)); }
 			    fmt::format_to(back, "<br/>on host {}", htinstr.execution_range);
 
 			    for(const auto& access : htinstr.access_map) {
 				    const auto accessed_box_in_allocation = box( //
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
-				    fmt::format_to(back, "<br/>+ access {} {}", get_buffer_label(access.buffer_id, access.buffer_name), access.accessed_box_in_buffer);
+				    fmt::format_to(back, "<br/>+ access {} {}", utils::get_buffer_label(access.buffer_id, access.buffer_name), access.accessed_box_in_buffer);
 				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();
@@ -386,7 +390,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
 			    fmt::format_to(back, "<br/><b>send</b> {}", sinstr.transfer_id);
 			    fmt::format_to(back, "<br/>to N{} tag {}", sinstr.dest_node_id, sinstr.tag);
-			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(sinstr.transfer_id.bid, sinstr.buffer_name),
+			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(sinstr.transfer_id.bid, sinstr.buffer_name),
 			        box(subrange(sinstr.offset_in_buffer, sinstr.send_range)));
 			    fmt::format_to(back, "<br/>via M{}.A{} {}", sinstr.source_memory_id, sinstr.source_allocation_id,
 			        box(subrange(sinstr.offset_in_source_allocation, sinstr.send_range)));
@@ -398,7 +402,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(rinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, irec.get_await_push_command_id(rinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>receive</b> {}", rinstr.transfer_id);
-			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(rinstr.transfer_id.bid, rinstr.buffer_name), rinstr.requested_region);
+			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(rinstr.transfer_id.bid, rinstr.buffer_name), rinstr.requested_region);
 			    fmt::format_to(
 			        back, "<br/>into M{}.A{} (B{} {})", rinstr.dest_memory_id, rinstr.dest_allocation_id, rinstr.transfer_id.bid, rinstr.allocated_box);
 			    fmt::format_to(back, "<br/>x{} bytes", rinstr.element_size);
@@ -408,7 +412,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(srinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", srinstr.id, irec.get_await_push_command_id(srinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>split receive</b> {}", srinstr.transfer_id);
-			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(srinstr.transfer_id.bid, srinstr.buffer_name), srinstr.requested_region);
+			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(srinstr.transfer_id.bid, srinstr.buffer_name), srinstr.requested_region);
 			    fmt::format_to(
 			        back, "<br/>into M{}.A{} (B{} {})", srinstr.dest_memory_id, srinstr.dest_allocation_id, srinstr.transfer_id.bid, srinstr.allocated_box);
 			    fmt::format_to(back, "<br/>x{} bytes", srinstr.element_size);
@@ -418,14 +422,15 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(arinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", arinstr.id, irec.get_await_push_command_id(arinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>await receive</b> {}", arinstr.transfer_id);
-			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(arinstr.transfer_id.bid, arinstr.buffer_name), arinstr.received_region);
+			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(arinstr.transfer_id.bid, arinstr.buffer_name), arinstr.received_region);
 			    end_node();
 		    },
 		    [&](const gather_receive_instruction_record& grinstr) {
 			    begin_node(grinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (await-push C{})", grinstr.id, irec.get_await_push_command_id(grinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>gather receive</b> {}", grinstr.transfer_id);
-			    fmt::format_to(back, "<br/>{} {} x{}", get_buffer_label(grinstr.transfer_id.bid, grinstr.buffer_name), grinstr.gather_box, grinstr.num_nodes);
+			    fmt::format_to(
+			        back, "<br/>{} {} x{}", utils::get_buffer_label(grinstr.transfer_id.bid, grinstr.buffer_name), grinstr.gather_box, grinstr.num_nodes);
 			    fmt::format_to(back, "<br/>into M{}.A{}", grinstr.memory_id, grinstr.allocation_id);
 			    end_node();
 		    },
@@ -442,7 +447,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    if(rinstr.reduction_command_id.has_value()) { fmt::format_to(back, " (reduction C{})", *rinstr.reduction_command_id); }
 			    fmt::format_to(back, "<br/>{} <b>reduce</b> B{}.R{}", rinstr.scope == reduce_instruction_record::reduction_scope::global ? "global" : "local",
 			        rinstr.buffer_id, rinstr.reduction_id);
-			    fmt::format_to(back, "<br/>{} {}", get_buffer_label(rinstr.buffer_id, rinstr.buffer_name), rinstr.box);
+			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(rinstr.buffer_id, rinstr.buffer_name), rinstr.box);
 			    fmt::format_to(back, "<br/>from M{}.A{} x{}", rinstr.memory_id, rinstr.source_allocation_id, rinstr.num_source_values);
 			    fmt::format_to(back, "<br/>to M{}.A{} x1", rinstr.memory_id, rinstr.dest_allocation_id);
 			    end_node();
@@ -453,7 +458,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    matchbox::match(
 			        finstr.variant, //
 			        [&](const fence_instruction_record::buffer_variant& buffer) {
-				        fmt::format_to(back, "{} {}", get_buffer_label(buffer.bid, buffer.name), buffer.box);
+				        fmt::format_to(back, "{} {}", utils::get_buffer_label(buffer.bid, buffer.name), buffer.box);
 			        },
 			        [&](const fence_instruction_record::host_object_variant& obj) { fmt::format_to(back, "H{}", obj.hoid); });
 			    end_node();
@@ -466,11 +471,17 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const horizon_instruction_record& hinstr) {
 			    begin_node(hinstr, "box,margin=0.2,style=rounded", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>horizon</b>", hinstr.id, hinstr.horizon_task_id, hinstr.horizon_command_id);
+			    for(const auto rid : hinstr.completed_reductions) {
+				    fmt::format_to(back, "<br/>drop R{}", rid);
+			    }
 			    end_node();
 		    },
 		    [&](const epoch_instruction_record& einstr) {
 			    begin_node(einstr, "box,margin=0.2,style=rounded", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/>{}", einstr.id, einstr.epoch_task_id, einstr.epoch_command_id, get_epoch_label(einstr.epoch_action));
+			    for(const auto rid : einstr.completed_reductions) {
+				    fmt::format_to(back, "<br/>drop R{}", rid);
+			    }
 			    end_node();
 		    });
 	}
@@ -485,7 +496,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 	for(const auto& pilot : irec.get_outbound_pilots()) {
 		fmt::format_to(back,
 		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} tag {}<br/>{}<br/>for {} {}</font>>];",
-		    pilot.message.tag, pilot.to, pilot.message.tag, pilot.message.transfer_id, get_buffer_label(pilot.message.transfer_id.bid), pilot.message.box);
+		    pilot.message.tag, pilot.to, pilot.message.tag, pilot.message.transfer_id, utils::get_buffer_label(pilot.message.transfer_id.bid),
+		    pilot.message.box);
 		if(auto it = send_instructions_by_tag.find(pilot.message.tag); it != send_instructions_by_tag.end()) {
 			fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.message.tag, it->second);
 		}

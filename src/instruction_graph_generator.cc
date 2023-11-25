@@ -300,6 +300,8 @@ class instruction_graph_generator::impl {
 	void compile_await_push_command(const await_push_command& apcmd);
 	void compile_reduction_command(const reduction_command& rcmd);
 	void compile_fence_command(const fence_command& fcmd);
+	void compile_horizon_command(const horizon_command& hcmd);
+	void compile_epoch_command(const epoch_command& ecmd);
 };
 
 
@@ -392,7 +394,7 @@ instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes
 #endif
 
 	m_idag.begin_epoch(task_manager::initial_epoch_task);
-	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none);
+	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none, std::vector<reduction_id>{});
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
 	m_collective_groups.emplace(root_collective_group_id, per_collective_group_data{initial_epoch});
@@ -1443,7 +1445,7 @@ void split_into_communicator_compatible_boxes_recursive(
 }
 
 // We split boxes if the stride within the buffer becomes too large (as opposed to within the sender's allocation) to guarantee that the receiver ends up with a
-// stride that is within bounds even when receiving into a larger (potentially full-buffer) allocation, 
+// stride that is within bounds even when receiving into a larger (potentially full-buffer) allocation,
 box_vector<3> split_into_communicator_compatible_boxes(const range<3>& buffer_range, const box<3>& full_box) {
 	assert(box(subrange<3>(zeros, buffer_range)).covers(full_box));
 
@@ -1695,6 +1697,26 @@ void instruction_graph_generator::impl::compile_fence_command(const fence_comman
 }
 
 
+void instruction_graph_generator::impl::compile_horizon_command(const horizon_command& hcmd) {
+	m_idag.begin_epoch(hcmd.get_tid());
+	const auto horizon = &create<horizon_instruction>(hcmd.get_tid(), hcmd.get_completed_reductions());
+	collapse_execution_front_to(horizon);
+	if(m_last_horizon != nullptr) { apply_epoch(m_last_horizon); }
+	m_last_horizon = horizon;
+	if(m_recorder != nullptr) { *m_recorder << horizon_instruction_record(*horizon, hcmd.get_cid()); }
+}
+
+
+void instruction_graph_generator::impl::compile_epoch_command(const epoch_command& ecmd) {
+	m_idag.begin_epoch(ecmd.get_tid());
+	const auto epoch = &create<epoch_instruction>(ecmd.get_tid(), ecmd.get_epoch_action(), ecmd.get_completed_reductions());
+	collapse_execution_front_to(epoch);
+	apply_epoch(epoch);
+	m_last_horizon = nullptr;
+	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*epoch, ecmd.get_cid()); }
+}
+
+
 template <typename Iterator>
 bool is_topologically_sorted(Iterator begin, Iterator end) {
 	for(auto check = begin; check != end; ++check) {
@@ -1711,24 +1733,10 @@ std::pair<std::vector<const instruction*>, std::vector<outbound_pilot>> instruct
 	    [&](const execution_command& ecmd) { compile_execution_command(ecmd); },     //
 	    [&](const push_command& pcmd) { compile_push_command(pcmd); },               //
 	    [&](const await_push_command& apcmd) { compile_await_push_command(apcmd); }, //
-	    [&](const horizon_command& hcmd) {
-		    m_idag.begin_epoch(hcmd.get_tid());
-		    const auto horizon = &create<horizon_instruction>(hcmd.get_tid());
-		    collapse_execution_front_to(horizon);
-		    if(m_last_horizon != nullptr) { apply_epoch(m_last_horizon); }
-		    m_last_horizon = horizon;
-		    if(m_recorder != nullptr) { *m_recorder << horizon_instruction_record(*horizon, hcmd.get_cid()); }
-	    },
-	    [&](const epoch_command& ecmd) {
-		    m_idag.begin_epoch(ecmd.get_tid());
-		    const auto epoch = &create<epoch_instruction>(ecmd.get_tid(), ecmd.get_epoch_action());
-		    collapse_execution_front_to(epoch);
-		    apply_epoch(epoch);
-		    m_last_horizon = nullptr;
-		    if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*epoch, ecmd.get_cid()); }
-	    },
-	    [&](const reduction_command& rcmd) { compile_reduction_command(rcmd); }, //
-	    [&](const fence_command& fcmd) { compile_fence_command(fcmd); }          //
+	    [&](const horizon_command& hcmd) { compile_horizon_command(hcmd); },         //
+	    [&](const epoch_command& ecmd) { compile_epoch_command(ecmd); },             //
+	    [&](const reduction_command& rcmd) { compile_reduction_command(rcmd); },     //
+	    [&](const fence_command& fcmd) { compile_fence_command(fcmd); }              //
 	);
 
 	if(m_recorder != nullptr) {

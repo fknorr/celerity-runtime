@@ -295,7 +295,7 @@ bool instruction_executor::boundary_checked_event::is_complete() const {
 			    "Out-of-bounds access detected in {} T{}{}: accessor {} attempted to access buffer {} indicies between {} and outside the declared range {}.",
 			    info.target == target::device ? "device kernel" : "host task", info.task_id,
 			    (!info.task_name.empty() ? fmt::format(" \"{}\"", info.task_name) : ""), i,
-			    get_buffer_label(accessor_info.buffer_id, accessor_info.buffer_name), oob_box, accessor_info.accessible_box);
+			    utils::get_buffer_label(accessor_info.buffer_id, accessor_info.buffer_name), oob_box, accessor_info.accessible_box);
 		}
 	}
 
@@ -569,6 +569,9 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "horizon");
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
+		    for(const auto rid : hinstr.get_completed_reductions()) {
+			    m_reductions.erase(rid);
+		    }
 		    return make_complete_event();
 	    },
 	    [&](const epoch_instruction& einstr) {
@@ -587,6 +590,9 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    }
 		    if(m_delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO tm doesn't expect us to actually execute the init epoch */) {
 			    m_delegate->epoch_reached(einstr.get_epoch_task_id());
+		    }
+		    for(const auto rid : einstr.get_completed_reductions()) {
+			    m_reductions.erase(rid);
 		    }
 		    return make_complete_event();
 	    });

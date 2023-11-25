@@ -159,6 +159,10 @@ class distributed_graph_generator {
 	// Batch of commands currently being generated. Returned (and thereby emptied) by build_task().
 	std::unordered_set<abstract_command*, command_hash_by_id> m_current_cmd_batch;
 
+	// List of reductions that have either completed globally or whose result has been discarded. This list will be appended to the next horizon to eventually
+	// inform the instruction executor that it can safely garbage-collect runtime info on the reduction operation.
+	std::vector<reduction_id> m_completed_reductions;
+
 	// For proper handling of anti-dependencies we also have to store for each command which buffer regions it reads.
 	// We do this because we cannot reconstruct the requirements from a command within the graph alone (e.g. for compute commands).
 	// While we could apply range mappers again etc., that is a bit wasteful. This is basically an optimization.

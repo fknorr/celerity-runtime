@@ -332,7 +332,8 @@ class pilot_query {
 	template <typename... Filters>
 	pilot_query select_all(const Filters&... filters) const {
 		std::vector<outbound_pilot> filtered;
-		std::copy_if(m_result.begin(), m_result.end(), std::back_inserter(filtered), [&](const outbound_pilot& pilot) { return matches_all(pilot, filters...); });
+		std::copy_if(
+		    m_result.begin(), m_result.end(), std::back_inserter(filtered), [&](const outbound_pilot& pilot) { return matches_all(pilot, filters...); });
 		return pilot_query(m_recorder, std::move(filtered));
 	}
 

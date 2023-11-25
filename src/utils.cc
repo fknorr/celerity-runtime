@@ -42,6 +42,12 @@ std::string escape_for_dot_label(std::string str) {
 	return str;
 }
 
+std::string get_buffer_label(const buffer_id bid, const std::string& name) {
+	// if there is no name defined, the name will be the buffer id.
+	// if there is a name we want "id name"
+	return !name.empty() ? fmt::format("B{} \"{}\"", bid, utils::escape_for_dot_label(name)) : fmt::format("B{}", bid);
+}
+
 } // namespace celerity::detail::utils
 
 

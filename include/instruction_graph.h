@@ -447,26 +447,31 @@ class destroy_host_object_instruction final : public matchbox::implement_accepto
 /// IDAG equivalent of a horizon task or command.
 class horizon_instruction final : public matchbox::implement_acceptor<instruction, horizon_instruction> {
   public:
-	explicit horizon_instruction(const instruction_id iid, const task_id horizon_tid) : acceptor_base(iid), m_horizon_tid(horizon_tid) {}
+	explicit horizon_instruction(const instruction_id iid, const task_id horizon_tid, std::vector<reduction_id> completed_reductions)
+	    : acceptor_base(iid), m_horizon_tid(horizon_tid), m_completed_reductions(std::move(completed_reductions)) {}
 
 	task_id get_horizon_task_id() const { return m_horizon_tid; }
+	const std::vector<reduction_id>& get_completed_reductions() const { return m_completed_reductions; }
 
   private:
 	task_id m_horizon_tid;
+	std::vector<reduction_id> m_completed_reductions;
 };
 
 /// IDAG equivalent of an epoch task or command.
 class epoch_instruction final : public matchbox::implement_acceptor<instruction, epoch_instruction> {
   public:
-	explicit epoch_instruction(const instruction_id iid, const task_id epoch_tid, const epoch_action action)
-	    : acceptor_base(iid), m_epoch_tid(epoch_tid), m_epoch_action(action) {}
+	explicit epoch_instruction(const instruction_id iid, const task_id epoch_tid, const epoch_action action, std::vector<reduction_id> completed_reductions)
+	    : acceptor_base(iid), m_epoch_tid(epoch_tid), m_epoch_action(action), m_completed_reductions(std::move(completed_reductions)) {}
 
 	task_id get_epoch_task_id() const { return m_epoch_tid; }
 	epoch_action get_epoch_action() const { return m_epoch_action; }
+	const std::vector<reduction_id>& get_completed_reductions() const { return m_completed_reductions; }
 
   private:
 	task_id m_epoch_tid;
 	epoch_action m_epoch_action;
+	std::vector<reduction_id> m_completed_reductions;
 };
 
 // Standard map / set collections of pointers have non-deterministic behavior because addresses change with every run of the program. Unordered types also have

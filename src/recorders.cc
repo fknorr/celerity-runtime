@@ -149,6 +149,14 @@ std::optional<collective_group_id> get_collective_group_id(const abstract_comman
 	return {};
 }
 
+std::vector<reduction_id> get_completed_reductions(const abstract_command& cmd) {
+	return matchbox::match(
+	    cmd,                                                                         //
+	    [](const horizon_command& hcmd) { return hcmd.get_completed_reductions(); }, //
+	    [](const epoch_command& ecmd) { return ecmd.get_completed_reductions(); },   //
+	    [](const auto&) { return std::vector<reduction_id>{}; });
+}
+
 command_record::command_record(const abstract_command& cmd, const task& tsk, const buffer_name_map& accessed_buffer_names)
     : cid(cmd.get_cid()), type(cmd.get_type()), epoch_action(get_epoch_action(cmd)), execution_range(get_execution_range(cmd)),
       reduction_id(get_reduction_id(cmd)), buffer_id(get_buffer_id(cmd)), buffer_name(get_cmd_buffer_name(buffer_id, accessed_buffer_names)),
@@ -156,7 +164,7 @@ command_record::command_record(const abstract_command& cmd, const task& tsk, con
       task_id(get_task_id(cmd)), task_geometry(tsk.get_geometry()), is_reduction_initializer(get_is_reduction_initializer(cmd)),
       accesses(build_cmd_access_list(cmd, tsk, accessed_buffer_names)), reductions(build_reduction_list(tsk, accessed_buffer_names)),
       side_effects(tsk.get_side_effect_map()), dependencies(build_command_dependency_list(cmd)), task_name(get_task_name(tsk)), task_type(tsk.get_type()),
-      collective_group_id(tsk.get_collective_group_id()) {}
+      collective_group_id(tsk.get_collective_group_id()), completed_reductions(get_completed_reductions(cmd)) {}
 
 // Instructions
 
@@ -272,10 +280,12 @@ destroy_host_object_instruction_record::destroy_host_object_instruction_record(c
     : acceptor_base(dhoinstr), host_object_id(dhoinstr.get_host_object_id()) {}
 
 horizon_instruction_record::horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid)
-    : acceptor_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid) {}
+    : acceptor_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid),
+      completed_reductions(hinstr.get_completed_reductions()) {}
 
 epoch_instruction_record::epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid)
-    : acceptor_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid), epoch_action(einstr.get_epoch_action()) {}
+    : acceptor_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid), epoch_action(einstr.get_epoch_action()),
+      completed_reductions(einstr.get_completed_reductions()) {}
 
 void instruction_recorder::record_await_push_command_id(const transfer_id& trid, const command_id cid) {
 	assert(m_await_push_cids.count(trid) == 0 || m_await_push_cids.at(trid) == cid);

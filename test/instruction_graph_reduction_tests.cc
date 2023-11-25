@@ -462,3 +462,31 @@ TEST_CASE("global reductions without a local contribution do not read stale loca
 	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 	CHECK(reader.transitive_predecessors_across<copy_instruction_record>().contains(global_reduce));
 }
+
+TEST_CASE("horizons and epochs notify the executor of completed reductions", "[instruction_graph_generator][instruction-graph][reduction]") {
+	const size_t num_nodes = GENERATE(values<size_t>({1, 2}));
+	const auto num_devices = GENERATE(values<size_t>({1, 2}));
+	const auto trigger = GENERATE(values<std::string>({"horizon", "epoch"}));
+	CAPTURE(num_nodes, num_devices, trigger);
+
+	test_utils::idag_test_context ictx(num_nodes, 0 /* local nid */, num_devices);
+	ictx.set_horizon_step(trigger == "horizon" ? 2 : 999);
+	auto buf = ictx.create_buffer(range<1>(1));
+	ictx.device_compute(range<1>(num_nodes)).name("writer").reduce(buf, false /* include_current_buffer_value */).submit();
+	SECTION("when the reduction result is subsequently read") { ictx.device_compute(range<1>(num_nodes)).name("reader").read(buf, acc::all()).submit(); }
+	SECTION("when the reduction result is discarded") { ictx.device_compute(range<1>(num_nodes)).name("reader").read(buf, acc::all()).submit(); }
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
+	const auto rid = all_writers[0]->reduction_map.at(0).reduction_id;
+
+	if(trigger == "horizon") {
+		const auto horizon = all_instrs.select_unique<horizon_instruction_record>();
+		CHECK(horizon->completed_reductions == std::vector{rid});
+	} else {
+		const auto epoch = all_instrs.select_unique<epoch_instruction_record>(
+		    [](const epoch_instruction_record& einstr) { return einstr.epoch_action == epoch_action::shutdown; });
+		CHECK(epoch->completed_reductions == std::vector{rid});
+	}
+}

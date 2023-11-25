@@ -94,22 +94,32 @@ namespace detail {
 
 	class epoch_command final : public matchbox::implement_acceptor<task_command, epoch_command> {
 		friend class command_graph;
-		epoch_command(const command_id& cid, const task_id& tid, epoch_action action) : acceptor_base(cid, tid), m_action(action) {}
+		epoch_command(const command_id cid, const task_id tid, const epoch_action action, std::vector<reduction_id> completed_reductions)
+		    : acceptor_base(cid, tid), m_action(action), m_completed_reductions(std::move(completed_reductions)) {}
 
 		command_type get_type() const override { return command_type::epoch; }
 
 	  public:
 		epoch_action get_epoch_action() const { return m_action; }
+		const std::vector<reduction_id>& get_completed_reductions() const { return m_completed_reductions; }
 
 	  private:
 		epoch_action m_action;
+		std::vector<reduction_id> m_completed_reductions;
 	};
 
 	class horizon_command final : public matchbox::implement_acceptor<task_command, horizon_command> {
 		friend class command_graph;
-		using acceptor_base::acceptor_base;
+		horizon_command(const command_id cid, const task_id tid, std::vector<reduction_id> completed_reductions)
+		    : acceptor_base(cid, tid), m_completed_reductions(std::move(completed_reductions)) {}
 
 		command_type get_type() const override { return command_type::horizon; }
+
+	  public:
+		const std::vector<reduction_id>& get_completed_reductions() const { return m_completed_reductions; }
+
+	  private:
+		std::vector<reduction_id> m_completed_reductions;
 	};
 
 	class execution_command final : public matchbox::implement_acceptor<task_command, execution_command> {
