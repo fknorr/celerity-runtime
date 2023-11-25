@@ -378,9 +378,18 @@ instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes
     instruction_recorder* const recorder, const policy_set& policy)
     : m_idag(idag), m_tm(tm), m_num_nodes(num_nodes), m_local_nid(local_nid), m_system(std::move(system)), m_policy(policy), m_recorder(recorder) //
 {
+#ifndef NDEBUG
 	assert(m_system.memories.size() <= max_num_memories);
 	assert(std::all_of(
 	    m_system.devices.begin(), m_system.devices.end(), [&](const device_info& device) { return device.native_memory < m_system.memories.size(); }));
+	for(memory_id mid_a = 0; mid_a < m_system.memories.size(); ++mid_a) {
+		assert(m_system.memories[mid_a].copy_peers[mid_a]);
+		for(memory_id mid_b = mid_a + 1; mid_b < m_system.memories.size(); ++mid_b) {
+			assert(m_system.memories[mid_a].copy_peers[mid_b] == m_system.memories[mid_b].copy_peers[mid_a]
+			       && "system_info::memories::copy_peers must be reflexive");
+		}
+	}
+#endif
 
 	m_idag.begin_epoch(task_manager::initial_epoch_task);
 	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none);
@@ -784,7 +793,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 						}
 						region<3> unsatisfied_region_on_host(std::move(unsatisfied_boxes_on_host));
 
-						if (!unsatisfied_region_on_host.empty()) {
+						if(!unsatisfied_region_on_host.empty()) {
 							auto& staging_source_region = staging_copy_sources[source_mid]; // allow default-insert
 							staging_source_region = region_union(staging_source_region, unsatisfied_region_on_host);
 						}
