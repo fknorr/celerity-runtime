@@ -430,6 +430,35 @@ TEST_CASE("instruction_graph_generator gracefully handles overlapping writes whe
 	SUCCEED();
 }
 
+TEMPLATE_TEST_CASE_SIG("hints::split_2d results in a 2d split", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 2, 3) {
+	const size_t num_nodes = 1;
+	const node_id local_nid = 0;
+	const size_t num_devices = 4;
+
+	test_utils::idag_test_context ictx(num_nodes, local_nid, num_devices);
+	const auto range = test_utils::truncate_range<Dims>({256, 256, 256});
+	auto buf = ictx.create_buffer(range);
+	ictx.device_compute(range).hint(hints::split_2d()).discard_write(buf, acc::one_to_one()).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto all_kernels = all_instrs.select_all<device_kernel_instruction_record>();
+	CHECK(all_kernels.count() == num_devices);
+
+	box_vector<3> kernel_boxes;
+	for(const auto& kernel : all_kernels.iterate()) {
+		// 2D split means that no tile spans either dimension 0 or 1 entirely
+		CHECK(kernel->execution_range.range[0] < range[0]);
+		CHECK(kernel->execution_range.range[1] < range[1]);
+		REQUIRE(kernel->access_map.size() == 1);
+		const auto& write = kernel->access_map.front();
+		CHECK(write.accessed_box_in_buffer == box(kernel->execution_range));
+		kernel_boxes.push_back(box(kernel->execution_range));
+	}
+	CHECK(region(std::move(kernel_boxes)) == box(subrange(id<3>(), range_cast<3>(range))));
+}
+
 TEMPLATE_TEST_CASE_SIG("oversubscription splits local chunks recursively", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 1, 2, 3) {
 	const size_t num_nodes = 1;
 	const node_id local_nid = 0;
@@ -545,52 +574,4 @@ TEST_CASE("instruction_graph_generator gracefully handles unsafe oversubscriptio
 
 	const auto all_instrs = ictx.query_instructions();
 	CHECK(all_instrs.count<device_kernel_instruction_record>() + all_instrs.count<host_task_instruction_record>() == 1);
-}
-
-
-TEST_CASE("wave_sim on 4 nodes") {
-	test_utils::idag_test_context ictx(4 /* num nodes */, GENERATE(values<node_id>({0, 1, 2, 3})) /* local nid */, 1 /* num devices */);
-
-	auto setup_wave = [&](test_utils::mock_buffer<2>& u) {
-		ictx.device_compute(u.get_range()).name("setup_wave").discard_write(u, acc::one_to_one()).submit();
-	};
-	auto zero = [&](test_utils::mock_buffer<2>& buf) { ictx.device_compute(buf.get_range()).name("zero").discard_write(buf, acc::one_to_one()).submit(); };
-
-	auto step = [&](test_utils::mock_buffer<2>& up, test_utils::mock_buffer<2>& u) {
-		ictx.device_compute(up.get_range()).name("step").read_write(up, acc::one_to_one()).read(u, acc::neighborhood(1, 1)).submit();
-	};
-
-	struct wave_sim_config {
-		int N = 512;  // Grid size
-		float T = 10; // Time at end of simulation
-		float dt = 0.25f;
-		float dx = 1.f;
-		float dy = 1.f;
-
-		// "Sample" a frame every X iterations
-		// (0 = don't produce any output)
-		unsigned output_sample_rate = 0;
-	} const cfg;
-
-	const size_t num_steps = cfg.T / cfg.dt;
-	// Sample (if enabled) every n-th frame, +1 for initial state
-	const size_t num_samples = cfg.output_sample_rate != 0 ? num_steps / cfg.output_sample_rate + 1 : 0;
-	if(cfg.output_sample_rate != 0 && num_steps % cfg.output_sample_rate != 0) {
-		std::cerr << "Warning: Number of time steps (" << num_steps << ") is not a multiple of the output sample rate (wasted frames)" << std::endl;
-	}
-
-	auto up = ictx.create_buffer(celerity::range<2>(cfg.N, cfg.N)); // next
-	auto u = ictx.create_buffer(celerity::range<2>(cfg.N, cfg.N));  // current
-
-	setup_wave(u);
-	zero(up);
-	step(up, u);
-
-	auto t = 0.0;
-	size_t i = 0;
-	while(t < cfg.T) {
-		step(up, u);
-		std::swap(u, up);
-		t += cfg.dt;
-	}
 }

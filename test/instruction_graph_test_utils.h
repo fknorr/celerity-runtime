@@ -422,6 +422,7 @@ class idag_test_context {
 		for(memory_id mid = 0; mid < info.memories.size(); ++mid) {
 			info.memories[mid].copy_peers.set(host_memory_id);
 			info.memories[mid].copy_peers.set(mid);
+			info.memories[host_memory_id].copy_peers.set(mid);
 			if(supports_d2d_copies) {
 				for(memory_id peer = 0; peer < info.memories.size(); ++peer) {
 					info.memories[mid].copy_peers.set(peer);
