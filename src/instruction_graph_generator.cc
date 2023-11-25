@@ -731,12 +731,6 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 		region<3> region;
 	};
 
-	// TODO host copy staging if p2p is not enabled. This must be a separate pass altogether, because, in case of a broadcast from one device to multiple
-	// devices, we only want to generate a single d2h followed by any number of h2ds.
-	//    1. find regions that need to be copied through the host but are not yet present on the host (disjoint like `reads`)
-	//    2. perform d2h copies, update access fronts / last writers
-	//    3. in the actual copy loop, use the last-host-writer instead of the original writer as copy source
-
 	constexpr auto stage_mid = host_memory_id;
 	std::vector<copy_template> pending_staging_copies;
 	std::vector<copy_template> pending_final_copies;
@@ -790,17 +784,21 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 						}
 						region<3> unsatisfied_region_on_host(std::move(unsatisfied_boxes_on_host));
 
-						auto& staging_source_region = staging_copy_sources[source_mid]; // allow default-insert
-						staging_source_region = region_union(staging_source_region, unsatisfied_region_on_host);
+						if (!unsatisfied_region_on_host.empty()) {
+							auto& staging_source_region = staging_copy_sources[source_mid]; // allow default-insert
+							staging_source_region = region_union(staging_source_region, unsatisfied_region_on_host);
+						}
 
 						auto& final_source_region = final_copy_sources[stage_mid]; // allow default-insert
 						final_source_region = region_union(final_source_region, copy_box);
 					}
 				}
 				for(auto& [source_mid, copy_region] : staging_copy_sources) {
+					assert(!copy_region.empty());
 					pending_staging_copies.push_back({source_mid, stage_mid, std::move(copy_region)});
 				}
 				for(auto& [source_mid, copy_region] : final_copy_sources) {
+					assert(!copy_region.empty());
 					pending_final_copies.push_back({source_mid, dest_mid, std::move(copy_region)});
 				}
 			}

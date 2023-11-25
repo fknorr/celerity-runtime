@@ -186,6 +186,7 @@ namespace detail {
 			system_info.devices[did].native_memory = native_memory;
 			system_info.memories[native_memory].copy_peers.set(host_memory_id);
 			system_info.memories[native_memory].copy_peers.set(native_memory);
+			system_info.memories[host_memory_id].copy_peers.set(native_memory);
 			CELERITY_DEBUG("Device D{} with native memory M{} is {}", backend_devices[did].device_id, backend_devices[did].native_memory,
 			    backend_devices[did].sycl_device.get_info<sycl::info::device::name>());
 		}
