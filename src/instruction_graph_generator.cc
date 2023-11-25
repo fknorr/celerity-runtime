@@ -1421,6 +1421,43 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 }
 
 
+constexpr size_t communicator_max_coordinate = INT_MAX;
+
+void split_into_communicator_compatible_boxes_recursive(
+    box_vector<3>& comm_boxes, const box<3>& full_box, id<3> min, id<3> max, const int slice_dim, const int dim) {
+	assert(dim <= slice_dim);
+	const auto& full_box_min = full_box.get_min();
+	const auto& full_box_max = full_box.get_max();
+
+	if(dim < slice_dim) {
+		for(min[dim] = full_box_min[dim]; min[dim] < full_box_max[dim]; ++min[dim]) {
+			max[dim] = min[dim] + 1;
+			split_into_communicator_compatible_boxes_recursive(comm_boxes, full_box, min, max, slice_dim, dim + 1);
+		}
+	} else {
+		for(min[dim] = full_box_min[dim]; min[dim] < full_box_max[dim]; min[dim] += communicator_max_coordinate) {
+			max[dim] = std::min(full_box_max[dim], min[dim] + communicator_max_coordinate);
+			comm_boxes.emplace_back(min, max);
+		}
+	}
+}
+
+// We split boxes if the stride within the buffer becomes too large (as opposed to within the sender's allocation) to guarantee that the receiver ends up with a
+// stride that is within bounds even when receiving into a larger (potentially full-buffer) allocation, 
+box_vector<3> split_into_communicator_compatible_boxes(const range<3>& buffer_range, const box<3>& full_box) {
+	assert(box(subrange<3>(zeros, buffer_range)).covers(full_box));
+
+	int slice_dim = 0;
+	for(int d = 1; d < 3; ++d) {
+		if(buffer_range[d] > communicator_max_coordinate) { slice_dim = d; }
+	}
+
+	box_vector<3> comm_boxes;
+	split_into_communicator_compatible_boxes_recursive(comm_boxes, full_box, full_box.get_min(), full_box.get_max(), slice_dim, 0);
+	return comm_boxes;
+}
+
+
 void instruction_graph_generator::impl::compile_push_command(const push_command& pcmd) {
 	const auto trid = pcmd.get_transfer_id();
 
@@ -1443,26 +1480,28 @@ void instruction_graph_generator::impl::compile_push_command(const push_command&
 	}
 
 	for(auto& [_, region] : send_regions) {
-		for(const auto& box : region.get_boxes()) {
-			const int tag = create_pilot_message(pcmd.get_target(), trid, box);
+		for(const auto& full_box : region.get_boxes()) {
+			for(const auto& box : split_into_communicator_compatible_boxes(buffer.range, full_box)) {
+				const int tag = create_pilot_message(pcmd.get_target(), trid, box);
 
-			const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
-			assert(allocation != nullptr); // we allocate_contiguously above
+				const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
+				assert(allocation != nullptr); // we allocate_contiguously above
 
-			const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
-			const auto send_instr = &create<send_instruction>(
-			    pcmd.get_target(), tag, host_memory_id, allocation->aid, allocation->box.get_range(), offset_in_allocation, box.get_range(), buffer.elem_size);
+				const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
+				const auto send_instr = &create<send_instruction>(pcmd.get_target(), tag, host_memory_id, allocation->aid, allocation->box.get_range(),
+				    offset_in_allocation, box.get_range(), buffer.elem_size);
 
-			if(m_recorder != nullptr) {
-				const auto offset_in_buffer = box.get_offset();
-				*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), trid, buffer.name, offset_in_buffer);
+				if(m_recorder != nullptr) {
+					const auto offset_in_buffer = box.get_offset();
+					*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), trid, buffer.name, offset_in_buffer);
+				}
+
+				for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
+					assert(dep_instr != nullptr);
+					add_dependency(*send_instr, *dep_instr, dependency_kind::true_dep);
+				}
+				allocation->record_read(box, send_instr);
 			}
-
-			for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
-				assert(dep_instr != nullptr);
-				add_dependency(*send_instr, *dep_instr, dependency_kind::true_dep);
-			}
-			allocation->record_read(box, send_instr);
 		}
 	}
 

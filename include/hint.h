@@ -57,6 +57,10 @@ inline void split_2d::validate(const hint_base& other) const {
 	if(dynamic_cast<const split_1d*>(&other) != nullptr) { throw std::runtime_error("Cannot combine split_1d and split_2d hints"); }
 }
 
+/**
+ * Suggests that more than chunks of the execution space assigned to individual devices should be subdivided further.
+ * Oversubscription can improve utilization by increasing the potential for compute-transfer overlap.
+ */
 class oversubscribe final : public detail::hint_base {
   public:
 	explicit oversubscribe(const size_t factor) : m_factor(factor) {

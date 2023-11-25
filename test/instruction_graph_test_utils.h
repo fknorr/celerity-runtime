@@ -332,7 +332,7 @@ class pilot_query {
 	template <typename... Filters>
 	pilot_query select_all(const Filters&... filters) const {
 		std::vector<outbound_pilot> filtered;
-		std::copy_if(m_result.begin(), m_result.end(), std::back_inserter(filtered), [&](const outbound_pilot& pilot) { return matches(pilot, filters...); });
+		std::copy_if(m_result.begin(), m_result.end(), std::back_inserter(filtered), [&](const outbound_pilot& pilot) { return matches_all(pilot, filters...); });
 		return pilot_query(m_recorder, std::move(filtered));
 	}
 
@@ -345,12 +345,12 @@ class pilot_query {
 
 	template <typename... Filters>
 	size_t count(const Filters&... filters) const {
-		return static_cast<size_t>(std::count_if(m_result.begin(), m_result.end(), [&](const outbound_pilot& p) { return matches(p, filters...); }));
+		return static_cast<size_t>(std::count_if(m_result.begin(), m_result.end(), [&](const outbound_pilot& p) { return matches_all(p, filters...); }));
 	}
 
 	template <typename... Filters>
 	bool all_match(const Filters&... filters) const {
-		const auto num_non_matching = std::count_if(m_result.begin(), m_result.end(), [&](const outbound_pilot& p) { return !matches(p, filters...); });
+		const auto num_non_matching = std::count_if(m_result.begin(), m_result.end(), [&](const outbound_pilot& p) { return !matches_all(p, filters...); });
 		if(num_non_matching > 0) { UNSCOPED_INFO(fmt::format("non-matching: {} pilots", num_non_matching)); }
 		return num_non_matching == 0;
 	}
@@ -379,8 +379,13 @@ class pilot_query {
 	static bool matches(const outbound_pilot& pilot, const transfer_id& trid) { return pilot.message.transfer_id == trid; }
 	static bool matches(const outbound_pilot& pilot, const box<3>& box) { return pilot.message.box == box; }
 
+	template <typename Predicate, std::enable_if_t<std::is_invocable_r_v<bool, const Predicate&, const outbound_pilot&>, int> = 0>
+	static bool matches(const outbound_pilot& pilot, const Predicate& predicate) {
+		return predicate(pilot);
+	}
+
 	template <typename... Filters>
-	static bool matches(const outbound_pilot& pilot, const Filters&... filters) {
+	static bool matches_all(const outbound_pilot& pilot, const Filters&... filters) {
 		return (matches(pilot, filters) && ...);
 	}
 
