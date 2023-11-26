@@ -26,6 +26,17 @@ class PhantomTypePrinter:
         return self.prefix + str(self.value)
 
 
+class AllocationIdPrinter:
+    def __init__(self, val: gdb.Value):
+        bits = int(val['m_bits'])
+        self.is_null = bits == 0
+        self.mid = (bits >> 56)
+        self.raid = (bits & 0x00ff_ffff_ffff_ffff)
+
+    def to_string(self) -> str:
+        return 'M{}.A{}'.format(self.mid, self.raid) if not self.is_null else 'null'
+
+
 class TransferIdPrinter:
     def __init__(self, val: gdb.Value):
         self.consumer_tid = val['consumer_tid']
@@ -157,8 +168,9 @@ def build_pretty_printer():
     add_phantom_type_printer(pp, 'hydration_id', 'HY')
     add_phantom_type_printer(pp, 'memory_id', 'M')
     add_phantom_type_printer(pp, 'device_id', 'D')
-    add_phantom_type_printer(pp, 'allocation_id', 'A')
+    add_phantom_type_printer(pp, 'raw_allocation_id', 'A')
     add_phantom_type_printer(pp, 'instruction_id', 'I')
+    pp.add_printer('allocation_id', '^celerity::detail::allocation_id$', AllocationIdPrinter)
     pp.add_printer('transfer_id', '^celerity::detail::transfer_id$', TransferIdPrinter)
     pp.add_printer('id', '^celerity::id<.*>$', CoordinatePrinter)
     pp.add_printer('range', '^celerity::range<.*>$', CoordinatePrinter)

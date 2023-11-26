@@ -235,8 +235,8 @@ TEST_CASE("epochs serialize execution and compact dependency tracking", "[instru
 	const auto init_epoch = all_instrs.select_unique<epoch_instruction_record>(task_manager::initial_epoch_task);
 	CHECK(init_epoch.predecessors().count() == 0);
 
-	const auto all_device_allocs =
-	    all_instrs.select_all<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id != host_memory_id; });
+	const auto all_device_allocs = all_instrs.select_all<alloc_instruction_record>(
+	    [](const alloc_instruction_record& ainstr) { return ainstr.allocation_id.get_memory_id() != host_memory_id; });
 	CHECK(all_device_allocs.predecessors() == init_epoch);
 
 	const auto all_producers = all_instrs.select_all("producer");
@@ -248,8 +248,8 @@ TEST_CASE("epochs serialize execution and compact dependency tracking", "[instru
 
 	// There will only be a single d2h copy, since inserting the epoch will compact the last-writer tracking structures, replacing the two concurrent device
 	// kernels with the single epoch.
-	const auto host_alloc =
-	    all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id == host_memory_id; });
+	const auto host_alloc = all_instrs.select_unique<alloc_instruction_record>(
+	    [](const alloc_instruction_record& ainstr) { return ainstr.allocation_id.get_memory_id() == host_memory_id; });
 	CHECK(host_alloc.predecessors() == barrier_epoch);
 	const auto d2h_copy = host_alloc.successors().select_unique<copy_instruction_record>();
 
@@ -318,15 +318,15 @@ TEST_CASE("horizon application serializes execution and compacts dependency trac
 	const auto applied_horizon = all_horizons[0];
 	const auto current_horizon = all_horizons[1];
 
-	const auto all_device_allocs =
-	    all_instrs.select_all<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id != host_memory_id; });
+	const auto all_device_allocs = all_instrs.select_all<alloc_instruction_record>(
+	    [](const alloc_instruction_record& ainstr) { return ainstr.allocation_id.get_memory_id() != host_memory_id; });
 	const auto all_producers = all_instrs.select_all("producer");
 	CHECK(applied_horizon.transitive_predecessors().contains(union_of(all_device_allocs, all_producers)));
 
 	// There will only be a single d2h copy, since inserting the epoch will compact the last-writer tracking structures, replacing the two concurrent device
 	// kernels with the single epoch.
-	const auto host_alloc =
-	    all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) { return ainstr.memory_id == host_memory_id; });
+	const auto host_alloc = all_instrs.select_unique<alloc_instruction_record>(
+	    [](const alloc_instruction_record& ainstr) { return ainstr.allocation_id.get_memory_id() == host_memory_id; });
 	const auto d2h_copy = host_alloc.successors().select_unique<copy_instruction_record>();
 	const auto consumer = all_instrs.select_unique<host_task_instruction_record>("consumer");
 	const auto all_frees = all_instrs.select_all<free_instruction_record>();

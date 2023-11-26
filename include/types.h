@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdlib>
 #include <functional>
 #include <utility>
@@ -58,7 +59,7 @@ MAKE_PHANTOM_TYPE(host_object_id, size_t)
 MAKE_PHANTOM_TYPE(hydration_id, size_t)
 MAKE_PHANTOM_TYPE(memory_id, size_t)
 MAKE_PHANTOM_TYPE(device_id, size_t)
-MAKE_PHANTOM_TYPE(allocation_id, size_t)
+MAKE_PHANTOM_TYPE(raw_allocation_id, size_t)
 MAKE_PHANTOM_TYPE(instruction_id, size_t)
 
 
@@ -71,13 +72,39 @@ enum class side_effect_order { sequential };
 
 namespace celerity::detail {
 
+class allocation_id {
+  public:
+	constexpr static size_t memory_id_bits = 8;
+	constexpr static size_t max_memory_id = (1 << memory_id_bits) - 1;
+	constexpr static size_t raw_allocation_id_bits = sizeof(size_t) * 8 - memory_id_bits;
+	constexpr static size_t max_raw_allocation_id = (size_t(1) << raw_allocation_id_bits) - 1;
+
+	allocation_id() = default;
+
+	constexpr allocation_id(const memory_id mid, const raw_allocation_id raid) {
+		assert(mid <= max_memory_id);
+		assert(raid <= max_raw_allocation_id);
+		m_bits = (mid << raw_allocation_id_bits) | raid;
+	}
+
+	constexpr memory_id get_memory_id() const { return m_bits >> raw_allocation_id_bits; }
+	constexpr raw_allocation_id get_raw_allocation_id() const { return m_bits & max_raw_allocation_id; }
+
+	friend constexpr bool operator==(const allocation_id& lhs, const allocation_id& rhs) { return lhs.m_bits == rhs.m_bits; }
+	friend constexpr bool operator!=(const allocation_id& lhs, const allocation_id& rhs) { return lhs.m_bits != rhs.m_bits; }
+
+  private:
+	friend struct std::hash<allocation_id>;
+	size_t m_bits = 0;
+};
+
 inline constexpr node_id master_node_id = 0;
 
 inline constexpr memory_id user_memory_id = 0; // (unpinned) host memory allocated for or by the user
 inline constexpr memory_id host_memory_id = 1; // (pinned) host memory for buffer-backing allocations
 inline constexpr memory_id first_device_memory_id = 2;
 
-inline constexpr allocation_id null_allocation_id = 0; // allocation_id equivalent of a null pointer
+inline constexpr allocation_id null_allocation_id{}; // allocation_id equivalent of a null pointer
 
 inline constexpr collective_group_id non_collective_group_id = 0;
 inline constexpr collective_group_id root_collective_group_id = 1;
@@ -103,6 +130,11 @@ struct transfer_id {
 template <>
 struct std::hash<celerity::detail::transfer_id> {
 	std::size_t operator()(const celerity::detail::transfer_id& t) const noexcept; // defined in utils.cc
+};
+
+template <>
+struct std::hash<celerity::detail::allocation_id> {
+	std::size_t operator()(const celerity::detail::allocation_id aid) const noexcept { return std::hash<size_t>{}(aid.m_bits); }
 };
 
 namespace celerity::detail {

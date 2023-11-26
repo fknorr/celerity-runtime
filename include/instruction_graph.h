@@ -59,17 +59,15 @@ class clone_collective_group_instruction : public matchbox::implement_acceptor<i
 /// Allocates a contiguous range of memory, either for use as a backing allocation for a buffer or for other purposes i.e. staging for transfer operations.
 class alloc_instruction final : public matchbox::implement_acceptor<instruction, alloc_instruction> {
   public:
-	explicit alloc_instruction(const instruction_id iid, const allocation_id aid, const memory_id mid, const size_t size, const size_t alignment)
-	    : acceptor_base(iid), m_aid(aid), m_mid(mid), m_size(size), m_alignment(alignment) {}
+	explicit alloc_instruction(const instruction_id iid, const allocation_id aid, const size_t size, const size_t alignment)
+	    : acceptor_base(iid), m_aid(aid), m_size(size), m_alignment(alignment) {}
 
 	allocation_id get_allocation_id() const { return m_aid; }
-	memory_id get_memory_id() const { return m_mid; }
 	size_t get_size_bytes() const { return m_size; }
 	size_t get_alignment_bytes() const { return m_alignment; }
 
   private:
 	allocation_id m_aid;
-	memory_id m_mid;
 	size_t m_size;
 	size_t m_alignment;
 };
@@ -77,13 +75,11 @@ class alloc_instruction final : public matchbox::implement_acceptor<instruction,
 /// Returns an allocation made with alloc_instruction to the system.
 class free_instruction final : public matchbox::implement_acceptor<instruction, free_instruction> {
   public:
-	explicit free_instruction(const instruction_id iid, const memory_id mid, const allocation_id aid) : acceptor_base(iid), m_mid(mid), m_aid(aid) {}
+	explicit free_instruction(const instruction_id iid, const allocation_id aid) : acceptor_base(iid), m_aid(aid) {}
 
-	memory_id get_memory_id() const { return m_mid; }
 	allocation_id get_allocation_id() const { return m_aid; }
 
   private:
-	memory_id m_mid;
 	allocation_id m_aid;
 };
 
@@ -134,19 +130,16 @@ class export_instruction final : public matchbox::implement_acceptor<instruction
 /// Copies a 0- to 3-dimensional subrange of elements from one allocation to another, potentially between different memories.
 class copy_instruction final : public matchbox::implement_acceptor<instruction, copy_instruction> {
   public:
-	explicit copy_instruction(const instruction_id iid, const int dims, const memory_id source_memory, const allocation_id source_allocation,
-	    const range<3>& source_range, const id<3>& offset_in_source, const memory_id dest_memory, const allocation_id dest_allocation,
-	    const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
-	    : acceptor_base(iid), m_source_mid(source_memory), m_source_aid(source_allocation), m_dest_mid(dest_memory), m_dest_aid(dest_allocation), m_dims(dims),
-	      m_source_range(source_range), m_dest_range(dest_range), m_offset_in_source(offset_in_source), m_offset_in_dest(offset_in_dest),
-	      m_copy_range(copy_range), m_elem_size(elem_size) {}
+	explicit copy_instruction(const instruction_id iid, const int dims, const allocation_id source_allocation, const range<3>& source_range,
+	    const id<3>& offset_in_source, const allocation_id dest_allocation, const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range,
+	    const size_t elem_size)
+	    : acceptor_base(iid), m_source_aid(source_allocation), m_dest_aid(dest_allocation), m_dims(dims), m_source_range(source_range),
+	      m_dest_range(dest_range), m_offset_in_source(offset_in_source), m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
 
-	memory_id get_source_memory_id() const { return m_source_mid; }
 	allocation_id get_source_allocation_id() const { return m_source_aid; }
 	int get_dimensions() const { return m_dims; }
 	const range<3>& get_source_range() const { return m_source_range; }
 	const id<3>& get_offset_in_source() const { return m_offset_in_source; }
-	memory_id get_dest_memory_id() const { return m_dest_mid; }
 	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
 	const range<3>& get_dest_range() const { return m_dest_range; }
 	const id<3>& get_offset_in_dest() const { return m_offset_in_dest; }
@@ -154,9 +147,7 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
-	memory_id m_source_mid;
 	allocation_id m_source_aid;
-	memory_id m_dest_mid;
 	allocation_id m_dest_aid;
 	int m_dims; // TODO does this actually need to know dimensions or can we just copy by effective_dims?
 	range<3> m_source_range;
@@ -274,14 +265,13 @@ struct inbound_pilot {
 /// (MPI_) sends a subrange of an allocation to a single remote node. The send must have be announced by transmitting a pilot_message first.
 class send_instruction final : public matchbox::implement_acceptor<instruction, send_instruction> {
   public:
-	explicit send_instruction(const instruction_id iid, const node_id to_nid, const int tag, const memory_id source_mid, const allocation_id source_aid,
-	    const range<3>& source_alloc_range, const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
-	    : acceptor_base(iid), m_to_nid(to_nid), m_tag(tag), m_source_mid(source_mid), m_source_aid(source_aid), m_source_range(source_alloc_range),
-	      m_offset_in_source(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
+	explicit send_instruction(const instruction_id iid, const node_id to_nid, const int tag, const allocation_id source_aid, const range<3>& source_alloc_range,
+	    const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
+	    : acceptor_base(iid), m_to_nid(to_nid), m_tag(tag), m_source_aid(source_aid), m_source_range(source_alloc_range), m_offset_in_source(offset_in_alloc),
+	      m_send_range(send_range), m_elem_size(elem_size) {}
 
 	node_id get_dest_node_id() const { return m_to_nid; }
 	int get_tag() const { return m_tag; }
-	memory_id get_source_memory_id() const { return m_source_mid; }
 	allocation_id get_source_allocation_id() const { return m_source_aid; }
 	const range<3>& get_source_allocation_range() const { return m_source_range; }
 	const id<3>& get_offset_in_source_allocation() const { return m_offset_in_source; }
@@ -291,7 +281,6 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
   private:
 	node_id m_to_nid;
 	int m_tag;
-	memory_id m_source_mid;
 	allocation_id m_source_aid;
 	range<3> m_source_range;
 	id<3> m_offset_in_source;
@@ -302,14 +291,12 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 /// Common implementation mixin for receive_instruction and split_receive_instruction.
 class receive_instruction_impl {
   public:
-	explicit receive_instruction_impl(const transfer_id& trid, region<3> request, const memory_id dest_memory, const allocation_id dest_allocation,
-	    const box<3>& allocated_box, const size_t elem_size)
-	    : m_trid(trid), m_request(std::move(request)), m_dest_mid(dest_memory), m_dest_aid(dest_allocation), m_allocated_box(allocated_box),
-	      m_elem_size(elem_size) {}
+	explicit receive_instruction_impl(
+	    const transfer_id& trid, region<3> request, const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
+	    : m_trid(trid), m_request(std::move(request)), m_dest_aid(dest_allocation), m_allocated_box(allocated_box), m_elem_size(elem_size) {}
 
 	const transfer_id& get_transfer_id() const { return m_trid; }
 	const region<3>& get_requested_region() const { return m_request; }
-	memory_id get_dest_memory_id() const { return m_dest_mid; }
 	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
 	const box<3>& get_allocated_box() const { return m_allocated_box; }
 	size_t get_element_size() const { return m_elem_size; }
@@ -317,7 +304,6 @@ class receive_instruction_impl {
   private:
 	transfer_id m_trid;
 	region<3> m_request;
-	memory_id m_dest_mid;
 	allocation_id m_dest_aid;
 	box<3> m_allocated_box;
 	size_t m_elem_size;
@@ -327,9 +313,9 @@ class receive_instruction_impl {
 /// complete once all of its constituent parts have arrived.
 class receive_instruction final : public matchbox::implement_acceptor<instruction, receive_instruction>, public receive_instruction_impl {
   public:
-	explicit receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
-	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
-	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_memory, dest_allocation, allocated_box, elem_size) {}
+	explicit receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const allocation_id dest_allocation,
+	    const box<3>& allocated_box, const size_t elem_size)
+	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_allocation, allocated_box, elem_size) {}
 };
 
 /// Informs the receive arbiter about the bounding box allocation for a series of incoming transfers. The boxes of remote send_instructions do not necessarily
@@ -338,9 +324,9 @@ class receive_instruction final : public matchbox::implement_acceptor<instructio
 /// 2/4/8-connected component of the await_push region and passes it on to the receive_arbiter through a begin_receive_instruction.
 class split_receive_instruction final : public matchbox::implement_acceptor<instruction, split_receive_instruction>, public receive_instruction_impl {
   public:
-	explicit split_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const memory_id dest_memory,
-	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
-	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_memory, dest_allocation, allocated_box, elem_size) {}
+	explicit split_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const allocation_id dest_allocation,
+	    const box<3>& allocated_box, const size_t elem_size)
+	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_allocation, allocated_box, elem_size) {}
 };
 
 /// Waits on the receive arbiter to complete part of the receive.
@@ -363,19 +349,16 @@ class await_receive_instruction final : public matchbox::implement_acceptor<inst
 /// peer node and place the chunks side-by-side in a contiguous allocation. The offset in the output allocation are equal to the sender node id.
 class gather_receive_instruction final : public matchbox::implement_acceptor<instruction, gather_receive_instruction> {
   public:
-	explicit gather_receive_instruction(
-	    const instruction_id iid, const transfer_id& trid, const memory_id dest_mid, const allocation_id dest_aid, const size_t node_chunk_size)
-	    : acceptor_base(iid), m_trid(trid), m_mid(dest_mid), m_aid(dest_aid), m_node_chunk_size(node_chunk_size) {}
+	explicit gather_receive_instruction(const instruction_id iid, const transfer_id& trid, const allocation_id dest_aid, const size_t node_chunk_size)
+	    : acceptor_base(iid), m_trid(trid), m_dest_aid(dest_aid), m_node_chunk_size(node_chunk_size) {}
 
 	transfer_id get_transfer_id() const { return m_trid; }
-	memory_id get_dest_memory_id() const { return m_mid; }
-	allocation_id get_dest_allocation_id() const { return m_aid; }
+	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
 	size_t get_node_chunk_size() const { return m_node_chunk_size; }
 
   private:
 	transfer_id m_trid;
-	memory_id m_mid;
-	allocation_id m_aid;
+	allocation_id m_dest_aid;
 	size_t m_node_chunk_size;
 };
 
@@ -383,18 +366,15 @@ class gather_receive_instruction final : public matchbox::implement_acceptor<ins
 /// contribute a partial reduction result leave the identity value in their gather slot.
 class fill_identity_instruction final : public matchbox::implement_acceptor<instruction, fill_identity_instruction> {
   public:
-	explicit fill_identity_instruction(
-	    const instruction_id iid, const reduction_id rid, const memory_id mid, const allocation_id allocation_id, const size_t num_values)
-	    : acceptor_base(iid), m_rid(rid), m_mid(mid), m_aid(allocation_id), m_num_values(num_values) {}
+	explicit fill_identity_instruction(const instruction_id iid, const reduction_id rid, const allocation_id allocation_id, const size_t num_values)
+	    : acceptor_base(iid), m_rid(rid), m_aid(allocation_id), m_num_values(num_values) {}
 
 	reduction_id get_reduction_id() const { return m_rid; }
-	memory_id get_memory_id() const { return m_mid; }
 	allocation_id get_allocation_id() const { return m_aid; }
 	size_t get_num_values() const { return m_num_values; }
 
   private:
 	reduction_id m_rid;
-	memory_id m_mid;
 	allocation_id m_aid;
 	size_t m_num_values;
 };
@@ -402,20 +382,17 @@ class fill_identity_instruction final : public matchbox::implement_acceptor<inst
 /// Performs an out-of-memory reduction by reading from a gather allocation and writing to a single (buffer) allocation.
 class reduce_instruction final : public matchbox::implement_acceptor<instruction, reduce_instruction> {
   public:
-	explicit reduce_instruction(const instruction_id iid, const reduction_id rid, const memory_id mid, const allocation_id source_allocation_id,
-	    const size_t num_source_values, const allocation_id dest_allocation_id)
-	    : acceptor_base(iid), m_rid(rid), m_mid(mid), m_source_aid(source_allocation_id), m_num_source_values(num_source_values),
-	      m_dest_aid(dest_allocation_id) {}
+	explicit reduce_instruction(const instruction_id iid, const reduction_id rid, const allocation_id source_allocation_id, const size_t num_source_values,
+	    const allocation_id dest_allocation_id)
+	    : acceptor_base(iid), m_rid(rid), m_source_aid(source_allocation_id), m_num_source_values(num_source_values), m_dest_aid(dest_allocation_id) {}
 
 	reduction_id get_reduction_id() const { return m_rid; }
-	memory_id get_memory_id() const { return m_mid; }
 	allocation_id get_source_allocation_id() const { return m_source_aid; }
 	size_t get_num_source_values() const { return m_num_source_values; }
 	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
 
   private:
 	reduction_id m_rid;
-	memory_id m_mid;
 	allocation_id m_source_aid;
 	size_t m_num_source_values;
 	allocation_id m_dest_aid;

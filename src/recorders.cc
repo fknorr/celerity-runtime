@@ -176,12 +176,11 @@ clone_collective_group_instruction_record::clone_collective_group_instruction_re
 
 alloc_instruction_record::alloc_instruction_record(
     const alloc_instruction& ainstr, const alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation, std::optional<size_t> num_chunks)
-    : acceptor_base(ainstr), allocation_id(ainstr.get_allocation_id()), memory_id(ainstr.get_memory_id()), size_bytes(ainstr.get_size_bytes()),
-      alignment_bytes(ainstr.get_alignment_bytes()), origin(origin), buffer_allocation(std::move(buffer_allocation)), num_chunks(num_chunks) {}
+    : acceptor_base(ainstr), allocation_id(ainstr.get_allocation_id()), size_bytes(ainstr.get_size_bytes()), alignment_bytes(ainstr.get_alignment_bytes()),
+      origin(origin), buffer_allocation(std::move(buffer_allocation)), num_chunks(num_chunks) {}
 
 free_instruction_record::free_instruction_record(const free_instruction& finstr, const size_t size, std::optional<buffer_allocation_record> buffer_allocation)
-    : acceptor_base(finstr), memory_id(finstr.get_memory_id()), allocation_id(finstr.get_allocation_id()), size(size),
-      buffer_allocation(std::move(buffer_allocation)) {}
+    : acceptor_base(finstr), allocation_id(finstr.get_allocation_id()), size(size), buffer_allocation(std::move(buffer_allocation)) {}
 
 init_buffer_instruction_record::init_buffer_instruction_record(const init_buffer_instruction& ibinstr, std::string buffer_name)
     : acceptor_base(ibinstr), buffer_id(ibinstr.get_buffer_id()), buffer_name(std::move(buffer_name)), host_allocation_id(ibinstr.get_host_allocation_id()),
@@ -195,11 +194,10 @@ export_instruction_record::export_instruction_record(
 
 copy_instruction_record::copy_instruction_record(
     const copy_instruction& cinstr, const copy_origin origin, const detail::buffer_id buffer_id, std::string buffer_name, const detail::box<3>& box)
-    : acceptor_base(cinstr), source_memory_id(cinstr.get_source_memory_id()), source_allocation_id(cinstr.get_source_allocation_id()),
-      dest_memory_id(cinstr.get_dest_memory_id()), dest_allocation_id(cinstr.get_dest_allocation_id()), dimensions(cinstr.get_dimensions()),
-      source_range(cinstr.get_source_range()), dest_range(cinstr.get_dest_range()), offset_in_source(cinstr.get_offset_in_source()),
-      offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), element_size(cinstr.get_element_size()), origin(origin),
-      buffer_id(buffer_id), buffer_name(std::move(buffer_name)), box(box) {}
+    : acceptor_base(cinstr), source_allocation_id(cinstr.get_source_allocation_id()), dest_allocation_id(cinstr.get_dest_allocation_id()),
+      dimensions(cinstr.get_dimensions()), source_range(cinstr.get_source_range()), dest_range(cinstr.get_dest_range()),
+      offset_in_source(cinstr.get_offset_in_source()), offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()),
+      element_size(cinstr.get_element_size()), origin(origin), buffer_id(buffer_id), buffer_name(std::move(buffer_name)), box(box) {}
 
 device_kernel_instruction_record::device_kernel_instruction_record(const device_kernel_instruction& dkinstr, const task_id cg_tid,
     const command_id execution_cid, const std::string& debug_name, const std::vector<buffer_memory_record>& buffer_memory_allocation_map,
@@ -234,15 +232,14 @@ host_task_instruction_record::host_task_instruction_record(const host_task_instr
 
 send_instruction_record::send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const detail::transfer_id& trid,
     std::string buffer_name, const celerity::id<3>& offset_in_buffer)
-    : acceptor_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()), source_memory_id(sinstr.get_source_memory_id()),
-      source_allocation_id(sinstr.get_source_allocation_id()), source_allocation_range(sinstr.get_source_allocation_range()),
-      offset_in_source_allocation(sinstr.get_offset_in_source_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()),
-      push_cid(push_cid), transfer_id(trid), buffer_name(std::move(buffer_name)), offset_in_buffer(offset_in_buffer) {}
+    : acceptor_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()), source_allocation_id(sinstr.get_source_allocation_id()),
+      source_allocation_range(sinstr.get_source_allocation_range()), offset_in_source_allocation(sinstr.get_offset_in_source_allocation()),
+      send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid), transfer_id(trid), buffer_name(std::move(buffer_name)),
+      offset_in_buffer(offset_in_buffer) {}
 
 receive_instruction_record_impl::receive_instruction_record_impl(const receive_instruction_impl& rinstr, std::string buffer_name)
     : transfer_id(rinstr.get_transfer_id()), buffer_name(std::move(buffer_name)), requested_region(rinstr.get_requested_region()),
-      dest_memory_id(rinstr.get_dest_memory_id()), dest_allocation_id(rinstr.get_dest_allocation_id()), allocated_box(rinstr.get_allocated_box()),
-      element_size(rinstr.get_element_size()) {}
+      dest_allocation_id(rinstr.get_dest_allocation_id()), allocated_box(rinstr.get_allocated_box()), element_size(rinstr.get_element_size()) {}
 
 receive_instruction_record::receive_instruction_record(const receive_instruction& rinstr, std::string buffer_name)
     : acceptor_base(rinstr), receive_instruction_record_impl(rinstr, std::move(buffer_name)) {}
@@ -255,19 +252,17 @@ await_receive_instruction_record::await_receive_instruction_record(const await_r
 
 gather_receive_instruction_record::gather_receive_instruction_record(
     const gather_receive_instruction& grinstr, std::string buffer_name, const box<3>& gather_box, size_t num_nodes)
-    : acceptor_base(grinstr), transfer_id(grinstr.get_transfer_id()), buffer_name(std::move(buffer_name)), memory_id(grinstr.get_dest_memory_id()),
-      allocation_id(grinstr.get_dest_allocation_id()), node_chunk_size(grinstr.get_node_chunk_size()), gather_box(gather_box), num_nodes(num_nodes) {}
+    : acceptor_base(grinstr), transfer_id(grinstr.get_transfer_id()), buffer_name(std::move(buffer_name)), allocation_id(grinstr.get_dest_allocation_id()),
+      node_chunk_size(grinstr.get_node_chunk_size()), gather_box(gather_box), num_nodes(num_nodes) {}
 
 fill_identity_instruction_record::fill_identity_instruction_record(const fill_identity_instruction& fiinstr)
-    : acceptor_base(fiinstr), reduction_id(fiinstr.get_reduction_id()), memory_id(fiinstr.get_memory_id()), allocation_id(fiinstr.get_allocation_id()),
-      num_values(fiinstr.get_num_values()) {}
+    : acceptor_base(fiinstr), reduction_id(fiinstr.get_reduction_id()), allocation_id(fiinstr.get_allocation_id()), num_values(fiinstr.get_num_values()) {}
 
 reduce_instruction_record::reduce_instruction_record(const reduce_instruction& rinstr, const std::optional<detail::command_id> reduction_cid,
     const detail::buffer_id bid, std::string buffer_name, const detail::box<3>& box, const reduction_scope scope)
-    : acceptor_base(rinstr), reduction_id(rinstr.get_reduction_id()), memory_id(rinstr.get_memory_id()),
-      source_allocation_id(rinstr.get_source_allocation_id()), num_source_values(rinstr.get_num_source_values()),
-      dest_allocation_id(rinstr.get_dest_allocation_id()), reduction_command_id(reduction_cid), buffer_id(bid), buffer_name(std::move(buffer_name)), box(box),
-      scope(scope) {}
+    : acceptor_base(rinstr), reduction_id(rinstr.get_reduction_id()), source_allocation_id(rinstr.get_source_allocation_id()),
+      num_source_values(rinstr.get_num_source_values()), dest_allocation_id(rinstr.get_dest_allocation_id()), reduction_command_id(reduction_cid),
+      buffer_id(bid), buffer_name(std::move(buffer_name)), box(box), scope(scope) {}
 
 fence_instruction_record::fence_instruction_record(
     const fence_instruction& finstr, const task_id tid, const command_id cid, const buffer_id bid, std::string buffer_name, const box<3>& box)

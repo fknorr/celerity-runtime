@@ -171,7 +171,6 @@ struct alloc_instruction_record : matchbox::implement_acceptor<instruction_recor
 	};
 
 	detail::allocation_id allocation_id;
-	detail::memory_id memory_id;
 	size_t size_bytes;
 	size_t alignment_bytes;
 	alloc_origin origin;
@@ -183,7 +182,6 @@ struct alloc_instruction_record : matchbox::implement_acceptor<instruction_recor
 };
 
 struct free_instruction_record : matchbox::implement_acceptor<instruction_record, free_instruction_record> {
-	detail::memory_id memory_id;
 	detail::allocation_id allocation_id;
 	size_t size;
 	std::optional<buffer_allocation_record> buffer_allocation;
@@ -223,9 +221,7 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 		gather,
 	};
 
-	memory_id source_memory_id;
 	allocation_id source_allocation_id;
-	memory_id dest_memory_id;
 	allocation_id dest_allocation_id;
 	int dimensions;
 	range<3> source_range;
@@ -246,13 +242,11 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 struct buffer_memory_record {
 	detail::buffer_id buffer_id;
 	std::string buffer_name;
-	detail::memory_id memory_id;
 };
 
 struct buffer_reduction_record {
 	detail::buffer_id buffer_id;
 	std::string buffer_name;
-	detail::memory_id memory_id;
 	detail::reduction_id reduction_id;
 };
 
@@ -294,7 +288,6 @@ struct host_task_instruction_record : matchbox::implement_acceptor<instruction_r
 struct send_instruction_record : matchbox::implement_acceptor<instruction_record, send_instruction_record> {
 	node_id dest_node_id;
 	int tag;
-	memory_id source_memory_id;
 	allocation_id source_allocation_id;
 	range<3> source_allocation_range;
 	celerity::id<3> offset_in_source_allocation;
@@ -313,7 +306,6 @@ struct receive_instruction_record_impl {
 	detail::transfer_id transfer_id;
 	std::string buffer_name;
 	region<3> requested_region;
-	memory_id dest_memory_id;
 	allocation_id dest_allocation_id;
 	box<3> allocated_box;
 	size_t element_size;
@@ -340,7 +332,6 @@ struct await_receive_instruction_record : matchbox::implement_acceptor<instructi
 struct gather_receive_instruction_record : matchbox::implement_acceptor<instruction_record, gather_receive_instruction_record> {
 	transfer_id transfer_id;
 	std::string buffer_name;
-	memory_id memory_id;
 	allocation_id allocation_id;
 	size_t node_chunk_size;
 	box<3> gather_box;
@@ -351,7 +342,6 @@ struct gather_receive_instruction_record : matchbox::implement_acceptor<instruct
 
 struct fill_identity_instruction_record : matchbox::implement_acceptor<instruction_record, fill_identity_instruction_record> {
 	reduction_id reduction_id;
-	memory_id memory_id;
 	allocation_id allocation_id;
 	size_t num_values;
 
@@ -365,7 +355,6 @@ struct reduce_instruction_record : matchbox::implement_acceptor<instruction_reco
 	};
 
 	reduction_id reduction_id;
-	memory_id memory_id;
 	allocation_id source_allocation_id;
 	size_t num_source_values;
 	allocation_id dest_allocation_id;

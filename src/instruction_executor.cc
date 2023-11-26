@@ -100,12 +100,6 @@ struct instruction_priority_less {
 	bool operator()(const instruction* lhs, const instruction* rhs) const { return instruction_priority(lhs) < instruction_priority(rhs); }
 };
 
-struct alloc_result {
-	memory_id mid;
-	allocation_id aid;
-	void* ptr;
-};
-
 // TODO dupe of host_queue::future_event
 template <typename Result = void>
 class future_event final : public async_event_base {
@@ -150,12 +144,6 @@ void instruction_executor::loop() {
 			if(active_info.operation.is_complete()) {
 				CELERITY_DETAIL_TRACY_ASYNC_ZONE_END(active_info.tracy_lane);
 				CELERITY_DEBUG("[executor] completed I{}", active_instr->get_id());
-
-				const auto result = active_info.operation.take_result();
-				if(const auto alloc = std::any_cast<alloc_result>(&result)) {
-					m_allocations.emplace(alloc->aid, alloc->ptr);
-					CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", alloc->mid, alloc->aid, alloc->ptr);
-				}
 
 				const auto incomplete_it = incomplete_instructions.find(active_instr);
 				assert(incomplete_it != incomplete_instructions.end());
@@ -338,16 +326,16 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return make_complete_event();
 	    },
 	    [&](const alloc_instruction& ainstr) {
-		    CELERITY_DEBUG("[executor] I{}: alloc M{}.A{}, {}%{} bytes", ainstr.get_id(), ainstr.get_memory_id(), ainstr.get_allocation_id(),
-		        ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
+		    CELERITY_DEBUG(
+		        "[executor] I{}: alloc {}, {}%{} bytes", ainstr.get_id(), ainstr.get_allocation_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 
 		    void* ptr;
 		    {
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} alloc", ainstr.get_id());
-			    ptr = m_backend_queue->malloc(ainstr.get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
+			    ptr = m_backend_queue->malloc(ainstr.get_allocation_id().get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 		    }
 
-		    CELERITY_DEBUG("[executor] M{}.A{} allocated as {}", ainstr.get_memory_id(), ainstr.get_allocation_id(), ptr);
+		    CELERITY_DEBUG("[executor] {} allocated as {}", ainstr.get_allocation_id(), ptr);
 		    m_allocations.emplace(ainstr.get_allocation_id(), ptr);
 		    return make_complete_event();
 	    },
@@ -357,14 +345,14 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto ptr = it->second;
 		    m_allocations.erase(it);
 
-		    CELERITY_DEBUG("[executor] I{}: free M{}.A{}", finstr.get_id(), finstr.get_memory_id(), finstr.get_allocation_id());
+		    CELERITY_DEBUG("[executor] I{}: free {}", finstr.get_id(), finstr.get_allocation_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} free", finstr.get_id());
 
-		    m_backend_queue->free(finstr.get_memory_id(), ptr);
+		    m_backend_queue->free(finstr.get_allocation_id().get_memory_id(), ptr);
 		    return make_complete_event();
 	    },
 	    [&](const init_buffer_instruction& ibinstr) {
-		    CELERITY_DEBUG("[executor] I{}: init B{} as M0.A{}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
+		    CELERITY_DEBUG("[executor] I{}: init B{} as {}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
 		        ibinstr.get_size_bytes());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} init buffer", ibinstr.get_id());
 
@@ -374,8 +362,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return make_complete_event();
 	    },
 	    [&](const export_instruction& einstr) {
-		    CELERITY_DEBUG("[executor] I{}: export M0.A{} ({})+{}, {}x{} bytes", einstr.get_id(), einstr.get_host_allocation_id(),
-		        einstr.get_allocation_range(), einstr.get_offset_in_allocation(), einstr.get_copy_range(), einstr.get_element_size());
+		    CELERITY_DEBUG("[executor] I{}: export {} ({})+{}, {}x{} bytes", einstr.get_id(), einstr.get_host_allocation_id(), einstr.get_allocation_range(),
+		        einstr.get_offset_in_allocation(), einstr.get_copy_range(), einstr.get_element_size());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} export", einstr.get_id());
 
 		    const auto dest_ptr = einstr.get_out_pointer(); // TODO very naughty
@@ -397,13 +385,15 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return make_complete_event();
 	    },
 	    [&](const copy_instruction& cinstr) {
-		    CELERITY_DEBUG("[executor] I{}: copy M{}.A{}+{} -> M{}.A{}+{}, {}x{} bytes", cinstr.get_id(), cinstr.get_source_memory_id(),
-		        cinstr.get_source_allocation_id(), cinstr.get_offset_in_source(), cinstr.get_dest_memory_id(), cinstr.get_dest_allocation_id(),
-		        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
+		    CELERITY_DEBUG("[executor] I{}: copy {}+{} -> {}+{}, {}x{} bytes", cinstr.get_id(), cinstr.get_source_allocation_id(),
+		        cinstr.get_offset_in_source(), cinstr.get_dest_allocation_id(), cinstr.get_offset_in_dest(), cinstr.get_copy_range(),
+		        cinstr.get_element_size());
 
+		    const auto source_mid = cinstr.get_source_allocation_id().get_memory_id();
+		    const auto dest_mid = cinstr.get_dest_allocation_id().get_memory_id();
 		    const auto source_base_ptr = m_allocations.at(cinstr.get_source_allocation_id());
 		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation_id());
-		    if(cinstr.get_source_memory_id() == host_memory_id && cinstr.get_dest_memory_id() == host_memory_id) {
+		    if((source_mid == user_memory_id || source_mid == host_memory_id) && (dest_mid == user_memory_id || dest_mid == host_memory_id)) {
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} copy", cinstr.get_id());
 			    const auto dispatch_copy = [&](const auto dims) {
 				    memcpy_strided_host(source_base_ptr, dest_base_ptr, cinstr.get_element_size(), range_cast<dims.value>(cinstr.get_source_range()),
@@ -419,10 +409,11 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 			    }
 			    return make_complete_event();
 		    } else {
+			    assert(source_mid != user_memory_id && dest_mid != user_memory_id);
 			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Lime, "I{} copy", cinstr.get_id());
-			    return m_backend_queue->memcpy_strided_device(cinstr.get_dimensions(), cinstr.get_source_memory_id(), cinstr.get_dest_memory_id(),
-			        source_base_ptr, dest_base_ptr, cinstr.get_element_size(), cinstr.get_source_range(), cinstr.get_offset_in_source(),
-			        cinstr.get_dest_range(), cinstr.get_offset_in_dest(), cinstr.get_copy_range());
+			    return m_backend_queue->memcpy_strided_device(cinstr.get_dimensions(), source_mid, dest_mid, source_base_ptr, dest_base_ptr,
+			        cinstr.get_element_size(), cinstr.get_source_range(), cinstr.get_offset_in_source(), cinstr.get_dest_range(), cinstr.get_offset_in_dest(),
+			        cinstr.get_copy_range());
 		    }
 	    },
 	    [&](const device_kernel_instruction& dkinstr) {
@@ -478,9 +469,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 #endif
 	    },
 	    [&](const send_instruction& sinstr) {
-		    CELERITY_DEBUG("[executor] I{}: send M{}.A{}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), host_memory_id /* TODO RDMA */,
-		        sinstr.get_source_allocation_id(), sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(),
-		        sinstr.get_dest_node_id(), sinstr.get_tag());
+		    CELERITY_DEBUG("[executor] I{}: send {}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), sinstr.get_source_allocation_id(),
+		        sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(), sinstr.get_tag());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} send", sinstr.get_id());
 
 		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id());
@@ -492,9 +482,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
 	    },
 	    [&](const receive_instruction& rinstr) {
-		    CELERITY_DEBUG("[executor] I{}: receive {} {} into M{}.A{} ({}), x{} bytes", rinstr.get_id(), rinstr.get_transfer_id(),
-		        rinstr.get_requested_region(), rinstr.get_dest_memory_id(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(),
-		        rinstr.get_element_size());
+		    CELERITY_DEBUG("[executor] I{}: receive {} {} into {} ({}), x{} bytes", rinstr.get_id(), rinstr.get_transfer_id(), rinstr.get_requested_region(),
+		        rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(), rinstr.get_element_size());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} receive", rinstr.get_id());
 
 		    const auto allocation = m_allocations.at(rinstr.get_dest_allocation_id());
@@ -502,9 +491,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        rinstr.get_transfer_id(), rinstr.get_requested_region(), allocation, rinstr.get_allocated_box(), rinstr.get_element_size());
 	    },
 	    [&](const split_receive_instruction& srinstr) {
-		    CELERITY_DEBUG("[executor] I{}: split receive {} {} into M{}.A{} ({}), x{} bytes", srinstr.get_id(), srinstr.get_transfer_id(),
-		        srinstr.get_requested_region(), srinstr.get_dest_memory_id(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(),
-		        srinstr.get_element_size());
+		    CELERITY_DEBUG("[executor] I{}: split receive {} {} into {} ({}), x{} bytes", srinstr.get_id(), srinstr.get_transfer_id(),
+		        srinstr.get_requested_region(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(), srinstr.get_element_size());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} split receive", srinstr.get_id());
 
 		    const auto allocation = m_allocations.at(srinstr.get_dest_allocation_id());
@@ -519,16 +507,16 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return m_recv_arbiter.await_split_receive_subregion(arinstr.get_transfer_id(), arinstr.get_received_region());
 	    },
 	    [&](const gather_receive_instruction& grinstr) {
-		    CELERITY_DEBUG("[executor] I{}: gather receive {} into M{}.A{}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
-		        grinstr.get_dest_memory_id(), grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
+		    CELERITY_DEBUG("[executor] I{}: gather receive {} into {}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
+		        grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} gather receive", grinstr.get_id());
 
 		    const auto allocation = m_allocations.at(grinstr.get_dest_allocation_id());
 		    return m_recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
 	    },
 	    [&](const fill_identity_instruction& fiinstr) {
-		    CELERITY_DEBUG("[executor] I{}: fill identity M{}.A{} x{} for R{}", fiinstr.get_id(), fiinstr.get_memory_id(), fiinstr.get_allocation_id(),
-		        fiinstr.get_num_values(), fiinstr.get_reduction_id());
+		    CELERITY_DEBUG("[executor] I{}: fill identity {} x{} for R{}", fiinstr.get_id(), fiinstr.get_allocation_id(), fiinstr.get_num_values(),
+		        fiinstr.get_reduction_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Blue, "I{} fill identity", fiinstr.get_id());
 
 		    const auto allocation = m_allocations.at(fiinstr.get_allocation_id());
@@ -537,8 +525,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return make_complete_event();
 	    },
 	    [&](const reduce_instruction& rinstr) {
-		    CELERITY_DEBUG("[executor] I{}: reduce M{}.A{} x{} into M{}.A{} as R{}", rinstr.get_id(), rinstr.get_memory_id(), rinstr.get_source_allocation_id(),
-		        rinstr.get_num_source_values(), rinstr.get_memory_id(), rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
+		    CELERITY_DEBUG("[executor] I{}: reduce {} x{} into {} as R{}", rinstr.get_id(), rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
+		        rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Blue, "I{} reduce", rinstr.get_id());
 
 		    const auto gather_allocation = m_allocations.at(rinstr.get_source_allocation_id());

@@ -63,7 +63,7 @@ TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors trigger allocation of the
 	const auto kernel = all_instrs.select_unique<device_kernel_instruction_record>();
 
 	const auto alloc = all_instrs.select_unique<alloc_instruction_record>();
-	CHECK(alloc->memory_id == ictx.get_native_memory(kernel->device_id));
+	CHECK(alloc->allocation_id.get_memory_id() == ictx.get_native_memory(kernel->device_id));
 	CHECK(alloc->buffer_allocation->buffer_id == buf.get_id());
 
 	// the IDAG must allocate the bounding box for both accessors to map to overlapping, contiguous memory
@@ -74,7 +74,6 @@ TEMPLATE_TEST_CASE_SIG("multiple overlapping accessors trigger allocation of the
 
 	// alloc and free instructions are always symmetric
 	const auto free = all_instrs.select_unique<free_instruction_record>();
-	CHECK(free->memory_id == alloc->memory_id);
 	CHECK(free->allocation_id == alloc->allocation_id);
 	CHECK(free->size == alloc->size_bytes);
 	CHECK(free->buffer_allocation == alloc->buffer_allocation);
@@ -113,12 +112,11 @@ TEMPLATE_TEST_CASE_SIG(
 
 		// the IDAG allocates appropriate boxes on the memories native to each executing device.
 		const auto alloc = writer.predecessors().assert_unique<alloc_instruction_record>();
-		CHECK(alloc->memory_id == ictx.get_native_memory(writer->device_id));
+		CHECK(alloc->allocation_id.get_memory_id() == ictx.get_native_memory(writer->device_id));
 		CHECK(writer->access_map.front().allocation_id == alloc->allocation_id);
 		CHECK(alloc->buffer_allocation.value().box == writer->access_map.front().accessed_box_in_buffer);
 
 		const auto free = writer.successors().assert_unique<free_instruction_record>();
-		CHECK(free->memory_id == alloc->memory_id);
 		CHECK(free->allocation_id == alloc->allocation_id);
 		CHECK(free->size == alloc->size_bytes);
 	}
@@ -194,8 +192,8 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 
 		// There is one coherence copy per reader kernel, which copies the portion written on the opposite device
 		const auto coherence_copy = intersection_of(coherence_copies, reader.predecessors()).assert_unique();
-		CHECK(coherence_copy->source_memory_id == ictx.get_native_memory(opposite_did));
-		CHECK(coherence_copy->dest_memory_id == ictx.get_native_memory(did));
+		CHECK(coherence_copy->source_allocation_id.get_memory_id() == ictx.get_native_memory(opposite_did));
+		CHECK(coherence_copy->dest_allocation_id.get_memory_id() == ictx.get_native_memory(did));
 		CHECK(coherence_copy->box == opposite_writer->access_map.front().accessed_box_in_buffer);
 	}
 
@@ -401,7 +399,7 @@ TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer fro
 
 	const auto init = all_instrs.select_unique<init_buffer_instruction_record>();
 	const auto alloc = init.predecessors().assert_unique<alloc_instruction_record>();
-	CHECK(alloc->memory_id == host_memory_id);
+	CHECK(alloc->allocation_id.get_memory_id() == host_memory_id);
 	CHECK(alloc->buffer_allocation.value().box == box_cast<3>(buffer_box));
 	CHECK(alloc->size_bytes == buffer_range.size() * sizeof(int));
 	CHECK(init->size_bytes == alloc->size_bytes);
@@ -435,9 +433,9 @@ TEST_CASE("copies are staged through host memory for devices that are not peer-c
 		const auto copy_from_host = intersection_of(all_copies_from_host, copy_to_host.successors()).assert_unique();
 		const auto reader = intersection_of(all_readers, copy_from_host.successors()).assert_unique();
 
-		CHECK(copy_to_host->source_memory_id == ictx.get_native_memory(writer->device_id));
-		CHECK(copy_to_host->dest_memory_id == host_memory_id);
-		CHECK(copy_from_host->source_memory_id == host_memory_id);
-		CHECK(copy_from_host->dest_memory_id == ictx.get_native_memory(reader->device_id));
+		CHECK(copy_to_host->source_allocation_id.get_memory_id() == ictx.get_native_memory(writer->device_id));
+		CHECK(copy_to_host->dest_allocation_id.get_memory_id() == host_memory_id);
+		CHECK(copy_from_host->source_allocation_id.get_memory_id() == host_memory_id);
+		CHECK(copy_from_host->dest_allocation_id.get_memory_id() == ictx.get_native_memory(reader->device_id));
 	}
 }

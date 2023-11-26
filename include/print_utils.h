@@ -76,6 +76,16 @@ struct fmt::formatter<celerity::chunk<Dims>> : fmt::formatter<celerity::subrange
 // TODO implement formatters for all phantom types
 
 template <>
+struct fmt::formatter<celerity::detail::allocation_id> {
+	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }
+
+	format_context::iterator format(const celerity::detail::allocation_id aid, format_context& ctx) const {
+		if(aid == celerity::detail::null_allocation_id) { return format_to(ctx.out(), "null"); }
+		return format_to(ctx.out(), "M{}.A{}", aid.get_memory_id(), aid.get_raw_allocation_id());
+	}
+};
+
+template <>
 struct fmt::formatter<celerity::detail::transfer_id> {
 	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }
 

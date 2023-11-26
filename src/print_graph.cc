@@ -288,7 +288,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case alloc_instruction_record::alloc_origin::buffer: dot += "buffer "; break;
 			    case alloc_instruction_record::alloc_origin::gather: dot += "gather "; break;
 			    }
-			    fmt::format_to(back, "<b>alloc</b> M{}.A{}", ainstr.memory_id, ainstr.allocation_id);
+			    fmt::format_to(back, "<b>alloc</b> {}", ainstr.allocation_id);
 			    if(ainstr.buffer_allocation.has_value()) {
 				    fmt::format_to(back, "<br/>for {} {}", utils::get_buffer_label(ainstr.buffer_allocation->buffer_id, ainstr.buffer_allocation->buffer_name),
 				        ainstr.buffer_allocation->box);
@@ -300,7 +300,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const free_instruction_record& finstr) {
 			    begin_node(finstr, "ellipse", "cyan3");
 			    fmt::format_to(back, "I{}<br/>", finstr.id);
-			    fmt::format_to(back, "<b>free</b> M{}.A{}", finstr.memory_id, finstr.allocation_id);
+			    fmt::format_to(back, "<b>free</b> {}", finstr.allocation_id);
 			    if(finstr.buffer_allocation.has_value()) {
 				    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(finstr.buffer_allocation->buffer_id, finstr.buffer_allocation->buffer_name),
 				        finstr.buffer_allocation->box);
@@ -311,7 +311,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const init_buffer_instruction_record& ibinstr) {
 			    begin_node(ibinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", ibinstr.id);
-			    fmt::format_to(back, "<b>init buffer</b> {}<br/>via M0.A{}, {} bytes", utils::get_buffer_label(ibinstr.buffer_id, ibinstr.buffer_name),
+			    fmt::format_to(back, "<b>init buffer</b> {}<br/>via {}, {} bytes", utils::get_buffer_label(ibinstr.buffer_id, ibinstr.buffer_name),
 			        ibinstr.host_allocation_id, ibinstr.size_bytes);
 			    end_node();
 		    },
@@ -321,8 +321,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/>{}D <b>export</b>", einstr.dimensions);
 			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(einstr.buffer_id, einstr.buffer_name),
 			        box(subrange(einstr.offset_in_buffer, einstr.copy_range)));
-			    fmt::format_to(back, "<br/>via M0.A{} {}<br/>{}x{} bytes", einstr.host_allocation_id,
-			        box(subrange(einstr.offset_in_allocation, einstr.copy_range)), einstr.copy_range, einstr.element_size);
+			    fmt::format_to(back, "<br/>via {} {}<br/>{}x{} bytes", einstr.host_allocation_id, box(subrange(einstr.offset_in_allocation, einstr.copy_range)),
+			        einstr.copy_range, einstr.element_size);
 			    end_node();
 		    },
 		    [&](const copy_instruction_record& cinstr) {
@@ -336,8 +336,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case copy_instruction_record::copy_origin::gather: dot += "gather "; break;
 			    }
 			    fmt::format_to(back, "<b>copy</b><br/>on {} {}", utils::get_buffer_label(cinstr.buffer_id, cinstr.buffer_name), cinstr.box);
-			    fmt::format_to(back, "<br/>from M{}.A{} {}<br/>to M{}.A{} {}<br/>{}x{} bytes", cinstr.source_memory_id, cinstr.source_allocation_id,
-			        box(subrange(cinstr.offset_in_source, cinstr.copy_range)), cinstr.dest_memory_id, cinstr.dest_allocation_id,
+			    fmt::format_to(back, "<br/>from {} {}<br/>to {} {}<br/>{}x{} bytes", cinstr.source_allocation_id,
+			        box(subrange(cinstr.offset_in_source, cinstr.copy_range)), cinstr.dest_allocation_id,
 			        box(subrange(cinstr.offset_in_dest, cinstr.copy_range)), cinstr.copy_range, cinstr.element_size);
 			    end_node();
 		    },
@@ -354,7 +354,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
 				    fmt::format_to(back, "<br/>+ access {} {}", utils::get_buffer_label(access.buffer_id, access.buffer_name), access.accessed_box_in_buffer);
-				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
+				    fmt::format_to(back, "<br/>via {} {}", access.allocation_id, accessed_box_in_allocation);
 			    }
 			    for(const auto& access : dkinstr.reduction_map) {
 				    const auto accessed_box_in_allocation = box( //
@@ -362,7 +362,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
 				    fmt::format_to(back, "<br/>+ (R{}) reduce into {} {}", access.reduction_id, utils::get_buffer_label(access.buffer_id, access.buffer_name),
 				        access.accessed_box_in_buffer);
-				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
+				    fmt::format_to(back, "<br/>via {} {}", access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();
 		    },
@@ -381,7 +381,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 				        access.accessed_box_in_buffer.get_min() - access.allocated_box_in_buffer.get_min(),
 				        access.accessed_box_in_buffer.get_max() - access.allocated_box_in_buffer.get_min());
 				    fmt::format_to(back, "<br/>+ access {} {}", utils::get_buffer_label(access.buffer_id, access.buffer_name), access.accessed_box_in_buffer);
-				    fmt::format_to(back, "<br/>via M{}.A{} {}", access.memory_id, access.allocation_id, accessed_box_in_allocation);
+				    fmt::format_to(back, "<br/>via {} {}", access.allocation_id, accessed_box_in_allocation);
 			    }
 			    end_node();
 		    },
@@ -392,8 +392,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/>to N{} tag {}", sinstr.dest_node_id, sinstr.tag);
 			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(sinstr.transfer_id.bid, sinstr.buffer_name),
 			        box(subrange(sinstr.offset_in_buffer, sinstr.send_range)));
-			    fmt::format_to(back, "<br/>via M{}.A{} {}", sinstr.source_memory_id, sinstr.source_allocation_id,
-			        box(subrange(sinstr.offset_in_source_allocation, sinstr.send_range)));
+			    fmt::format_to(back, "<br/>via {} {}", sinstr.source_allocation_id, box(subrange(sinstr.offset_in_source_allocation, sinstr.send_range)));
 			    fmt::format_to(back, "<br/>{}x{} bytes", sinstr.send_range, sinstr.element_size);
 			    send_instructions_by_tag.emplace(sinstr.tag, sinstr.id);
 			    end_node();
@@ -403,8 +402,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", rinstr.id, irec.get_await_push_command_id(rinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>receive</b> {}", rinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(rinstr.transfer_id.bid, rinstr.buffer_name), rinstr.requested_region);
-			    fmt::format_to(
-			        back, "<br/>into M{}.A{} (B{} {})", rinstr.dest_memory_id, rinstr.dest_allocation_id, rinstr.transfer_id.bid, rinstr.allocated_box);
+			    fmt::format_to(back, "<br/>into {} (B{} {})", rinstr.dest_allocation_id, rinstr.transfer_id.bid, rinstr.allocated_box);
 			    fmt::format_to(back, "<br/>x{} bytes", rinstr.element_size);
 			    end_node();
 		    },
@@ -413,8 +411,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "I{} (await-push C{})", srinstr.id, irec.get_await_push_command_id(srinstr.transfer_id));
 			    fmt::format_to(back, "<br/><b>split receive</b> {}", srinstr.transfer_id);
 			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(srinstr.transfer_id.bid, srinstr.buffer_name), srinstr.requested_region);
-			    fmt::format_to(
-			        back, "<br/>into M{}.A{} (B{} {})", srinstr.dest_memory_id, srinstr.dest_allocation_id, srinstr.transfer_id.bid, srinstr.allocated_box);
+			    fmt::format_to(back, "<br/>into {} (B{} {})", srinstr.dest_allocation_id, srinstr.transfer_id.bid, srinstr.allocated_box);
 			    fmt::format_to(back, "<br/>x{} bytes", srinstr.element_size);
 			    end_node();
 		    },
@@ -431,14 +428,14 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/><b>gather receive</b> {}", grinstr.transfer_id);
 			    fmt::format_to(
 			        back, "<br/>{} {} x{}", utils::get_buffer_label(grinstr.transfer_id.bid, grinstr.buffer_name), grinstr.gather_box, grinstr.num_nodes);
-			    fmt::format_to(back, "<br/>into M{}.A{}", grinstr.memory_id, grinstr.allocation_id);
+			    fmt::format_to(back, "<br/>into {}", grinstr.allocation_id);
 			    end_node();
 		    },
 		    [&](const fill_identity_instruction_record& fiinstr) {
 			    begin_node(fiinstr, "ellipse", "blue");
 			    fmt::format_to(back, "I{}", fiinstr.id);
 			    fmt::format_to(back, "<br/><b>fill identity</b> for R{}", fiinstr.reduction_id);
-			    fmt::format_to(back, "<br/>M{}.A{} x{}", fiinstr.memory_id, fiinstr.allocation_id, fiinstr.num_values);
+			    fmt::format_to(back, "<br/>{} x{}", fiinstr.allocation_id, fiinstr.num_values);
 			    end_node();
 		    },
 		    [&](const reduce_instruction_record& rinstr) {
@@ -448,8 +445,8 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, "<br/>{} <b>reduce</b> B{}.R{}", rinstr.scope == reduce_instruction_record::reduction_scope::global ? "global" : "local",
 			        rinstr.buffer_id, rinstr.reduction_id);
 			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(rinstr.buffer_id, rinstr.buffer_name), rinstr.box);
-			    fmt::format_to(back, "<br/>from M{}.A{} x{}", rinstr.memory_id, rinstr.source_allocation_id, rinstr.num_source_values);
-			    fmt::format_to(back, "<br/>to M{}.A{} x1", rinstr.memory_id, rinstr.dest_allocation_id);
+			    fmt::format_to(back, "<br/>from {} x{}", rinstr.source_allocation_id, rinstr.num_source_values);
+			    fmt::format_to(back, "<br/>to {} x1", rinstr.dest_allocation_id);
 			    end_node();
 		    },
 		    [&](const fence_instruction_record& finstr) {
