@@ -10,7 +10,7 @@ using namespace celerity;
 using namespace celerity::detail;
 
 
-TEMPLATE_TEST_CASE_SIG("nd copy", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
+TEMPLATE_TEST_CASE_SIG("nd_copy_host works correctly in all source- and destination layouts ", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
 	const auto copy_range = test_utils::truncate_range<Dims>({5, 6, 7});
 
 	int source_shift[Dims];
@@ -19,8 +19,8 @@ TEMPLATE_TEST_CASE_SIG("nd copy", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
 	if constexpr(Dims > 1) { source_shift[1] = GENERATE(values({-2, 0, 2})), dest_shift[1] = GENERATE(values({-2, 0, 2})); }
 	if constexpr(Dims > 2) { source_shift[2] = GENERATE(values({-2, 0, 2})), dest_shift[2] = GENERATE(values({-2, 0, 2})); }
 
-	range<Dims> source_range = zeros;
-	range<Dims> dest_range = zeros;
+	range<Dims> source_range = ones;
+	range<Dims> dest_range = ones;
 	id<Dims> offset_in_source = zeros;
 	id<Dims> offset_in_dest = zeros;
 	for(int i = 0; i < Dims; ++i) {
