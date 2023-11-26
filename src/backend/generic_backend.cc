@@ -83,6 +83,7 @@ generic_queue::generic_queue(const std::vector<device_config>& devices) {
 }
 
 void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+	assert(where != user_memory_id);
 	auto& queue = m_memory_queues.at(where);
 	void* ptr;
 	if(where == host_memory_id) {
@@ -99,18 +100,23 @@ void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_un
 	return ptr;
 }
 
-void generic_queue::free(const memory_id where, void* const allocation) { sycl::free(allocation, m_memory_queues.at(where)); }
+void generic_queue::free(const memory_id where, void* const allocation) {
+	assert(where != user_memory_id);
+	sycl::free(allocation, m_memory_queues.at(where));
+}
 
-async_event generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id target, const void* const source_base_ptr,
-    void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
+async_event generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,
+    void* const dest_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& dest_range,
     const id<3>& target_offset, const range<3>& copy_range) //
 {
-	assert(source != host_memory_id || target != host_memory_id);
+	assert(source != user_memory_id);
+	assert(dest != user_memory_id);
+	assert(source != host_memory_id || dest != host_memory_id);
 
-	auto& queue = m_memory_queues.at(source == host_memory_id ? target : source);
+	auto& queue = m_memory_queues.at(source == host_memory_id ? dest : source);
 	const auto dispatch_memcpy = [&](const auto dims) {
-		auto wait_list = backend_detail::memcpy_strided_device_generic(queue, source_base_ptr, target_base_ptr, elem_size, range_cast<dims.value>(source_range),
-		    id_cast<dims.value>(source_offset), range_cast<dims.value>(target_range), id_cast<dims.value>(target_offset), range_cast<dims.value>(copy_range));
+		auto wait_list = backend_detail::memcpy_strided_device_generic(queue, source_base_ptr, dest_base_ptr, elem_size, range_cast<dims.value>(source_range),
+		    id_cast<dims.value>(source_offset), range_cast<dims.value>(dest_range), id_cast<dims.value>(target_offset), range_cast<dims.value>(copy_range));
 		flush_sycl_queue(queue);
 		return make_async_event<sycl_event>(std::move(wait_list));
 	};

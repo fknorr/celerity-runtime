@@ -193,17 +193,27 @@ struct command_graph_generator_benchmark_context {
 	}
 };
 
+// TODO duplicated with instruction_graph_test_utils.h
 instruction_graph_generator::system_info make_system_info(const size_t num_devices) {
-	instruction_graph_generator::system_info system;
-	system.devices.resize(num_devices);
-	system.memories.resize(1 + num_devices);
+	instruction_graph_generator::system_info info;
+	info.devices.resize(num_devices);
+	info.memories.resize(first_device_memory_id + num_devices);
+	info.memories[host_memory_id].copy_peers.set(host_memory_id);
+	info.memories[user_memory_id].copy_peers.set(user_memory_id);
+	info.memories[host_memory_id].copy_peers.set(user_memory_id);
+	info.memories[user_memory_id].copy_peers.set(host_memory_id);
 	for(device_id did = 0; did < num_devices; ++did) {
-		system.devices[did].native_memory = memory_id(did + 1);
+		info.devices[did].native_memory = first_device_memory_id + did;
 	}
-	for(auto& memory : system.memories) {
-		memory.copy_peers.set();
+	for(memory_id mid = first_device_memory_id; mid < info.memories.size(); ++mid) {
+		info.memories[mid].copy_peers.set(mid);
+		info.memories[mid].copy_peers.set(host_memory_id);
+		info.memories[host_memory_id].copy_peers.set(mid);
+		for(memory_id peer = first_device_memory_id; peer < info.memories.size(); ++peer) {
+			info.memories[mid].copy_peers.set(peer);
+		}
 	}
-	return system;
+	return info;
 }
 
 struct instruction_graph_generator_benchmark_context {

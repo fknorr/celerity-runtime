@@ -418,19 +418,23 @@ class idag_test_context {
 		int m_uncaught_exceptions_before;
 	};
 
-	static auto make_system_info(const size_t num_devices, bool supports_d2d_copies) {
+	static auto make_system_info(const size_t num_devices, const bool supports_d2d_copies) {
 		instruction_graph_generator::system_info info;
 		info.devices.resize(num_devices);
-		info.memories.resize(1 + num_devices);
+		info.memories.resize(first_device_memory_id + num_devices);
+		info.memories[host_memory_id].copy_peers.set(host_memory_id);
+		info.memories[user_memory_id].copy_peers.set(user_memory_id);
+		info.memories[host_memory_id].copy_peers.set(user_memory_id);
+		info.memories[user_memory_id].copy_peers.set(host_memory_id);
 		for(device_id did = 0; did < num_devices; ++did) {
-			info.devices[did].native_memory = memory_id(1 + did);
+			info.devices[did].native_memory = first_device_memory_id + did;
 		}
-		for(memory_id mid = 0; mid < info.memories.size(); ++mid) {
-			info.memories[mid].copy_peers.set(host_memory_id);
+		for(memory_id mid = first_device_memory_id; mid < info.memories.size(); ++mid) {
 			info.memories[mid].copy_peers.set(mid);
+			info.memories[mid].copy_peers.set(host_memory_id);
 			info.memories[host_memory_id].copy_peers.set(mid);
 			if(supports_d2d_copies) {
-				for(memory_id peer = 0; peer < info.memories.size(); ++peer) {
+				for(memory_id peer = first_device_memory_id; peer < info.memories.size(); ++peer) {
 					info.memories[mid].copy_peers.set(peer);
 				}
 			}
@@ -467,7 +471,7 @@ class idag_test_context {
 	idag_test_context& operator=(const idag_test_context&) = delete;
 	idag_test_context& operator=(idag_test_context&&) = delete;
 
-	static memory_id get_native_memory(device_id did) { return memory_id(did + 1); }
+	static memory_id get_native_memory(const device_id did) { return first_device_memory_id + did; }
 
 	void finish() {
 		if(m_finished) return;
@@ -598,7 +602,7 @@ class idag_test_context {
 	int m_uncaught_exceptions_before;
 	buffer_id m_next_buffer_id = 0;
 	host_object_id m_next_host_object_id = 0;
-	reduction_id m_next_reduction_id = 1; // Start from 1 as rid 0 designates "no reduction" in push commands
+	reduction_id m_next_reduction_id = no_reduction_id + 1;
 	std::vector<std::variant<buffer_id, host_object_id>> m_managed_objects;
 	std::optional<task_id> m_most_recently_built_horizon;
 	task_recorder m_task_recorder;

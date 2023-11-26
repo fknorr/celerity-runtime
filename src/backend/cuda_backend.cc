@@ -232,6 +232,7 @@ void cuda_queue::init() {
 }
 
 void* cuda_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+	assert(where != user_memory_id);
 	void* ptr;
 	if(where == host_memory_id) {
 		{
@@ -263,6 +264,7 @@ void* cuda_queue::malloc(const memory_id where, const size_t size, [[maybe_unuse
 }
 
 void cuda_queue::free(const memory_id where, void* const allocation) {
+	assert(where != user_memory_id);
 	if(where == host_memory_id) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaFreeHost");
 		CELERITY_CUDA_CHECK(cudaFreeHost, allocation);
@@ -276,7 +278,11 @@ void cuda_queue::free(const memory_id where, void* const allocation) {
 
 async_event cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,
     void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
-    const id<3>& target_offset, const range<3>& copy_range) {
+    const id<3>& target_offset, const range<3>& copy_range) //
+{
+	assert(source != user_memory_id);
+	assert(dest != user_memory_id);
+
 	const impl::memory* memory = nullptr;
 	cudaStream_t stream = nullptr;
 	if(source == host_memory_id) {

@@ -176,10 +176,15 @@ namespace detail {
 		std::vector<backend::device_config> backend_devices(devices.size());
 		instruction_graph_generator::system_info system_info;
 		system_info.devices.resize(devices.size());
-		system_info.memories.resize(1 + devices.size());
+		system_info.memories.resize(first_device_memory_id + devices.size());
+		system_info.memories[user_memory_id].copy_peers.set(user_memory_id);
 		system_info.memories[host_memory_id].copy_peers.set(host_memory_id);
+		// user memory is only good for copying from and to host memory
+		system_info.memories[user_memory_id].copy_peers.set(host_memory_id);
+		system_info.memories[host_memory_id].copy_peers.set(user_memory_id);
 		for(device_id did = 0; did < devices.size(); ++did) {
-			const auto native_memory = memory_id(1 + did); // TODO query the backend about how memory is attached to devices
+			// TODO query the backend about how memory is attached to devices - we want to support SoCs with shared memory
+			const auto native_memory = memory_id(first_device_memory_id + did);
 			backend_devices[did].device_id = did;
 			backend_devices[did].native_memory = native_memory;
 			backend_devices[did].sycl_device = devices[did];
