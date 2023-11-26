@@ -1,4 +1,6 @@
 #include "backend/backend.h"
+#include "backend/cuda_backend.h"
+#include "backend/generic_backend.h"
 
 namespace celerity::detail::backend {
 

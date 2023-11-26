@@ -18,7 +18,6 @@
 #include <celerity.h>
 
 #include "affinity.h"
-#include "buffer_storage.h"
 #include "instruction_executor.h"
 #include "named_threads.h"
 #include "ranges.h"
@@ -312,106 +311,6 @@ namespace detail {
 
 		for(int i = 0; i < N; i++) {
 			CHECK(host_buff[i] == i);
-		}
-	}
-
-	TEST_CASE("memcpy_strided correctly copies") {
-		SECTION("strided 1D data") {
-			const range<1> source_range{128};
-			const id<1> source_offset{32};
-			const range<1> target_range{64};
-			const id<1> target_offset{16};
-			const range<1> copy_range{32};
-			const auto source_buffer = std::make_unique<size_t[]>(source_range.size());
-			const auto target_buffer = std::make_unique<size_t[]>(target_range.size());
-			for(size_t i = 0; i < copy_range[0]; ++i) {
-				source_buffer[source_offset[0] + i] = source_offset[0] + i;
-			}
-			memcpy_strided_host(source_buffer.get(), target_buffer.get(), sizeof(size_t), source_range, source_offset, target_range, target_offset, copy_range);
-			for(size_t i = 0; i < copy_range[0]; ++i) {
-				REQUIRE_LOOP(target_buffer[target_offset[0] + i] == source_offset[0] + i);
-			}
-		}
-
-		SECTION("strided 2D data") {
-			const range<2> source_range{128, 96};
-			const id<2> source_offset{32, 24};
-			const range<2> target_range{64, 48};
-			const id<2> target_offset{16, 32};
-			const range<2> copy_range{32, 8};
-			const auto source_buffer = std::make_unique<size_t[]>(source_range.size());
-			const auto target_buffer = std::make_unique<size_t[]>(target_range.size());
-			for(size_t i = 0; i < copy_range[0]; ++i) {
-				for(size_t j = 0; j < copy_range[1]; ++j) {
-					const auto id = source_offset + celerity::id<2>{i, j};
-					source_buffer[get_linear_index(source_range, id)] = id[0] * 10000 + id[1];
-				}
-			}
-			memcpy_strided_host(source_buffer.get(), target_buffer.get(), sizeof(size_t), source_range, source_offset, target_range, target_offset, copy_range);
-			for(size_t i = 0; i < copy_range[0]; ++i) {
-				for(size_t j = 0; j < copy_range[1]; ++j) {
-					const auto id = target_offset + celerity::id<2>{i, j};
-					const auto source_id = source_offset + celerity::id<2>{i, j};
-					REQUIRE_LOOP(target_buffer[get_linear_index(target_range, id)] == source_id[0] * 10000 + source_id[1]);
-				}
-			}
-		}
-
-		SECTION("strided 3D data") {
-			const range<3> source_range{128, 96, 48};
-			const id<3> source_offset{32, 24, 16};
-			const range<3> target_range{64, 48, 24};
-			const id<3> target_offset{16, 32, 4};
-			const range<3> copy_range{32, 8, 16};
-			const auto source_buffer = std::make_unique<size_t[]>(source_range.size());
-			const auto target_buffer = std::make_unique<size_t[]>(target_range.size());
-			for(size_t i = 0; i < copy_range[0]; ++i) {
-				for(size_t j = 0; j < copy_range[1]; ++j) {
-					for(size_t k = 0; k < copy_range[2]; ++k) {
-						const auto id = source_offset + celerity::id<3>{i, j, k};
-						source_buffer[get_linear_index(source_range, id)] = id[0] * 10000 + id[1] * 100 + id[2];
-					}
-				}
-			}
-			memcpy_strided_host(source_buffer.get(), target_buffer.get(), sizeof(size_t), source_range, source_offset, target_range, target_offset, copy_range);
-			for(size_t i = 0; i < copy_range[0]; ++i) {
-				for(size_t j = 0; j < copy_range[1]; ++j) {
-					for(size_t k = 0; k < copy_range[2]; ++k) {
-						const auto id = target_offset + celerity::id<3>{i, j, k};
-						const auto source_id = source_offset + celerity::id<3>{i, j, k};
-						CAPTURE(
-						    id[0], id[1], id[2], target_buffer[get_linear_index(target_range, id)], source_id[0] * 10000 + source_id[1] * 100 + source_id[2]);
-						REQUIRE_LOOP(target_buffer[get_linear_index(target_range, id)] == source_id[0] * 10000 + source_id[1] * 100 + source_id[2]);
-					}
-				}
-			}
-		}
-	}
-
-	TEST_CASE("linearize_subrange works as expected") {
-		const range<3> data1_range{3, 5, 7};
-		std::vector<size_t> data1(data1_range.size());
-
-		for(size_t i = 0; i < data1_range[0]; ++i) {
-			for(size_t j = 0; j < data1_range[1]; ++j) {
-				for(size_t k = 0; k < data1_range[2]; ++k) {
-					data1[i * data1_range[1] * data1_range[2] + j * data1_range[2] + k] = i * 100 + j * 10 + k;
-				}
-			}
-		}
-
-		const range<3> data2_range{2, 2, 4};
-		const id<3> data2_offset{1, 2, 2};
-		std::vector<size_t> data2(data2_range.size());
-		linearize_subrange(data1.data(), data2.data(), sizeof(size_t), data1_range, {data2_offset, data2_range});
-
-		for(size_t i = 0; i < 2; ++i) {
-			for(size_t j = 0; j < 2; ++j) {
-				for(size_t k = 0; k < 4; ++k) {
-					REQUIRE_LOOP(data2[i * data2_range[1] * data2_range[2] + j * data2_range[2] + k]
-					             == (i + data2_offset[0]) * 100 + (j + data2_offset[1]) * 10 + (k + data2_offset[2]));
-				}
-			}
 		}
 	}
 

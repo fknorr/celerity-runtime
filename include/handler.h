@@ -600,7 +600,7 @@ class handler {
 					}
 				} else if constexpr(std::is_invocable_v<Kernel, const partition<0>&>) {
 					(void)execution_sr;
-					const auto part = detail::make_0d_partition();
+					const auto part = detail::make_partition<0>(range<0>(), subrange<0>());
 					hydrated_kernel(part);
 				} else {
 					(void)execution_sr;

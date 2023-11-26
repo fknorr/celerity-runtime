@@ -166,7 +166,6 @@ if(CMAKE_GENERATOR STREQUAL "Ninja")
 endif()
 
 set(SOURCES
-  src/buffer_storage.cc
   src/command_graph.cc
   src/config.cc
   src/distributed_graph_generator.cc

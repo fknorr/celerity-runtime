@@ -1,10 +1,10 @@
 #include "instruction_executor.h"
-#include "buffer_storage.h" // for memcpy_strided_host
 #include "closure_hydrator.h"
 #include "communicator.h"
 #include "host_object.h"
 #include "instruction_graph.h"
 #include "mpi_communicator.h" // TODO
+#include "nd_memory.h"
 #include "print_utils.h"
 #include "receive_arbiter.h"
 #include "tracy.h"
@@ -369,19 +369,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto dest_ptr = einstr.get_out_pointer(); // TODO very naughty
 		    const auto source_base_ptr = m_allocations.at(einstr.get_host_allocation_id());
 
-		    // TODO copy-pasted,but export_instruction will be removed anyway
-		    const auto dispatch_copy = [&](const auto dims) {
-			    memcpy_strided_host(source_base_ptr, dest_ptr, einstr.get_element_size(), range_cast<dims.value>(einstr.get_allocation_range()),
-			        id_cast<dims.value>(einstr.get_offset_in_allocation()), range_cast<dims.value>(einstr.get_copy_range()), id<dims.value>(),
-			        range_cast<dims.value>(einstr.get_copy_range()));
-		    };
-		    switch(einstr.get_dimensions()) {
-		    case 0: dispatch_copy(std::integral_constant<int, 0>()); break;
-		    case 1: dispatch_copy(std::integral_constant<int, 1>()); break;
-		    case 2: dispatch_copy(std::integral_constant<int, 2>()); break;
-		    case 3: dispatch_copy(std::integral_constant<int, 3>()); break;
-		    default: abort();
-		    }
+		    nd_copy_host(source_base_ptr, dest_ptr, einstr.get_allocation_range(), einstr.get_copy_range(), einstr.get_offset_in_allocation(), id<3>(zeros),
+		        einstr.get_copy_range(), einstr.get_element_size());
 		    return make_complete_event();
 	    },
 	    [&](const copy_instruction& cinstr) {
@@ -395,18 +384,8 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation_id());
 		    if((source_mid == user_memory_id || source_mid == host_memory_id) && (dest_mid == user_memory_id || dest_mid == host_memory_id)) {
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} copy", cinstr.get_id());
-			    const auto dispatch_copy = [&](const auto dims) {
-				    memcpy_strided_host(source_base_ptr, dest_base_ptr, cinstr.get_element_size(), range_cast<dims.value>(cinstr.get_source_range()),
-				        id_cast<dims.value>(cinstr.get_offset_in_source()), range_cast<dims.value>(cinstr.get_dest_range()),
-				        id_cast<dims.value>(cinstr.get_offset_in_dest()), range_cast<dims.value>(cinstr.get_copy_range()));
-			    };
-			    switch(cinstr.get_dimensions()) {
-			    case 0: dispatch_copy(std::integral_constant<int, 0>()); break;
-			    case 1: dispatch_copy(std::integral_constant<int, 1>()); break;
-			    case 2: dispatch_copy(std::integral_constant<int, 2>()); break;
-			    case 3: dispatch_copy(std::integral_constant<int, 3>()); break;
-			    default: abort();
-			    }
+			    nd_copy_host(source_base_ptr, dest_base_ptr, cinstr.get_source_range(), cinstr.get_dest_range(), cinstr.get_offset_in_source(),
+			        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
 			    return make_complete_event();
 		    } else {
 			    assert(source_mid != user_memory_id && dest_mid != user_memory_id);

@@ -25,28 +25,9 @@ namespace experimental {
 namespace detail {
 
 	template <int Dims>
-	class sized_partition_base {
-	  public:
-		explicit sized_partition_base(const range<Dims>& global_size, const subrange<Dims>& range)
-		    : m_global_size(range_cast<Dims>(global_size)), m_range(range) {}
-
-		/** The subrange handled by this host. */
-		const subrange<Dims>& get_subrange() const { return m_range; }
-
-		/** The size of the entire iteration space */
-		const range<Dims>& get_global_size() const { return m_global_size; }
-
-	  private:
-		range<Dims> m_global_size;
-		subrange<Dims> m_range;
-	};
-
-	template <int Dims>
 	partition<Dims> make_partition(const range<Dims>& global_size, const subrange<Dims>& range) {
 		return partition<Dims>(global_size, range);
 	}
-
-	partition<0> make_0d_partition();
 
 	experimental::collective_partition make_collective_partition(const range<1>& global_size, const subrange<1>& range, MPI_Comm comm);
 
@@ -56,11 +37,22 @@ namespace detail {
  * Represents the sub-range of the iteration space handled by each host in a host_task.
  */
 template <int Dims>
-class partition : public detail::sized_partition_base<Dims> {
+class partition {
+  public:
+	/** The subrange handled by this host. */
+	const subrange<Dims>& get_subrange() const { return m_range; }
+
+	/** The size of the entire iteration space */
+	const range<Dims>& get_global_size() const { return m_global_size; }
+
+  private:
+	range<Dims> m_global_size;
+	subrange<Dims> m_range;
+
   protected:
 	friend partition<Dims> detail::make_partition<Dims>(const range<Dims>& global_size, const subrange<Dims>& range);
 
-	partition(const range<Dims>& global_size, const subrange<Dims>& range) : detail::sized_partition_base<Dims>(global_size, range) {}
+	explicit partition(const range<Dims>& global_size, const subrange<Dims>& range) : m_global_size(global_size), m_range(range) {}
 };
 
 /**
@@ -82,22 +74,12 @@ class experimental::collective_partition : public partition<1> {
 	collective_partition(const range<1>& global_size, const subrange<1>& range, MPI_Comm comm) : partition<1>(global_size, range), m_comm(comm) {}
 };
 
-template <>
-class partition<0> {
-  private:
-	partition() noexcept = default;
-
-	friend partition<0> detail::make_0d_partition();
-};
-
 
 namespace detail {
 
 	inline experimental::collective_partition make_collective_partition(const range<1>& global_size, const subrange<1>& range, MPI_Comm comm) {
 		return experimental::collective_partition(global_size, range, comm);
 	}
-
-	inline partition<0> make_0d_partition() { return {}; }
 
 	/**
 	 * The @p host_queue provides a thread pool to submit host tasks.
