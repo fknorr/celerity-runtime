@@ -318,8 +318,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const export_instruction_record& einstr) {
 			    begin_node(einstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}", einstr.id);
-			    fmt::format_to(back, "<br/>{}D <b>export</b>", einstr.dimensions);
-			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(einstr.buffer_id, einstr.buffer_name),
+			    fmt::format_to(back, "<br/><b>export</b><br/>{} {}", utils::get_buffer_label(einstr.buffer_id, einstr.buffer_name),
 			        box(subrange(einstr.offset_in_buffer, einstr.copy_range)));
 			    fmt::format_to(back, "<br/>via {} {}<br/>{}x{} bytes", einstr.host_allocation_id, box(subrange(einstr.offset_in_allocation, einstr.copy_range)),
 			        einstr.copy_range, einstr.element_size);
@@ -328,7 +327,6 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const copy_instruction_record& cinstr) {
 			    begin_node(cinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", cinstr.id);
-			    fmt::format_to(back, "{}D ", cinstr.dimensions);
 			    switch(cinstr.origin) {
 			    case copy_instruction_record::copy_origin::linearize: dot += "linearizing "; break;
 			    case copy_instruction_record::copy_origin::resize: dot += "resize "; break;

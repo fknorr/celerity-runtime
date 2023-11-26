@@ -189,15 +189,15 @@ init_buffer_instruction_record::init_buffer_instruction_record(const init_buffer
 export_instruction_record::export_instruction_record(
     const export_instruction& einstr, const detail::buffer_id buffer_id, std::string buffer_name, const celerity::id<3>& offset_in_buffer)
     : acceptor_base(einstr), buffer_id(buffer_id), buffer_name(std::move(buffer_name)), offset_in_buffer(offset_in_buffer),
-      host_allocation_id(einstr.get_host_allocation_id()), dimensions(einstr.get_dimensions()), allocation_range(einstr.get_allocation_range()),
+      host_allocation_id(einstr.get_host_allocation_id()), allocation_range(einstr.get_allocation_range()),
       offset_in_allocation(einstr.get_offset_in_allocation()), copy_range(einstr.get_copy_range()), element_size(einstr.get_element_size()) {}
 
 copy_instruction_record::copy_instruction_record(
     const copy_instruction& cinstr, const copy_origin origin, const detail::buffer_id buffer_id, std::string buffer_name, const detail::box<3>& box)
     : acceptor_base(cinstr), source_allocation_id(cinstr.get_source_allocation_id()), dest_allocation_id(cinstr.get_dest_allocation_id()),
-      dimensions(cinstr.get_dimensions()), source_range(cinstr.get_source_range()), dest_range(cinstr.get_dest_range()),
-      offset_in_source(cinstr.get_offset_in_source()), offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()),
-      element_size(cinstr.get_element_size()), origin(origin), buffer_id(buffer_id), buffer_name(std::move(buffer_name)), box(box) {}
+      source_range(cinstr.get_source_range()), dest_range(cinstr.get_dest_range()), offset_in_source(cinstr.get_offset_in_source()),
+      offset_in_dest(cinstr.get_offset_in_dest()), copy_range(cinstr.get_copy_range()), element_size(cinstr.get_element_size()), origin(origin),
+      buffer_id(buffer_id), buffer_name(std::move(buffer_name)), box(box) {}
 
 device_kernel_instruction_record::device_kernel_instruction_record(const device_kernel_instruction& dkinstr, const task_id cg_tid,
     const command_id execution_cid, const std::string& debug_name, const std::vector<buffer_memory_record>& buffer_memory_allocation_map,

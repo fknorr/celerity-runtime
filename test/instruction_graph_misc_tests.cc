@@ -164,7 +164,6 @@ TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction
 	// these specialized export instructions.
 	const auto xport = fence.predecessors().assert_unique<export_instruction_record>();
 	CHECK(xport->buffer_id == buf.get_id());
-	CHECK(xport->dimensions == Dims);
 	CHECK(xport->offset_in_buffer == id_cast<3>(export_subrange.offset));
 	CHECK(xport->copy_range == range_cast<3>(export_subrange.range));
 	CHECK(xport->element_size == sizeof(int));
@@ -173,7 +172,6 @@ TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction
 	const auto coherence_copy = xport.predecessors().assert_unique<copy_instruction_record>();
 	CHECK(coherence_copy->copy_range == xport->copy_range);
 	CHECK(coherence_copy->buffer_id == buf.get_id());
-	CHECK(coherence_copy->dimensions == Dims);
 	CHECK(coherence_copy->box.get_offset() == xport->offset_in_buffer);
 	CHECK(coherence_copy->box.get_range() == xport->copy_range);
 }

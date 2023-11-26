@@ -2,11 +2,11 @@
 
 #include <sycl/sycl.hpp>
 
-#include "backend/generic_backend.h"
+#include "backend/queue.h"
 #include "backend/traits.h"
 #include "backend/type.h"
-#include "types.h"
 
+// TODO this is only used for `get_name` - maybe we can get rid of it?
 // Helper function to instantiate `Template` (during compile time) based on the backend type (a runtime value).
 namespace celerity::detail::backend_detail {
 template <template <backend::type> typename Template, typename Callback>

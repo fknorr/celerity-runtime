@@ -203,7 +203,6 @@ struct export_instruction_record : matchbox::implement_acceptor<instruction_reco
 	std::string buffer_name;
 	celerity::id<3> offset_in_buffer;
 	allocation_id host_allocation_id;
-	int dimensions;
 	range<3> allocation_range;
 	celerity::id<3> offset_in_allocation;
 	range<3> copy_range;
@@ -223,7 +222,6 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 
 	allocation_id source_allocation_id;
 	allocation_id dest_allocation_id;
-	int dimensions;
 	range<3> source_range;
 	range<3> dest_range;
 	celerity::id<3> offset_in_source;

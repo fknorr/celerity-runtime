@@ -259,7 +259,7 @@ instruction_executor::boundary_check_info instruction_executor::prepare_accessor
 	boundary_check_info info;
 	if(!amap.empty()) {
 		info.illegal_access_bounding_boxes =
-		    static_cast<oob_bounding_box*>(m_backend_queue->malloc(host_memory_id, amap.size() * sizeof(oob_bounding_box), alignof(oob_bounding_box)));
+		    static_cast<oob_bounding_box*>(m_backend_queue->alloc(host_memory_id, amap.size() * sizeof(oob_bounding_box), alignof(oob_bounding_box)));
 		std::uninitialized_default_construct_n(info.illegal_access_bounding_boxes, amap.size());
 	}
 	for(size_t i = 0; i < amap.size(); ++i) {
@@ -332,7 +332,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    void* ptr;
 		    {
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} alloc", ainstr.get_id());
-			    ptr = m_backend_queue->malloc(ainstr.get_allocation_id().get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
+			    ptr = m_backend_queue->alloc(ainstr.get_allocation_id().get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 		    }
 
 		    CELERITY_DEBUG("[executor] {} allocated as {}", ainstr.get_allocation_id(), ptr);
@@ -380,19 +380,19 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 
 		    const auto source_mid = cinstr.get_source_allocation_id().get_memory_id();
 		    const auto dest_mid = cinstr.get_dest_allocation_id().get_memory_id();
-		    const auto source_base_ptr = m_allocations.at(cinstr.get_source_allocation_id());
-		    const auto dest_base_ptr = m_allocations.at(cinstr.get_dest_allocation_id());
+		    const auto source_base = m_allocations.at(cinstr.get_source_allocation_id());
+		    const auto dest_base = m_allocations.at(cinstr.get_dest_allocation_id());
 		    if((source_mid == user_memory_id || source_mid == host_memory_id) && (dest_mid == user_memory_id || dest_mid == host_memory_id)) {
+			    // TODO into thread pool
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} copy", cinstr.get_id());
-			    nd_copy_host(source_base_ptr, dest_base_ptr, cinstr.get_source_range(), cinstr.get_dest_range(), cinstr.get_offset_in_source(),
+			    nd_copy_host(source_base, dest_base, cinstr.get_source_range(), cinstr.get_dest_range(), cinstr.get_offset_in_source(),
 			        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
 			    return make_complete_event();
 		    } else {
 			    assert(source_mid != user_memory_id && dest_mid != user_memory_id);
 			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Lime, "I{} copy", cinstr.get_id());
-			    return m_backend_queue->memcpy_strided_device(cinstr.get_dimensions(), source_mid, dest_mid, source_base_ptr, dest_base_ptr,
-			        cinstr.get_element_size(), cinstr.get_source_range(), cinstr.get_offset_in_source(), cinstr.get_dest_range(), cinstr.get_offset_in_dest(),
-			        cinstr.get_copy_range());
+			    return m_backend_queue->nd_copy(source_mid, dest_mid, source_base, dest_base, cinstr.get_source_range(), cinstr.get_dest_range(),
+			        cinstr.get_offset_in_source(), cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
 		    }
 	    },
 	    [&](const device_kernel_instruction& dkinstr) {

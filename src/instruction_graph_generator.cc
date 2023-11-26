@@ -577,8 +577,8 @@ void instruction_graph_generator::impl::allocate_contiguously(const buffer_id bi
 				// TODO to avoid introducing a synchronization point on oversubscription, split into multiple copies if that will allow unimpeded
 				// oversubscribed-producer to oversubscribed-consumer data flow.
 
-				const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, dest.aid, dest_range,
-				    copy_offset - dest_offset, copy_range, buffer.elem_size);
+				const auto copy_instr = &create<copy_instruction>(
+				    source.aid, source_range, copy_offset - source_offset, dest.aid, dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 				for(const auto& [_, dep_instr] : source.last_writers.get_region_values(copy_box)) { // TODO copy-pasta
 					assert(dep_instr != nullptr);
@@ -850,8 +850,8 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 						const auto [dest_offset, dest_range] = dest.box.get_subrange();
 						const auto [copy_offset, copy_range] = copy_box.get_subrange();
 
-						const auto copy_instr = &create<copy_instruction>(buffer.dims, source.aid, source_range, copy_offset - source_offset, dest.aid,
-						    dest_range, copy_offset - dest_offset, copy_range, buffer.elem_size);
+						const auto copy_instr = &create<copy_instruction>(source.aid, source_range, copy_offset - source_offset, dest.aid, dest_range,
+						    copy_offset - dest_offset, copy_range, buffer.elem_size);
 
 						for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_box)) {
 							assert(last_writer_instr != nullptr);
@@ -1144,8 +1144,8 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 			// copy to local gather space
 
 			const auto current_value_copy_instr =
-			    &create<copy_instruction>(buffer.dims, source->aid, source->box.get_range(), scalar_reduction_box.get_offset() - source->box.get_offset(),
-			        red.gather_aid, range_cast<3>(range<1>(red.num_chunks)), id<3>(), scalar_reduction_box.get_range(), buffer.elem_size);
+			    &create<copy_instruction>(source->aid, source->box.get_range(), scalar_reduction_box.get_offset() - source->box.get_offset(), red.gather_aid,
+			        range_cast<3>(range<1>(red.num_chunks)), id<3>(), scalar_reduction_box.get_range(), buffer.elem_size);
 			if(m_recorder != nullptr) {
 				*m_recorder << copy_instruction_record(
 				    *current_value_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name, scalar_reduction_box);
@@ -1376,7 +1376,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 
 			// copy to local gather space
 
-			const auto copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), source->aid, source->box.get_range(),
+			const auto copy_instr = &create<copy_instruction>(source->aid, source->box.get_range(),
 			    scalar_reduction_box.get_offset() - source->box.get_offset(), red.gather_aid, range_cast<3>(range<1>(red.num_chunks)),
 			    id_cast<3>(id<1>(red.current_value_offset + j)), scalar_reduction_box.get_range(), buffer.elem_size);
 			if(m_recorder != nullptr) {
@@ -1599,9 +1599,9 @@ void instruction_graph_generator::impl::compile_reduction_command(const reductio
 		const auto source_alloc = buffer.memories.at(source_mid).find_contiguous_allocation(scalar_reduction_box);
 		assert(source_alloc != nullptr); // if scalar_box is up to date in that memory, it (the single element) must also be contiguous
 
-		local_gather_copy_instr = &create<copy_instruction>(std::max(1, buffer.dims), source_alloc->aid, source_alloc->box.get_range(),
-		    scalar_reduction_box.get_offset() - source_alloc->box.get_offset(), gather_aid, range_cast<3>(range<1>(m_num_nodes)),
-		    id_cast<3>(id<1>(m_local_nid)), scalar_reduction_box.get_range(), buffer.elem_size);
+		local_gather_copy_instr =
+		    &create<copy_instruction>(source_alloc->aid, source_alloc->box.get_range(), scalar_reduction_box.get_offset() - source_alloc->box.get_offset(),
+		        gather_aid, range_cast<3>(range<1>(m_num_nodes)), id_cast<3>(id<1>(m_local_nid)), scalar_reduction_box.get_range(), buffer.elem_size);
 		if(m_recorder != nullptr) {
 			*m_recorder << copy_instruction_record(
 			    *local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name, scalar_reduction_box);
@@ -1680,8 +1680,8 @@ void instruction_graph_generator::impl::compile_fence_command(const fence_comman
 		assert(allocation != nullptr);
 
 		// TODO this should become copy_instruction as soon as IGGEN supports user_memory_id
-		const auto export_instr = &create<export_instruction>(allocation->aid, buffer.dims, allocation->box.get_range(),
-		    box.get_offset() - allocation->box.get_offset(), box.get_range(), buffer.elem_size, tsk.get_fence_promise()->get_snapshot_pointer());
+		const auto export_instr = &create<export_instruction>(allocation->aid, allocation->box.get_range(), box.get_offset() - allocation->box.get_offset(),
+		    box.get_range(), buffer.elem_size, tsk.get_fence_promise()->get_snapshot_pointer());
 		for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
 			assert(dep_instr != nullptr);
 			add_dependency(*export_instr, *dep_instr, dependency_kind::true_dep);

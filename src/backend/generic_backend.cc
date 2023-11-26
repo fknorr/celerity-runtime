@@ -1,4 +1,4 @@
-#include "backend/backend.h"
+#include "backend/generic_backend.h"
 
 #include "nd_memory.h"
 #include "ranges.h"
@@ -29,7 +29,7 @@ generic_queue::generic_queue(const std::vector<device_config>& devices) {
 	}
 }
 
-void* generic_queue::malloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
+void* generic_queue::alloc(const memory_id where, const size_t size, [[maybe_unused]] const size_t alignment) {
 	assert(where != user_memory_id);
 	auto& queue = m_memory_queues.at(where);
 	void* ptr;
@@ -52,15 +52,15 @@ void generic_queue::free(const memory_id where, void* const allocation) {
 	sycl::free(allocation, m_memory_queues.at(where));
 }
 
-async_event generic_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base,
-    void* const dest_base, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& dest_range,
-    const id<3>& dest_offset, const range<3>& copy_range) //
+async_event generic_queue::nd_copy(const memory_id source_mid, const memory_id dest_mid, const void* const source_base, void* const dest_base,
+    const range<3>& source_range, const range<3>& dest_range, const id<3>& source_offset, const id<3>& dest_offset, const range<3>& copy_range,
+    const size_t elem_size) //
 {
-	assert(source != user_memory_id);
-	assert(dest != user_memory_id);
-	assert(source != host_memory_id || dest != host_memory_id);
+	assert(source_mid != user_memory_id);
+	assert(dest_mid != user_memory_id);
+	assert(source_mid != host_memory_id || dest_mid != host_memory_id);
 
-	auto& queue = m_memory_queues.at(source == host_memory_id ? dest : source);
+	auto& queue = m_memory_queues.at(source_mid == host_memory_id ? dest_mid : source_mid);
 
 	std::vector<sycl::event> wait_list;
 	for_each_linear_slice_in_nd_copy(source_range, dest_range, source_offset, dest_offset, copy_range,
@@ -73,7 +73,8 @@ async_event generic_queue::memcpy_strided_device(const int dims, const memory_id
 }
 
 async_event generic_queue::launch_kernel(
-    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
+    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+{
 	return launch_sycl_kernel(m_device_queues.at(did), launcher, execution_range, reduction_ptrs);
 }
 

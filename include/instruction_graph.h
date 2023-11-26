@@ -104,13 +104,12 @@ class init_buffer_instruction final : public matchbox::implement_acceptor<instru
 /// This instruction exists temporarily until the IDAG is able to track user allocations directly, at which point this will become a copy_instruction.
 class export_instruction final : public matchbox::implement_acceptor<instruction, export_instruction> {
   public:
-	explicit export_instruction(const instruction_id iid, const allocation_id host_aid, const int dims, const range<3>& allocation_range,
+	explicit export_instruction(const instruction_id iid, const allocation_id host_aid, const range<3>& allocation_range,
 	    const id<3>& offset_in_allocation, const range<3>& copy_range, size_t elem_size, void* out_pointer)
-	    : acceptor_base(iid), m_host_aid(host_aid), m_dims(dims), m_allocation_range(allocation_range), m_offset_in_allocation(offset_in_allocation),
+	    : acceptor_base(iid), m_host_aid(host_aid), m_allocation_range(allocation_range), m_offset_in_allocation(offset_in_allocation),
 	      m_copy_range(copy_range), m_elem_size(elem_size), m_out_pointer(out_pointer) {}
 
 	allocation_id get_host_allocation_id() const { return m_host_aid; }
-	int get_dimensions() const { return m_dims; }
 	range<3> get_allocation_range() const { return m_allocation_range; }
 	id<3> get_offset_in_allocation() const { return m_offset_in_allocation; }
 	range<3> get_copy_range() const { return m_copy_range; }
@@ -119,7 +118,6 @@ class export_instruction final : public matchbox::implement_acceptor<instruction
 
   private:
 	allocation_id m_host_aid;
-	int m_dims; // TODO does this actually need to know dimensions or can we just copy by effective_dims?
 	range<3> m_allocation_range;
 	id<3> m_offset_in_allocation;
 	range<3> m_copy_range;
@@ -130,14 +128,13 @@ class export_instruction final : public matchbox::implement_acceptor<instruction
 /// Copies a 0- to 3-dimensional subrange of elements from one allocation to another, potentially between different memories.
 class copy_instruction final : public matchbox::implement_acceptor<instruction, copy_instruction> {
   public:
-	explicit copy_instruction(const instruction_id iid, const int dims, const allocation_id source_allocation, const range<3>& source_range,
+	explicit copy_instruction(const instruction_id iid, const allocation_id source_allocation, const range<3>& source_range,
 	    const id<3>& offset_in_source, const allocation_id dest_allocation, const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range,
 	    const size_t elem_size)
-	    : acceptor_base(iid), m_source_aid(source_allocation), m_dest_aid(dest_allocation), m_dims(dims), m_source_range(source_range),
+	    : acceptor_base(iid), m_source_aid(source_allocation), m_dest_aid(dest_allocation), m_source_range(source_range),
 	      m_dest_range(dest_range), m_offset_in_source(offset_in_source), m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
 
 	allocation_id get_source_allocation_id() const { return m_source_aid; }
-	int get_dimensions() const { return m_dims; }
 	const range<3>& get_source_range() const { return m_source_range; }
 	const id<3>& get_offset_in_source() const { return m_offset_in_source; }
 	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
@@ -149,7 +146,6 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
   private:
 	allocation_id m_source_aid;
 	allocation_id m_dest_aid;
-	int m_dims; // TODO does this actually need to know dimensions or can we just copy by effective_dims?
 	range<3> m_source_range;
 	range<3> m_dest_range;
 	id<3> m_offset_in_source;
