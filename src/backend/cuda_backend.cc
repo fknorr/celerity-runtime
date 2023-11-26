@@ -17,89 +17,50 @@
 
 namespace celerity::detail::backend_detail {
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<0>& /* source_range */,
-    const id<0>& /* source_offset */, const range<0>& /* target_range */, const id<0>& /* target_offset */, const range<0>& /* copy_range */) {
-	(void)queue;
-	const auto ret = cudaMemcpy(target_base_ptr, source_base_ptr, elem_size, cudaMemcpyDefault);
-	if(ret != cudaSuccess) throw std::runtime_error("cudaMemcpy failed");
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	cudaStreamSynchronize(0);
-}
+void nd_copy_cuda(const void* const source_base, void* const dest_base, const range<3>& source_range, const range<3>& dest_range, const id<3>& offset_in_source,
+    const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size, const cudaStream_t stream) {
+	assert(all_true(offset_in_source + copy_range <= source_range));
+	assert(all_true(offset_in_dest + copy_range <= dest_range));
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<1>& source_range,
-    const id<1>& source_offset, const range<1>& target_range, const id<1>& target_offset, const range<1>& copy_range) {
-	(void)queue;
-	const size_t line_size = elem_size * copy_range[0];
-	CELERITY_CUDA_CHECK(cudaMemcpy, static_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
-	    static_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault);
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	CELERITY_CUDA_CHECK(cudaStreamSynchronize, 0);
-}
+	if(copy_range.size() == 0) return;
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<2>& source_range,
-    const id<2>& source_offset, const range<2>& target_range, const id<2>& target_offset, const range<2>& copy_range) {
-	(void)queue;
-	const auto source_base_offset = get_linear_index(source_range, source_offset);
-	const auto target_base_offset = get_linear_index(target_range, target_offset);
-	CELERITY_CUDA_CHECK(cudaMemcpy2D, static_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
-	    static_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size, copy_range[0],
-	    cudaMemcpyDefault);
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	CELERITY_CUDA_CHECK(cudaStreamSynchronize, 0);
-}
+	// TODO copied from nd_copy_host - this works but is not optimal, it will still do a 2D copy on a [1,1,1] range if there is a dim1 offset
+	int linear_dim = 0;
+	for(int d = 1; d < 3; ++d) {
+		if(source_range[d] != copy_range[d] || dest_range[d] != copy_range[d]) { linear_dim = d; }
+	}
 
-void memcpy_strided_device_cuda(sycl::queue& queue, const void* source_base_ptr, void* target_base_ptr, size_t elem_size, const range<3>& source_range,
-    const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset, const range<3>& copy_range) {
-	cudaMemcpy3DParms parms = {};
-	parms.srcPos = make_cudaPos(source_offset[2] * elem_size, source_offset[1], source_offset[0]);
-	parms.srcPtr = make_cudaPitchedPtr(
-	    const_cast<void*>(source_base_ptr), source_range[2] * elem_size, source_range[2], source_range[1]); // NOLINT cppcoreguidelines-pro-type-const-cast
-	parms.dstPos = make_cudaPos(target_offset[2] * elem_size, target_offset[1], target_offset[0]);
-	parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
-	parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
-	parms.kind = cudaMemcpyDefault;
-	CELERITY_CUDA_CHECK(cudaMemcpy3D, &parms);
-	// Classic CUDA footgun: Memcpy is not always synchronous (e.g. for D2D)
-	CELERITY_CUDA_CHECK(cudaStreamSynchronize, 0);
-}
+	const auto first_source_elem = static_cast<const std::byte*>(source_base) + get_linear_index(source_range, offset_in_source) * elem_size;
+	const auto first_dest_elem = static_cast<std::byte*>(dest_base) + get_linear_index(dest_range, offset_in_dest) * elem_size;
 
-void memcpy_strided_device_cuda(const cudaStream_t stream, const void* const source_base_ptr, void* const target_base_ptr, const size_t elem_size,
-    const range<0>& /* source_range */, const id<0>& /* source_offset */, const range<0>& /* target_range */, const id<0>& /* target_offset */,
-    const range<0>& /* copy_range */) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpyAsync")
-	CELERITY_CUDA_CHECK(cudaMemcpyAsync, target_base_ptr, source_base_ptr, elem_size, cudaMemcpyDefault, stream);
-}
-
-void memcpy_strided_device_cuda(const cudaStream_t stream, const void* const source_base_ptr, void* const target_base_ptr, const size_t elem_size,
-    const range<1>& source_range, const id<1>& source_offset, const range<1>& target_range, const id<1>& target_offset, const range<1>& copy_range) {
-	const size_t line_size = elem_size * copy_range[0];
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpyAsync")
-	CELERITY_CUDA_CHECK(cudaMemcpyAsync, static_cast<char*>(target_base_ptr) + elem_size * get_linear_index(target_range, target_offset),
-	    static_cast<const char*>(source_base_ptr) + elem_size * get_linear_index(source_range, source_offset), line_size, cudaMemcpyDefault, stream);
-}
-
-void memcpy_strided_device_cuda(const cudaStream_t stream, const void* const source_base_ptr, void* const target_base_ptr, const size_t elem_size,
-    const range<2>& source_range, const id<2>& source_offset, const range<2>& target_range, const id<2>& target_offset, const range<2>& copy_range) {
-	const auto source_base_offset = get_linear_index(source_range, source_offset);
-	const auto target_base_offset = get_linear_index(target_range, target_offset);
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpy2DAsync")
-	CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, static_cast<char*>(target_base_ptr) + elem_size * target_base_offset, target_range[1] * elem_size,
-	    static_cast<const char*>(source_base_ptr) + elem_size * source_base_offset, source_range[1] * elem_size, copy_range[1] * elem_size, copy_range[0],
-	    cudaMemcpyDefault, stream);
-}
-
-void memcpy_strided_device_cuda(const cudaStream_t stream, const void* const source_base_ptr, void* const target_base_ptr, const size_t elem_size,
-    const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range, const id<3>& target_offset, const range<3>& copy_range) {
-	cudaMemcpy3DParms parms = {};
-	parms.srcPos = make_cudaPos(source_offset[2] * elem_size, source_offset[1], source_offset[0]);
-	parms.srcPtr = make_cudaPitchedPtr(
-	    const_cast<void*>(source_base_ptr), source_range[2] * elem_size, source_range[2], source_range[1]); // NOLINT cppcoreguidelines-pro-type-const-cast
-	parms.dstPos = make_cudaPos(target_offset[2] * elem_size, target_offset[1], target_offset[0]);
-	parms.dstPtr = make_cudaPitchedPtr(target_base_ptr, target_range[2] * elem_size, target_range[2], target_range[1]);
-	parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
-	parms.kind = cudaMemcpyDefault;
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpy3DAsync")
-	CELERITY_CUDA_CHECK(cudaMemcpy3DAsync, &parms, stream);
+	switch(linear_dim) {
+	case 0: {
+		const auto copy_bytes = (copy_range[0] * copy_range[1] * copy_range[2]) * elem_size;
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpyAsync")
+		CELERITY_CUDA_CHECK(cudaMemcpyAsync, first_dest_elem, first_source_elem, copy_bytes, cudaMemcpyDefault, stream);
+		break;
+	}
+	case 1: {
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpy2DAsync")
+		CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, first_dest_elem, dest_range[1] * dest_range[2] * elem_size, first_source_elem,
+		    source_range[1] * source_range[2] * elem_size, copy_range[1] * copy_range[2] * elem_size, copy_range[0], cudaMemcpyDefault, stream);
+		break;
+	}
+	case 2: {
+		cudaMemcpy3DParms parms = {};
+		parms.srcPos = make_cudaPos(offset_in_source[2] * elem_size, offset_in_source[1], offset_in_source[0]);
+		parms.srcPtr = make_cudaPitchedPtr(
+		    const_cast<void*>(source_base), source_range[2] * elem_size, source_range[2], source_range[1]); // NOLINT cppcoreguidelines-pro-type-const-cast
+		parms.dstPos = make_cudaPos(offset_in_dest[2] * elem_size, offset_in_dest[1], offset_in_dest[0]);
+		parms.dstPtr = make_cudaPitchedPtr(dest_base, dest_range[2] * elem_size, dest_range[2], dest_range[1]);
+		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
+		parms.kind = cudaMemcpyDefault;
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpy3DAsync")
+		CELERITY_CUDA_CHECK(cudaMemcpy3DAsync, &parms, stream);
+		break;
+	}
+	default: assert(!"unreachable");
+	}
 }
 
 using cuda_device_id = celerity::detail::backend::cuda_queue::cuda_device_id;
@@ -276,9 +237,9 @@ void cuda_queue::free(const memory_id where, void* const allocation) {
 	}
 }
 
-async_event cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base_ptr,
-    void* const target_base_ptr, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& target_range,
-    const id<3>& target_offset, const range<3>& copy_range) //
+async_event cuda_queue::memcpy_strided_device(const int dims, const memory_id source, const memory_id dest, const void* const source_base,
+    void* const dest_base, const size_t elem_size, const range<3>& source_range, const id<3>& source_offset, const range<3>& dest_range,
+    const id<3>& dest_offset, const range<3>& copy_range) //
 {
 	assert(source != user_memory_id);
 	assert(dest != user_memory_id);
@@ -299,21 +260,7 @@ async_event cuda_queue::memcpy_strided_device(const int dims, const memory_id so
 	}
 
 	backend_detail::cuda_set_device_guard set_device(memory->cuda_id);
-
-	// TODO figure out CUDA memcpy dimensionality from effective_dimensionality + whether a 2D/3D copy can actually be done in 1D/2D because it affects the
-	// entire allocation "width"
-	const auto dispatch_memcpy = [&](const auto dims) {
-		backend_detail::memcpy_strided_device_cuda(stream, source_base_ptr, target_base_ptr, elem_size, range_cast<dims.value>(source_range),
-		    id_cast<dims.value>(source_offset), range_cast<dims.value>(target_range), id_cast<dims.value>(target_offset), range_cast<dims.value>(copy_range));
-	};
-	switch(dims) {
-	case 0: dispatch_memcpy(std::integral_constant<int, 0>()); break;
-	case 1: dispatch_memcpy(std::integral_constant<int, 1>()); break;
-	case 2: dispatch_memcpy(std::integral_constant<int, 2>()); break;
-	case 3: dispatch_memcpy(std::integral_constant<int, 3>()); break;
-	default: abort();
-	}
-
+	backend_detail::nd_copy_cuda(source_base, dest_base, source_range, dest_range, source_offset, dest_offset, copy_range, elem_size, stream);
 	return cuda_event::record(stream);
 }
 
