@@ -5,6 +5,7 @@
 
 #include "backend/backend.h"
 #include "backend/queue.h"
+#include "nd_memory.h"
 #include "test_utils.h"
 
 using namespace celerity;
@@ -17,10 +18,10 @@ template <>
 struct Catch::StringMaker<copy_direction> {
 	static std::string convert(const copy_direction value) {
 		switch(value) {
-		case copy_direction::host_to_device: return "host_to_device";
-		case copy_direction::device_to_host: return "device_to_host";
-		case copy_direction::device_to_peer: return "device_to_peer";
-		case copy_direction::device_to_itself: return "device_to_itself";
+		case copy_direction::host_to_device: return "host-to-device";
+		case copy_direction::device_to_host: return "device-to-host";
+		case copy_direction::device_to_peer: return "device-to-peer";
+		case copy_direction::device_to_itself: return "device-to-itself";
 		default: return "unknown";
 		}
 	}
@@ -31,7 +32,7 @@ struct Catch::StringMaker<backend::type> {
 	static std::string convert(const backend::type value) { return std::string(backend::get_name(value)); }
 };
 
-TEMPLATE_TEST_CASE_SIG("backend queue works correctly in all source- and destination layouts ", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
+TEMPLATE_TEST_CASE_SIG("backend_queue::nd_copy works correctly on all source- and destination layouts ", "[backend]", ((int Dims), Dims), 0, 1, 2, 3) {
 	const auto backend = GENERATE(values({backend::type::generic, backend::type::cuda}));
 	if(!backend_detail::is_enabled_v<backend::type::cuda>) SKIP("CUDA backend not available");
 	CAPTURE(backend);
@@ -101,22 +102,20 @@ TEMPLATE_TEST_CASE_SIG("backend queue works correctly in all source- and destina
 	}
 	CAPTURE(source_range, dest_range, offset_in_source, offset_in_dest);
 
-	// generate the source pattern and expected dest pattern in user memory
+	// generate the source pattern in user memory
 	std::vector<int> source_template(source_range.size());
 	std::iota(source_template.begin(), source_template.end(), 1);
 
+	// reference is nd_copy_host (tested in nd_memory_tests)
 	std::vector<int> expected_dest(dest_range.size());
-	experimental::for_each_item(copy_range, [&](const item<Dims> it) {
-		const auto linear_index_in_source = get_linear_index(source_range, offset_in_source + it.get_id());
-		const auto linear_index_in_dest = get_linear_index(dest_range, offset_in_dest + it.get_id());
-		expected_dest[linear_index_in_dest] = source_template[linear_index_in_source];
-	});
-
-	const auto backend_queue = backend::make_queue(backend, backend_devices);
+	nd_copy_host(source_template.data(), expected_dest.data(), range_cast<3>(source_range), range_cast<3>(dest_range), id_cast<3>(offset_in_source),
+	    id_cast<3>(offset_in_dest), range_cast<3>(copy_range), sizeof(int));
 
 	// use a helper SYCL queues to init allocations and copy between user and source/dest memories
 	sycl::queue source_sycl_queue(backend_devices[0].sycl_device);
 	sycl::queue dest_sycl_queue(backend_devices[direction == copy_direction::device_to_peer ? 1 : 0].sycl_device);
+
+	const auto backend_queue = backend::make_queue(backend, backend_devices);
 
 	const auto source_base = backend_queue->alloc(source_mid, source_range.size() * sizeof(int), alignof(int));
 	source_sycl_queue.submit([&](sycl::handler& cgh) { cgh.memcpy(source_base, source_template.data(), source_template.size() * sizeof(int)); }).wait();
