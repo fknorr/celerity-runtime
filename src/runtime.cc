@@ -138,6 +138,9 @@ namespace detail {
 			    cores, min_cores_needed);
 		}
 #endif
+
+		if(CELERITY_ENABLE_TRACY) { CELERITY_WARN("Instrumentation for profiling with Tracy is enabled. Performance may be negatively impacted."); }
+
 		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, static_cast<node_id>(world_rank));
 
 		cgf_diagnostics::make_available();

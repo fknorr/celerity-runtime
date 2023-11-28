@@ -37,7 +37,6 @@ class instruction_graph_generator {
 		error_policy overlapping_write_error = error_policy::throw_exception;
 	};
 
-	// TODO should take unordered_map<device_id, device_info> (runtime is responsible for device id allocation, not IGGEN)
 	explicit instruction_graph_generator(const task_manager& tm, size_t num_nodes, node_id local_nid, system_info system, instruction_graph& idag,
 	    instruction_recorder* recorder, const policy_set& policy = default_policy_set());
 	instruction_graph_generator(const instruction_graph_generator&) = delete;
