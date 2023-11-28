@@ -235,7 +235,8 @@ class instruction_graph_generator::impl {
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
 	std::unordered_map<collective_group_id, per_collective_group_data> m_collective_groups;
-	std::vector<const instruction*> m_current_batch; // TODO this should NOT be a member but an output parameter to compile_*()
+	std::vector<allocation_id> m_unreferenced_user_allocations; // from completed buffer  - collected by the next horizon / epoch instruction
+	std::vector<const instruction*> m_current_batch;            // TODO this should NOT be a member but an output parameter to compile_*()
 	instruction_recorder* m_recorder;
 
 	static memory_id next_location(const memory_mask& locations, memory_id first);
@@ -407,7 +408,7 @@ instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes
 #endif
 
 	m_idag.begin_epoch(task_manager::initial_epoch_task);
-	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none, std::vector<reduction_id>{});
+	const auto initial_epoch = &create<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
 	m_collective_groups.emplace(root_collective_group_id, per_collective_group_data{initial_epoch});
@@ -1668,7 +1669,8 @@ void instruction_graph_generator::impl::compile_fence_command(const fence_comman
 
 void instruction_graph_generator::impl::compile_horizon_command(const horizon_command& hcmd) {
 	m_idag.begin_epoch(hcmd.get_tid());
-	const auto horizon = &create<horizon_instruction>(hcmd.get_tid(), hcmd.get_completed_reductions());
+	instruction_garbage garbage{hcmd.get_completed_reductions(), std::move(m_unreferenced_user_allocations)};
+	const auto horizon = &create<horizon_instruction>(hcmd.get_tid(), std::move(garbage));
 	collapse_execution_front_to(horizon);
 	if(m_last_horizon != nullptr) { apply_epoch(m_last_horizon); }
 	m_last_horizon = horizon;
@@ -1678,7 +1680,8 @@ void instruction_graph_generator::impl::compile_horizon_command(const horizon_co
 
 void instruction_graph_generator::impl::compile_epoch_command(const epoch_command& ecmd) {
 	m_idag.begin_epoch(ecmd.get_tid());
-	const auto epoch = &create<epoch_instruction>(ecmd.get_tid(), ecmd.get_epoch_action(), ecmd.get_completed_reductions());
+	instruction_garbage garbage{ecmd.get_completed_reductions(), std::move(m_unreferenced_user_allocations)};
+	const auto epoch = &create<epoch_instruction>(ecmd.get_tid(), ecmd.get_epoch_action(), std::move(garbage));
 	collapse_execution_front_to(epoch);
 	apply_epoch(epoch);
 	m_last_horizon = nullptr;

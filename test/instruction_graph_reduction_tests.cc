@@ -42,7 +42,7 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
 	auto buf = ictx.create_buffer<1>(1, true /* host initialized */);
 	// initialize the buffer - the resulting host_task_instruction is concurrent with the `writer` kernel because they act on different memories
-	ictx.host_task(buf.get_range()).name("init").discard_write(buf, acc::one_to_one());
+	ictx.host_task(buf.get_range()).name("init").discard_write(buf, acc::one_to_one()).submit();
 	ictx.device_compute(range(256)).name("writer").reduce(buf, true /* include_current_buffer_value */).submit();
 	ictx.device_compute(range(256)).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
@@ -72,8 +72,8 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 	const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
 	CHECK(local_reduce->scope == reduce_instruction_record::reduction_scope::local);
 	CHECK(local_reduce->num_source_values == 2);
-	CHECK(local_reduce->source_allocation_id == gather_from_init->dest_allocation);
-	CHECK(local_reduce->source_allocation_id == gather_from_writer->dest_allocation);
+	CHECK(local_reduce->source_allocation_id == gather_from_init->dest_allocation.id);
+	CHECK(local_reduce->source_allocation_id == gather_from_writer->dest_allocation.id);
 
 	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 	CHECK(reader.transitive_predecessors_across<copy_instruction_record>().contains(local_reduce));
@@ -366,11 +366,12 @@ TEST_CASE("local reductions only include values from participating devices", "[i
 
 		const auto gather_copy = writer.successors().assert_unique<copy_instruction_record>();
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-		CHECK(gather_copy->source_allocation == red_acc.allocation_id);
-		CHECK(gather_copy->dest_allocation == local_reduce->source_allocation_id);
+
+		CHECK(gather_copy->source_allocation.id == red_acc.allocation_id);
+		CHECK(gather_copy->source_allocation.offset_bytes == 0);
 
 		// gather-order must be deterministic because the reduction operation is not necessarily associative
-		CHECK(gather_copy->source_allocation.offset_bytes == 0);
+		CHECK(gather_copy->dest_allocation.id == local_reduce->source_allocation_id);
 		CHECK(gather_copy->dest_allocation.offset_bytes == writer->device_id * sizeof(int));
 
 		CHECK(local_reduce.predecessors().contains(gather_copy));
@@ -475,10 +476,10 @@ TEST_CASE("horizons and epochs notify the executor of completed reductions", "[i
 
 	if(trigger == "horizon") {
 		const auto horizon = all_instrs.select_unique<horizon_instruction_record>();
-		CHECK(horizon->completed_reductions == std::vector{rid});
+		CHECK(horizon->garbage.reductions == std::vector{rid});
 	} else {
 		const auto epoch = all_instrs.select_unique<epoch_instruction_record>(
 		    [](const epoch_instruction_record& einstr) { return einstr.epoch_action == epoch_action::shutdown; });
-		CHECK(epoch->completed_reductions == std::vector{rid});
+		CHECK(epoch->garbage.reductions == std::vector{rid});
 	}
 }

@@ -242,6 +242,18 @@ void instruction_executor::loop() {
 	assert(m_host_object_instances.empty());
 }
 
+void instruction_executor::collect_garbage(const instruction_garbage& garbage) {
+	for(const auto rid : garbage.reductions) {
+		assert(m_reductions.count(rid) != 0);
+		m_reductions.erase(rid);
+	}
+	for(const auto aid : garbage.user_allocations) {
+		assert(aid.get_memory_id() == user_memory_id);
+		assert(m_allocations.count(aid) != 0);
+		m_allocations.erase(aid);
+	}
+}
+
 void instruction_executor::prepare_accessor_hydration(
     target target, const buffer_access_allocation_map& amap CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const boundary_check_info& oob_info)) {
 	std::vector<closure_hydrator::accessor_info> accessor_infos;
@@ -528,9 +540,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "horizon");
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
-		    for(const auto rid : hinstr.get_completed_reductions()) {
-			    m_reductions.erase(rid);
-		    }
+		    collect_garbage(hinstr.get_garbage());
 		    return make_complete_event();
 	    },
 	    [&](const epoch_instruction& einstr) {
@@ -550,9 +560,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    if(m_delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO tm doesn't expect us to actually execute the init epoch */) {
 			    m_delegate->epoch_reached(einstr.get_epoch_task_id());
 		    }
-		    for(const auto rid : einstr.get_completed_reductions()) {
-			    m_reductions.erase(rid);
-		    }
+		    collect_garbage(einstr.get_garbage());
 		    return make_complete_event();
 	    });
 	return active_instruction;

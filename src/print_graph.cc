@@ -271,6 +271,15 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	const auto end_node = [&] { fmt::format_to(back, ">];"); };
 
+	const auto print_instruction_graph_garbage = [&](const instruction_garbage& garbage) {
+		for(const auto rid : garbage.reductions) {
+			fmt::format_to(back, "collect R{}\n", rid);
+		}
+		for(const auto aid : garbage.user_allocations) {
+			fmt::format_to(back, "collect {}\n", aid);
+		}
+	};
+
 	std::unordered_map<int, instruction_id> send_instructions_by_tag; // for connecting pilot messages to send instructions
 	for(const auto& instr : irec.get_instructions()) {
 		matchbox::match(
@@ -458,17 +467,13 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    [&](const horizon_instruction_record& hinstr) {
 			    begin_node(hinstr, "box,margin=0.2,style=rounded", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/><b>horizon</b>", hinstr.id, hinstr.horizon_task_id, hinstr.horizon_command_id);
-			    for(const auto rid : hinstr.completed_reductions) {
-				    fmt::format_to(back, "<br/>drop R{}", rid);
-			    }
+			    print_instruction_graph_garbage(hinstr.garbage);
 			    end_node();
 		    },
 		    [&](const epoch_instruction_record& einstr) {
 			    begin_node(einstr, "box,margin=0.2,style=rounded", "black");
 			    fmt::format_to(back, "I{} (T{}, C{})<br/>{}", einstr.id, einstr.epoch_task_id, einstr.epoch_command_id, get_epoch_label(einstr.epoch_action));
-			    for(const auto rid : einstr.completed_reductions) {
-				    fmt::format_to(back, "<br/>drop R{}", rid);
-			    }
+			    print_instruction_graph_garbage(einstr.garbage);
 			    end_node();
 		    });
 	}

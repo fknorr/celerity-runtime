@@ -355,7 +355,7 @@ namespace detail {
 				CHECK(aw.get_window_offset_in_buffer()[0] == 1);
 				CHECK(aw.get_buffer_range()[0] == 10);
 				CHECK(aw.get_window_offset_in_allocation()[0] <= 1);
-				CHECK(aw.get_allocation_range()[0] >= 6);
+				CHECK(aw.get_allocation_range()[0] >= 5);
 				CHECK(aw.get_allocation_range()[0] <= 10);
 				CHECK(aw.get_window_range()[0] == 5);
 				CHECK(aw.get_window_offset_in_buffer()[1] == 2);

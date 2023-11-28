@@ -135,6 +135,8 @@ class instruction_executor {
 
 	void prepare_accessor_hydration(
 	    target target, const buffer_access_allocation_map& amap CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const boundary_check_info& oob_info));
+
+	void collect_garbage(const instruction_garbage& garbage);
 };
 
 } // namespace celerity::detail

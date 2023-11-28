@@ -395,34 +395,42 @@ class destroy_host_object_instruction final : public matchbox::implement_accepto
 	host_object_id m_hoid;
 };
 
+/// The executor will maintain runtime state about entities that the instruction graph generator references through ids. When the entity goes out of scope or is
+/// otherwise not needed for further instructions, we can delete that state from the executor. We attach the list of these ids to horizon and epoch commands
+/// because they conveniently depend on the entire previous execution front and are thus scheduled to run after the last instruction using each entity.
+struct instruction_garbage {
+	std::vector<reduction_id> reductions;
+	std::vector<allocation_id> user_allocations;
+};
+
 /// IDAG equivalent of a horizon task or command.
 class horizon_instruction final : public matchbox::implement_acceptor<instruction, horizon_instruction> {
   public:
-	explicit horizon_instruction(const instruction_id iid, const task_id horizon_tid, std::vector<reduction_id> completed_reductions)
-	    : acceptor_base(iid), m_horizon_tid(horizon_tid), m_completed_reductions(std::move(completed_reductions)) {}
+	explicit horizon_instruction(const instruction_id iid, const task_id horizon_tid, instruction_garbage garbage)
+	    : acceptor_base(iid), m_horizon_tid(horizon_tid), m_garbage(std::move(garbage)) {}
 
 	task_id get_horizon_task_id() const { return m_horizon_tid; }
-	const std::vector<reduction_id>& get_completed_reductions() const { return m_completed_reductions; }
+	const instruction_garbage& get_garbage() const { return m_garbage; }
 
   private:
 	task_id m_horizon_tid;
-	std::vector<reduction_id> m_completed_reductions;
+	instruction_garbage m_garbage;
 };
 
 /// IDAG equivalent of an epoch task or command.
 class epoch_instruction final : public matchbox::implement_acceptor<instruction, epoch_instruction> {
   public:
-	explicit epoch_instruction(const instruction_id iid, const task_id epoch_tid, const epoch_action action, std::vector<reduction_id> completed_reductions)
-	    : acceptor_base(iid), m_epoch_tid(epoch_tid), m_epoch_action(action), m_completed_reductions(std::move(completed_reductions)) {}
+	explicit epoch_instruction(const instruction_id iid, const task_id epoch_tid, const epoch_action action, instruction_garbage garbage)
+	    : acceptor_base(iid), m_epoch_tid(epoch_tid), m_epoch_action(action), m_garbage(std::move(garbage)) {}
 
 	task_id get_epoch_task_id() const { return m_epoch_tid; }
 	epoch_action get_epoch_action() const { return m_epoch_action; }
-	const std::vector<reduction_id>& get_completed_reductions() const { return m_completed_reductions; }
+	const instruction_garbage& get_garbage() const { return m_garbage; }
 
   private:
 	task_id m_epoch_tid;
 	epoch_action m_epoch_action;
-	std::vector<reduction_id> m_completed_reductions;
+	instruction_garbage m_garbage;
 };
 
 // Standard map / set collections of pointers have non-deterministic behavior because addresses change with every run of the program. Unordered types also have

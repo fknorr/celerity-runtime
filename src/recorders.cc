@@ -270,12 +270,11 @@ destroy_host_object_instruction_record::destroy_host_object_instruction_record(c
     : acceptor_base(dhoinstr), host_object_id(dhoinstr.get_host_object_id()) {}
 
 horizon_instruction_record::horizon_instruction_record(const horizon_instruction& hinstr, const command_id horizon_cid)
-    : acceptor_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid),
-      completed_reductions(hinstr.get_completed_reductions()) {}
+    : acceptor_base(hinstr), horizon_task_id(hinstr.get_horizon_task_id()), horizon_command_id(horizon_cid), garbage(hinstr.get_garbage()) {}
 
 epoch_instruction_record::epoch_instruction_record(const epoch_instruction& einstr, const command_id epoch_cid)
     : acceptor_base(einstr), epoch_task_id(einstr.get_epoch_task_id()), epoch_command_id(epoch_cid), epoch_action(einstr.get_epoch_action()),
-      completed_reductions(einstr.get_completed_reductions()) {}
+      garbage(einstr.get_garbage()) {}
 
 void instruction_recorder::record_await_push_command_id(const transfer_id& trid, const command_id cid) {
 	assert(m_await_push_cids.count(trid) == 0 || m_await_push_cids.at(trid) == cid);
