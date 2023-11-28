@@ -3,7 +3,6 @@
 #include "task_manager.h"
 #include "utils.h"
 
-#include <regex>
 
 namespace celerity::detail {
 
@@ -181,12 +180,6 @@ alloc_instruction_record::alloc_instruction_record(
 
 free_instruction_record::free_instruction_record(const free_instruction& finstr, const size_t size, std::optional<buffer_allocation_record> buffer_allocation)
     : acceptor_base(finstr), allocation_id(finstr.get_allocation_id()), size(size), buffer_allocation(std::move(buffer_allocation)) {}
-
-export_instruction_record::export_instruction_record(
-    const export_instruction& einstr, const detail::buffer_id buffer_id, std::string buffer_name, const celerity::id<3>& offset_in_buffer)
-    : acceptor_base(einstr), buffer_id(buffer_id), buffer_name(std::move(buffer_name)), offset_in_buffer(offset_in_buffer),
-      host_allocation_id(einstr.get_host_allocation_id()), allocation_range(einstr.get_allocation_range()),
-      offset_in_allocation(einstr.get_offset_in_allocation()), copy_range(einstr.get_copy_range()), element_size(einstr.get_element_size()) {}
 
 copy_instruction_record::copy_instruction_record(
     const copy_instruction& cinstr, const copy_origin origin, const detail::buffer_id buffer_id, std::string buffer_name)

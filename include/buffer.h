@@ -82,9 +82,12 @@ class buffer {
 
   private:
 	struct impl {
-		impl(range<Dims> rng, const DataT* host_init_ptr) : range(rng) {
+		impl(range<Dims> rng, const void* host_init_ptr) : range(rng) {
 			if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
-			id = detail::runtime::get_instance().create_buffer(Dims, detail::range_cast<3>(range), sizeof(DataT), alignof(DataT), host_init_ptr);
+			const auto user_aid = host_init_ptr != nullptr
+			                          ? detail::runtime::get_instance().create_user_allocation(const_cast<void*>(host_init_ptr) /* pinky promise */)
+			                          : detail::null_allocation_id;
+			id = detail::runtime::get_instance().create_buffer(Dims, detail::range_cast<3>(range), sizeof(DataT), alignof(DataT), user_aid);
 		}
 		impl(const impl&) = delete;
 		impl(impl&&) = delete;

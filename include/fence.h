@@ -75,7 +75,7 @@ class host_object_fence_promise final : public detail::fence_promise {
 
 	void fulfill() override { m_promise.set_value(*m_instance); }
 
-	void* get_snapshot_pointer() override { utils::panic("host_object_fence_promise::get_snapshot_pointer"); }
+	allocation_id get_user_allocation_id() override { utils::panic("host_object_fence_promise::get_user_allocation_id"); }
 
   private:
 	const T* m_instance;
@@ -85,17 +85,19 @@ class host_object_fence_promise final : public detail::fence_promise {
 template <typename DataT, int Dims>
 class buffer_fence_promise final : public detail::fence_promise {
   public:
-	explicit buffer_fence_promise(const subrange<Dims>& sr) : m_subrange(sr), m_data(std::make_unique<DataT[]>(sr.range.size())) {}
+	explicit buffer_fence_promise(const subrange<Dims>& sr)
+	    : m_subrange(sr), m_data(std::make_unique<DataT[]>(sr.range.size())), m_aid(runtime::get_instance().create_user_allocation(m_data.get())) {}
 
 	std::future<buffer_snapshot<DataT, Dims>> get_future() { return m_promise.get_future(); }
 
 	void fulfill() override { m_promise.set_value(buffer_snapshot<DataT, Dims>(m_subrange, std::move(m_data))); }
 
-	void* get_snapshot_pointer() override { return m_data.get(); }
+	allocation_id get_user_allocation_id() override { return m_aid; }
 
   private:
 	subrange<Dims> m_subrange;
 	std::unique_ptr<DataT[]> m_data;
+	allocation_id m_aid;
 	std::promise<buffer_snapshot<DataT, Dims>> m_promise;
 };
 

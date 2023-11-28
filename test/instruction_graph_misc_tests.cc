@@ -160,18 +160,50 @@ TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction
 	CHECK(fence_buffer_info.box.get_offset() == id_cast<3>(export_subrange.offset));
 	CHECK(fence_buffer_info.box.get_range() == range_cast<3>(export_subrange.range));
 
-	// At some point in the future we want to track user-memory allocations in the executor, and emit normal copy-instructions from host-memory instead of
-	// these specialized export instructions.
-	const auto xport = fence.predecessors().assert_unique<export_instruction_record>();
-	CHECK(xport->buffer_id == buf.get_id());
-	CHECK(xport->offset_in_buffer == id_cast<3>(export_subrange.offset));
-	CHECK(xport->copy_range == range_cast<3>(export_subrange.range));
-	CHECK(xport->element_size == sizeof(int));
+	// copy to user memory
+	const auto fence_copy = fence.predecessors().assert_unique<copy_instruction_record>();
+	CHECK(fence_copy->buffer_id == buf.get_id());
+	CHECK(fence_copy->source_allocation.id.get_memory_id() == host_memory_id);
+	CHECK(fence_copy->dest_allocation.id.get_memory_id() == user_memory_id);
+	CHECK(fence_copy->dest_allocation.offset_bytes == 0);
+	CHECK(fence_copy->dest_box == box_cast<3>(box(export_subrange)));
+	CHECK(fence_copy->copy_region == region_cast<3>(region(box(export_subrange))));
+	CHECK(fence_copy->element_size == sizeof(int));
 
-	// exports are done from host memory
-	const auto coherence_copy = xport.predecessors().assert_unique<copy_instruction_record>();
-	CHECK(coherence_copy->copy_region == region(subrange(xport->offset_in_buffer, xport->copy_range)));
-	CHECK(coherence_copy->buffer_id == buf.get_id());
+	// exports are done from host memory, so data needs to be staged from device memory
+	const auto staging_copy = fence_copy.predecessors().assert_unique<copy_instruction_record>();
+	CHECK(staging_copy->dest_allocation == fence_copy->source_allocation);
+	CHECK(staging_copy->copy_region == fence_copy->copy_region);
+	CHECK(staging_copy->buffer_id == buf.get_id());
+}
+
+TEST_CASE("horizons and epochs notify the executor of unreferenced user allocations after buffer fences",
+    "[instruction_graph_generator][instruction-graph][fence]") //
+{
+	const auto trigger = GENERATE(values<std::string>({"horizon", "epoch"}));
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	ictx.set_horizon_step(trigger == "horizon" ? 2 : 999);
+	auto buf = ictx.create_buffer<int>(range(256));
+	ictx.host_task(buf.get_range()).name("writer").discard_write(buf, acc::one_to_one()).submit();
+	ictx.fence(buf, subrange({}, buf.get_range()));
+	if(trigger == "horizon") { ictx.host_task(buf.get_range()).name("horizon trigger").read_write(buf, acc::one_to_one()).submit(); }
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	instruction_garbage garbage;
+	if(trigger == "horizon") {
+		const auto horizon = all_instrs.select_unique<horizon_instruction_record>();
+		garbage = horizon->garbage;
+	} else {
+		const auto epoch = all_instrs.select_unique<epoch_instruction_record>(
+		    [](const epoch_instruction_record& einstr) { return einstr.epoch_action == epoch_action::shutdown; });
+		garbage = epoch->garbage;
+	}
+	CHECK(garbage.user_allocations.size() == 1);
+	CHECK(garbage.user_allocations.at(0) != null_allocation_id);
+	CHECK(garbage.user_allocations.at(0).get_memory_id() == user_memory_id);
 }
 
 TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruction_graph_generator][instruction-graph][fence]") {

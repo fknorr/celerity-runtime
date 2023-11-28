@@ -394,6 +394,28 @@ class pilot_query {
 	std::vector<outbound_pilot> m_result;
 };
 
+class mock_host_object_fence_promise : public fence_promise {
+  public:
+	void fulfill() override { FAIL("unimplemented"); }
+	allocation_id get_user_allocation_id() override {
+		FAIL("unimplemented");
+		return null_allocation_id;
+	}
+};
+
+class mock_buffer_fence_promise : public fence_promise {
+  public:
+	mock_buffer_fence_promise() = default;
+	explicit mock_buffer_fence_promise(allocation_id user_allocation_id) : m_user_aid(user_allocation_id) {}
+
+	void fulfill() override { FAIL("unimplemented"); }
+
+	allocation_id get_user_allocation_id() override { return m_user_aid; }
+
+  private:
+	allocation_id m_user_aid;
+};
+
 class idag_test_context {
 	friend class task_builder<idag_test_context>;
 
@@ -551,7 +573,7 @@ class idag_test_context {
 	task_id fence(test_utils::mock_host_object ho) {
 		side_effect_map side_effects;
 		side_effects.add_side_effect(ho.get_id(), experimental::side_effect_order::sequential);
-		return fence({}, std::move(side_effects));
+		return fence({}, std::move(side_effects), std::make_unique<mock_host_object_fence_promise>());
 	}
 
 	template <int Dims>
@@ -559,7 +581,7 @@ class idag_test_context {
 		buffer_access_map access_map;
 		access_map.add_access(buf.get_id(),
 		    std::make_unique<range_mapper<Dims, celerity::access::fixed<Dims>>>(celerity::access::fixed<Dims>(sr), access_mode::read, buf.get_range()));
-		return fence(std::move(access_map), {});
+		return fence(std::move(access_map), {}, std::make_unique<mock_buffer_fence_promise>(create_user_allocation()));
 	}
 
 	template <int Dims>
@@ -617,6 +639,8 @@ class idag_test_context {
 	instruction_graph_generator m_iggen;
 	bool m_finished = false;
 
+	allocation_id create_user_allocation() { return detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++); }
+
 	reduction_info create_reduction(const buffer_id bid, const bool include_current_buffer_value) {
 		return reduction_info{m_next_reduction_id++, bid, include_current_buffer_value};
 	}
@@ -656,10 +680,10 @@ class idag_test_context {
 		}
 	}
 
-	task_id fence(buffer_access_map access_map, side_effect_map side_effects) {
+	task_id fence(buffer_access_map access_map, side_effect_map side_effects, std::unique_ptr<fence_promise> promise) {
 		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
-		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::make_unique<null_fence_promise>());
+		const auto tid = m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::move(promise));
 		build_task(tid);
 		maybe_build_horizon();
 		return tid;

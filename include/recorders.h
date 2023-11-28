@@ -145,8 +145,8 @@ using instruction_dependency_list = std::vector<dependency_record<instruction_id
 
 struct instruction_record
     : matchbox::acceptor<struct clone_collective_group_instruction_record, struct alloc_instruction_record, struct free_instruction_record,
-          struct export_instruction_record, struct copy_instruction_record, struct device_kernel_instruction_record, struct host_task_instruction_record,
-          struct send_instruction_record, struct receive_instruction_record, struct split_receive_instruction_record, struct await_receive_instruction_record,
+          struct copy_instruction_record, struct device_kernel_instruction_record, struct host_task_instruction_record, struct send_instruction_record,
+          struct receive_instruction_record, struct split_receive_instruction_record, struct await_receive_instruction_record,
           struct gather_receive_instruction_record, struct fill_identity_instruction_record, struct reduce_instruction_record, struct fence_instruction_record,
           struct destroy_host_object_instruction_record, struct horizon_instruction_record,
           struct epoch_instruction_record> //
@@ -189,26 +189,12 @@ struct free_instruction_record : matchbox::implement_acceptor<instruction_record
 	free_instruction_record(const free_instruction& finstr, size_t size, std::optional<buffer_allocation_record> buffer_allocation);
 };
 
-struct export_instruction_record : matchbox::implement_acceptor<instruction_record, export_instruction_record> {
-	buffer_id buffer_id;
-	std::string buffer_name;
-	celerity::id<3> offset_in_buffer;
-	allocation_id host_allocation_id;
-	range<3> allocation_range;
-	celerity::id<3> offset_in_allocation;
-	range<3> copy_range;
-	size_t element_size;
-
-	explicit export_instruction_record(
-	    const export_instruction& einstr, detail::buffer_id buffer_id, std::string buffer_name, const celerity::id<3>& offset_in_buffer);
-};
-
 struct copy_instruction_record : matchbox::implement_acceptor<instruction_record, copy_instruction_record> {
 	enum class copy_origin {
-		linearize,
 		resize,
 		coherence,
 		gather,
+		fence,
 	};
 
 	allocation_with_offset source_allocation;

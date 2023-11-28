@@ -273,10 +273,10 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	const auto print_instruction_graph_garbage = [&](const instruction_garbage& garbage) {
 		for(const auto rid : garbage.reductions) {
-			fmt::format_to(back, "collect R{}\n", rid);
+			fmt::format_to(back, "<br/>collect R{}", rid);
 		}
 		for(const auto aid : garbage.user_allocations) {
-			fmt::format_to(back, "collect {}\n", aid);
+			fmt::format_to(back, "<br/>collect {}", aid);
 		}
 	};
 
@@ -317,23 +317,14 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, " <br/>{} bytes", finstr.size);
 			    end_node();
 		    },
-		    [&](const export_instruction_record& einstr) {
-			    begin_node(einstr, "ellipse", "green3");
-			    fmt::format_to(back, "I{}", einstr.id);
-			    fmt::format_to(back, "<br/><b>export</b><br/>{} {}", utils::get_buffer_label(einstr.buffer_id, einstr.buffer_name),
-			        box(subrange(einstr.offset_in_buffer, einstr.copy_range)));
-			    fmt::format_to(back, "<br/>via {} {}<br/>{}x{} bytes", einstr.host_allocation_id, box(subrange(einstr.offset_in_allocation, einstr.copy_range)),
-			        einstr.copy_range, einstr.element_size);
-			    end_node();
-		    },
 		    [&](const copy_instruction_record& cinstr) {
 			    begin_node(cinstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}<br/>", cinstr.id);
 			    switch(cinstr.origin) {
-			    case copy_instruction_record::copy_origin::linearize: dot += "linearizing "; break;
 			    case copy_instruction_record::copy_origin::resize: dot += "resize "; break;
 			    case copy_instruction_record::copy_origin::coherence: dot += "coherence "; break;
 			    case copy_instruction_record::copy_origin::gather: dot += "gather "; break;
+			    case copy_instruction_record::copy_origin::fence: dot += "fence "; break;
 			    }
 			    fmt::format_to(back, "<b>copy</b><br/>from {} ({})<br/>to {} ({})<br/>{} {} x{} bytes", cinstr.source_allocation, cinstr.source_box,
 			        cinstr.dest_allocation, cinstr.dest_box, utils::get_buffer_label(cinstr.buffer_id, cinstr.buffer_name), cinstr.copy_region,

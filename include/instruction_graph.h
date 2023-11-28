@@ -23,10 +23,10 @@ class fence_promise;
 /// uses) can back sub-regions of the (virtual) global buffer.
 class instruction
     : public intrusive_graph_node<instruction>,
-      public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class export_instruction,
-          class copy_instruction, class device_kernel_instruction, class host_task_instruction, class send_instruction, class receive_instruction,
-          class split_receive_instruction, class await_receive_instruction, class gather_receive_instruction, class fill_identity_instruction,
-          class reduce_instruction, class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+      public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class copy_instruction,
+          class device_kernel_instruction, class host_task_instruction, class send_instruction, class receive_instruction, class split_receive_instruction,
+          class await_receive_instruction, class gather_receive_instruction, class fill_identity_instruction, class reduce_instruction, class fence_instruction,
+          class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -83,30 +83,6 @@ class free_instruction final : public matchbox::implement_acceptor<instruction, 
 	allocation_id m_aid;
 };
 
-/// Copies a subrange of a host-memory allocation to a user-controlled position. Used for buffer fences.
-/// This instruction exists temporarily until the IDAG is able to track user allocations directly, at which point this will become a copy_instruction.
-class export_instruction final : public matchbox::implement_acceptor<instruction, export_instruction> {
-  public:
-	explicit export_instruction(const instruction_id iid, const allocation_id host_aid, const range<3>& allocation_range, const id<3>& offset_in_allocation,
-	    const range<3>& copy_range, size_t elem_size, void* out_pointer)
-	    : acceptor_base(iid), m_host_aid(host_aid), m_allocation_range(allocation_range), m_offset_in_allocation(offset_in_allocation),
-	      m_copy_range(copy_range), m_elem_size(elem_size), m_out_pointer(out_pointer) {}
-
-	allocation_id get_host_allocation_id() const { return m_host_aid; }
-	range<3> get_allocation_range() const { return m_allocation_range; }
-	id<3> get_offset_in_allocation() const { return m_offset_in_allocation; }
-	range<3> get_copy_range() const { return m_copy_range; }
-	size_t get_element_size() const { return m_elem_size; }
-	void* get_out_pointer() const { return m_out_pointer; }
-
-  private:
-	allocation_id m_host_aid;
-	range<3> m_allocation_range;
-	id<3> m_offset_in_allocation;
-	range<3> m_copy_range;
-	size_t m_elem_size;
-	void* m_out_pointer; // TODO very naughty
-};
 
 /// Copies one or more subranges of elements from one allocation to another, potentially between different memories.
 class copy_instruction final : public matchbox::implement_acceptor<instruction, copy_instruction> {

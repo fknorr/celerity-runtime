@@ -60,7 +60,9 @@ namespace detail {
 
 		void destroy_queue();
 
-		buffer_id create_buffer(int dims, const range<3>& range, size_t elem_size, size_t elem_align, const void* user_allocation);
+		allocation_id create_user_allocation(void* ptr);
+
+		buffer_id create_buffer(int dims, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid);
 
 		void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
 

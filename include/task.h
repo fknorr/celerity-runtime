@@ -108,7 +108,7 @@ namespace detail {
 		virtual ~fence_promise() = default;
 
 		virtual void fulfill() = 0;
-		virtual void* get_snapshot_pointer() = 0;
+		virtual allocation_id get_user_allocation_id() = 0; // TODO this shouldn't be here - refactor fences
 	};
 
 	struct task_geometry {

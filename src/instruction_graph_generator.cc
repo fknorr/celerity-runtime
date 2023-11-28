@@ -1627,31 +1627,38 @@ void instruction_graph_generator::impl::compile_fence_command(const fence_comman
 		const subrange<3> local_sr{};
 		const std::vector chunks{localized_chunk{host_memory_id, local_sr}};
 		assert(tsk.get_reductions().empty()); // it doesn't matter what we pass to is_reduction_initializer next
+
+		// We make the host buffer coherent first in order to apply pending await-pushes.
+		// TODO this enforces a contiguous host-buffer allocation which may cause unnecessary resizes.
 		satisfy_buffer_requirements(bid, tsk, local_sr, false /* is_reduction_initializer */, chunks);
 
 		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros);
-		assert(region.get_boxes().size() == 1);
+		assert(region.get_boxes().size() == 1); // the user allocation exactly fits the fence box
 		const auto box = region.get_boxes().front();
 		// TODO explicitly verify support for empty-range buffer fences
 
 		auto& buffer = m_buffers.at(bid);
-		const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
-		assert(allocation != nullptr);
+		const auto host_buffer_allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
+		assert(host_buffer_allocation != nullptr);
 
-		// TODO this should become copy_instruction as soon as IGGEN supports user_memory_id
-		const auto export_instr = &create<export_instruction>(allocation->aid, allocation->box.get_range(), box.get_offset() - allocation->box.get_offset(),
-		    box.get_range(), buffer.elem_size, tsk.get_fence_promise()->get_snapshot_pointer());
-		for(const auto& [_, dep_instr] : allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
+		const auto user_allocation_id = tsk.get_fence_promise()->get_user_allocation_id();
+
+		const auto copy_instr =
+		    &create<copy_instruction>(host_buffer_allocation->aid, user_allocation_id, host_buffer_allocation->box, box, box, buffer.elem_size);
+		for(const auto& [_, dep_instr] : host_buffer_allocation->last_writers.get_region_values(box)) { // TODO copy-pasta
 			assert(dep_instr != nullptr);
-			add_dependency(*export_instr, *dep_instr, dependency_kind::true_dep);
+			add_dependency(*copy_instr, *dep_instr, dependency_kind::true_dep);
 		}
-		allocation->record_read(box, export_instr);
+		host_buffer_allocation->record_read(box, copy_instr);
 
 		const auto fence_instr = &create<fence_instruction>(tsk.get_fence_promise());
-		add_dependency(*fence_instr, *export_instr, dependency_kind::true_dep);
+		add_dependency(*fence_instr, *copy_instr, dependency_kind::true_dep);
+
+		// we will just assume that the runtime does not intend to re-use this allocation
+		m_unreferenced_user_allocations.push_back(user_allocation_id);
 
 		if(m_recorder != nullptr) {
-			*m_recorder << export_instruction_record(*export_instr, bid, buffer.name, box.get_offset());
+			*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::fence, bid, buffer.name);
 			*m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), bid, buffer.name, box.get_subrange());
 		}
 	}

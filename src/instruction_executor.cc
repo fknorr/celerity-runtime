@@ -242,7 +242,7 @@ void instruction_executor::loop() {
 	assert(m_host_object_instances.empty());
 }
 
-void instruction_executor::collect_garbage(const instruction_garbage& garbage) {
+void instruction_executor::collect(const instruction_garbage& garbage) {
 	for(const auto rid : garbage.reductions) {
 		assert(m_reductions.count(rid) != 0);
 		m_reductions.erase(rid);
@@ -364,18 +364,6 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} free", finstr.get_id());
 
 		    m_backend_queue->free(finstr.get_allocation_id().get_memory_id(), ptr);
-		    return make_complete_event();
-	    },
-	    [&](const export_instruction& einstr) {
-		    CELERITY_DEBUG("[executor] I{}: export {} ({})+{}, {}x{} bytes", einstr.get_id(), einstr.get_host_allocation_id(), einstr.get_allocation_range(),
-		        einstr.get_offset_in_allocation(), einstr.get_copy_range(), einstr.get_element_size());
-		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} export", einstr.get_id());
-
-		    const auto dest_ptr = einstr.get_out_pointer(); // TODO very naughty
-		    const auto source_base_ptr = m_allocations.at(einstr.get_host_allocation_id());
-
-		    nd_copy_host(source_base_ptr, dest_ptr, einstr.get_allocation_range(), einstr.get_copy_range(), einstr.get_offset_in_allocation(), id<3>(zeros),
-		        einstr.get_copy_range(), einstr.get_element_size());
 		    return make_complete_event();
 	    },
 	    [&](const copy_instruction& cinstr) {
@@ -540,7 +528,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "horizon");
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
-		    collect_garbage(hinstr.get_garbage());
+		    collect(hinstr.get_garbage());
 		    return make_complete_event();
 	    },
 	    [&](const epoch_instruction& einstr) {
@@ -560,7 +548,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    if(m_delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO tm doesn't expect us to actually execute the init epoch */) {
 			    m_delegate->epoch_reached(einstr.get_epoch_task_id());
 		    }
-		    collect_garbage(einstr.get_garbage());
+		    collect(einstr.get_garbage());
 		    return make_complete_event();
 	    });
 	return active_instruction;

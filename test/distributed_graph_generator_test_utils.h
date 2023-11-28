@@ -25,12 +25,6 @@ using namespace celerity::detail;
 
 namespace celerity::test_utils {
 
-class null_fence_promise : public fence_promise {
-  public:
-	void fulfill() override { utils::panic("unimplemented"); }
-	void* get_snapshot_pointer() override { return nullptr; }
-};
-
 class dist_cdag_test_context;
 class idag_test_context;
 
