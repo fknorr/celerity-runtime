@@ -170,10 +170,8 @@ TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction
 
 	// exports are done from host memory
 	const auto coherence_copy = xport.predecessors().assert_unique<copy_instruction_record>();
-	CHECK(coherence_copy->copy_range == xport->copy_range);
+	CHECK(coherence_copy->copy_region == region(subrange(xport->offset_in_buffer, xport->copy_range)));
 	CHECK(coherence_copy->buffer_id == buf.get_id());
-	CHECK(coherence_copy->box.get_offset() == xport->offset_in_buffer);
-	CHECK(coherence_copy->box.get_range() == xport->copy_range);
 }
 
 TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruction_graph_generator][instruction-graph][fence]") {

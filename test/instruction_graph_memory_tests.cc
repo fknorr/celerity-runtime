@@ -194,7 +194,7 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 		const auto coherence_copy = intersection_of(coherence_copies, reader.predecessors()).assert_unique();
 		CHECK(coherence_copy->source_allocation_id.get_memory_id() == ictx.get_native_memory(opposite_did));
 		CHECK(coherence_copy->dest_allocation_id.get_memory_id() == ictx.get_native_memory(did));
-		CHECK(coherence_copy->box == opposite_writer->access_map.front().accessed_box_in_buffer);
+		CHECK(coherence_copy->copy_region == region(opposite_writer->access_map.front().accessed_box_in_buffer));
 	}
 
 	// Coherence copies are not sequenced with respect to each other
@@ -234,9 +234,9 @@ TEMPLATE_TEST_CASE_SIG(
 	// there is one device -> host copy for each half
 	CHECK(all_copies.count() == 2);
 	const auto first_half_copy = intersection_of(all_copies, write_first_half.successors()).assert_unique();
-	CHECK(first_half_copy->box == box_cast<3>(box(first_half)));
+	CHECK(first_half_copy->copy_region == region(box_cast<3>(box(first_half))));
 	const auto second_half_copy = intersection_of(all_copies, write_second_half.successors()).assert_unique();
-	CHECK(second_half_copy->box == box_cast<3>(box(second_half)));
+	CHECK(second_half_copy->copy_region == region(box_cast<3>(box(second_half))));
 
 	// copies depend on their producers only
 	CHECK(first_half_copy.predecessors().contains(write_first_half));
@@ -285,7 +285,7 @@ TEMPLATE_TEST_CASE_SIG("local copies are split on writers to facilitate compute-
 
 		const auto& write = writer->access_map.front();
 		CHECK(write.buffer_id == this_copy->buffer_id);
-		CHECK(write.accessed_box_in_buffer == this_copy->box);
+		CHECK(region(write.accessed_box_in_buffer) == this_copy->copy_region);
 		this_copy.successors().contains(reader);
 
 		// each copy can be issued once its writer has completed in order to overlap with the other writer
@@ -371,7 +371,7 @@ TEST_CASE("resizing a buffer allocation for a discard-write access preserves onl
 	const auto preserved_box = preserved_region.get_boxes().front();
 
 	const auto resize_copy = all_instrs.select_unique<copy_instruction_record>();
-	CHECK(resize_copy->box == preserved_box);
+	CHECK(resize_copy->copy_region == region(preserved_box));
 
 	const auto resize_copy_preds = resize_copy.predecessors();
 	CHECK(resize_copy_preds.count() == 2);
@@ -438,4 +438,44 @@ TEST_CASE("copies are staged through host memory for devices that are not peer-c
 		CHECK(copy_from_host->source_allocation_id.get_memory_id() == host_memory_id);
 		CHECK(copy_from_host->dest_allocation_id.get_memory_id() == ictx.get_native_memory(reader->device_id));
 	}
+}
+
+TEST_CASE("oddly-shaped coherence copies generate a single region-copy instruction", "[instruction_graph_generator][instruction-graph][memory]") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 2 /* num devices */);
+	auto buf = ictx.create_buffer(range<2>(256, 256));
+	// init full buffer on D0 to avoid future resizes
+	ictx.device_compute(range(1)).discard_write(buf, acc::all()).submit();
+	// overwrite entire buffer on D1
+	ictx.device_compute(range(2))
+	    .discard_write(buf, [](const chunk<1> ck) { return subrange<2>(zeros, ck.offset[0] + ck.range[0] > 1 ? range(256, 256) : range(0, 0)); })
+	    .submit();
+	// overwrite box in the center on D0
+	ictx.device_compute(range(1)).discard_write(buf, acc::fixed(subrange(id(64, 64), range(128, 128)))).submit();
+	// read full buffer on D0 (requires a coherence copy on the border box)
+	ictx.device_compute(range(1)).read(buf, acc::all()).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	CHECK(all_instrs.count<alloc_instruction_record>() == 2);
+
+	// we expect one coherence copy
+	const auto copy = all_instrs.select_unique<copy_instruction_record>();
+	CHECK(copy->copy_region == region_cast<3>(region_difference(box(id(0, 0), id(256, 256)), box(id(64, 64), id(192, 192)))));
+}
+
+TEST_CASE("oddly-shaped resize copies generate a single region-copy instruction", "[instruction_graph_generator][instruction-graph][memory]") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
+	auto buf = ictx.create_buffer(range<2>(256, 256));
+	// single-device: allocate and write the upper half of the buffer
+	ictx.device_compute(range(1)).discard_write(buf, acc::fixed(subrange(id(0, 0), range(128, 256)))).submit();
+	// now write a box that overlaps with the previous write but extends into the previously unallocated part
+	ictx.device_compute(range(1)).discard_write(buf, acc::fixed(subrange(id(64, 64), range(128, 128)))).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	CHECK(all_instrs.count<alloc_instruction_record>() == 2);
+
+	// we expect one resize copy
+	const auto copy = all_instrs.select_unique<copy_instruction_record>();
+	CHECK(copy->copy_region == region_cast<3>(region_difference(box(id(0, 0), id(128, 256)), box(id(64, 64), id(192, 192)))));
 }

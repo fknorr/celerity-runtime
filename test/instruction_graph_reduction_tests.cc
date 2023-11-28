@@ -54,12 +54,12 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 	// initialization happens in a buffer allocation, from which we must copy into the gather allocation
 	const auto gather_from_init = init_buffer.successors().assert_unique<copy_instruction_record>();
 	CHECK(gather_from_init->origin == copy_instruction_record::copy_origin::gather);
-	CHECK(gather_from_init->box == box<3>(zeros, ones));
+	CHECK(gather_from_init->copy_region == region(box<3>(zeros, ones)));
 
 	// we also directly perfrom a device-to-host copy into the gather allocation
 	const auto gather_from_writer = writer.successors().assert_unique<copy_instruction_record>();
 	CHECK(gather_from_writer->origin == copy_instruction_record::copy_origin::gather);
-	CHECK(gather_from_writer->box == box<3>(zeros, ones));
+	CHECK(gather_from_writer->copy_region == region(box<3>(zeros, ones)));
 	CHECK(gather_from_writer.is_concurrent_with(gather_from_init));
 
 	const auto gather_alloc = intersection_of(gather_from_init.predecessors(), gather_from_writer.predecessors()).assert_unique<alloc_instruction_record>();
@@ -115,7 +115,8 @@ TEST_CASE("reduction accesses on a single-node multi-device setup generate local
 
 		// the order of reduction inputs must be deterministic because the reduction operator is not necessarily associative
 		const auto writer = intersection_of(all_writers, gather_copy.predecessors());
-		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id))));
+		CHECK(gather_copy->byte_offset_to_source == 0);
+		CHECK(gather_copy->byte_offset_to_dest == static_cast<size_t>(writer->device_id) * sizeof(int));
 	}
 
 	const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
@@ -175,9 +176,9 @@ TEST_CASE("reduction accesses on a multi-node single-device setup generate globa
 	// we (gather-) copy the local partial result to the appropriate position in the gather buffer
 	const auto gather_copy = reduce.predecessors().select_unique<copy_instruction_record>();
 	CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-	CHECK(gather_copy->offset_in_source == zeros);
-	CHECK(gather_copy->offset_in_dest == id_cast<3>(id(local_nid)));
-	CHECK(gather_copy->copy_range == ones);
+	CHECK(gather_copy->byte_offset_to_source == 0);
+	CHECK(gather_copy->byte_offset_to_dest == local_nid * sizeof(int));
+	CHECK(gather_copy->copy_region == region(box<3>(zeros, ones)));
 
 	// we gather-receive from all peers - this will _not_ write to the position `local_nid`
 	const auto gather_recv = all_instrs.select_unique<gather_receive_instruction_record>();
@@ -224,7 +225,7 @@ TEST_CASE("reduction accesses on a multi-node multi-device setup generate global
 
 	for(const auto& gather_copy : gather_copies_to_local.iterate()) {
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-		CHECK(gather_copy->box == box<3>(zeros, ones));
+		CHECK(gather_copy->copy_region == region(box<3>(zeros, ones)));
 		CHECK(gather_copy->dest_allocation_id == local_gather_alloc->allocation_id);
 		CHECK(gather_copy->dest_allocation_id == local_reduce->source_allocation_id);
 	}
@@ -311,8 +312,7 @@ TEST_CASE("local reductions can be initialized to a buffer value that is not pre
 		for(const auto& copy : gather_copies.iterate()) {
 			CHECK(copy->origin == copy_instruction_record::copy_origin::gather);
 			CHECK(copy->buffer_id == buf.get_id());
-			CHECK(copy->copy_range == ones);
-			CHECK(copy->box == box<3>(zeros, ones));
+			CHECK(copy->copy_region == region(box<3>(zeros, ones)));
 		}
 
 		const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
@@ -368,7 +368,8 @@ TEST_CASE("local reductions only include values from participating devices", "[i
 		CHECK(gather_copy->dest_allocation_id == local_reduce->source_allocation_id);
 
 		// gather-order must be deterministic because the reduction operation is not necessarily associative
-		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(static_cast<size_t>(writer->device_id))));
+		CHECK(gather_copy->byte_offset_to_source == 0);
+		CHECK(gather_copy->byte_offset_to_dest == writer->device_id * sizeof(int));
 
 		CHECK(local_reduce.predecessors().contains(gather_copy));
 	}
@@ -412,8 +413,9 @@ TEST_CASE("global reductions without a local contribution do not read stale loca
 		const auto gather_copy = global_reduce.predecessors().select_unique<copy_instruction_record>();
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
 		CHECK(gather_copy->dest_allocation_id == gather_recv->allocation_id);
-		CHECK(gather_copy->copy_range == ones);
-		CHECK(gather_copy->offset_in_dest == id_cast<3>(id(local_nid)));
+		CHECK(gather_copy->byte_offset_to_source == 0);
+		CHECK(gather_copy->byte_offset_to_dest == local_nid * sizeof(int));
+		CHECK(gather_copy->copy_region == region(box<3>(zeros, ones)));
 		CHECK(gather_copy.is_concurrent_with(gather_recv));
 
 		// fill_identity writes the entire buffer, so we need to overwrite one slot with our contribution

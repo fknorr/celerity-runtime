@@ -222,19 +222,17 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 
 	allocation_id source_allocation_id;
 	allocation_id dest_allocation_id;
-	range<3> source_range;
-	range<3> dest_range;
-	celerity::id<3> offset_in_source;
-	celerity::id<3> offset_in_dest;
-	range<3> copy_range;
+	size_t byte_offset_to_source;
+	size_t byte_offset_to_dest;
+	box<3> source_box;
+	box<3> dest_box;
+	region<3> copy_region;
 	size_t element_size;
 	copy_origin origin;
 	buffer_id buffer_id;
 	std::string buffer_name;
-	detail::box<3> box; // NOMERGE what does this do?
 
-	copy_instruction_record(
-	    const copy_instruction& cinstr, copy_origin origin, detail::buffer_id buffer_id, std::string buffer_name, const detail::box<3>& box);
+	copy_instruction_record(const copy_instruction& cinstr, copy_origin origin, detail::buffer_id buffer_id, std::string buffer_name);
 };
 
 struct buffer_memory_record {

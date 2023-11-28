@@ -52,9 +52,8 @@ void generic_queue::free(const memory_id where, void* const allocation) {
 	sycl::free(allocation, m_memory_queues.at(where));
 }
 
-async_event generic_queue::nd_copy(const memory_id source_mid, const memory_id dest_mid, const void* const source_base, void* const dest_base,
-    const range<3>& source_range, const range<3>& dest_range, const id<3>& source_offset, const id<3>& dest_offset, const range<3>& copy_range,
-    const size_t elem_size) //
+async_event generic_queue::copy_region(const memory_id source_mid, memory_id dest_mid, const void* const source_base, void* const dest_base,
+    const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
 {
 	assert(source_mid != user_memory_id);
 	assert(dest_mid != user_memory_id);
@@ -63,11 +62,16 @@ async_event generic_queue::nd_copy(const memory_id source_mid, const memory_id d
 	auto& queue = m_memory_queues.at(source_mid == host_memory_id ? dest_mid : source_mid);
 
 	std::vector<sycl::event> wait_list;
-	for_each_linear_slice_in_nd_copy(source_range, dest_range, source_offset, dest_offset, copy_range,
-	    [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
-		    wait_list.push_back(queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
-		        static_cast<const std::byte*>(source_base) + linear_offset_in_source * elem_size, linear_size * elem_size));
-	    });
+	for(const auto& copy_box : copy_region.get_boxes()) {
+		assert(source_box.covers(copy_box));
+		assert(dest_box.covers(copy_box));
+		for_each_linear_slice_in_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(),
+		    [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
+			    wait_list.push_back(queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
+			        static_cast<const std::byte*>(source_base) + linear_offset_in_source * elem_size, linear_size * elem_size));
+		    });
+	}
 	flush_sycl_queue(queue);
 	return make_async_event<sycl_event>(std::move(wait_list));
 }

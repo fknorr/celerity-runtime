@@ -374,25 +374,25 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return make_complete_event();
 	    },
 	    [&](const copy_instruction& cinstr) {
-		    CELERITY_DEBUG("[executor] I{}: copy {}+{} -> {}+{}, {}x{} bytes", cinstr.get_id(), cinstr.get_source_allocation_id(),
-		        cinstr.get_offset_in_source(), cinstr.get_dest_allocation_id(), cinstr.get_offset_in_dest(), cinstr.get_copy_range(),
-		        cinstr.get_element_size());
+		    CELERITY_DEBUG("[executor] I{}: copy {}{} ({}) -> {}{} ({}), {} x{} bytes", cinstr.get_id(), cinstr.get_source_allocation_id(),
+		        cinstr.get_byte_offset_to_source() > 0 ? fmt::format(" + {} bytes", cinstr.get_byte_offset_to_source()) : "", cinstr.get_source_box(),
+		        cinstr.get_dest_allocation_id(), cinstr.get_byte_offset_to_dest() > 0 ? fmt::format(" + {} bytes", cinstr.get_byte_offset_to_dest()) : "",
+		        cinstr.get_dest_box(), cinstr.get_copy_region(), cinstr.get_element_size());
 
 		    const auto source_mid = cinstr.get_source_allocation_id().get_memory_id();
 		    const auto dest_mid = cinstr.get_dest_allocation_id().get_memory_id();
-		    const auto source_base = m_allocations.at(cinstr.get_source_allocation_id());
-		    const auto dest_base = m_allocations.at(cinstr.get_dest_allocation_id());
+		    const auto source_base = static_cast<const std::byte*>(m_allocations.at(cinstr.get_source_allocation_id())) + cinstr.get_byte_offset_to_source();
+		    const auto dest_base = static_cast<std::byte*>(m_allocations.at(cinstr.get_dest_allocation_id())) + cinstr.get_byte_offset_to_dest();
 		    if((source_mid == user_memory_id || source_mid == host_memory_id) && (dest_mid == user_memory_id || dest_mid == host_memory_id)) {
 			    // TODO into thread pool
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} copy", cinstr.get_id());
-			    nd_copy_host(source_base, dest_base, cinstr.get_source_range(), cinstr.get_dest_range(), cinstr.get_offset_in_source(),
-			        cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
+			    copy_region_host(source_base, dest_base, cinstr.get_source_box(), cinstr.get_dest_box(), cinstr.get_copy_region(), cinstr.get_element_size());
 			    return make_complete_event();
 		    } else {
 			    assert(source_mid != user_memory_id && dest_mid != user_memory_id);
 			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Lime, "I{} copy", cinstr.get_id());
-			    return m_backend_queue->nd_copy(source_mid, dest_mid, source_base, dest_base, cinstr.get_source_range(), cinstr.get_dest_range(),
-			        cinstr.get_offset_in_source(), cinstr.get_offset_in_dest(), cinstr.get_copy_range(), cinstr.get_element_size());
+			    return m_backend_queue->copy_region(source_mid, dest_mid, source_base, dest_base, cinstr.get_source_box(), cinstr.get_dest_box(),
+			        cinstr.get_copy_region(), cinstr.get_element_size());
 		    }
 	    },
 	    [&](const device_kernel_instruction& dkinstr) {

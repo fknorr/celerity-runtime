@@ -125,31 +125,32 @@ class export_instruction final : public matchbox::implement_acceptor<instruction
 	void* m_out_pointer; // TODO very naughty
 };
 
-/// Copies a 0- to 3-dimensional subrange of elements from one allocation to another, potentially between different memories.
+/// Copies one or more subranges of elements from one allocation to another, potentially between different memories.
 class copy_instruction final : public matchbox::implement_acceptor<instruction, copy_instruction> {
   public:
-	explicit copy_instruction(const instruction_id iid, const allocation_id source_allocation, const range<3>& source_range, const id<3>& offset_in_source,
-	    const allocation_id dest_allocation, const range<3>& dest_range, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size)
-	    : acceptor_base(iid), m_source_aid(source_allocation), m_dest_aid(dest_allocation), m_source_range(source_range), m_dest_range(dest_range),
-	      m_offset_in_source(offset_in_source), m_offset_in_dest(offset_in_dest), m_copy_range(copy_range), m_elem_size(elem_size) {}
+	explicit copy_instruction(const instruction_id iid, const allocation_id source_aid, const allocation_id dest_aid, const size_t byte_offset_to_source,
+	    const size_t byte_offset_to_dest, const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size)
+	    : acceptor_base(iid), m_source_aid(source_aid), m_dest_aid(dest_aid), m_byte_offset_to_source(byte_offset_to_source),
+	      m_byte_offset_to_dest(byte_offset_to_dest), m_source_box(source_box), m_dest_box(dest_box), m_copy_region(std::move(copy_region)),
+	      m_elem_size(elem_size) {}
 
 	allocation_id get_source_allocation_id() const { return m_source_aid; }
-	const range<3>& get_source_range() const { return m_source_range; }
-	const id<3>& get_offset_in_source() const { return m_offset_in_source; }
 	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
-	const range<3>& get_dest_range() const { return m_dest_range; }
-	const id<3>& get_offset_in_dest() const { return m_offset_in_dest; }
-	const range<3>& get_copy_range() const { return m_copy_range; }
+	size_t get_byte_offset_to_source() const { return m_byte_offset_to_source; }
+	size_t get_byte_offset_to_dest() const { return m_byte_offset_to_dest; }
+	const box<3>& get_source_box() const { return m_source_box; }
+	const box<3>& get_dest_box() const { return m_dest_box; }
+	const region<3>& get_copy_region() const { return m_copy_region; }
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
 	allocation_id m_source_aid;
 	allocation_id m_dest_aid;
-	range<3> m_source_range;
-	range<3> m_dest_range;
-	id<3> m_offset_in_source;
-	id<3> m_offset_in_dest;
-	range<3> m_copy_range;
+	size_t m_byte_offset_to_source;
+	size_t m_byte_offset_to_dest;
+	box<3> m_source_box;
+	box<3> m_dest_box;
+	region<3> m_copy_region;
 	size_t m_elem_size;
 };
 

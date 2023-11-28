@@ -87,29 +87,34 @@ TEMPLATE_TEST_CASE_SIG("backend_queue::nd_copy works correctly on all source- an
 	if constexpr(Dims > 1) { source_shift[1] = GENERATE(values({-2, 0, 2})), dest_shift[1] = GENERATE(values({-2, 0, 2})); }
 	if constexpr(Dims > 2) { source_shift[2] = GENERATE(values({-2, 0, 2})), dest_shift[2] = GENERATE(values({-2, 0, 2})); }
 
-	const auto copy_range = test_utils::truncate_range<Dims>({5, 6, 7});
-	CAPTURE(copy_range);
+	const auto copy_box = box<Dims>(test_utils::truncate_id<Dims>({2, 2, 2}), test_utils::truncate_range<Dims>({5, 6, 7}));
+	CAPTURE(copy_box);
 
-	range<Dims> source_range = ones;
-	range<Dims> dest_range = ones;
-	id<Dims> offset_in_source = zeros;
-	id<Dims> offset_in_dest = zeros;
-	for(int i = 0; i < Dims; ++i) {
-		source_range[i] = copy_range[i] + std::abs(source_shift[i]);
-		offset_in_source[i] = std::max(0, source_shift[i]);
-		dest_range[i] = copy_range[i] + std::abs(dest_shift[i]);
-		offset_in_dest[i] = std::max(0, dest_shift[i]);
+	box<Dims> source_box;
+	box<Dims> dest_box;
+	{
+		id<Dims> source_min;
+		id<Dims> source_max;
+		id<Dims> dest_min;
+		id<Dims> dest_max;
+		for(int i = 0; i < Dims; ++i) {
+			source_min[i] = std::max(0, source_shift[i]);
+			source_max[i] = copy_box.get_max()[i] + std::max(0, -source_shift[i]);
+			dest_min[i] = std::max(0, dest_shift[i]);
+			dest_max[i] = copy_box.get_max()[i] + std::max(0, -dest_shift[i]);
+		}
+		source_box = box<Dims>(source_min, source_max);
+		dest_box = box<Dims>(dest_min, dest_max);
 	}
-	CAPTURE(source_range, dest_range, offset_in_source, offset_in_dest);
+	CAPTURE(source_box, dest_box);
 
 	// generate the source pattern in user memory
-	std::vector<int> source_template(source_range.size());
+	std::vector<int> source_template(source_box.get_area());
 	std::iota(source_template.begin(), source_template.end(), 1);
 
 	// reference is nd_copy_host (tested in nd_memory_tests)
-	std::vector<int> expected_dest(dest_range.size());
-	nd_copy_host(source_template.data(), expected_dest.data(), range_cast<3>(source_range), range_cast<3>(dest_range), id_cast<3>(offset_in_source),
-	    id_cast<3>(offset_in_dest), range_cast<3>(copy_range), sizeof(int));
+	std::vector<int> expected_dest(dest_box.get_area());
+	copy_region_host(source_template.data(), expected_dest.data(), box_cast<3>(source_box), box_cast<3>(dest_box), box_cast<3>(copy_box), sizeof(int));
 
 	// use a helper SYCL queues to init allocations and copy between user and source/dest memories
 	sycl::queue source_sycl_queue(backend_devices[0].sycl_device);
@@ -117,17 +122,17 @@ TEMPLATE_TEST_CASE_SIG("backend_queue::nd_copy works correctly on all source- an
 
 	const auto backend_queue = backend::make_queue(backend, backend_devices);
 
-	const auto source_base = backend_queue->alloc(source_mid, source_range.size() * sizeof(int), alignof(int));
+	const auto source_base = backend_queue->alloc(source_mid, source_box.get_area() * sizeof(int), alignof(int));
 	source_sycl_queue.submit([&](sycl::handler& cgh) { cgh.memcpy(source_base, source_template.data(), source_template.size() * sizeof(int)); }).wait();
 
-	const auto dest_base = backend_queue->alloc(dest_mid, dest_range.size() * sizeof(int), alignof(int));
-	dest_sycl_queue.submit([&](sycl::handler& cgh) { cgh.memset(dest_base, 0, dest_range.size() * sizeof(int)); }).wait();
+	const auto dest_base = backend_queue->alloc(dest_mid, dest_box.get_area() * sizeof(int), alignof(int));
+	dest_sycl_queue.submit([&](sycl::handler& cgh) { cgh.memset(dest_base, 0, dest_box.get_area() * sizeof(int)); }).wait();
 
-	const auto copy_event = backend_queue->nd_copy(source_mid, dest_mid, source_base, dest_base, range_cast<3>(source_range), range_cast<3>(dest_range),
-	    id_cast<3>(offset_in_source), id_cast<3>(offset_in_dest), range_cast<3>(copy_range), sizeof(int));
+	const auto copy_event = backend_queue->copy_region(
+	    source_mid, dest_mid, source_base, dest_base, box_cast<3>(source_box), box_cast<3>(dest_box), box_cast<3>(copy_box), sizeof(int));
 	while(!copy_event.is_complete()) {} // busy-wait
 
-	std::vector<int> actual_dest(dest_range.size());
+	std::vector<int> actual_dest(dest_box.get_area());
 	dest_sycl_queue.submit([&](sycl::handler& cgh) { cgh.memcpy(actual_dest.data(), dest_base, actual_dest.size() * sizeof(int)); }).wait();
 
 	CHECK(actual_dest == expected_dest);

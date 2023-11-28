@@ -39,8 +39,8 @@ class queue {
 
 	virtual void free(memory_id where, void* allocation) = 0;
 
-	virtual async_event nd_copy(memory_id source_mid, memory_id dest_mid, const void* source_base, void* dest_base, const range<3>& source_range,
-	    const range<3>& dest_range, const id<3>& source_offset, const id<3>& dest_offset, const range<3>& copy_range, size_t elem_size) = 0;
+	virtual async_event copy_region(memory_id source_mid, memory_id dest_mid, const void* const source_base, void* const dest_base, const box<3>& source_box,
+	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) = 0;
 
 	// TODO why is this in queue again? Can't we just have a get_launch_queue(device_id)?
 	virtual async_event launch_kernel(

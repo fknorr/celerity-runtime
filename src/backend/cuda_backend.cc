@@ -237,9 +237,8 @@ void cuda_queue::free(const memory_id where, void* const allocation) {
 	}
 }
 
-async_event cuda_queue::nd_copy(const memory_id source_mid, const memory_id dest_mid, const void* const source_base, void* const dest_base,
-    const range<3>& source_range, const range<3>& dest_range, const id<3>& source_offset, const id<3>& dest_offset, const range<3>& copy_range,
-    const size_t elem_size) //
+async_event cuda_queue::copy_region(const memory_id source_mid, memory_id dest_mid, const void* const source_base, void* const dest_base,
+    const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
 {
 	assert(source_mid != user_memory_id);
 	assert(dest_mid != user_memory_id);
@@ -260,7 +259,12 @@ async_event cuda_queue::nd_copy(const memory_id source_mid, const memory_id dest
 	}
 
 	backend_detail::cuda_set_device_guard set_device(memory->cuda_id);
-	backend_detail::nd_copy_cuda(source_base, dest_base, source_range, dest_range, source_offset, dest_offset, copy_range, elem_size, stream);
+	for(const auto& copy_box : copy_region.get_boxes()) {
+		assert(source_box.covers(copy_box));
+		assert(dest_box.covers(copy_box));
+		backend_detail::nd_copy_cuda(source_base, dest_base, source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(), elem_size, stream);
+	}
 	return cuda_event::record(stream);
 }
 
