@@ -1,7 +1,6 @@
 #pragma once
 
 #include "communicator.h"
-#include "instruction_graph.h" // for pilot_message TODO
 
 #include <memory>
 #include <unordered_map>
@@ -50,8 +49,8 @@ class mpi_communicator final : public communicator {
 	node_id get_local_node_id() const override;
 	void send_outbound_pilot(const outbound_pilot& pilot) override;
 	[[nodiscard]] std::vector<inbound_pilot> poll_inbound_pilots() override;
-	[[nodiscard]] async_event send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) override;
-	[[nodiscard]] async_event receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) override;
+	[[nodiscard]] async_event send_payload(node_id to, message_id msgid, const void* base, const stride& stride) override;
+	[[nodiscard]] async_event receive_payload(node_id from, message_id msgid, void* base, const stride& stride) override;
 
 	collective_group* get_collective_root() override;
 
@@ -67,7 +66,8 @@ class mpi_communicator final : public communicator {
 		MPI_Request request = MPI_REQUEST_NULL;
 	};
 
-	inline constexpr static int pilot_tag = 0; // TODO have a celerity pilot_id and translate it to an MPI tag on this level
+	inline constexpr static int pilot_exchange_tag = 0;
+	inline constexpr static int first_message_tag = 10; // TODO mpi_support.h defines its own tag type for graph printing, unify these
 
 	MPI_Comm m_root_comm;
 

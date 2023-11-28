@@ -61,6 +61,7 @@ MAKE_PHANTOM_TYPE(memory_id, size_t)
 MAKE_PHANTOM_TYPE(device_id, size_t)
 MAKE_PHANTOM_TYPE(raw_allocation_id, size_t)
 MAKE_PHANTOM_TYPE(instruction_id, size_t)
+MAKE_PHANTOM_TYPE(message_id, size_t)
 
 
 // declared in this header for include-dependency reasons

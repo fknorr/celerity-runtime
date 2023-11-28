@@ -71,7 +71,7 @@ node_id mpi_communicator::get_local_node_id() const {
 }
 
 void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
-	CELERITY_DEBUG("[mpi] pilot -> N{} (tag {}, {}, {})", pilot.to, pilot.message.tag, pilot.message.transfer_id, pilot.message.box);
+	CELERITY_DEBUG("[mpi] pilot -> N{} (MSG{}, {}, {})", pilot.to, pilot.message.id, pilot.message.transfer_id, pilot.message.box);
 
 	assert(pilot.to < get_num_nodes());
 	assert(pilot.to != get_local_node_id());
@@ -79,8 +79,8 @@ void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
 	// initiate Isend as early as possible
 	in_flight_pilot newly_in_flight;
 	*newly_in_flight.message = pilot.message;
-	MPI_Isend(
-	    newly_in_flight.message.get(), sizeof *newly_in_flight.message, MPI_BYTE, static_cast<int>(pilot.to), pilot_tag, m_root_comm, &newly_in_flight.request);
+	MPI_Isend(newly_in_flight.message.get(), sizeof *newly_in_flight.message, MPI_BYTE, static_cast<int>(pilot.to), pilot_exchange_tag, m_root_comm,
+	    &newly_in_flight.request);
 
 	// collect finished sends (TODO rate-limit this to avoid quadratic behavior)
 	for(auto& already_in_flight : m_outbound_pilots) {
@@ -106,32 +106,32 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 		const inbound_pilot pilot{static_cast<node_id>(status.MPI_SOURCE), *m_inbound_pilot.message};
 		begin_receive_pilot(); // initiate next receive asap
 
-		CELERITY_DEBUG("[mpi] pilot <- N{} (tag {}, {} {})", pilot.from, pilot.message.tag, pilot.message.transfer_id, pilot.message.box);
+		CELERITY_DEBUG("[mpi] pilot <- N{} (MSG{}, {} {})", pilot.from, pilot.message.id, pilot.message.transfer_id, pilot.message.box);
 		received_pilots.push_back(pilot);
 	}
 }
 
-async_event mpi_communicator::send_payload(const node_id to, const int tag, const void* const base, const stride& stride) {
-	CELERITY_DEBUG("[mpi] payload -> N{} (tag {}) from {} ({}) {}x{}", to, tag, base, stride.allocation, stride.subrange, stride.element_size);
+async_event mpi_communicator::send_payload(const node_id to, const message_id msgid, const void* const base, const stride& stride) {
+	CELERITY_DEBUG("[mpi] payload -> N{} (MSG{}) from {} ({}) {}x{}", to, msgid, base, stride.allocation, stride.subrange, stride.element_size);
 
 	assert(to < get_num_nodes());
 	assert(to != get_local_node_id());
 
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
-	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), tag, m_root_comm, &req);
+	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), first_message_tag + static_cast<int>(msgid), m_root_comm, &req);
 	return make_async_event<mpi_event>(req);
 }
 
-async_event mpi_communicator::receive_payload(const node_id from, const int tag, void* const base, const stride& stride) {
-	CELERITY_DEBUG("[mpi] payload <- N{} (tag {}) into {} ({}) {}x{}", from, tag, base, stride.allocation, stride.subrange, stride.element_size);
+async_event mpi_communicator::receive_payload(const node_id from, const message_id msgid, void* const base, const stride& stride) {
+	CELERITY_DEBUG("[mpi] payload <- N{} (MSG{}) into {} ({}) {}x{}", from, msgid, base, stride.allocation, stride.subrange, stride.element_size);
 
 	assert(from < get_num_nodes());
 	assert(from != get_local_node_id());
 
 	MPI_Request req = MPI_REQUEST_NULL;
 	// TODO normalize stride and adjust base in order to re-use more datatypes
-	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), tag, m_root_comm, &req);
+	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), first_message_tag + static_cast<int>(msgid), m_root_comm, &req);
 	return make_async_event<mpi_event>(req);
 }
 
@@ -139,7 +139,8 @@ mpi_communicator::collective_group* mpi_communicator::get_collective_root() { re
 
 void mpi_communicator::begin_receive_pilot() {
 	assert(m_inbound_pilot.request == MPI_REQUEST_NULL);
-	MPI_Irecv(m_inbound_pilot.message.get(), sizeof *m_inbound_pilot.message, MPI_BYTE, MPI_ANY_SOURCE, pilot_tag, m_root_comm, &m_inbound_pilot.request);
+	MPI_Irecv(
+	    m_inbound_pilot.message.get(), sizeof *m_inbound_pilot.message, MPI_BYTE, MPI_ANY_SOURCE, pilot_exchange_tag, m_root_comm, &m_inbound_pilot.request);
 }
 
 MPI_Datatype mpi_communicator::get_scalar_type(const size_t bytes) {

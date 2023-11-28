@@ -221,7 +221,7 @@ class instruction_graph_generator::impl {
 	instruction_graph& m_idag;
 	std::vector<outbound_pilot> m_pending_pilots;
 	instruction_id m_next_iid = 0;
-	int m_next_p2p_tag = 10; // TODO
+	message_id m_next_message_id = 0;
 	const task_manager& m_tm;
 	size_t m_num_nodes;
 	node_id m_local_nid;
@@ -306,7 +306,7 @@ class instruction_graph_generator::impl {
 	void satisfy_buffer_requirements(
 	    buffer_id bid, const task& tsk, const subrange<3>& local_sr, bool is_reduction_initializer, const std::vector<localized_chunk>& local_chunks);
 
-	int create_pilot_message(node_id target, const transfer_id& trid, const box<3>& box);
+	message_id create_pilot_message(node_id target, const transfer_id& trid, const box<3>& box);
 
 	void compile_execution_command(const execution_command& ecmd);
 	void compile_push_command(const push_command& pcmd);
@@ -947,11 +947,11 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(const buffer
 }
 
 
-int instruction_graph_generator::impl::create_pilot_message(const node_id target, const transfer_id& trid, const box<3>& box) {
-	int tag = m_next_p2p_tag++;
-	m_pending_pilots.push_back(outbound_pilot{target, pilot_message{tag, trid, box}});
+message_id instruction_graph_generator::impl::create_pilot_message(const node_id target, const transfer_id& trid, const box<3>& box) {
+	const message_id msgid = m_next_message_id++;
+	m_pending_pilots.push_back(outbound_pilot{target, pilot_message{msgid, trid, box}});
 	if(m_recorder != nullptr) { *m_recorder << m_pending_pilots.back(); }
-	return tag;
+	return msgid;
 }
 
 
@@ -1456,14 +1456,14 @@ void instruction_graph_generator::impl::compile_push_command(const push_command&
 	for(auto& [_, region] : send_regions) {
 		for(const auto& full_box : region.get_boxes()) {
 			for(const auto& box : split_into_communicator_compatible_boxes(buffer.range, full_box)) {
-				const int tag = create_pilot_message(pcmd.get_target(), trid, box);
+				const message_id msgid = create_pilot_message(pcmd.get_target(), trid, box);
 
 				const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
 				assert(allocation != nullptr); // we allocate_contiguously above
 
 				const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
 				const auto send_instr = &create<send_instruction>(
-				    pcmd.get_target(), tag, allocation->aid, allocation->box.get_range(), offset_in_allocation, box.get_range(), buffer.elem_size);
+				    pcmd.get_target(), msgid, allocation->aid, allocation->box.get_range(), offset_in_allocation, box.get_range(), buffer.elem_size);
 
 				if(m_recorder != nullptr) {
 					const auto offset_in_buffer = box.get_offset();

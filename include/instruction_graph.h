@@ -192,36 +192,16 @@ class host_task_instruction final : public matchbox::implement_acceptor<instruct
 #endif
 };
 
-/// Metadata exchanged in preparation for a peer-to-peer data transfer with send_instruction / receive_instruction (and cousins). Pilots allow the receiving
-/// side to issue MPI_*recv instructions directly to the appropriate target memory and (optionally) stride without additional staging or buffering.
-struct pilot_message {
-	int tag = -1;
-	detail::transfer_id transfer_id;
-	box<3> box;
-};
-
-/// A pilot message as packaged on the sender side.
-struct outbound_pilot {
-	node_id to;
-	pilot_message message;
-};
-
-/// A pilot message as packaged on the receiver side.
-struct inbound_pilot {
-	node_id from;
-	pilot_message message;
-};
-
 /// (MPI_) sends a subrange of an allocation to a single remote node. The send must have be announced by transmitting a pilot_message first.
 class send_instruction final : public matchbox::implement_acceptor<instruction, send_instruction> {
   public:
-	explicit send_instruction(const instruction_id iid, const node_id to_nid, const int tag, const allocation_id source_aid, const range<3>& source_alloc_range,
-	    const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
-	    : acceptor_base(iid), m_to_nid(to_nid), m_tag(tag), m_source_aid(source_aid), m_source_range(source_alloc_range), m_offset_in_source(offset_in_alloc),
-	      m_send_range(send_range), m_elem_size(elem_size) {}
+	explicit send_instruction(const instruction_id iid, const node_id to_nid, const message_id msgid, const allocation_id source_aid,
+	    const range<3>& source_alloc_range, const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
+	    : acceptor_base(iid), m_to_nid(to_nid), m_message_id(msgid), m_source_aid(source_aid), m_source_range(source_alloc_range),
+	      m_offset_in_source(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
 
 	node_id get_dest_node_id() const { return m_to_nid; }
-	int get_tag() const { return m_tag; }
+	message_id get_message_id() const { return m_message_id; }
 	allocation_id get_source_allocation_id() const { return m_source_aid; }
 	const range<3>& get_source_allocation_range() const { return m_source_range; }
 	const id<3>& get_offset_in_source_allocation() const { return m_offset_in_source; }
@@ -230,7 +210,7 @@ class send_instruction final : public matchbox::implement_acceptor<instruction, 
 
   private:
 	node_id m_to_nid;
-	int m_tag;
+	message_id m_message_id;
 	allocation_id m_source_aid;
 	range<3> m_source_range;
 	id<3> m_offset_in_source;

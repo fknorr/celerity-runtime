@@ -1,6 +1,5 @@
 #include "communicator.h"
 #include "host_utils.h"
-#include "instruction_graph.h" // for pilot_message TODO
 #include "mpi_communicator.h"
 #include "test_utils.h"
 #include "types.h"
@@ -19,13 +18,13 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 
 	const auto make_pilot_message = [&](const node_id sender, const node_id receiver) {
 		const auto p2p_id = 1 + sender * comm.get_num_nodes() + receiver;
-		const int tag = static_cast<int>(p2p_id) * 13;
+		const message_id msgid = p2p_id * 13;
 		const buffer_id bid = p2p_id * 11;
 		const task_id consumer_tid = p2p_id * 17;
 		const reduction_id rid = p2p_id * 19;
 		const transfer_id trid(consumer_tid, bid, rid);
 		const box<3> box = {id{p2p_id, p2p_id * 2, p2p_id * 3}, id{p2p_id * 4, p2p_id * 5, p2p_id * 6}};
-		return outbound_pilot{receiver, pilot_message{tag, trid, box}};
+		return outbound_pilot{receiver, pilot_message{msgid, trid, box}};
 	};
 
 	for(node_id to = 0; to < comm.get_num_nodes(); ++to) {
@@ -38,7 +37,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		for(const auto& pilot : comm.poll_inbound_pilots()) {
 			CAPTURE(pilot.from, comm.get_local_node_id());
 			const auto expect = make_pilot_message(pilot.from, comm.get_local_node_id());
-			CHECK(pilot.message.tag == expect.message.tag);
+			CHECK(pilot.message.id == expect.message.id);
 			CHECK(pilot.message.transfer_id == expect.message.transfer_id);
 			CHECK(pilot.message.box == expect.message.box);
 			++num_pilots_received;
@@ -52,8 +51,8 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 	mpi_communicator comm(MPI_COMM_WORLD);
 	if(comm.get_num_nodes() <= 1) { SKIP("test must be run on at least 2 ranks"); }
 
-	const auto make_tag = [&](const node_id sender, const node_id receiver) { //
-		return static_cast<int>(1 + sender * comm.get_num_nodes() + receiver);
+	const auto make_msgid = [&](const node_id sender, const node_id receiver) { //
+		return message_id(1 + sender * comm.get_num_nodes() + receiver);
 	};
 
 	const communicator::stride stride{{12, 11, 11}, {{1, 0, 3}, {5, 4, 6}}, sizeof(int)};
@@ -65,10 +64,10 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		if(other == comm.get_local_node_id()) continue;
 
 		auto& send = send_buffers.emplace_back(stride.allocation.size());
-		std::iota(send.begin(), send.end(), make_tag(comm.get_local_node_id(), other));
+		std::iota(send.begin(), send.end(), make_msgid(comm.get_local_node_id(), other));
 		auto& receive = receive_buffers.emplace_back(stride.allocation.size());
-		events.push_back(comm.send_payload(other, make_tag(comm.get_local_node_id(), other), send.data(), stride));
-		events.push_back(comm.receive_payload(other, make_tag(other, comm.get_local_node_id()), receive.data(), stride));
+		events.push_back(comm.send_payload(other, make_msgid(comm.get_local_node_id(), other), send.data(), stride));
+		events.push_back(comm.receive_payload(other, make_msgid(other, comm.get_local_node_id()), receive.data(), stride));
 	}
 
 	while(!events.empty()) {
@@ -81,7 +80,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 		if(other == comm.get_local_node_id()) continue;
 
 		std::vector<int> other_send(stride.allocation.size());
-		std::iota(other_send.begin(), other_send.end(), make_tag(other, comm.get_local_node_id()));
+		std::iota(other_send.begin(), other_send.end(), make_msgid(other, comm.get_local_node_id()));
 		std::vector<int> expected(stride.allocation.size());
 		experimental::for_each_item(stride.subrange.range, [&](const item<3>& item) {
 			const auto id = stride.subrange.offset + item.get_id();

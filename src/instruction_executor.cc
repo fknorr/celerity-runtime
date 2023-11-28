@@ -440,8 +440,9 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 #endif
 	    },
 	    [&](const send_instruction& sinstr) {
-		    CELERITY_DEBUG("[executor] I{}: send {}+{}, {}x{} bytes to N{} (tag {})", sinstr.get_id(), sinstr.get_source_allocation_id(),
-		        sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(), sinstr.get_tag());
+		    CELERITY_DEBUG("[executor] I{}: send {}+{}, {}x{} bytes to N{} (MSG{})", sinstr.get_id(), sinstr.get_source_allocation_id(),
+		        sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(),
+		        sinstr.get_message_id());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", Violet, "I{} send", sinstr.get_id());
 
 		    const auto allocation_base = m_allocations.at(sinstr.get_source_allocation_id());
@@ -450,7 +451,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        subrange<3>{sinstr.get_offset_in_source_allocation(), sinstr.get_send_range()},
 		        sinstr.get_element_size(),
 		    };
-		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_tag(), allocation_base, stride);
+		    return m_communicator->send_payload(sinstr.get_dest_node_id(), sinstr.get_message_id(), allocation_base, stride);
 	    },
 	    [&](const receive_instruction& rinstr) {
 		    CELERITY_DEBUG("[executor] I{}: receive {} {} into {} ({}), x{} bytes", rinstr.get_id(), rinstr.get_transfer_id(), rinstr.get_requested_region(),

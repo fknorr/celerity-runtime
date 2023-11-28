@@ -1,7 +1,7 @@
 #pragma once
 
 #include "communicator.h"
-#include "instruction_graph.h" // for pilot_message. TODO?
+#include "pilot.h"
 
 #include <unordered_map>
 

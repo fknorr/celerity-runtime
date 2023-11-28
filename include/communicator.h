@@ -1,7 +1,7 @@
 #pragma once
 
 #include "async_event.h"
-#include "instruction_graph.h" // for pilot_message - TODO does not feel right
+#include "pilot.h"
 #include "utils.h"
 
 namespace celerity::detail {
@@ -42,8 +42,8 @@ class communicator {
 	virtual void send_outbound_pilot(const outbound_pilot& pilot) = 0;
 	[[nodiscard]] virtual std::vector<inbound_pilot> poll_inbound_pilots() = 0;
 
-	[[nodiscard]] virtual async_event send_payload(node_id to, int outbound_pilot_tag, const void* base, const stride& stride) = 0;
-	[[nodiscard]] virtual async_event receive_payload(node_id from, int inbound_pilot_tag, void* base, const stride& stride) = 0;
+	[[nodiscard]] virtual async_event send_payload(node_id to, message_id msgid, const void* base, const stride& stride) = 0;
+	[[nodiscard]] virtual async_event receive_payload(node_id from, message_id msgid, void* base, const stride& stride) = 0;
 
 	virtual collective_group* get_collective_root() = 0;
 

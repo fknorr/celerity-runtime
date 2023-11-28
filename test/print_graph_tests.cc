@@ -154,10 +154,10 @@ TEST_CASE("instruction-graph printing is unchanged", "[print_graph][instruction-
 	    "[1,1,1])<br/>B0 {[0,0,0] - [1,1,1]} x4 bytes>];I15[color=green3,shape=ellipse,label=<I15<br/>gather <b>copy</b><br/>from M3.A1 ([0,0,0] - "
 	    "[1,1,1])<br/>to M1.A3 + 4 bytes ([0,0,0] - [1,1,1])<br/>B0 {[0,0,0] - [1,1,1]} x4 bytes>];I16[color=blue,shape=ellipse,label=<I16<br/>local "
 	    "<b>reduce</b> B0.R1<br/>B0 [0,0,0] - [1,1,1]<br/>from M1.A3 x2<br/>to M1.A1 x1>];I17[color=cyan3,shape=ellipse,label=<I17<br/><b>free</b> M1.A3 "
-	    "<br/>8 bytes>];I18[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I18 (push C5)<br/><b>send</b> T2.B0.R1<br/>to N1 tag 10<br/>B0 [0,0,0] - "
+	    "<br/>8 bytes>];I18[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I18 (push C5)<br/><b>send</b> T2.B0.R1<br/>to N1 MSG0<br/>B0 [0,0,0] - "
 	    "[1,1,1]<br/>via M1.A1 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I19[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I19 (push "
-	    "C6)<br/><b>send</b> T2.B0.R1<br/>to N2 tag 11<br/>B0 [0,0,0] - [1,1,1]<br/>via M1.A1 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 "
-	    "bytes>];I20[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I20 (push C7)<br/><b>send</b> T2.B0.R1<br/>to N3 tag 12<br/>B0 [0,0,0] - "
+	    "C6)<br/><b>send</b> T2.B0.R1<br/>to N2 MSG1<br/>B0 [0,0,0] - [1,1,1]<br/>via M1.A1 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 "
+	    "bytes>];I20[color=deeppink2,shape=box,margin=0.2,style=rounded,label=<I20 (push C7)<br/><b>send</b> T2.B0.R1<br/>to N3 MSG2<br/>B0 [0,0,0] - "
 	    "[1,1,1]<br/>via M1.A1 [0,0,0] - [1,1,1]<br/>[1,1,1]x4 bytes>];I21[color=cyan3,shape=ellipse,label=<I21<br/>gather <b>alloc</b> M1.A4<br/>for B0 "
 	    "[0,0,0] - [1,1,1] x4<br/>16%4 bytes>];I22[color=blue,shape=ellipse,label=<I22<br/><b>fill identity</b> for R1<br/>M1.A4 "
 	    "x4>];I23[color=green3,shape=ellipse,label=<I23<br/>gather <b>copy</b><br/>from M1.A1 ([0,0,0] - [1,1,1])<br/>to M1.A4 ([0,0,0] - [1,1,1])<br/>B0 "
@@ -177,11 +177,11 @@ TEST_CASE("instruction-graph printing is unchanged", "[print_graph][instruction-
 	    ">I12[];I3->I12[];I9->I13[];I2->I13[];I11->I14[];I12->I14[];I11->I15[];I13->I15[];I14->I16[];I15->I16[];I1->I16[];I16->I17[];I16->I18[];I16->I19[];I16-"
 	    ">I20[];I0->I21[];I21->I22[];I22->I23[];I16->I23[];I22->I24[];I24->I25[];I23->I25[];I18->I25[];I19->I25[];I20->I25[];I25->I26[];I25->I27[];I27->I28[];"
 	    "I10->I29[];I9->I29[];I12->I30[];I13->I31[];I27->I32[];I14->I33[];I15->I34[];I34->I35[];I33->I35[];I32->I35[];I31->I35[];I29->I35[];I28->I35[];I26->"
-	    "I35[];I30->I35[];I17->I35[];P10[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N1 tag 10<br/>T2.B0.R1<br/>for "
-	    "B0 [0,0,0] - [1,1,1]</font>>];P10->I18[dir=none,style=dashed,color=\"#606060\"];P11[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
-	    "color=\"#606060\"><b>pilot</b> to N2 tag 11<br/>T2.B0.R1<br/>for B0 [0,0,0] - "
-	    "[1,1,1]</font>>];P11->I19[dir=none,style=dashed,color=\"#606060\"];P12[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
-	    "color=\"#606060\"><b>pilot</b> to N3 tag 12<br/>T2.B0.R1<br/>for B0 [0,0,0] - [1,1,1]</font>>];P12->I20[dir=none,style=dashed,color=\"#606060\"];}";
+	    "I35[];I30->I35[];I17->I35[];P0[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N1 MSG0<br/>T2.B0.R1<br/>for B0 "
+	    "[0,0,0] - [1,1,1]</font>>];P0->I18[dir=none,style=dashed,color=\"#606060\"];P1[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
+	    "color=\"#606060\"><b>pilot</b> to N2 MSG1<br/>T2.B0.R1<br/>for B0 [0,0,0] - "
+	    "[1,1,1]</font>>];P1->I19[dir=none,style=dashed,color=\"#606060\"];P2[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
+	    "color=\"#606060\"><b>pilot</b> to N3 MSG2<br/>T2.B0.R1<br/>for B0 [0,0,0] - [1,1,1]</font>>];P2->I20[dir=none,style=dashed,color=\"#606060\"];}";
 
 	const auto dot = ictx.print_instruction_graph();
 	CHECK(dot == expected);

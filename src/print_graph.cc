@@ -280,7 +280,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		}
 	};
 
-	std::unordered_map<int, instruction_id> send_instructions_by_tag; // for connecting pilot messages to send instructions
+	std::unordered_map<message_id, instruction_id> send_instructions_by_message_id; // for connecting pilot messages to send instructions
 	for(const auto& instr : irec.get_instructions()) {
 		matchbox::match(
 		    *instr,
@@ -379,12 +379,12 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    begin_node(sinstr, "box,margin=0.2,style=rounded", "deeppink2");
 			    fmt::format_to(back, "I{} (push C{})", sinstr.id, sinstr.push_cid);
 			    fmt::format_to(back, "<br/><b>send</b> {}", sinstr.transfer_id);
-			    fmt::format_to(back, "<br/>to N{} tag {}", sinstr.dest_node_id, sinstr.tag);
+			    fmt::format_to(back, "<br/>to N{} MSG{}", sinstr.dest_node_id, sinstr.message_id);
 			    fmt::format_to(back, "<br/>{} {}", utils::get_buffer_label(sinstr.transfer_id.bid, sinstr.buffer_name),
 			        box(subrange(sinstr.offset_in_buffer, sinstr.send_range)));
 			    fmt::format_to(back, "<br/>via {} {}", sinstr.source_allocation_id, box(subrange(sinstr.offset_in_source_allocation, sinstr.send_range)));
 			    fmt::format_to(back, "<br/>{}x{} bytes", sinstr.send_range, sinstr.element_size);
-			    send_instructions_by_tag.emplace(sinstr.tag, sinstr.id);
+			    send_instructions_by_message_id.emplace(sinstr.message_id, sinstr.id);
 			    end_node();
 		    },
 		    [&](const receive_instruction_record& rinstr) {
@@ -478,11 +478,10 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 
 	for(const auto& pilot : irec.get_outbound_pilots()) {
 		fmt::format_to(back,
-		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} tag {}<br/>{}<br/>for {} {}</font>>];",
-		    pilot.message.tag, pilot.to, pilot.message.tag, pilot.message.transfer_id, utils::get_buffer_label(pilot.message.transfer_id.bid),
-		    pilot.message.box);
-		if(auto it = send_instructions_by_tag.find(pilot.message.tag); it != send_instructions_by_tag.end()) {
-			fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.message.tag, it->second);
+		    "P{}[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N{} MSG{}<br/>{}<br/>for {} {}</font>>];",
+		    pilot.message.id, pilot.to, pilot.message.id, pilot.message.transfer_id, utils::get_buffer_label(pilot.message.transfer_id.bid), pilot.message.box);
+		if(auto it = send_instructions_by_message_id.find(pilot.message.id); it != send_instructions_by_message_id.end()) {
+			fmt::format_to(back, "P{}->I{}[dir=none,style=dashed,color=\"#606060\"];", pilot.message.id, it->second);
 		}
 	}
 

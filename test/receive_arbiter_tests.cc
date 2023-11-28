@@ -29,12 +29,12 @@ class mock_recv_communicator : public communicator {
 	[[nodiscard]] std::vector<inbound_pilot> poll_inbound_pilots() override { return std::move(m_inbound_pilots); }
 
 	[[nodiscard]] async_event send_payload(
-	    const node_id /* to */, const int /* outbound_pilot_tag */, const void* const /* base */, const stride& /* stride */) override {
+	    const node_id /* to */, const message_id /* outbound_pilot_tag */, const void* const /* base */, const stride& /* stride */) override {
 		utils::panic("unimplemented");
 	}
 
-	[[nodiscard]] async_event receive_payload(const node_id from, const int inbound_pilot_tag, void* const base, const stride& stride) override {
-		const auto key = std::pair(from, inbound_pilot_tag);
+	[[nodiscard]] async_event receive_payload(const node_id from, const message_id msgid, void* const base, const stride& stride) override {
+		const auto key = std::pair(from, msgid);
 		REQUIRE(m_pending_recvs.count(key) == 0);
 		completion_flag flag = std::make_shared<bool>(false);
 		m_pending_recvs.emplace(key, std::tuple(base, stride, flag));
@@ -43,8 +43,8 @@ class mock_recv_communicator : public communicator {
 
 	void push_inbound_pilot(const inbound_pilot& pilot) { m_inbound_pilots.push_back(pilot); }
 
-	void complete_receiving_payload(const node_id from, const int inbound_pilot_tag, const void* const src, const range<3>& src_range) {
-		const auto key = std::pair(from, inbound_pilot_tag);
+	void complete_receiving_payload(const node_id from, const message_id msgid, const void* const src, const range<3>& src_range) {
+		const auto key = std::pair(from, msgid);
 		const auto [dest, stride, flag] = m_pending_recvs.at(key);
 		REQUIRE(src_range == stride.subrange.range);
 		nd_copy_host(src, dest, src_range, stride.allocation, zeros, stride.subrange.offset, stride.subrange.range, stride.element_size);
@@ -69,7 +69,7 @@ class mock_recv_communicator : public communicator {
 	size_t m_num_nodes;
 	node_id m_local_nid;
 	std::vector<inbound_pilot> m_inbound_pilots;
-	std::unordered_map<std::pair<node_id, int>, std::tuple<void*, stride, completion_flag>, utils::pair_hash> m_pending_recvs;
+	std::unordered_map<std::pair<node_id, message_id>, std::tuple<void*, stride, completion_flag>, utils::pair_hash> m_pending_recvs;
 };
 
 // from https://en.cppreference.com/w/cpp/algorithm/next_permutation - replace with std::next_permutation for C++20
@@ -152,12 +152,12 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	CAPTURE(num_fragments);
 
 	std::vector<std::vector<int>> fragments;
-	for(const auto& [from, tag, box] : fragments_meta) {
+	for(const auto& [from, msgid, box] : fragments_meta) {
 		fragments.emplace_back(box.get_range().size(), static_cast<int>(from));
 	}
 	std::vector<inbound_pilot> pilots;
-	for(const auto& [from, tag, box] : fragments_meta) {
-		pilots.push_back(inbound_pilot{from, pilot_message{tag, trid, box}});
+	for(const auto& [from, msgid, box] : fragments_meta) {
+		pilots.push_back(inbound_pilot{from, pilot_message{msgid, trid, box}});
 	}
 
 	mock_recv_communicator comm(8, 0);
@@ -176,16 +176,16 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	const size_t num_pilots_completed_before_await = std::min(num_pilots_pushed_before_begin, GENERATE(values<size_t>({0, num_fragments / 2, num_fragments})));
 	CAPTURE(num_pilots_completed_before_await);
 	for(size_t i = 0; i < num_pilots_completed_before_await; ++i) {
-		const auto& [from, tag, box] = fragments_meta[i];
-		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
+		const auto& [from, msgid, box] = fragments_meta[i];
+		comm.complete_receiving_payload(from, msgid, fragments[i].data(), box.get_range());
 	}
 	ra.poll_communicator();
 
 	const auto event = ra.await_split_receive_subregion(trid, recv_box);
 
 	for(size_t i = num_pilots_completed_before_await; i < num_pilots_pushed_before_begin; ++i) {
-		const auto& [from, tag, box] = fragments_meta[i];
-		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
+		const auto& [from, msgid, box] = fragments_meta[i];
+		comm.complete_receiving_payload(from, msgid, fragments[i].data(), box.get_range());
 	}
 	ra.poll_communicator();
 
@@ -195,15 +195,15 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 	ra.poll_communicator();
 
 	for(size_t i = num_pilots_pushed_before_begin; i < num_fragments; ++i) {
-		const auto& [from, tag, box] = fragments_meta[i];
-		comm.complete_receiving_payload(from, tag, fragments[i].data(), box.get_range());
+		const auto& [from, msgid, box] = fragments_meta[i];
+		comm.complete_receiving_payload(from, msgid, fragments[i].data(), box.get_range());
 	}
 	ra.poll_communicator();
 
 	CHECK(event.is_complete());
 
 	std::vector<int> expected_allocation(alloc_box.get_range().size());
-	for(const auto& [from, tag, box] : fragments_meta) {
+	for(const auto& [from, msgid, box] : fragments_meta) {
 		experimental::for_each_item(box.get_range(), [&, from = from, &box = box](const item<3>& it) {
 			const auto id_in_allocation = box.get_offset() - alloc_box.get_offset() + it.get_id();
 			const auto linear_index = get_linear_index(alloc_box.get_range(), id_in_allocation);
@@ -225,12 +225,12 @@ TEST_CASE("receive_arbiter can await supersets of incoming fragments", "[receive
 	const region<3> full_recv_region = fragment_box;
 	const size_t elem_size = sizeof(int);
 	const node_id from = 1;
-	const int tag = 15;
+	const message_id msgid = 15;
 
 	mock_recv_communicator comm(2, 0);
 	receive_arbiter ra(comm);
 
-	comm.push_inbound_pilot(inbound_pilot{from, pilot_message{tag, trid, fragment_box}});
+	comm.push_inbound_pilot(inbound_pilot{from, pilot_message{msgid, trid, fragment_box}});
 	ra.poll_communicator();
 
 	std::vector<int> allocation(alloc_box.get_range().size());
@@ -243,7 +243,7 @@ TEST_CASE("receive_arbiter can await supersets of incoming fragments", "[receive
 	CHECK(!event_1.is_complete());
 
 	std::vector<int> fragment(fragment_box.get_range().size(), static_cast<int>(from));
-	comm.complete_receiving_payload(from, tag, fragment.data(), fragment_box.get_range());
+	comm.complete_receiving_payload(from, msgid, fragment.data(), fragment_box.get_range());
 	ra.poll_communicator();
 
 	CHECK(event_0.is_complete());

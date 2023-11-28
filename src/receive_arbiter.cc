@@ -184,7 +184,7 @@ void receive_arbiter::handle_region_request_pilot(region_request& rr, const inbo
 	    subrange<3>{offset_in_allocation, pilot.message.box.get_range()},
 	    elem_size,
 	};
-	auto event = m_comm->receive_payload(pilot.from, pilot.message.tag, rr.allocation, stride);
+	auto event = m_comm->receive_payload(pilot.from, pilot.message.id, rr.allocation, stride);
 	rr.incoming_fragments.push_back({pilot.message.box, std::move(event)});
 }
 
@@ -195,7 +195,7 @@ void receive_arbiter::handle_gather_request_pilot(gather_request& gr, const inbo
 		gr.num_incomplete_chunks -= 1;
 	} else {
 		const communicator::stride stride{range_cast<3>(range(m_num_nodes)), subrange(id_cast<3>(id(pilot.from)), range_cast<3>(range(1))), gr.chunk_size};
-		auto event = m_comm->receive_payload(pilot.from, pilot.message.tag, gr.allocation, stride);
+		auto event = m_comm->receive_payload(pilot.from, pilot.message.id, gr.allocation, stride);
 		gr.incoming_chunks.push_back(incoming_gather_chunk{std::move(event)});
 	}
 }

@@ -50,7 +50,7 @@ TEMPLATE_TEST_CASE_SIG("buffer subranges are sent and received to satisfy push a
 	CHECK(pilot.is_unique());
 	CHECK(pilot->to == peer_nid);
 	CHECK(pilot->message.transfer_id == send->transfer_id);
-	CHECK(pilot->message.tag == send->tag);
+	CHECK(pilot->message.id == send->message_id);
 
 	// we receive exactly the part of the buffer that our node has _not_ written
 	REQUIRE(reader->access_map.size() == 1);

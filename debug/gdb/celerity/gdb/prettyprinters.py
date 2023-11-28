@@ -37,6 +37,18 @@ class AllocationIdPrinter:
         return 'M{}.A{}'.format(self.mid, self.raid) if not self.is_null else 'null'
 
 
+class AllocationWithOffsetPrinter:
+    def __init__(self, val: gdb.Value):
+        self.id = val['id']
+        self.offset_bytes = int(val['offset_bytes'])
+
+    def to_string(self) -> str:
+        if self.offset_bytes > 0:
+            return '{} + {} bytes'.format(self.id, self.offset_bytes)
+        else:
+            return str(self.id)
+
+
 class TransferIdPrinter:
     def __init__(self, val: gdb.Value):
         self.consumer_tid = val['consumer_tid']
@@ -170,7 +182,9 @@ def build_pretty_printer():
     add_phantom_type_printer(pp, 'device_id', 'D')
     add_phantom_type_printer(pp, 'raw_allocation_id', 'A')
     add_phantom_type_printer(pp, 'instruction_id', 'I')
+    add_phantom_type_printer(pp, 'message_id', 'MSG')
     pp.add_printer('allocation_id', '^celerity::detail::allocation_id$', AllocationIdPrinter)
+    pp.add_printer('allocation_with_offset', '^celerity::detail::allocation_with_offset$', AllocationWithOffsetPrinter)
     pp.add_printer('transfer_id', '^celerity::detail::transfer_id$', TransferIdPrinter)
     pp.add_printer('id', '^celerity::id<.*>$', CoordinatePrinter)
     pp.add_printer('range', '^celerity::range<.*>$', CoordinatePrinter)

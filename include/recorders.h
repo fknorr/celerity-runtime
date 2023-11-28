@@ -2,7 +2,9 @@
 
 #include "command.h"
 #include "instruction_graph.h"
+#include "pilot.h"
 #include "task.h"
+
 
 namespace celerity::detail {
 
@@ -258,7 +260,7 @@ struct host_task_instruction_record : matchbox::implement_acceptor<instruction_r
 
 struct send_instruction_record : matchbox::implement_acceptor<instruction_record, send_instruction_record> {
 	node_id dest_node_id;
-	int tag;
+	detail::message_id message_id;
 	allocation_id source_allocation_id;
 	range<3> source_allocation_range;
 	celerity::id<3> offset_in_source_allocation;

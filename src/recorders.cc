@@ -220,10 +220,10 @@ host_task_instruction_record::host_task_instruction_record(const host_task_instr
 
 send_instruction_record::send_instruction_record(const send_instruction& sinstr, const command_id push_cid, const detail::transfer_id& trid,
     std::string buffer_name, const celerity::id<3>& offset_in_buffer)
-    : acceptor_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), tag(sinstr.get_tag()), source_allocation_id(sinstr.get_source_allocation_id()),
-      source_allocation_range(sinstr.get_source_allocation_range()), offset_in_source_allocation(sinstr.get_offset_in_source_allocation()),
-      send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()), push_cid(push_cid), transfer_id(trid), buffer_name(std::move(buffer_name)),
-      offset_in_buffer(offset_in_buffer) {}
+    : acceptor_base(sinstr), dest_node_id(sinstr.get_dest_node_id()), message_id(sinstr.get_message_id()),
+      source_allocation_id(sinstr.get_source_allocation_id()), source_allocation_range(sinstr.get_source_allocation_range()),
+      offset_in_source_allocation(sinstr.get_offset_in_source_allocation()), send_range(sinstr.get_send_range()), element_size(sinstr.get_element_size()),
+      push_cid(push_cid), transfer_id(trid), buffer_name(std::move(buffer_name)), offset_in_buffer(offset_in_buffer) {}
 
 receive_instruction_record_impl::receive_instruction_record_impl(const receive_instruction_impl& rinstr, std::string buffer_name)
     : transfer_id(rinstr.get_transfer_id()), buffer_name(std::move(buffer_name)), requested_region(rinstr.get_requested_region()),
