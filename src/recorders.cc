@@ -194,8 +194,7 @@ export_instruction_record::export_instruction_record(
 
 copy_instruction_record::copy_instruction_record(
     const copy_instruction& cinstr, const copy_origin origin, const detail::buffer_id buffer_id, std::string buffer_name)
-    : acceptor_base(cinstr), source_allocation_id(cinstr.get_source_allocation_id()), dest_allocation_id(cinstr.get_dest_allocation_id()),
-      byte_offset_to_source(cinstr.get_byte_offset_to_source()), byte_offset_to_dest(cinstr.get_byte_offset_to_dest()),
+    : acceptor_base(cinstr), source_allocation(cinstr.get_source_allocation()), dest_allocation(cinstr.get_dest_allocation()),
       source_box(cinstr.get_source_box()), dest_box(cinstr.get_dest_box()), copy_region(cinstr.get_copy_region()), element_size(cinstr.get_element_size()),
       origin(origin), buffer_id(buffer_id), buffer_name(std::move(buffer_name)) {}
 

@@ -86,6 +86,19 @@ struct fmt::formatter<celerity::detail::allocation_id> {
 };
 
 template <>
+struct fmt::formatter<celerity::detail::allocation_with_offset> {
+	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }
+
+	format_context::iterator format(const celerity::detail::allocation_with_offset& aid, format_context& ctx) const {
+		if(aid.offset_bytes > 0) {
+			return fmt::format_to(ctx.out(), "{} + {} bytes", aid.id, aid.offset_bytes);
+		} else {
+			return fmt::format_to(ctx.out(), "{}", aid.id);
+		}
+	}
+};
+
+template <>
 struct fmt::formatter<celerity::detail::transfer_id> {
 	constexpr format_parse_context::iterator parse(format_parse_context& ctx) { return ctx.begin(); }
 

@@ -192,8 +192,8 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 
 		// There is one coherence copy per reader kernel, which copies the portion written on the opposite device
 		const auto coherence_copy = intersection_of(coherence_copies, reader.predecessors()).assert_unique();
-		CHECK(coherence_copy->source_allocation_id.get_memory_id() == ictx.get_native_memory(opposite_did));
-		CHECK(coherence_copy->dest_allocation_id.get_memory_id() == ictx.get_native_memory(did));
+		CHECK(coherence_copy->source_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(opposite_did));
+		CHECK(coherence_copy->dest_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(did));
 		CHECK(coherence_copy->copy_region == region(opposite_writer->access_map.front().accessed_box_in_buffer));
 	}
 
@@ -433,10 +433,10 @@ TEST_CASE("copies are staged through host memory for devices that are not peer-c
 		const auto copy_from_host = intersection_of(all_copies_from_host, copy_to_host.successors()).assert_unique();
 		const auto reader = intersection_of(all_readers, copy_from_host.successors()).assert_unique();
 
-		CHECK(copy_to_host->source_allocation_id.get_memory_id() == ictx.get_native_memory(writer->device_id));
-		CHECK(copy_to_host->dest_allocation_id.get_memory_id() == host_memory_id);
-		CHECK(copy_from_host->source_allocation_id.get_memory_id() == host_memory_id);
-		CHECK(copy_from_host->dest_allocation_id.get_memory_id() == ictx.get_native_memory(reader->device_id));
+		CHECK(copy_to_host->source_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(writer->device_id));
+		CHECK(copy_to_host->dest_allocation.allocatoin_id.get_memory_id() == host_memory_id);
+		CHECK(copy_from_host->source_allocation.allocatoin_id.get_memory_id() == host_memory_id);
+		CHECK(copy_from_host->dest_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(reader->device_id));
 	}
 }
 

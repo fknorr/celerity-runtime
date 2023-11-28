@@ -128,26 +128,21 @@ class export_instruction final : public matchbox::implement_acceptor<instruction
 /// Copies one or more subranges of elements from one allocation to another, potentially between different memories.
 class copy_instruction final : public matchbox::implement_acceptor<instruction, copy_instruction> {
   public:
-	explicit copy_instruction(const instruction_id iid, const allocation_id source_aid, const allocation_id dest_aid, const size_t byte_offset_to_source,
-	    const size_t byte_offset_to_dest, const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size)
-	    : acceptor_base(iid), m_source_aid(source_aid), m_dest_aid(dest_aid), m_byte_offset_to_source(byte_offset_to_source),
-	      m_byte_offset_to_dest(byte_offset_to_dest), m_source_box(source_box), m_dest_box(dest_box), m_copy_region(std::move(copy_region)),
-	      m_elem_size(elem_size) {}
+	explicit copy_instruction(const instruction_id iid, const allocation_with_offset& source_alloc, const allocation_with_offset& dest_alloc,
+	    const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size)
+	    : acceptor_base(iid), m_source_alloc(source_alloc), m_dest_alloc(dest_alloc), m_source_box(source_box), m_dest_box(dest_box),
+	      m_copy_region(std::move(copy_region)), m_elem_size(elem_size) {}
 
-	allocation_id get_source_allocation_id() const { return m_source_aid; }
-	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
-	size_t get_byte_offset_to_source() const { return m_byte_offset_to_source; }
-	size_t get_byte_offset_to_dest() const { return m_byte_offset_to_dest; }
+	const allocation_with_offset& get_source_allocation() const { return m_source_alloc; }
+	const allocation_with_offset& get_dest_allocation() const { return m_dest_alloc; }
 	const box<3>& get_source_box() const { return m_source_box; }
 	const box<3>& get_dest_box() const { return m_dest_box; }
 	const region<3>& get_copy_region() const { return m_copy_region; }
 	size_t get_element_size() const { return m_elem_size; }
 
   private:
-	allocation_id m_source_aid;
-	allocation_id m_dest_aid;
-	size_t m_byte_offset_to_source;
-	size_t m_byte_offset_to_dest;
+	allocation_with_offset m_source_alloc;
+	allocation_with_offset m_dest_alloc;
 	box<3> m_source_box;
 	box<3> m_dest_box;
 	region<3> m_copy_region;

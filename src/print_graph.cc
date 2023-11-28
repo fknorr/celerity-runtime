@@ -333,10 +333,9 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case copy_instruction_record::copy_origin::coherence: dot += "coherence "; break;
 			    case copy_instruction_record::copy_origin::gather: dot += "gather "; break;
 			    }
-			    fmt::format_to(back, "<b>copy</b><br/>from {}{} ({})<br/>to {}{} ({})<br/>{} {} x{} bytes", cinstr.source_allocation_id,
-			        cinstr.byte_offset_to_source > 0 ? fmt::format(" + {} bytes", cinstr.byte_offset_to_source) : "", cinstr.source_box,
-			        cinstr.dest_allocation_id, cinstr.byte_offset_to_dest > 0 ? fmt::format(" + {} bytes", cinstr.byte_offset_to_dest) : "", cinstr.dest_box,
-			        utils::get_buffer_label(cinstr.buffer_id, cinstr.buffer_name), cinstr.copy_region, cinstr.element_size);
+			    fmt::format_to(back, "<b>copy</b><br/>from {}{} ({})<br/>to {}{} ({})<br/>{} {} x{} bytes", cinstr.source_allocation, cinstr.source_box,
+			        cinstr.dest_allocation, cinstr.dest_box, utils::get_buffer_label(cinstr.buffer_id, cinstr.buffer_name), cinstr.copy_region,
+			        cinstr.element_size);
 			    end_node();
 		    },
 		    [&](const device_kernel_instruction_record& dkinstr) {

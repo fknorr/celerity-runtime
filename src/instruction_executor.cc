@@ -374,15 +374,14 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    return make_complete_event();
 	    },
 	    [&](const copy_instruction& cinstr) {
-		    CELERITY_DEBUG("[executor] I{}: copy {}{} ({}) -> {}{} ({}), {} x{} bytes", cinstr.get_id(), cinstr.get_source_allocation_id(),
-		        cinstr.get_byte_offset_to_source() > 0 ? fmt::format(" + {} bytes", cinstr.get_byte_offset_to_source()) : "", cinstr.get_source_box(),
-		        cinstr.get_dest_allocation_id(), cinstr.get_byte_offset_to_dest() > 0 ? fmt::format(" + {} bytes", cinstr.get_byte_offset_to_dest()) : "",
-		        cinstr.get_dest_box(), cinstr.get_copy_region(), cinstr.get_element_size());
+		    CELERITY_DEBUG("[executor] I{}: copy {} ({}) -> {} ({}), {} x{} bytes", cinstr.get_id(), cinstr.get_source_allocation(), cinstr.get_source_box(),
+		        cinstr.get_dest_allocation(), cinstr.get_dest_box(), cinstr.get_copy_region(), cinstr.get_element_size());
 
-		    const auto source_mid = cinstr.get_source_allocation_id().get_memory_id();
-		    const auto dest_mid = cinstr.get_dest_allocation_id().get_memory_id();
-		    const auto source_base = static_cast<const std::byte*>(m_allocations.at(cinstr.get_source_allocation_id())) + cinstr.get_byte_offset_to_source();
-		    const auto dest_base = static_cast<std::byte*>(m_allocations.at(cinstr.get_dest_allocation_id())) + cinstr.get_byte_offset_to_dest();
+		    const auto source_mid = cinstr.get_source_allocation().id.get_memory_id();
+		    const auto dest_mid = cinstr.get_dest_allocation().id.get_memory_id();
+		    const auto source_base =
+		        static_cast<const std::byte*>(m_allocations.at(cinstr.get_source_allocation().id)) + cinstr.get_source_allocation().offset_bytes;
+		    const auto dest_base = static_cast<std::byte*>(m_allocations.at(cinstr.get_dest_allocation().id)) + cinstr.get_dest_allocation().offset_bytes;
 		    if((source_mid == user_memory_id || source_mid == host_memory_id) && (dest_mid == user_memory_id || dest_mid == host_memory_id)) {
 			    // TODO into thread pool
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} copy", cinstr.get_id());

@@ -571,7 +571,7 @@ void instruction_graph_generator::impl::allocate_contiguously(const buffer_id bi
 			// TODO to avoid introducing a synchronization point on oversubscription, split into multiple copies if that will allow unimpeded
 			// oversubscribed-producer to oversubscribed-consumer data flow.
 
-			const auto copy_instr = &create<copy_instruction>(source.aid, dest.aid, 0, 0, source.box, dest.box, live_copy_region, buffer.elem_size);
+			const auto copy_instr = &create<copy_instruction>(source.aid, dest.aid, source.box, dest.box, live_copy_region, buffer.elem_size);
 
 			for(const auto& [_, dep_instr] : source.last_writers.get_region_values(live_copy_region)) { // TODO copy-pasta
 				assert(dep_instr != nullptr);
@@ -833,7 +833,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(const 
 					const auto copy_region = region_intersection(read_region, dest.box);
 					if(copy_region.empty()) continue;
 
-					const auto copy_instr = &create<copy_instruction>(source.aid, dest.aid, 0, 0, source.box, dest.box, copy_region, buffer.elem_size);
+					const auto copy_instr = &create<copy_instruction>(source.aid, dest.aid, source.box, dest.box, copy_region, buffer.elem_size);
 
 					for(const auto& [_, last_writer_instr] : source.last_writers.get_region_values(copy_region)) {
 						assert(last_writer_instr != nullptr);
@@ -1125,7 +1125,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 			// copy to local gather space
 
 			const auto current_value_copy_instr =
-			    &create<copy_instruction>(source->aid, red.gather_aid, 0, 0, source->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
+			    &create<copy_instruction>(source->aid, red.gather_aid, source->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
 			if(m_recorder != nullptr) {
 				*m_recorder << copy_instruction_record(*current_value_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name);
 			}
@@ -1355,7 +1355,7 @@ void instruction_graph_generator::impl::compile_execution_command(const executio
 
 			// copy to local gather space
 
-			const auto copy_instr = &create<copy_instruction>(source->aid, red.gather_aid, 0, (red.current_value_offset + j) * buffer.elem_size, source->box,
+			const auto copy_instr = &create<copy_instruction>(source->aid, red.gather_aid + (red.current_value_offset + j) * buffer.elem_size, source->box,
 			    scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
 			if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name); }
 			add_dependency(*copy_instr, *red.gather_alloc_instr, dependency_kind::true_dep);
@@ -1576,7 +1576,7 @@ void instruction_graph_generator::impl::compile_reduction_command(const reductio
 		assert(source_alloc != nullptr); // if scalar_box is up to date in that memory, it (the single element) must also be contiguous
 
 		local_gather_copy_instr = &create<copy_instruction>(
-		    source_alloc->aid, gather_aid, 0, m_local_nid * buffer.elem_size, source_alloc->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
+		    source_alloc->aid, gather_aid + m_local_nid * buffer.elem_size, source_alloc->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
 		if(m_recorder != nullptr) {
 			*m_recorder << copy_instruction_record(*local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name);
 		}

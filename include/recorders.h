@@ -220,10 +220,8 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 		gather,
 	};
 
-	allocation_id source_allocation_id;
-	allocation_id dest_allocation_id;
-	size_t byte_offset_to_source;
-	size_t byte_offset_to_dest;
+	allocation_with_offset source_allocation;
+	allocation_with_offset dest_allocation;
 	box<3> source_box;
 	box<3> dest_box;
 	region<3> copy_region;

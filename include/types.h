@@ -125,6 +125,28 @@ struct transfer_id {
 	friend bool operator!=(const transfer_id& lhs, const transfer_id& rhs) { return !(lhs == rhs); }
 };
 
+struct allocation_with_offset {
+	allocation_id id = null_allocation_id;
+	size_t offset_bytes = 0;
+
+	allocation_with_offset() = default;
+	allocation_with_offset(const detail::allocation_id aid, const size_t offset_bytes = 0) : id(aid), offset_bytes(offset_bytes) {}
+
+	friend bool operator==(const allocation_with_offset& lhs, const allocation_with_offset& rhs) {
+		return lhs.id == rhs.id && lhs.offset_bytes == rhs.offset_bytes;
+	}
+	friend bool operator!=(const allocation_with_offset& lhs, const allocation_with_offset& rhs) {
+		return lhs.id == rhs.id && lhs.offset_bytes == rhs.offset_bytes;
+	}
+};
+
+inline allocation_with_offset operator+(const allocation_with_offset& ptr, const size_t offset_bytes) { return {ptr.id, ptr.offset_bytes + offset_bytes}; }
+
+inline allocation_with_offset& operator+=(allocation_with_offset& ptr, const size_t offset_bytes) {
+	ptr.offset_bytes += offset_bytes;
+	return ptr;
+}
+
 } // namespace celerity::detail
 
 template <>
