@@ -503,7 +503,8 @@ class idag_test_context {
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
 		m_dggen.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
-		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), sizeof(DataT), alignof(DataT), mark_as_host_initialized);
+		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), sizeof(DataT), alignof(DataT),
+		    mark_as_host_initialized ? detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++) : detail::null_allocation_id);
 		m_managed_objects.emplace_back(bid);
 		return buf;
 	}
@@ -603,6 +604,7 @@ class idag_test_context {
 	buffer_id m_next_buffer_id = 0;
 	host_object_id m_next_host_object_id = 0;
 	reduction_id m_next_reduction_id = no_reduction_id + 1;
+	detail::raw_allocation_id m_next_user_allocation_id = 1;
 	std::vector<std::variant<buffer_id, host_object_id>> m_managed_objects;
 	std::optional<task_id> m_most_recently_built_horizon;
 	task_recorder m_task_recorder;

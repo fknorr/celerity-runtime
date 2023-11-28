@@ -41,6 +41,8 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 	// almost the same setup as above, but now we include the current buffer value, which generates a local reduce-instruction.
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
 	auto buf = ictx.create_buffer<1>(1, true /* host initialized */);
+	// initialize the buffer - the resulting host_task_instruction is concurrent with the `writer` kernel because they act on different memories
+	ictx.host_task(buf.get_range()).name("init").discard_write(buf, acc::one_to_one());
 	ictx.device_compute(range(256)).name("writer").reduce(buf, true /* include_current_buffer_value */).submit();
 	ictx.device_compute(range(256)).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
@@ -48,7 +50,7 @@ TEST_CASE("single-node single-device reductions locally include the initial buff
 	const auto all_instrs = ictx.query_instructions();
 
 	const auto writer = all_instrs.select_unique<device_kernel_instruction_record>("writer");
-	const auto init_buffer = all_instrs.select_unique<init_buffer_instruction_record>();
+	const auto init_buffer = all_instrs.select_unique<host_task_instruction_record>("init");
 	CHECK(writer.is_concurrent_with(init_buffer));
 
 	// initialization happens in a buffer allocation, from which we must copy into the gather allocation
@@ -111,11 +113,11 @@ TEST_CASE("reduction accesses on a single-node multi-device setup generate local
 	for(const auto& gather_copy : all_gather_copies.iterate()) {
 		CAPTURE(gather_copy);
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-		CHECK(gather_copy->dest_allocation == gather_alloc->allocation_id);
+		CHECK(gather_copy->source_allocation.offset_bytes == 0);
+		CHECK(gather_copy->dest_allocation.id == gather_alloc->allocation_id);
 
 		// the order of reduction inputs must be deterministic because the reduction operator is not necessarily associative
 		const auto writer = intersection_of(all_writers, gather_copy.predecessors());
-		CHECK(gather_copy->source_allocation.offset_bytes == 0);
 		CHECK(gather_copy->dest_allocation.offset_bytes == static_cast<size_t>(writer->device_id) * sizeof(int));
 	}
 
@@ -185,7 +187,7 @@ TEST_CASE("reduction accesses on a multi-node single-device setup generate globa
 	CHECK(reduce.predecessors().contains(gather_recv));
 	CHECK(gather_recv->gather_box == box<3>(zeros, ones));
 	CHECK(gather_recv->num_nodes == num_nodes);
-	CHECK(gather_recv->allocation_id == gather_copy->dest_allocation);
+	CHECK(gather_recv->allocation_id == gather_copy->dest_allocation.id);
 	CHECK(gather_recv->transfer_id == send_to_peer->transfer_id);
 }
 
@@ -226,8 +228,8 @@ TEST_CASE("reduction accesses on a multi-node multi-device setup generate global
 	for(const auto& gather_copy : gather_copies_to_local.iterate()) {
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
 		CHECK(gather_copy->copy_region == region(box<3>(zeros, ones)));
-		CHECK(gather_copy->dest_allocation == local_gather_alloc->allocation_id);
-		CHECK(gather_copy->dest_allocation == local_reduce->source_allocation_id);
+		CHECK(gather_copy->dest_allocation.id == local_gather_alloc->allocation_id);
+		CHECK(gather_copy->dest_allocation.id == local_reduce->source_allocation_id);
 	}
 
 	// the global reduction has a single local contribution (the locally-reduced partial result from devices), and `num_nodes - 1` contributions from peers.
@@ -412,7 +414,7 @@ TEST_CASE("global reductions without a local contribution do not read stale loca
 		// there is a local contribution, which will be copied to the global gather buffer concurrent with the receive
 		const auto gather_copy = global_reduce.predecessors().select_unique<copy_instruction_record>();
 		CHECK(gather_copy->origin == copy_instruction_record::copy_origin::gather);
-		CHECK(gather_copy->dest_allocation.allocatoin_id == gather_recv->allocation_id);
+		CHECK(gather_copy->dest_allocation.id == gather_recv->allocation_id);
 		CHECK(gather_copy->dest_allocation.offset_bytes == local_nid * sizeof(int));
 		CHECK(gather_copy->source_allocation.offset_bytes == 0);
 		CHECK(gather_copy->copy_region == region(box<3>(zeros, ones)));

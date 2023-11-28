@@ -49,8 +49,8 @@ void instruction_executor::submit_instruction(const instruction& instr) { m_subm
 
 void instruction_executor::submit_pilot(const outbound_pilot& pilot) { m_submission_queue.push_back(pilot); }
 
-void instruction_executor::announce_buffer_user_pointer(const buffer_id bid, const void* const ptr) {
-	m_submission_queue.push_back(buffer_user_pointer_announcement{bid, ptr});
+void instruction_executor::announce_user_allocation(const allocation_id aid, void* const ptr) {
+	m_submission_queue.push_back(user_allocation_announcement{aid, ptr});
 }
 
 void instruction_executor::announce_host_object_instance(const host_object_id hoid, std::unique_ptr<host_object_instance> instance) {
@@ -191,9 +191,11 @@ void instruction_executor::loop() {
 				    [&](const outbound_pilot& pilot) { //
 					    m_communicator->send_outbound_pilot(pilot);
 				    },
-				    [&](const buffer_user_pointer_announcement& ann) {
-					    assert(m_buffer_user_pointers.count(ann.bid) == 0);
-					    m_buffer_user_pointers.emplace(ann.bid, ann.ptr);
+				    [&](const user_allocation_announcement& ann) {
+					    assert(ann.aid != null_allocation_id);
+					    assert(ann.aid.get_memory_id() == user_memory_id);
+					    assert(m_allocations.count(ann.aid) == 0);
+					    m_allocations.emplace(ann.aid, ann.ptr);
 				    },
 				    [&](host_object_instance_announcement& ann) {
 					    assert(m_host_object_instances.count(ann.hoid) == 0);
@@ -235,7 +237,8 @@ void instruction_executor::loop() {
 		}
 	}
 
-	assert(m_allocations.size() == 1); // null allocation
+	assert(std::all_of(m_allocations.begin(), m_allocations.end(),
+	    [](const std::pair<allocation_id, void*>& p) { return p.first == null_allocation_id || p.first.get_memory_id() == user_memory_id; }));
 	assert(m_host_object_instances.empty());
 }
 
@@ -349,16 +352,6 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Turquoise, "I{} free", finstr.get_id());
 
 		    m_backend_queue->free(finstr.get_allocation_id().get_memory_id(), ptr);
-		    return make_complete_event();
-	    },
-	    [&](const init_buffer_instruction& ibinstr) {
-		    CELERITY_DEBUG("[executor] I{}: init B{} as {}, {} bytes", ibinstr.get_id(), ibinstr.get_buffer_id(), ibinstr.get_host_allocation_id(),
-		        ibinstr.get_size_bytes());
-		    CELERITY_DETAIL_TRACY_SCOPED_ZONE(Lime, "I{} init buffer", ibinstr.get_id());
-
-		    const auto user_ptr = m_buffer_user_pointers.at(ibinstr.get_buffer_id());
-		    const auto host_ptr = m_allocations.at(ibinstr.get_host_allocation_id());
-		    memcpy(host_ptr, user_ptr, ibinstr.get_size_bytes());
 		    return make_complete_event();
 	    },
 	    [&](const export_instruction& einstr) {

@@ -45,7 +45,7 @@ class instruction_executor {
 	void submit_instruction(const instruction& instr); // TODO should receive pointer
 	void submit_pilot(const outbound_pilot& pilot);
 
-	void announce_buffer_user_pointer(buffer_id bid, const void* ptr);
+	void announce_user_allocation(allocation_id aid, void* ptr);
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);
 	void announce_reduction(reduction_id rid, std::unique_ptr<runtime_reduction> reduction);
 
@@ -84,9 +84,9 @@ class instruction_executor {
 	};
 #endif
 
-	struct buffer_user_pointer_announcement {
-		buffer_id bid;
-		const void* ptr;
+	struct user_allocation_announcement {
+		allocation_id aid;
+		void* ptr;
 	};
 	struct host_object_instance_announcement {
 		host_object_id hoid;
@@ -97,7 +97,7 @@ class instruction_executor {
 		std::unique_ptr<runtime_reduction> reduction;
 	};
 	using submission =
-	    std::variant<const instruction*, outbound_pilot, buffer_user_pointer_announcement, host_object_instance_announcement, reduction_announcement>;
+	    std::variant<const instruction*, outbound_pilot, user_allocation_announcement, host_object_instance_announcement, reduction_announcement>;
 
 	struct pending_instruction_info;
 	struct active_instruction_info;
@@ -113,7 +113,6 @@ class instruction_executor {
 	// accessed by executor thread only (unsynchronized)
 	bool m_expecting_more_submissions = true;
 	std::unique_ptr<backend::queue> m_backend_queue;
-	std::unordered_map<buffer_id, const void*> m_buffer_user_pointers;
 	std::unordered_map<allocation_id, void*> m_allocations;
 	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> m_host_object_instances;
 	std::unordered_map<collective_group_id, communicator::collective_group*> m_collective_groups;

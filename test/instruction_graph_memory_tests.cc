@@ -192,8 +192,8 @@ TEST_CASE("data dependencies across memories introduce coherence copies", "[inst
 
 		// There is one coherence copy per reader kernel, which copies the portion written on the opposite device
 		const auto coherence_copy = intersection_of(coherence_copies, reader.predecessors()).assert_unique();
-		CHECK(coherence_copy->source_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(opposite_did));
-		CHECK(coherence_copy->dest_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(did));
+		CHECK(coherence_copy->source_allocation.id.get_memory_id() == ictx.get_native_memory(opposite_did));
+		CHECK(coherence_copy->dest_allocation.id.get_memory_id() == ictx.get_native_memory(did));
 		CHECK(coherence_copy->copy_region == region(opposite_writer->access_map.front().accessed_box_in_buffer));
 	}
 
@@ -211,8 +211,10 @@ TEMPLATE_TEST_CASE_SIG(
 
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	ictx.set_horizon_step(999);
-	auto buf = ictx.create_buffer<int>(full_range, true /* host-initialize to avoid resizes */);
+	auto buf = ictx.create_buffer<int>(full_range);
 
+	// write once to avoid resizes of host buffer later on
+	ictx.host_task(full_range).name("init").discard_write(buf, acc::one_to_one()).submit();
 	ictx.device_compute(range(1)).name("write 1st half").discard_write(buf, acc::fixed(first_half)).submit();
 	// requires a coherence copy for the first half
 	ictx.master_node_host_task().name("read 1st half").read(buf, acc::fixed(first_half)).submit();
@@ -385,26 +387,70 @@ TEST_CASE("resizing a buffer allocation for a discard-write access preserves onl
 
 // This test should become obsolete in the future when we allow the instruction_executor to manage user memory - this feature would remove the need for both
 // init_buffer_instruction and export_instruction
-TEMPLATE_TEST_CASE_SIG("host-initialization eagerly copies the entire buffer from user memory to a host allocation",
-    "[instruction_graph_generator][instruction-graph][memory]", ((int Dims), Dims), 1, 2, 3) //
+TEMPLATE_TEST_CASE_SIG("data from user-initialized buffers is copied lazily to managed allocations", "[instruction_graph_generator][instruction-graph][memory]",
+    ((int Dims), Dims), 1, 2, 3) //
 {
 	const auto buffer_range = test_utils::truncate_range<Dims>({256, 256, 256});
+	const auto half_range = test_utils::truncate_range<Dims>({128, 256, 256});
+	const auto second_half_offset = test_utils::truncate_id<Dims>({128, 0, 0});
 	const auto buffer_box = box(subrange(id<Dims>(zeros), buffer_range));
 
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* devices */);
 	auto buf = ictx.create_buffer<int, Dims>(buffer_range, true /* host_initialized */);
-	ictx.finish();
 
-	const auto all_instrs = ictx.query_instructions();
+	SECTION("for host access") {
+		ictx.master_node_host_task().read(buf, acc::all()).submit();
+		ictx.finish();
 
-	const auto init = all_instrs.select_unique<init_buffer_instruction_record>();
-	const auto alloc = init.predecessors().assert_unique<alloc_instruction_record>();
-	CHECK(alloc->allocation_id.get_memory_id() == host_memory_id);
-	CHECK(alloc->buffer_allocation.value().box == box_cast<3>(buffer_box));
-	CHECK(alloc->size_bytes == buffer_range.size() * sizeof(int));
-	CHECK(init->size_bytes == alloc->size_bytes);
-	CHECK(init->buffer_id == buf.get_id());
-	CHECK(init->host_allocation_id == alloc->allocation_id);
+		const auto all_instrs = ictx.query_instructions();
+		const auto reader = all_instrs.select_unique<host_task_instruction_record>();
+		const auto coherence_copy = all_instrs.select_unique<copy_instruction_record>();
+		CHECK(coherence_copy->copy_region == region(box_cast<3>(buffer_box)));
+		CHECK(coherence_copy->source_allocation.id.get_memory_id() == user_memory_id);
+		CHECK(coherence_copy->dest_allocation.id.get_memory_id() == host_memory_id);
+
+		// must not attempt to free user allocation
+		CHECK(all_instrs.count<free_instruction_record>([](const free_instruction_record& finstr) {
+			return finstr.allocation_id.get_memory_id() == user_memory_id;
+		}) == 0);
+	}
+
+	SECTION("for device access, by staging through (pinned) host memory") {
+		ictx.device_compute(range(1)).read(buf, acc::fixed(subrange({}, half_range))).submit();
+		ictx.device_compute(range(1)).read(buf, acc::fixed(subrange(second_half_offset, half_range))).submit();
+		ictx.finish();
+
+		const auto all_instrs = ictx.query_instructions();
+		CHECK(all_instrs.count<copy_instruction_record>() == 4);
+
+		const auto all_readers = all_instrs.select_all<device_kernel_instruction_record>();
+		const auto all_coherence_copies = all_readers.predecessors().select_all<copy_instruction_record>();
+		CHECK(all_coherence_copies.count() == 2);
+
+		for(const auto& coherence_copy : all_coherence_copies.iterate()) {
+			REQUIRE(coherence_copy->copy_region.get_boxes().size() == 1);
+			const auto& copy_box = coherence_copy->copy_region.get_boxes().front();
+			CHECK(copy_box.get_range() == range_cast<3>(half_range));
+			CHECK(coherence_copy->source_allocation.id.get_memory_id() == host_memory_id);
+			CHECK(coherence_copy->dest_allocation.id.get_memory_id() == first_device_memory_id);
+		}
+
+		const auto all_staging_copies = all_coherence_copies.predecessors().select_all<copy_instruction_record>();
+		CHECK(all_staging_copies.count() == 2);
+
+		for(const auto& staging_copy : all_staging_copies.iterate()) {
+			REQUIRE(staging_copy->copy_region.get_boxes().size() == 1);
+			const auto& copy_box = staging_copy->copy_region.get_boxes().front();
+			CHECK(copy_box.get_range() == range_cast<3>(half_range));
+			CHECK(staging_copy->source_allocation.id.get_memory_id() == user_memory_id);
+			CHECK(staging_copy->dest_allocation.id.get_memory_id() == host_memory_id);
+		}
+
+		// must not attempt to free user allocation
+		CHECK(all_instrs.count<free_instruction_record>([](const free_instruction_record& finstr) {
+			return finstr.allocation_id.get_memory_id() == user_memory_id;
+		}) == 0);
+	}
 }
 
 TEST_CASE("copies are staged through host memory for devices that are not peer-copy capable", "[instruction_graph_generator][instruction-graph][memory]") {
@@ -433,10 +479,10 @@ TEST_CASE("copies are staged through host memory for devices that are not peer-c
 		const auto copy_from_host = intersection_of(all_copies_from_host, copy_to_host.successors()).assert_unique();
 		const auto reader = intersection_of(all_readers, copy_from_host.successors()).assert_unique();
 
-		CHECK(copy_to_host->source_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(writer->device_id));
-		CHECK(copy_to_host->dest_allocation.allocatoin_id.get_memory_id() == host_memory_id);
-		CHECK(copy_from_host->source_allocation.allocatoin_id.get_memory_id() == host_memory_id);
-		CHECK(copy_from_host->dest_allocation.allocatoin_id.get_memory_id() == ictx.get_native_memory(reader->device_id));
+		CHECK(copy_to_host->source_allocation.id.get_memory_id() == ictx.get_native_memory(writer->device_id));
+		CHECK(copy_to_host->dest_allocation.id.get_memory_id() == host_memory_id);
+		CHECK(copy_from_host->source_allocation.id.get_memory_id() == host_memory_id);
+		CHECK(copy_from_host->dest_allocation.id.get_memory_id() == ictx.get_native_memory(reader->device_id));
 	}
 }
 

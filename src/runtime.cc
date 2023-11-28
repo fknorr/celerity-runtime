@@ -391,15 +391,17 @@ namespace detail {
 		destroy_instance_if_unreferenced();
 	}
 
-	buffer_id runtime::create_buffer(const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const void* const host_init_ptr) {
+	buffer_id runtime::create_buffer(
+	    const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const void* const user_allocation) {
 		require_call_from_application_thread();
 
 		const auto bid = m_next_buffer_id++;
 		m_live_buffers.emplace(bid);
-		const auto is_host_initialized = host_init_ptr != nullptr;
-		if(is_host_initialized) { m_exec->announce_buffer_user_pointer(bid, host_init_ptr); }
-		m_task_mngr->create_buffer(bid, dims, range, is_host_initialized);
-		m_schdlr->notify_buffer_created(bid, dims, range, elem_size, elem_align, is_host_initialized);
+		const auto has_user_allocation = user_allocation != nullptr;
+		const auto user_allocation_id = has_user_allocation ? allocation_id(user_memory_id, m_next_user_allocation_id++) : null_allocation_id;
+		if(has_user_allocation) { m_exec->announce_user_allocation(user_allocation_id, /* pinky promise */ const_cast<void*>(user_allocation)); }
+		m_task_mngr->create_buffer(bid, dims, range, has_user_allocation);
+		m_schdlr->notify_buffer_created(bid, dims, range, elem_size, elem_align, user_allocation_id);
 		return bid;
 	}
 

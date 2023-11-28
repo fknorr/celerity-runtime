@@ -63,9 +63,9 @@ namespace detail {
 		 */
 		void notify_task_created(const task* const tsk) { notify(event_task_available{tsk}); }
 
-		void notify_buffer_created(
-		    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
-			notify(event_buffer_created{bid, dims, range, elem_size, elem_align, host_initialized});
+		void notify_buffer_created(const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align,
+		    const allocation_id user_allocation_id) {
+			notify(event_buffer_created{bid, dims, range, elem_size, elem_align, user_allocation_id});
 		}
 
 		void set_buffer_debug_name(const buffer_id bid, const std::string& name) { notify(event_set_buffer_debug_name{bid, name}); }
@@ -94,7 +94,7 @@ namespace detail {
 			celerity::range<3> range;
 			size_t elem_size;
 			size_t elem_align;
-			bool host_initialized;
+			allocation_id user_allocation_id;
 		};
 		struct event_set_buffer_debug_name {
 			buffer_id bid;

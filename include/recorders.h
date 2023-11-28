@@ -145,10 +145,10 @@ using instruction_dependency_list = std::vector<dependency_record<instruction_id
 
 struct instruction_record
     : matchbox::acceptor<struct clone_collective_group_instruction_record, struct alloc_instruction_record, struct free_instruction_record,
-          struct init_buffer_instruction_record, struct export_instruction_record, struct copy_instruction_record, struct device_kernel_instruction_record,
-          struct host_task_instruction_record, struct send_instruction_record, struct receive_instruction_record, struct split_receive_instruction_record,
-          struct await_receive_instruction_record, struct gather_receive_instruction_record, struct fill_identity_instruction_record,
-          struct reduce_instruction_record, struct fence_instruction_record, struct destroy_host_object_instruction_record, struct horizon_instruction_record,
+          struct export_instruction_record, struct copy_instruction_record, struct device_kernel_instruction_record, struct host_task_instruction_record,
+          struct send_instruction_record, struct receive_instruction_record, struct split_receive_instruction_record, struct await_receive_instruction_record,
+          struct gather_receive_instruction_record, struct fill_identity_instruction_record, struct reduce_instruction_record, struct fence_instruction_record,
+          struct destroy_host_object_instruction_record, struct horizon_instruction_record,
           struct epoch_instruction_record> //
 {
 	instruction_id id;
@@ -187,15 +187,6 @@ struct free_instruction_record : matchbox::implement_acceptor<instruction_record
 	std::optional<buffer_allocation_record> buffer_allocation;
 
 	free_instruction_record(const free_instruction& finstr, size_t size, std::optional<buffer_allocation_record> buffer_allocation);
-};
-
-struct init_buffer_instruction_record : matchbox::implement_acceptor<instruction_record, init_buffer_instruction_record> {
-	detail::buffer_id buffer_id;
-	std::string buffer_name;
-	detail::allocation_id host_allocation_id;
-	size_t size_bytes;
-
-	explicit init_buffer_instruction_record(const init_buffer_instruction& ibinstr, std::string buffer_name);
 };
 
 struct export_instruction_record : matchbox::implement_acceptor<instruction_record, export_instruction_record> {

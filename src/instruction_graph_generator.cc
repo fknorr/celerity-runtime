@@ -26,7 +26,7 @@ class instruction_graph_generator::impl {
 	impl(const task_manager& tm, size_t num_nods, node_id local_nid, system_info system, instruction_graph& idag, instruction_recorder* recorder,
 	    const policy_set& policy);
 
-	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, bool host_initialized);
+	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id = null_allocation_id);
 
 	void set_buffer_debug_name(buffer_id bid, const std::string& name);
 
@@ -66,7 +66,8 @@ class instruction_graph_generator::impl {
 		region_map<instruction*> last_writers;  // in virtual-buffer coordinates
 		region_map<access_front> access_fronts; // in virtual-buffer coordinates
 
-		explicit buffer_memory_per_allocation_data(int buffer_dims, const allocation_id aid, const detail::box<3>& allocated_box, const range<3>& buffer_range)
+		explicit buffer_memory_per_allocation_data(
+		    const int buffer_dims, const allocation_id aid, const detail::box<3>& allocated_box, const range<3>& buffer_range)
 		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {}
 
 		void record_read(const region<3>& region, instruction* const instr) {
@@ -413,43 +414,24 @@ instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes
 }
 
 void instruction_graph_generator::impl::create_buffer(
-    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) //
+    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, allocation_id user_allocation_id) //
 {
 	const auto [iter, inserted] =
 	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_system.memories.size()));
 	assert(inserted);
 
-	if(host_initialized) {
-		// eagerly allocate and fill entire host buffer. TODO this should only be done as-needed as part of satisfy_read_requirements, but eager operations
-		// saves us from a) tracking user allocations (needs a separate memory_id) as well as generating chained user -> host -> device copies which we would
-		// want to do to guarantee that host -> device copies are always made from pinned memory.
+	if(user_allocation_id != null_allocation_id) {
+		assert(user_allocation_id.get_memory_id() == user_memory_id);
+		const box entire_buffer = subrange({}, range);
 
 		auto& buffer = iter->second;
-		auto& host_memory = buffer.memories.at(host_memory_id);
-		const box entire_buffer = subrange({}, buffer.range);
+		auto& memory = buffer.memories.at(user_memory_id);
+		auto& allocation = memory.allocations.emplace_back(buffer.dims, user_allocation_id, entire_buffer, buffer.range);
 
-		// this will be the first allocation for the buffer - no need to go through allocate_contiguously()
-		const auto host_aid = new_allocation_id(host_memory_id);
-		auto& alloc_instr = create<alloc_instruction>(host_aid, range.size() * elem_size, elem_align);
-		add_dependency(alloc_instr, *m_last_epoch, dependency_kind::true_dep);
-
-		auto& init_instr = create<init_buffer_instruction>(bid, host_aid, range.size() * elem_size);
-		add_dependency(init_instr, alloc_instr, dependency_kind::true_dep);
-
-		auto& allocation = host_memory.allocations.emplace_back(buffer.dims, host_aid, entire_buffer, buffer.range);
-		allocation.record_write(entire_buffer, &init_instr);
-		buffer.original_writers.update_region(entire_buffer, &init_instr);
-		buffer.newest_data_location.update_region(entire_buffer, memory_mask().set(host_memory_id));
-		buffer.original_write_memories.update_region(entire_buffer, host_memory_id);
-
-		if(m_recorder != nullptr) {
-			*m_recorder << alloc_instruction_record(
-			    alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.name, entire_buffer}, std::nullopt);
-			*m_recorder << init_buffer_instruction_record(init_instr, buffer.name);
-		}
-
-		// we return the generated instructions with the next call to compile().
-		// TODO this should probably follow a callback mechanism instead - we currently do the same for the initial epoch.
+		allocation.record_write(entire_buffer, m_last_epoch);
+		buffer.original_writers.update_region(entire_buffer, m_last_epoch);
+		buffer.newest_data_location.update_region(entire_buffer, memory_mask().set(user_memory_id));
+		buffer.original_write_memories.update_region(entire_buffer, user_memory_id);
 	}
 }
 
@@ -461,6 +443,8 @@ void instruction_graph_generator::impl::destroy_buffer(const buffer_id bid) {
 	auto& buffer = iter->second;
 
 	for(memory_id mid = 0; mid < buffer.memories.size(); ++mid) {
+		if(mid == user_memory_id) continue;
+
 		auto& memory = buffer.memories[mid];
 		for(auto& allocation : memory.allocations) {
 			const auto free_instr = &create<free_instruction>(allocation.aid);
@@ -1744,10 +1728,10 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 instruction_graph_generator::~instruction_graph_generator() = default;
 
 void instruction_graph_generator::create_buffer(
-    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const bool host_initialized) {
+    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("create buffer B{}", bid);
-	m_impl->create_buffer(bid, dims, range, elem_size, elem_align, host_initialized);
+	m_impl->create_buffer(bid, dims, range, elem_size, elem_align, user_allocation_id);
 }
 
 void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, const std::string& name) {

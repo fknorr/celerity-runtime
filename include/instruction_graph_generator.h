@@ -49,7 +49,7 @@ class instruction_graph_generator {
 	void set_uninitialized_read_policy(const error_policy policy);
 	void set_overlapping_write_policy(const error_policy policy);
 
-	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, bool host_initialized);
+	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_allocation_id);
 
 	void set_buffer_debug_name(buffer_id bid, const std::string& name);
 

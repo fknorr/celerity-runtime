@@ -182,10 +182,6 @@ alloc_instruction_record::alloc_instruction_record(
 free_instruction_record::free_instruction_record(const free_instruction& finstr, const size_t size, std::optional<buffer_allocation_record> buffer_allocation)
     : acceptor_base(finstr), allocation_id(finstr.get_allocation_id()), size(size), buffer_allocation(std::move(buffer_allocation)) {}
 
-init_buffer_instruction_record::init_buffer_instruction_record(const init_buffer_instruction& ibinstr, std::string buffer_name)
-    : acceptor_base(ibinstr), buffer_id(ibinstr.get_buffer_id()), buffer_name(std::move(buffer_name)), host_allocation_id(ibinstr.get_host_allocation_id()),
-      size_bytes(ibinstr.get_size_bytes()) {}
-
 export_instruction_record::export_instruction_record(
     const export_instruction& einstr, const detail::buffer_id buffer_id, std::string buffer_name, const celerity::id<3>& offset_in_buffer)
     : acceptor_base(einstr), buffer_id(buffer_id), buffer_name(std::move(buffer_name)), offset_in_buffer(offset_in_buffer),

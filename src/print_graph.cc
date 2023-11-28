@@ -308,13 +308,6 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    fmt::format_to(back, " <br/>{} bytes", finstr.size);
 			    end_node();
 		    },
-		    [&](const init_buffer_instruction_record& ibinstr) {
-			    begin_node(ibinstr, "ellipse", "green3");
-			    fmt::format_to(back, "I{}<br/>", ibinstr.id);
-			    fmt::format_to(back, "<b>init buffer</b> {}<br/>via {}, {} bytes", utils::get_buffer_label(ibinstr.buffer_id, ibinstr.buffer_name),
-			        ibinstr.host_allocation_id, ibinstr.size_bytes);
-			    end_node();
-		    },
 		    [&](const export_instruction_record& einstr) {
 			    begin_node(einstr, "ellipse", "green3");
 			    fmt::format_to(back, "I{}", einstr.id);
@@ -333,7 +326,7 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 			    case copy_instruction_record::copy_origin::coherence: dot += "coherence "; break;
 			    case copy_instruction_record::copy_origin::gather: dot += "gather "; break;
 			    }
-			    fmt::format_to(back, "<b>copy</b><br/>from {}{} ({})<br/>to {}{} ({})<br/>{} {} x{} bytes", cinstr.source_allocation, cinstr.source_box,
+			    fmt::format_to(back, "<b>copy</b><br/>from {} ({})<br/>to {} ({})<br/>{} {} x{} bytes", cinstr.source_allocation, cinstr.source_box,
 			        cinstr.dest_allocation, cinstr.dest_box, utils::get_buffer_label(cinstr.buffer_id, cinstr.buffer_name), cinstr.copy_region,
 			        cinstr.element_size);
 			    end_node();

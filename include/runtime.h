@@ -60,7 +60,7 @@ namespace detail {
 
 		void destroy_queue();
 
-		buffer_id create_buffer(int dims, const range<3>& range, size_t elem_size, size_t elem_align, const void* host_init_ptr);
+		buffer_id create_buffer(int dims, const range<3>& range, size_t elem_size, size_t elem_align, const void* user_allocation);
 
 		void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
 
@@ -107,6 +107,7 @@ namespace detail {
 		std::unordered_set<host_object_id> m_live_host_objects;
 
 		buffer_id m_next_buffer_id = 0;
+		raw_allocation_id m_next_user_allocation_id = 1;
 		host_object_id m_next_host_object_id = 0;
 		reduction_id m_next_reduction_id = 1;
 

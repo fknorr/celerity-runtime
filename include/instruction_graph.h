@@ -21,12 +21,12 @@ class fence_promise;
 /// operations between host- and all device memories installed in the node and issues kernel launches, inter-node data transfers and reductions. Unlike the
 /// higher-level task and command graphs which track data dependencies in terms of buffers, it operates on the lower level of allocations, which (among ohter
 /// uses) can back sub-regions of the (virtual) global buffer.
-class instruction : public intrusive_graph_node<instruction>,
-                    public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction,
-                        class init_buffer_instruction, class export_instruction, class copy_instruction, class device_kernel_instruction,
-                        class host_task_instruction, class send_instruction, class receive_instruction, class split_receive_instruction,
-                        class await_receive_instruction, class gather_receive_instruction, class fill_identity_instruction, class reduce_instruction,
-                        class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
+class instruction
+    : public intrusive_graph_node<instruction>,
+      public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class export_instruction,
+          class copy_instruction, class device_kernel_instruction, class host_task_instruction, class send_instruction, class receive_instruction,
+          class split_receive_instruction, class await_receive_instruction, class gather_receive_instruction, class fill_identity_instruction,
+          class reduce_instruction, class fence_instruction, class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
@@ -81,23 +81,6 @@ class free_instruction final : public matchbox::implement_acceptor<instruction, 
 
   private:
 	allocation_id m_aid;
-};
-
-/// Fills an allocation which has been allocated on host memory with the runtime-associated user pointer. Used for host-initialized buffers.
-/// This instruction exists temporarily until the IDAG is able to track user allocations directly, at which point this will become a copy_instruction.
-class init_buffer_instruction final : public matchbox::implement_acceptor<instruction, init_buffer_instruction> {
-  public:
-	explicit init_buffer_instruction(const instruction_id iid, const buffer_id bid, const allocation_id host_aid, const size_t size_bytes)
-	    : acceptor_base(iid), m_bid(bid), m_host_aid(host_aid), m_size_bytes(size_bytes) {}
-
-	buffer_id get_buffer_id() const { return m_bid; }
-	allocation_id get_host_allocation_id() const { return m_host_aid; }
-	size_t get_size_bytes() const { return m_size_bytes; }
-
-  private:
-	buffer_id m_bid;
-	allocation_id m_host_aid;
-	size_t m_size_bytes;
 };
 
 /// Copies a subrange of a host-memory allocation to a user-controlled position. Used for buffer fences.
