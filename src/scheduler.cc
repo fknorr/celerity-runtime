@@ -18,8 +18,7 @@ namespace detail {
 	      m_dggen(std::make_unique<distributed_graph_generator>(num_nodes, local_node_id, *m_cdag, tm, crec, policy.command_graph_generator)),
 	      m_idag(std::make_unique<instruction_graph>()), m_irec(irec), //
 	      m_iggen(std::make_unique<instruction_graph_generator>(
-	          tm, num_nodes, local_node_id, std::move(system_info), *m_idag, irec, policy.instruction_graph_generator)),
-	      m_delegate(delegate) {}
+	          tm, num_nodes, local_node_id, std::move(system_info), *m_idag, delegate, irec, policy.instruction_graph_generator)) {}
 
 	abstract_scheduler::~abstract_scheduler() = default;
 
@@ -45,20 +44,11 @@ namespace detail {
 					    const auto commands = m_dggen->build_task(*e.tsk);
 
 					    for(const auto cmd : commands) {
-						    const auto [instructions, pilots] = m_iggen->compile(*cmd);
-
-						    if(m_delegate != nullptr) {
-							    for(const auto instr : instructions) {
-								    m_delegate->submit_instruction(*instr);
-							    }
-							    for(const auto& p : pilots) {
-								    m_delegate->submit_pilot(p);
-							    }
-						    }
+						    m_iggen->compile(*cmd);
 
 						    if(e.tsk->get_type() == task_type::epoch && e.tsk->get_epoch_action() == epoch_action::shutdown) {
 							    shutdown = true;
-							    // m_delegate must be considered dangling as soon as the instructions for the shutdown epoch have been emitted
+							    // m_iggen.delegate must be considered dangling as soon as the instructions for the shutdown epoch have been emitted
 						    }
 					    }
 				    },

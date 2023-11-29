@@ -27,22 +27,11 @@ namespace detail {
 
 	// Abstract base class to allow different threading implementation in tests
 	class abstract_scheduler {
+	  protected:
 		friend struct scheduler_testspy;
 
 	  public:
-		class delegate {
-		  protected:
-			delegate() = default;
-			delegate(const delegate&) = default;
-			delegate(delegate&&) = default;
-			delegate& operator=(const delegate&) = default;
-			delegate& operator=(delegate&&) = default;
-			~delegate() = default; // do not allow destruction through base pointer
-
-		  public:
-			virtual void submit_instruction(const instruction& instr) = 0;
-			virtual void submit_pilot(const outbound_pilot& pilot) = 0;
-		};
+		using delegate = instruction_graph_generator::delegate;
 
 		struct policy_set {
 			distributed_graph_generator::policy_set command_graph_generator;
@@ -125,8 +114,6 @@ namespace detail {
 		std::unique_ptr<instruction_graph> m_idag;
 		instruction_recorder* m_irec;
 		std::unique_ptr<instruction_graph_generator> m_iggen;
-
-		delegate* m_delegate; // Pointer instead of reference so we can omit for tests / benchmarks
 
 		std::queue<event> m_available_events;
 

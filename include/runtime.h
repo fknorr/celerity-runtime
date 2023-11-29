@@ -132,9 +132,9 @@ namespace detail {
 		// functions, we call this check at the beginning of all the non-safe ones.
 		void require_call_from_application_thread() const;
 
-		// scheduler::delegate
-		void submit_instruction(const instruction& instr) override;
-		void submit_pilot(const outbound_pilot& pilot) override;
+		// abstract_scheduler::delegate
+		void flush_instructions(std::vector<const instruction*> instr) override;
+		void flush_outbound_pilots(std::vector<outbound_pilot> pilot) override;
 
 		// instruction_executor::delegate
 		void horizon_reached(task_id horizon_tid) override;

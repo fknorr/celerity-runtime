@@ -227,8 +227,8 @@ struct instruction_graph_generator_benchmark_context {
 	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
 	instruction_recorder irec;
 	instruction_graph idag;
-	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_system_info(num_devices), idag, test_utils::print_graphs ? &irec : nullptr,
-	    benchmark_instruction_graph_generator_policy};
+	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_system_info(num_devices), idag, nullptr /* delegate */,
+	    test_utils::print_graphs ? &irec : nullptr, benchmark_instruction_graph_generator_policy};
 	test_utils::mock_buffer_factory mbf{tm, dggen, iggen};
 
 	explicit instruction_graph_generator_benchmark_context(const size_t num_nodes, const size_t num_devices) : num_nodes(num_nodes), num_devices(num_devices) {

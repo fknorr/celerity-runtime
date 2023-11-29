@@ -349,18 +349,28 @@ namespace detail {
 		return combine_command_graphs(graphs);
 	}
 
-	void runtime::submit_instruction(const instruction& instr) {
+	// TODO I don't like this. IMO we should have a dry_run_executor that noop's all instructions except epoch / horizon / fence and just implement the
+	// scheduler delegate in the the executor base class.
+	void runtime::flush_instructions(std::vector<const instruction*> instrs) {
 		// thread-safe
 		assert(m_exec != nullptr);
-		if(!is_dry_run() || utils::isa<epoch_instruction>(&instr) || utils::isa<horizon_instruction>(&instr) || utils::isa<fence_instruction>(&instr)) {
-			m_exec->submit_instruction(instr);
+		// TODO avoid this loop because it will acquire and release the executor queue lock every iteration
+		for(const auto instr : instrs) {
+			if(!is_dry_run() || utils::isa<epoch_instruction>(instr) || utils::isa<horizon_instruction>(instr) || utils::isa<fence_instruction>(instr)) {
+				m_exec->submit_instruction(*instr);
+			}
 		}
 	}
 
-	void runtime::submit_pilot(const outbound_pilot& pilot) {
+	void runtime::flush_outbound_pilots(std::vector<outbound_pilot> pilots) {
 		// thread-safe
 		assert(m_exec != nullptr);
-		if(!is_dry_run()) { m_exec->submit_pilot(pilot); }
+		if(!is_dry_run()) {
+			// TODO avoid this loop because it will acquire and release the executor queue lock every iteration
+			for(const auto& pilot : pilots) {
+				m_exec->submit_pilot(pilot);
+			}
+		}
 	}
 
 	void runtime::horizon_reached(const task_id horizon_tid) {

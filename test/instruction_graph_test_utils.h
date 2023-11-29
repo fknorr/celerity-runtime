@@ -476,7 +476,8 @@ class idag_test_context {
 	    : m_num_nodes(num_nodes), m_local_nid(local_nid), m_num_devices_per_node(num_devices_per_node),
 	      m_uncaught_exceptions_before(std::uncaught_exceptions()), m_tm(num_nodes, nullptr /* host_queue */, &m_task_recorder, policy.tm), m_cmd_recorder(),
 	      m_cdag(), m_dggen(num_nodes, local_nid, m_cdag, m_tm, &m_cmd_recorder, policy.dggen), m_instr_recorder(),
-	      m_iggen(m_tm, num_nodes, local_nid, make_system_info(num_devices_per_node, supports_d2d_copies), m_idag, &m_instr_recorder, policy.iggen) //
+	      m_iggen(m_tm, num_nodes, local_nid, make_system_info(num_devices_per_node, supports_d2d_copies), m_idag, nullptr /* delegate */, &m_instr_recorder,
+	          policy.iggen) //
 	{
 		REQUIRE(local_nid < num_nodes);
 		REQUIRE(num_devices_per_node > 0);

@@ -132,6 +132,9 @@ namespace detail {
 
 	  private:
 		gch::small_vector<dependency> m_dependencies;
+
+		// TODO This variable can be modified even after a DAG node is final, which easily leads to data races when a DAG is created by one thread and read /
+		// processed by another. Remove this member altogether after refactoring TDAG / CDAG generation to work without it.
 		gch::small_vector<dependent> m_dependents;
 
 		// This only (potentially) grows when adding dependencies,
