@@ -111,6 +111,24 @@ bool is_topologically_sorted(Iterator begin, Iterator end) {
 	return true;
 }
 
+void symmetrically_split_overlapping_regions(std::vector<region<3>>& regions) {
+restart:
+	for(size_t i = 0; i < regions.size(); ++i) {
+		for(size_t j = i + 1; j < regions.size(); ++j) {
+			auto intersection = region_intersection(regions[i], regions[j]);
+			if(!intersection.empty()) {
+				regions[i] = region_difference(regions[i], intersection);
+				regions[j] = region_difference(regions[j], intersection);
+				regions.push_back(std::move(intersection));
+				// if intersections above are actually subsets, we will end up with empty regions
+				regions.erase(std::remove_if(regions.begin(), regions.end(), std::mem_fn(&region<3>::empty)), regions.end());
+				goto restart; // NOLINT(cppcoreguidelines-avoid-goto)
+			}
+		}
+	}
+}
+
+
 } // namespace celerity::detail::instruction_graph_generator_detail
 
 namespace celerity::detail {
@@ -155,10 +173,10 @@ class instruction_graph_generator::impl {
 	/// Per-allocation state for a single buffer. This is where we track last-writer instructions and access fronts.
 	struct buffer_memory_per_allocation_data {
 		struct access_front {
-			gch::small_vector<instruction*> front; // sorted by id to allow equality comparison
+			gch::small_vector<instruction*> instructions; // ordered by id to allow equality comparison
 			enum { read, write } mode = write;
 
-			friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.front == rhs.front && lhs.mode == rhs.mode; }
+			friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.instructions == rhs.instructions && lhs.mode == rhs.mode; }
 			friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
 		};
 
@@ -180,37 +198,45 @@ class instruction_graph_generator::impl {
 		    const int buffer_dims, const allocation_id aid, const detail::box<3>& allocated_box, const range<3>& buffer_range)
 		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {}
 
+		// TODO accept BoxOrRegion
 		void record_read(const region<3>& region, instruction* const instr) {
-			for(auto& [box, record] : access_fronts.get_region_values(region)) {
-				if(record.mode == access_front::read) {
-					// sorted insert
-					const auto at = std::lower_bound(record.front.begin(), record.front.end(), instr, instruction_id_less());
-					assert(at == record.front.end() || *at != instr);
-					record.front.insert(at, instr);
+			for(auto& [box, front] : access_fronts.get_region_values(region)) {
+				if(front.mode == access_front::read) {
+					// we call record_read as soon as the writing instructions is generated, so inserting at the end keeps the vector sorted
+					assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
+					front.instructions.push_back(instr);
 				} else {
-					record = {{instr}, access_front::read};
+					front = {{instr}, access_front::read};
 				}
-				assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
-				access_fronts.update_region(box, record);
+				assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
+				access_fronts.update_region(box, front);
 			}
 		}
 
+		// TODO accept BoxOrRegion
 		void record_write(const region<3>& region, instruction* const instr) {
 			last_writers.update_region(region, instr);
 			access_fronts.update_region(region, access_front{{instr}, access_front::write});
 		}
 
 		void apply_epoch(instruction* const epoch) {
-			last_writers.apply_to_values([epoch](instruction* const instr) { return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr; });
-			access_fronts.apply_to_values([epoch](access_front record) {
-				const auto new_front_end = std::remove_if(record.front.begin(), record.front.end(), //
-				    [epoch](instruction* const instr) { return instr->get_id() <= epoch->get_id(); });
-				if(new_front_end != record.front.end()) {
-					record.front.erase(new_front_end, record.front.end());
-					record.front.insert(record.front.begin(), epoch);
-				}
-				assert(std::is_sorted(record.front.begin(), record.front.end(), instruction_id_less()));
-				return record;
+			last_writers.apply_to_values([epoch](instruction* const instr) { //
+				return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr;
+			});
+			access_fronts.apply_to_values([epoch](const access_front& old_front) {
+				const auto first_retained = std::upper_bound(old_front.instructions.begin(), old_front.instructions.end(), epoch, instruction_id_less());
+				const auto last_retained = old_front.instructions.end();
+
+				// only include the new epoch in the access front if it in fact subsumes another instruction
+				if(first_retained == old_front.instructions.begin()) return old_front;
+
+				access_front new_front;
+				new_front.mode = old_front.mode;
+				new_front.instructions.resize(1 + static_cast<size_t>(std::distance(first_retained, last_retained)));
+				new_front.instructions.front() = epoch;
+				std::copy(first_retained, last_retained, std::next(new_front.instructions.begin()));
+				assert(std::is_sorted(new_front.instructions.begin(), new_front.instructions.end(), instruction_id_less()));
+				return new_front;
 			});
 		}
 	};
@@ -380,6 +406,35 @@ class instruction_graph_generator::impl {
 		m_execution_front.erase(to);
 	}
 
+	template <typename BoxOrRegion>
+	void add_dependencies_on_last_writers(instruction* const access, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& box_or_region) {
+		for(const auto& [_, dep_instr] : allocation.last_writers.get_region_values(box_or_region)) {
+			assert(dep_instr != nullptr);
+			add_dependency(access, dep_instr);
+		}
+	}
+
+	template <typename BoxOrRegion>
+	void read_from_allocation(instruction* const access, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& box_or_region) {
+		add_dependencies_on_last_writers(access, allocation, box_or_region);
+		allocation.record_read(box_or_region, access);
+	}
+
+	template <typename BoxOrRegion>
+	void add_dependencies_on_access_front(instruction* const access, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& box_or_region) {
+		for(const auto& [_, front] : allocation.access_fronts.get_region_values(box_or_region)) {
+			for(const auto dep_instr : front.instructions) {
+				add_dependency(access, dep_instr);
+			}
+		}
+	}
+
+	template <typename BoxOrRegion>
+	void write_to_allocation(instruction* const access, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& box_or_region) {
+		add_dependencies_on_access_front(access, allocation, box_or_region);
+		allocation.record_write(box_or_region, access);
+	}
+
 	void apply_epoch(instruction* const epoch) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE(SlateBlue, "apply epoch");
 
@@ -497,12 +552,8 @@ void instruction_graph_generator::impl::destroy_buffer(const buffer_id bid) {
 		auto& memory = buffer.memories[mid];
 		for(auto& allocation : memory.allocations) {
 			const auto free_instr = create<free_instruction>(free_batch, allocation.aid);
-			for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) {
-				for(const auto access_instr : front.front) {
-					add_dependency(free_instr, access_instr);
-				}
-			}
-			// no need to record access front - we're removing the buffer altogether!
+			add_dependencies_on_access_front(free_instr, allocation, allocation.box);
+			// no need to modify the access front - we're removing the buffer altogether!
 			if(m_recorder != nullptr) {
 				*m_recorder << free_instruction_record(
 				    *free_instr, allocation.box.get_area() * buffer.elem_size, buffer_allocation_record{bid, buffer.name, allocation.box});
@@ -578,16 +629,17 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 	// before, but use the non-fused boxes as copy destinations.
 	region new_allocations(std::move(unmerged_new_allocation));
 
-	// TODO don't copy data that will be overwritten (have an additional region<3> to_be_overwritten parameter)
-
 	for(const auto& dest_box : new_allocations.get_boxes()) {
-		auto& dest = memory.allocations.emplace_back(buffer.dims, new_allocation_id(mid), dest_box, buffer.range);
-		const auto alloc_instr = create<alloc_instruction>(current_batch, dest.aid, dest.box.get_area() * buffer.elem_size, buffer.elem_align);
+		auto& dest_allocation = memory.allocations.emplace_back(buffer.dims, new_allocation_id(mid), dest_box, buffer.range);
+		const auto alloc_instr =
+		    create<alloc_instruction>(current_batch, dest_allocation.aid, dest_allocation.box.get_area() * buffer.elem_size, buffer.elem_align);
 		add_dependency(alloc_instr, m_last_epoch);
-		dest.record_write(dest.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
+		dest_allocation.record_write(
+		    dest_allocation.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
-		for(auto& source : memory.allocations) {
-			if(std::find_if(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const allocation_id aid) { return aid == source.aid; })
+		for(auto& source_allocation : memory.allocations) {
+			if(std::find_if(
+			       free_after_reallocation.begin(), free_after_reallocation.end(), [&](const allocation_id aid) { return aid == source_allocation.aid; })
 			    == free_after_reallocation.end()) {
 				// we modify memory.allocations in-place, so we need to be careful not to attempt copying from a new allocation to itself.
 				// Since we don't have overlapping allocations, any copy source must currently be one that will be freed after reallocation.
@@ -596,32 +648,17 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 
 			// only copy those boxes to the new allocation that are still up-to-date in the old allocation
 			// TODO investigate a garbage-collection heuristic that omits these copies if we do not expect them to be read from again on this memory
-			const auto full_copy_box = box_intersection(dest.box, source.box);
+			const auto full_copy_box = box_intersection(dest_allocation.box, source_allocation.box);
 			box_vector<3> live_copy_boxes;
 			for(const auto& [copy_box, location] : buffer.newest_data_location.get_region_values(full_copy_box)) {
 				if(location.test(mid)) { live_copy_boxes.push_back(copy_box); }
 			}
 			region<3> live_copy_region(std::move(live_copy_boxes));
 
-			// TODO v--- this is duplicated in satisfy_read_requirements
-
-			// TODO to avoid introducing a synchronization point on oversubscription, split into multiple copies if that will allow unimpeded
-			// oversubscribed-producer to oversubscribed-consumer data flow.
-
-			const auto copy_instr = create<copy_instruction>(current_batch, source.aid, dest.aid, source.box, dest.box, live_copy_region, buffer.elem_size);
-
-			for(const auto& [_, dep_instr] : source.last_writers.get_region_values(live_copy_region)) { // TODO copy-pasta
-				assert(dep_instr != nullptr);
-				add_dependency(copy_instr, dep_instr);
-			}
-			source.record_read(live_copy_region, copy_instr);
-
-			for(const auto& [_, front] : dest.access_fronts.get_region_values(live_copy_region)) { // TODO copy-pasta
-				for(const auto dep_instr : front.front) {
-					add_dependency(copy_instr, dep_instr);
-				}
-			}
-			dest.record_write(live_copy_region, copy_instr);
+			const auto copy_instr = create<copy_instruction>(
+			    current_batch, source_allocation.aid, dest_allocation.aid, source_allocation.box, dest_allocation.box, live_copy_region, buffer.elem_size);
+			read_from_allocation(copy_instr, source_allocation, live_copy_region);
+			write_to_allocation(copy_instr, dest_allocation, live_copy_region);
 
 			if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::resize, bid, buffer.name); }
 		}
@@ -632,18 +669,18 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 		}
 	}
 
-	// TODO consider keeping old allocations around until their box is written to in order to resolve "buffer-locking" anti-dependencies
+	// TODO keep old allocations around until their box is written to (or at least until the end of compile()) in order to resolve "buffer-locking"
+	// anti-dependencies
 	for(const auto free_aid : free_after_reallocation) {
-		const auto& allocation = *std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
-		const auto free_instr = create<free_instruction>(current_batch, allocation.aid);
-		for(const auto& [_, front] : allocation.access_fronts.get_region_values(allocation.box)) { // TODO copy-pasta
-			for(const auto dep_instr : front.front) {
-				add_dependency(free_instr, dep_instr);
-			}
-		}
+		const auto allocation = std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
+		assert(allocation != memory.allocations.end());
+
+		const auto free_instr = create<free_instruction>(current_batch, allocation->aid);
+		add_dependencies_on_access_front(free_instr, *allocation, allocation->box);
+
 		if(m_recorder != nullptr) {
 			*m_recorder << free_instruction_record(
-			    *free_instr, allocation.box.get_area() * buffer.elem_size, buffer_allocation_record{bid, buffer.name, allocation.box});
+			    *free_instr, allocation->box.get_area() * buffer.elem_size, buffer_allocation_record{bid, buffer.name, allocation->box});
 		}
 	}
 
@@ -655,23 +692,6 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 		return std::any_of(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const auto aid) { return alloc.aid == aid; });
 	});
 	memory.allocations.erase(end_retain_after_allocation, memory.allocations.end());
-}
-
-void symmetrically_split_overlapping_regions(std::vector<region<3>>& regions) {
-restart:
-	for(size_t i = 0; i < regions.size(); ++i) {
-		for(size_t j = i + 1; j < regions.size(); ++j) {
-			auto intersection = region_intersection(regions[i], regions[j]);
-			if(!intersection.empty()) {
-				regions[i] = region_difference(regions[i], intersection);
-				regions[j] = region_difference(regions[j], intersection);
-				regions.push_back(std::move(intersection));
-				// if intersections above are actually subsets, we will end up with empty regions
-				regions.erase(std::remove_if(regions.begin(), regions.end(), std::mem_fn(&region<3>::empty)), regions.end());
-				goto restart; // NOLINT(cppcoreguidelines-avoid-goto)
-			}
-		}
-	}
 }
 
 void instruction_graph_generator::impl::commit_pending_region_receive(
@@ -698,7 +718,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 			const auto await_region = region_intersection(read_region, alloc_recv_region);
 			if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
 		}
-		symmetrically_split_overlapping_regions(independent_await_regions);
+		instruction_graph_generator_detail::symmetrically_split_overlapping_regions(independent_await_regions);
 
 		if(independent_await_regions.size() > 1) {
 			const auto split_recv_instr = create<split_receive_instruction>(current_batch, trid, alloc_recv_region, alloc->aid, alloc->box, buffer.elem_size);
@@ -707,11 +727,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 			// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
 			// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
 			// that there are no pending transfers for the region they are trying to read or to access (TODO).
-			for(const auto& [_, front] : alloc->access_fronts.get_region_values(alloc_recv_region)) { // TODO copy-pasta
-				for(const auto dep_instr : front.front) {
-					add_dependency(split_recv_instr, dep_instr);
-				}
-			}
+			add_dependencies_on_access_front(split_recv_instr, *alloc, alloc_recv_region);
 
 #ifndef NDEBUG
 			region<3> full_await_region;
@@ -736,13 +752,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 			const auto recv_instr = create<receive_instruction>(current_batch, trid, alloc_recv_region, alloc->aid, alloc->box, buffer.elem_size);
 			if(m_recorder != nullptr) { *m_recorder << receive_instruction_record(*recv_instr, buffer.name); }
 
-			for(const auto& [_, front] : alloc->access_fronts.get_region_values(alloc_recv_region)) { // TODO copy-pasta
-				for(const auto dep_instr : front.front) {
-					add_dependency(recv_instr, dep_instr);
-				}
-			}
-
-			alloc->record_write(alloc_recv_region, recv_instr);
+			write_to_allocation(recv_instr, *alloc, alloc_recv_region);
 			buffer.original_writers.update_region(alloc_recv_region, recv_instr);
 		}
 	}
@@ -771,7 +781,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 
 	// transform vectors of potentially-overlapping unsatisfied regions into disjoint regions
 	for(auto& [mid, regions] : unsatisfied_reads) {
-		symmetrically_split_overlapping_regions(regions);
+		instruction_graph_generator_detail::symmetrically_split_overlapping_regions(regions);
 	}
 
 	// Next, satisfy any remaining reads by copying locally from the newest data location
@@ -880,7 +890,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 					source.record_read(copy_region, copy_instr);
 
 					for(const auto& [_, front] : dest.access_fronts.get_region_values(copy_region)) { // TODO copy-pasta
-						for(const auto dep_instr : front.front) {
+						for(const auto dep_instr : front.instructions) {
 							add_dependency(copy_instr, dep_instr);
 						}
 					}
@@ -1307,7 +1317,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			for(auto& alloc : memory.allocations) {
 				const auto writes_to_alloc = region_intersection(rw.writes, alloc.box);
 				for(const auto& [_, front] : alloc.access_fronts.get_region_values(writes_to_alloc)) {
-					for(const auto dep_instr : front.front) {
+					for(const auto dep_instr : front.instructions) {
 						add_dependency(instr.instruction, dep_instr);
 					}
 				}
@@ -1420,7 +1430,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			add_dependency(reduce_instr, copy_instr);
 		}
 		for(const auto& [_, front] : dest->access_fronts.get_region_values(scalar_reduction_box)) {
-			for(const auto access_instr : front.front) {
+			for(const auto access_instr : front.instructions) {
 				add_dependency(reduce_instr, access_instr);
 			}
 		}
@@ -1614,7 +1624,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 	add_dependency(reduce_instr, gather_instr);
 	if(local_gather_copy_instr != nullptr) { add_dependency(reduce_instr, local_gather_copy_instr); }
 	for(const auto& [_, front] : dest_alloc->access_fronts.get_region_values(scalar_reduction_box)) {
-		for(const auto access_instr : front.front) {
+		for(const auto access_instr : front.instructions) {
 			add_dependency(reduce_instr, access_instr);
 		}
 	}
