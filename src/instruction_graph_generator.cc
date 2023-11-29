@@ -19,6 +19,100 @@
 #include <vector>
 
 
+namespace celerity::detail::instruction_graph_generator_detail {
+
+constexpr size_t communicator_max_coordinate = INT_MAX;
+
+void split_into_communicator_compatible_boxes_recurse(
+    box_vector<3>& comm_boxes, const box<3>& full_box, id<3> min, id<3> max, const int slice_dim, const int dim) {
+	assert(dim <= slice_dim);
+	const auto& full_box_min = full_box.get_min();
+	const auto& full_box_max = full_box.get_max();
+
+	if(dim < slice_dim) {
+		for(min[dim] = full_box_min[dim]; min[dim] < full_box_max[dim]; ++min[dim]) {
+			max[dim] = min[dim] + 1;
+			split_into_communicator_compatible_boxes_recurse(comm_boxes, full_box, min, max, slice_dim, dim + 1);
+		}
+	} else {
+		for(min[dim] = full_box_min[dim]; min[dim] < full_box_max[dim]; min[dim] += communicator_max_coordinate) {
+			max[dim] = std::min(full_box_max[dim], min[dim] + communicator_max_coordinate);
+			comm_boxes.emplace_back(min, max);
+		}
+	}
+}
+
+// We split boxes if the stride within the buffer becomes too large (as opposed to within the sender's allocation) to guarantee that the receiver ends up with a
+// stride that is within bounds even when receiving into a larger (potentially full-buffer) allocation,
+box_vector<3> split_into_communicator_compatible_boxes(const range<3>& buffer_range, const box<3>& full_box) {
+	assert(box(subrange<3>(zeros, buffer_range)).covers(full_box));
+
+	int slice_dim = 0;
+	for(int d = 1; d < 3; ++d) {
+		if(buffer_range[d] > communicator_max_coordinate) { slice_dim = d; }
+	}
+
+	box_vector<3> comm_boxes;
+	split_into_communicator_compatible_boxes_recurse(comm_boxes, full_box, full_box.get_min(), full_box.get_max(), slice_dim, 0);
+	return comm_boxes;
+}
+
+// 2-connectivity for 1d boxes, 4-connectivity for 2d boxes and 6-connectivity for 3d boxes.
+template <int Dims>
+bool boxes_edge_connected(const box<Dims>& box1, const box<Dims>& box2) {
+	if(box1.empty() || box2.empty()) return false;
+
+	const auto min = id_max(box1.get_min(), box2.get_min());
+	const auto max = id_min(box1.get_max(), box2.get_max());
+	bool touching = false;
+	for(int d = 0; d < Dims; ++d) {
+		if(min[d] > max[d]) return false; // fully disconnected, even across corners
+		if(min[d] == max[d]) {
+			// when boxes are touching (but not intersecting) in more than one dimension, they can only be connected via corners
+			if(touching) return false;
+			touching = true;
+		}
+	}
+	return true;
+}
+
+// This is different from bounding_box_set merges, which work on box_intersections instead of boxes_edge_connected (TODO unit-test this)
+template <int Dims>
+box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) {
+	auto boxes = region.get_boxes();
+	auto begin = boxes.begin();
+	auto end = boxes.end();
+	box_vector<3> bounding_boxes;
+	while(begin != end) {
+		auto connected_end = std::next(begin);
+		auto connected_bounding_box = *begin; // optimization: skip connectivity checks if bounding box is disconnected
+		for(; connected_end != end; ++connected_end) {
+			const auto next_connected = std::find_if(connected_end, end, [&](const auto& candidate) {
+				return boxes_edge_connected(connected_bounding_box, candidate)
+				       && std::any_of(begin, connected_end, [&](const auto& box) { return boxes_edge_connected(candidate, box); });
+			});
+			if(next_connected == end) break;
+			connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
+			std::swap(*next_connected, *connected_end);
+		}
+		bounding_boxes.push_back(connected_bounding_box);
+		begin = connected_end;
+	}
+	return bounding_boxes;
+}
+
+template <typename Iterator>
+bool is_topologically_sorted(Iterator begin, Iterator end) {
+	for(auto check = begin; check != end; ++check) {
+		for(const auto& dep : (*check)->get_dependencies()) {
+			if(std::find(std::next(check), end, dep.node) != end) return false;
+		}
+	}
+	return true;
+}
+
+} // namespace celerity::detail::instruction_graph_generator_detail
+
 namespace celerity::detail {
 
 class instruction_graph_generator::impl {
@@ -39,7 +133,10 @@ class instruction_graph_generator::impl {
 	void compile(const abstract_command& cmd);
 
   private:
-	struct batch { // NOLINT(cppcoreguidelines-special-member-functions)
+	/// We submit the set of instructions and pilots generated for a call to compile() en-bloc to relieve contention on the executor queue lock. To collect all
+	/// instructions that are generated in the call stack without polluting internal state, we pass a `batch&` output parameter to any function that
+	/// transitively generates instructions or pilots.
+	struct batch { // NOLINT(cppcoreguidelines-special-member-functions) (do not complain about the asserting destructor)
 		std::vector<const instruction*> generated_instructions;
 		std::vector<outbound_pilot> generated_pilots;
 
@@ -50,10 +147,12 @@ class instruction_graph_generator::impl {
 #endif
 	};
 
+	/// `allocation_id`s are "namespaced" to their memory ID, so we maintain the next `raw_allocation_id` for each memory separately.
 	struct per_memory_data {
 		raw_allocation_id next_raw_aid = 1; // 0 is reserved for null_allocation_id
 	};
 
+	/// Per-allocation state for a single buffer. This is where we track last-writer instructions and access fronts.
 	struct buffer_memory_per_allocation_data {
 		struct access_front {
 			gch::small_vector<instruction*> front; // sorted by id to allow equality comparison
@@ -72,10 +171,11 @@ class instruction_graph_generator::impl {
 		};
 
 		allocation_id aid;
-		detail::box<3> box;
-		region_map<instruction*> last_writers;  // in virtual-buffer coordinates
-		region_map<access_front> access_fronts; // in virtual-buffer coordinates
+		detail::box<3> box;                     ///< in virtual-buffer coordinates
+		region_map<instruction*> last_writers;  ///< in virtual-buffer coordinates
+		region_map<access_front> access_fronts; ///< in virtual-buffer coordinates
 
+		/// `buffer_dims` is only required to construct region maps, the generator itself is independent from that parameter.
 		explicit buffer_memory_per_allocation_data(
 		    const int buffer_dims, const allocation_id aid, const detail::box<3>& allocated_box, const range<3>& buffer_range)
 		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {}
@@ -115,6 +215,7 @@ class instruction_graph_generator::impl {
 		}
 	};
 
+	/// Per-memory state for a single buffer. Dependencies and last writers are tracked on the contained allocations.
 	struct buffer_per_memory_data {
 		// TODO bound the number of allocations per buffer in order to avoid runaway tracking overhead (similar to horizons)
 		std::vector<buffer_memory_per_allocation_data> allocations; // disjoint
@@ -147,6 +248,7 @@ class instruction_graph_generator::impl {
 		}
 	};
 
+	/// State for a single buffer.
 	struct per_buffer_data {
 		/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
 		struct region_receive {
@@ -174,8 +276,8 @@ class instruction_graph_generator::impl {
 		size_t elem_size;
 		size_t elem_align;
 		std::vector<buffer_per_memory_data> memories;
-		region_map<memory_mask> newest_data_location; // TODO rename for vs original_write_memories?
-		region_map<instruction*> original_writers;
+		region_map<memory_mask> newest_data_location;  // TODO rename for vs original_write_memories?
+		region_map<instruction*> original_writers;     // TODO explain how and why this duplicates per_allocation_data::last_writers
 		region_map<memory_id> original_write_memories; // only meaningful if newest_data_location[box] is non-empty
 
 		// We store pending receives (await push regions) in a vector instead of a region map since we must process their entire regions en-bloc rather than on
@@ -331,77 +433,6 @@ class instruction_graph_generator::impl {
 	void flush_batch(batch&& batch);
 };
 
-
-// 2-connectivity for 1d boxes, 4-connectivity for 2d boxes and 6-connectivity for 3d boxes.
-template <int Dims>
-bool boxes_edge_connected(const box<Dims>& box1, const box<Dims>& box2) {
-	if(box1.empty() || box2.empty()) return false;
-
-	const auto min = id_max(box1.get_min(), box2.get_min());
-	const auto max = id_min(box1.get_max(), box2.get_max());
-	bool touching = false;
-	for(int d = 0; d < Dims; ++d) {
-		if(min[d] > max[d]) return false; // fully disconnected, even across corners
-		if(min[d] == max[d]) {
-			// when boxes are touching (but not intersecting) in more than one dimension, they can only be connected via corners
-			if(touching) return false;
-			touching = true;
-		}
-	}
-	return true;
-}
-
-// TODO can this re-use some code from bounding_box_set?
-template <int Dims>
-std::pair<std::vector<region<Dims>>, box_vector<Dims>> edge_connected_subregions_with_bounding_boxes(box_vector<Dims> boxes) {
-	std::vector<region<Dims>> subregions;
-	box_vector<Dims> bounding_boxes;
-
-	auto begin = boxes.begin();
-	const auto end = boxes.end();
-	while(begin != end) {
-		auto connected_end = std::next(begin);
-		auto connected_bounding_box = *begin; // optimization: skip connectivity checks if bounding box is disconnected
-		for(; connected_end != end; ++connected_end) {
-			const auto next_connected = std::find_if(connected_end, end, [&](const auto& candidate) {
-				return boxes_edge_connected(connected_bounding_box, candidate)
-				       && std::any_of(begin, connected_end, [&](const auto& box) { return boxes_edge_connected(candidate, box); });
-			});
-			if(next_connected == end) break;
-			connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
-			std::swap(*next_connected, *connected_end);
-		}
-		subregions.push_back(region<Dims>(box_vector<Dims>(begin, connected_end)));
-		bounding_boxes.push_back(connected_bounding_box);
-		begin = connected_end;
-	}
-	return {std::move(subregions), std::move(bounding_boxes)};
-}
-
-// This is different from bounding_box_set merges, which work on box_intersections instead of boxes_edge_connected (TODO unit-test this)
-template <int Dims>
-box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) {
-	auto boxes = region.get_boxes();
-	auto begin = boxes.begin();
-	auto end = boxes.end();
-	box_vector<3> bounding_boxes;
-	while(begin != end) {
-		auto connected_end = std::next(begin);
-		auto connected_bounding_box = *begin; // optimization: skip connectivity checks if bounding box is disconnected
-		for(; connected_end != end; ++connected_end) {
-			const auto next_connected = std::find_if(connected_end, end, [&](const auto& candidate) {
-				return boxes_edge_connected(connected_bounding_box, candidate)
-				       && std::any_of(begin, connected_end, [&](const auto& box) { return boxes_edge_connected(candidate, box); });
-			});
-			if(next_connected == end) break;
-			connected_bounding_box = bounding_box(connected_bounding_box, *next_connected);
-			std::swap(*next_connected, *connected_end);
-		}
-		bounding_boxes.push_back(connected_bounding_box);
-		begin = connected_end;
-	}
-	return bounding_boxes;
-}
 
 instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes, node_id local_nid, system_info system, instruction_graph& idag, delegate* dlg,
     instruction_recorder* const recorder, const policy_set& policy)
@@ -1418,43 +1449,6 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 }
 
 
-constexpr size_t communicator_max_coordinate = INT_MAX;
-
-void split_into_communicator_compatible_boxes_recursive(
-    box_vector<3>& comm_boxes, const box<3>& full_box, id<3> min, id<3> max, const int slice_dim, const int dim) {
-	assert(dim <= slice_dim);
-	const auto& full_box_min = full_box.get_min();
-	const auto& full_box_max = full_box.get_max();
-
-	if(dim < slice_dim) {
-		for(min[dim] = full_box_min[dim]; min[dim] < full_box_max[dim]; ++min[dim]) {
-			max[dim] = min[dim] + 1;
-			split_into_communicator_compatible_boxes_recursive(comm_boxes, full_box, min, max, slice_dim, dim + 1);
-		}
-	} else {
-		for(min[dim] = full_box_min[dim]; min[dim] < full_box_max[dim]; min[dim] += communicator_max_coordinate) {
-			max[dim] = std::min(full_box_max[dim], min[dim] + communicator_max_coordinate);
-			comm_boxes.emplace_back(min, max);
-		}
-	}
-}
-
-// We split boxes if the stride within the buffer becomes too large (as opposed to within the sender's allocation) to guarantee that the receiver ends up with a
-// stride that is within bounds even when receiving into a larger (potentially full-buffer) allocation,
-box_vector<3> split_into_communicator_compatible_boxes(const range<3>& buffer_range, const box<3>& full_box) {
-	assert(box(subrange<3>(zeros, buffer_range)).covers(full_box));
-
-	int slice_dim = 0;
-	for(int d = 1; d < 3; ++d) {
-		if(buffer_range[d] > communicator_max_coordinate) { slice_dim = d; }
-	}
-
-	box_vector<3> comm_boxes;
-	split_into_communicator_compatible_boxes_recursive(comm_boxes, full_box, full_box.get_min(), full_box.get_max(), slice_dim, 0);
-	return comm_boxes;
-}
-
-
 void instruction_graph_generator::impl::compile_push_command(batch& command_batch, const push_command& pcmd) {
 	const auto trid = pcmd.get_transfer_id();
 
@@ -1478,7 +1472,7 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 
 	for(auto& [_, region] : send_regions) {
 		for(const auto& full_box : region.get_boxes()) {
-			for(const auto& box : split_into_communicator_compatible_boxes(buffer.range, full_box)) {
+			for(const auto& box : instruction_graph_generator_detail::split_into_communicator_compatible_boxes(buffer.range, full_box)) {
 				const message_id msgid = create_outbound_pilot(command_batch, pcmd.get_target(), trid, box);
 
 				const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
@@ -1538,7 +1532,8 @@ void instruction_graph_generator::impl::defer_await_push_command(const await_pus
 #endif
 
 	if(trid.rid == 0) {
-		buffer.pending_receives.emplace_back(trid.consumer_tid, apcmd.get_region(), connected_subregion_bounding_boxes(apcmd.get_region()));
+		buffer.pending_receives.emplace_back(
+		    trid.consumer_tid, apcmd.get_region(), instruction_graph_generator_detail::connected_subregion_bounding_boxes(apcmd.get_region()));
 	} else {
 		assert(apcmd.get_region().get_boxes().size() == 1);
 		buffer.pending_gathers.emplace_back(trid.consumer_tid, trid.rid, apcmd.get_region().get_boxes().front());
@@ -1719,16 +1714,6 @@ void instruction_graph_generator::impl::compile_epoch_command(batch& command_bat
 }
 
 
-template <typename Iterator>
-bool is_topologically_sorted(Iterator begin, Iterator end) {
-	for(auto check = begin; check != end; ++check) {
-		for(const auto& dep : (*check)->get_dependencies()) {
-			if(std::find(std::next(check), end, dep.node) != end) return false;
-		}
-	}
-	return true;
-}
-
 void instruction_graph_generator::impl::flush_batch(batch&& batch) {
 	if(m_recorder != nullptr) {
 		// TODO see if there is a way to record all instructions after their dependencies are complete, then we wouldn't need this hack.
@@ -1737,7 +1722,7 @@ void instruction_graph_generator::impl::flush_batch(batch&& batch) {
 		}
 	}
 
-	assert(is_topologically_sorted(batch.generated_instructions.begin(), batch.generated_instructions.end()));
+	assert(instruction_graph_generator_detail::is_topologically_sorted(batch.generated_instructions.begin(), batch.generated_instructions.end()));
 	if(m_delegate != nullptr && !batch.generated_instructions.empty()) { m_delegate->flush_instructions(std::move(batch.generated_instructions)); }
 	if(m_delegate != nullptr && !batch.generated_pilots.empty()) { m_delegate->flush_outbound_pilots(std::move(batch.generated_pilots)); }
 
