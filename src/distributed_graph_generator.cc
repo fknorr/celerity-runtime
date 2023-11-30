@@ -97,7 +97,7 @@ std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*, com
 }
 
 std::vector<abstract_command*> distributed_graph_generator::build_task(const task& tsk) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(WebMaroon, "CDAG");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("cdag::build", WebMaroon, "CDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("build T{}", tsk.get_id());
 
 	assert(m_current_cmd_batch.empty());

@@ -41,7 +41,7 @@ namespace detail {
 	std::unique_ptr<runtime> runtime::s_instance = nullptr;
 
 	void runtime::mpi_initialize_once(int* argc, char*** argv) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(LightSkyBlue, "MPI_Init");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("mpi::init", LightSkyBlue, "MPI_Init");
 		assert(!s_mpi_initialized);
 		int provided;
 		MPI_Init_thread(argc, argv, MPI_THREAD_MULTIPLE, &provided);
@@ -50,7 +50,7 @@ namespace detail {
 	}
 
 	void runtime::mpi_finalize_once() {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(LightSkyBlue, "MPI_Finalize");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("mpi::finalize", LightSkyBlue, "MPI_Finalize");
 		assert(s_mpi_initialized && !s_mpi_finalized && (!s_test_mode || !s_instance));
 		MPI_Finalize();
 		s_mpi_finalized = true;
@@ -107,7 +107,7 @@ namespace detail {
 	}
 
 	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "runtime startup");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("runtime::startup", Gray, "runtime startup");
 
 		m_application_thread = std::this_thread::get_id();
 
@@ -165,7 +165,7 @@ namespace detail {
 
 		std::vector<sycl::device> devices;
 		{
-			CELERITY_DETAIL_TRACY_SCOPED_ZONE(PaleVioletRed, "device selection");
+			CELERITY_DETAIL_TRACY_SCOPED_ZONE("runtime::pick_devices", PaleVioletRed, "device selection");
 			devices =
 			    matchbox::match(user_devices_or_selector, [&](const auto& value) { return pick_devices(*m_cfg, value, sycl::platform::get_platforms()); });
 			assert(!devices.empty());
@@ -248,7 +248,7 @@ namespace detail {
 			abort();
 		}
 
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(Gray, "runtime shutdown");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("runtime::shutdown", Gray, "runtime shutdown");
 
 		require_call_from_application_thread();
 

@@ -440,7 +440,7 @@ class instruction_graph_generator::impl {
 	}
 
 	void apply_epoch(instruction* const epoch) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(SlateBlue, "apply epoch");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::apply_epoch", SlateBlue, "apply epoch");
 
 		for(auto& [_, buffer] : m_buffers) {
 			buffer.apply_epoch(epoch);
@@ -600,7 +600,7 @@ memory_id instruction_graph_generator::impl::next_location(const memory_mask& lo
 
 // TODO decide if this should only receive non-contiguous boxes (and assert that) or it should filter for non-contiguous boxes itself
 void instruction_graph_generator::impl::allocate_contiguously(batch& current_batch, const buffer_id bid, const memory_id mid, const bounding_box_set& boxes) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(DodgerBlue, "allocate");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::allocate", DodgerBlue, "allocate");
 
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories[mid];
@@ -701,7 +701,7 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 
 void instruction_graph_generator::impl::commit_pending_region_receive(
     batch& current_batch, const buffer_id bid, const per_buffer_data::region_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(MediumOrchid, "commit recv");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_receive", MediumOrchid, "commit recv");
 
 	const auto trid = transfer_id(receive.consumer_tid, bid, no_reduction_id);
 	const auto mid = host_memory_id;
@@ -768,13 +768,13 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 
 void instruction_graph_generator::impl::locally_satisfy_read_requirements(
     batch& current_batch, const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(Salmon, "local coherence");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_coherence", Salmon, "local coherence");
 
 	auto& buffer = m_buffers.at(bid);
 
 	std::unordered_map<memory_id, std::vector<region<3>>> unsatisfied_reads;
 	for(const auto& [mid, read_region] : reads) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(DarkSeaGreen, "find incoherent");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::find_incoherent", DarkSeaGreen, "find incoherent");
 
 		box_vector<3> unsatisfied_boxes;
 		for(const auto& [box, location] : buffer.newest_data_location.get_region_values(read_region)) {
@@ -803,7 +803,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 	for(auto& [dest_mid, disjoint_reader_regions] : unsatisfied_reads) {
 		if(disjoint_reader_regions.empty()) continue; // if fully satisfied by incoming transfers
 
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(Orchid, "collect");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::collect", Orchid, "collect");
 
 		auto& buffer = m_buffers.at(bid);
 		for(auto& reader_region : disjoint_reader_regions) {
@@ -875,7 +875,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 
 	for(auto& stage : {pending_staging_copies, pending_final_copies}) {
 		for(auto& copy : stage) {
-			CELERITY_DETAIL_TRACY_SCOPED_ZONE(LightSteelBlue, "apply");
+			CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::apply", LightSteelBlue, "apply");
 
 			assert(copy.dest_mid != copy.source_mid);
 			for(auto& source_allocation : buffer.memories[copy.source_mid].allocations) {
@@ -908,7 +908,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& local_chunks) //
 {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(SandyBrown, "B{} coherence", bid);
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::coherence", SandyBrown, "B{} coherence", bid);
 
 	assert(!local_chunks.empty());
 	const auto& bam = tsk.get_buffer_access_map();
@@ -1047,7 +1047,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 	std::vector<partial_instruction> cmd_instrs;
 	{
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(Teal, "split");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::split", Teal, "split");
 
 		const bool is_splittable_locally =
 		    tsk.has_variable_split() && tsk.get_side_effect_map().empty() && tsk.get_collective_group_id() == non_collective_group_id;
@@ -1141,7 +1141,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 	std::vector<partial_local_reduction> local_reductions(tsk.get_reductions().size());
 
 	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(LightSkyBlue, "collect reductions");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::collect_reduction", LightSkyBlue, "collect reductions");
 
 		auto& red = local_reductions[i];
 		const auto [rid, bid, reduction_task_includes_buffer_value] = tsk.get_reductions()[i];
@@ -1182,7 +1182,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 	// collect updated regions
 
 	for(const auto bid : bam.get_accessed_buffers()) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(IndianRed, "collect reads/writes");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::collect_accesses", IndianRed, "collect reads/writes");
 
 		for(auto& insn : cmd_instrs) {
 			reads_writes rw;
@@ -1213,7 +1213,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 	// 4) create the actual command instructions
 
 	for(auto& instr : cmd_instrs) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(Coral, "create instruction");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::create_instruction", Coral, "create instruction");
 
 		buffer_access_allocation_map allocation_map(bam.get_num_accesses());
 		buffer_access_allocation_map reduction_map(tsk.get_reductions().size());
@@ -1289,7 +1289,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 	//	 - read-all + write-1:1 cannot be oversubscribed at all, chunks would need a global read->write barrier (how would the kernel even look like?)
 	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
 	for(const auto& instr : cmd_instrs) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(DarkGray, "dependencies");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::dependencies", DarkGray, "dependencies");
 
 		for(const auto& [bid, rw] : instr.rw_map) {
 			auto& buffer = m_buffers.at(bid);
@@ -1314,7 +1314,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 	// 6) update data locations and last writers resulting from command instructions
 
 	for(const auto& instr : cmd_instrs) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(LightSeaGreen, "record accesses");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::record_access", LightSeaGreen, "record accesses");
 
 		for(const auto& [bid, rw] : instr.rw_map) {
 			assert(instr.instruction != nullptr);
@@ -1343,7 +1343,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 	// 7) insert local reduction instructions and update tracking structures accordingly
 
 	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(DeepSkyBlue, "local reduction");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_reduction", DeepSkyBlue, "local reduction");
 		const auto& red = local_reductions[i];
 
 		// for a single-device configuration that doesn't include the current value, the above update of last writers is sufficient
@@ -1696,38 +1696,38 @@ instruction_graph_generator::~instruction_graph_generator() = default;
 
 void instruction_graph_generator::create_buffer(
     const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::create_buffer", NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("create buffer B{}", bid);
 	m_impl->create_buffer(bid, dims, range, elem_size, elem_align, user_allocation_id);
 }
 
 void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, const std::string& name) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::set_buffer_debug_name", NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("set buffer name B{} \"{}\"", bid, name);
 	m_impl->set_buffer_debug_name(bid, name);
 }
 
 void instruction_graph_generator::destroy_buffer(const buffer_id bid) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::destroy_buffer", NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("destroy buffer B{}", bid);
 	m_impl->destroy_buffer(bid);
 }
 
 void instruction_graph_generator::create_host_object(const host_object_id hoid, const bool owns_instance) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::create_host_object", NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("create host object H{}", hoid);
 	m_impl->create_host_object(hoid, owns_instance);
 }
 
 void instruction_graph_generator::destroy_host_object(const host_object_id hoid) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::destroy_host_object", NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("destroy host object H{}", hoid);
 	m_impl->destroy_host_object(hoid);
 }
 
 // Resulting instructions are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
 void instruction_graph_generator::compile(const abstract_command& cmd) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(NavyBlue, "IDAG");
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::compile_command", NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("compile C{}", cmd.get_cid());
 	m_impl->compile(cmd);
 }

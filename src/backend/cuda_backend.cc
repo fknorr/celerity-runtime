@@ -36,12 +36,12 @@ void nd_copy_cuda(const void* const source_base, void* const dest_base, const ra
 	switch(linear_dim) {
 	case 0: {
 		const auto copy_bytes = (copy_range[0] * copy_range[1] * copy_range[2]) * elem_size;
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpyAsync")
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::memcpy_1d", ForestGreen, "cudaMemcpyAsync")
 		CELERITY_CUDA_CHECK(cudaMemcpyAsync, first_dest_elem, first_source_elem, copy_bytes, cudaMemcpyDefault, stream);
 		break;
 	}
 	case 1: {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpy2DAsync")
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::memcpy_2d", ForestGreen, "cudaMemcpy2DAsync")
 		CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, first_dest_elem, dest_range[1] * dest_range[2] * elem_size, first_source_elem,
 		    source_range[1] * source_range[2] * elem_size, copy_range[1] * copy_range[2] * elem_size, copy_range[0], cudaMemcpyDefault, stream);
 		break;
@@ -55,7 +55,7 @@ void nd_copy_cuda(const void* const source_base, void* const dest_base, const ra
 		parms.dstPtr = make_cudaPitchedPtr(dest_base, dest_range[2] * elem_size, dest_range[2], dest_range[1]);
 		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
 		parms.kind = cudaMemcpyDefault;
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMemcpy3DAsync")
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::memcpy_3d", ForestGreen, "cudaMemcpy3DAsync")
 		CELERITY_CUDA_CHECK(cudaMemcpy3DAsync, &parms, stream);
 		break;
 	}
@@ -185,7 +185,7 @@ cuda_queue::cuda_queue(const std::vector<device_config>& devices) : m_impl(std::
 cuda_queue::~cuda_queue() = default;
 
 void cuda_queue::init() {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaInit")
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::init", ForestGreen, "cudaInit")
 	for(const auto& [_, dev] : m_impl->devices) {
 		backend_detail::cuda_set_device_guard set_device(dev.cuda_id);
 		CELERITY_CUDA_CHECK(cudaFree, 0);
@@ -197,7 +197,7 @@ void* cuda_queue::alloc(const memory_id where, const size_t size, [[maybe_unused
 	void* ptr;
 	if(where == host_memory_id) {
 		{
-			CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMallocHost")
+			CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::malloc_host", ForestGreen, "cudaMallocHost")
 			CELERITY_CUDA_CHECK(cudaMallocHost, &ptr, size, cudaHostAllocDefault);
 		}
 #if CELERITY_DETAIL_ENABLE_DEBUG
@@ -211,7 +211,7 @@ void* cuda_queue::alloc(const memory_id where, const size_t size, [[maybe_unused
 		// RDMA (although NVIDIA plans to support this at an unspecified time in the future).
 		// When we eventually switch to cudaMallocAsync, remember to call cudaMemPoolSetAccess to allow d2d copies (see the same article).
 		{
-			CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaMalloc")
+			CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::malloc_device", ForestGreen, "cudaMalloc")
 			CELERITY_CUDA_CHECK(cudaMalloc, &ptr, size);
 		}
 #if CELERITY_DETAIL_ENABLE_DEBUG
@@ -227,12 +227,12 @@ void* cuda_queue::alloc(const memory_id where, const size_t size, [[maybe_unused
 void cuda_queue::free(const memory_id where, void* const allocation) {
 	assert(where != user_memory_id);
 	if(where == host_memory_id) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaFreeHost");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::free_host", ForestGreen, "cudaFreeHost");
 		CELERITY_CUDA_CHECK(cudaFreeHost, allocation);
 	} else {
 		const auto& mem = m_impl->memories.at(where);
 		backend_detail::cuda_set_device_guard set_device(mem.cuda_id);
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE(ForestGreen, "cudaFree");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("cuda::free_device", ForestGreen, "cudaFree");
 		CELERITY_CUDA_CHECK(cudaFree, allocation);
 	}
 }

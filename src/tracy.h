@@ -14,21 +14,21 @@
 #define CELERITY_DETAIL_TRACY_CAT(a, b) CELERITY_DETAIL_TRACY_CAT_2(a, b)
 #define CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tag) CELERITY_DETAIL_TRACY_CAT(tag, __COUNTER__)
 
-#define CELERITY_DETAIL_TRACY_ZONE_BEGIN(scoped_ctx, scoped_name, color_name, ...)                                                                             \
+#define CELERITY_DETAIL_TRACY_ZONE_BEGIN(scoped_ctx, scoped_name, tag, color_name, ...)                                                                        \
 	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
-	TracyCZone(scoped_ctx, true);                                                                                                                              \
+	TracyCZoneN(scoped_ctx, tag, true);                                                                                                                        \
 	TracyCZoneName(scoped_ctx, name.c_str(), name.size());                                                                                                     \
 	TracyCZoneColor(scoped_ctx, tracy::Color::color_name);
 
 #define CELERITY_DETAIL_TRACY_ZONE_END(scoped_ctx) TracyCZoneEnd(scoped_ctx);
 
-#define CELERITY_DETAIL_TRACY_SCOPED_ZONE_2(scoped_name, color_name, ...)                                                                                      \
+#define CELERITY_DETAIL_TRACY_SCOPED_ZONE_2(scoped_name, tag, color_name, ...)                                                                                 \
 	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
-	ZoneScopedC(tracy::Color::color_name);                                                                                                                     \
+	ZoneScopedNC((tag), tracy::Color::color_name);                                                                                                             \
 	ZoneName(scoped_name.data(), scoped_name.size());
 
-#define CELERITY_DETAIL_TRACY_SCOPED_ZONE(color_name, ...)                                                                                                     \
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE_2(CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(name_), color_name, __VA_ARGS__)
+#define CELERITY_DETAIL_TRACY_SCOPED_ZONE(tag, color_name, ...)                                                                                                \
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE_2(CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(name_), tag, color_name, __VA_ARGS__)
 
 #define CELERITY_DETAIL_TRACY_ZONE_TEXT_2(scoped_name, ...)                                                                                                    \
 	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
@@ -64,7 +64,7 @@ struct tracy_fiber_scope_guard {
 
 #define CELERITY_DETAIL_TRACY_DECLARE_ASYNC_LANE(lane) ::celerity::detail::tracy_async_lane lane = nullptr;
 
-#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_2(scoped_ctx, scoped_name, thread_name, lane, color_name, ...)                                                  \
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_2(scoped_ctx, scoped_name, thread_name, lane, tag, color_name, ...)                                             \
 	(lane) = celerity::detail::tracy_acquire_lane((thread_name));                                                                                              \
 	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
 	TracyFiberEnter((lane)->fiber_name.c_str());                                                                                                               \
@@ -72,23 +72,22 @@ struct tracy_fiber_scope_guard {
 		TracyCZoneEnd(*(lane)->current_zone);                                                                                                                  \
 		(lane)->current_zone = std::nullopt;                                                                                                                   \
 	}                                                                                                                                                          \
-	TracyCZone(scoped_ctx, true);                                                                                                                              \
+	TracyCZoneNC(scoped_ctx, (tag), tracy::Color::color_name, true);                                                                                           \
 	TracyCZoneName(scoped_ctx, scoped_name.c_str(), scoped_name.size());                                                                                       \
-	TracyCZoneColor(scoped_ctx, tracy::Color::color_name);                                                                                                     \
 	(lane)->current_zone = scoped_ctx;                                                                                                                         \
 	(lane)->current_zone_begin = std::chrono::steady_clock::now();
 
-#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN(out_lane, thread_name, color_name, ...)                                                                         \
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN(out_lane, thread_name, tag, color_name, ...)                                                                    \
 	CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_2(CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_ctx_),                                                         \
-	    CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_name_), thread_name, out_lane, color_name_name, __VA_ARGS__)
+	    CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_name_), thread_name, out_lane, tag, color_name, __VA_ARGS__)
 
-#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED_2(scoped_ctx, scoped_name, scoped_guard, thread_name, lane, color_name, ...)                             \
-	CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_2(scoped_ctx, scoped_name, thread_name, lane, color_name, __VA_ARGS__)                                              \
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED_2(scoped_ctx, scoped_name, scoped_guard, thread_name, lane, tag, color_name, ...)                        \
+	CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_2(scoped_ctx, scoped_name, thread_name, lane, tag, color_name, __VA_ARGS__)                                         \
 	tracy_fiber_scope_guard scoped_guard;
 
-#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(out_lane, thread_name, color_name, ...)                                                                  \
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(out_lane, thread_name, tag, color_name, ...)                                                             \
 	CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED_2(CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_ctx_),                                                  \
-	    CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_name_), CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_guard_), thread_name, out_lane,          \
+	    CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_name_), CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_guard_), thread_name, out_lane, tag,     \
 	    color_name, __VA_ARGS__)
 
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_SUSPEND() TracyFiberLeave
