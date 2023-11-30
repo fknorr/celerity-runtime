@@ -1344,25 +1344,13 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE(DeepSkyBlue, "local reduction");
+		const auto& red = local_reductions[i];
+
+		// for a single-device configuration that doesn't include the current value, the above update of last writers is sufficient
+		if(red.num_chunks == 1) continue;
 
 		const auto [rid, bid, reduction_task_includes_buffer_value] = tsk.get_reductions()[i];
 		auto& buffer = m_buffers.at(bid);
-		const auto& red = local_reductions[i];
-
-		// for a single-device configuration that doesn't include the current value, just update last writers (reduction is already complete locally)
-		if(red.num_chunks == 1) {
-			const auto& instr = cmd_instrs.front();
-			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
-				// TODO copy-pasted from rw-map updates above
-				const auto write_box = box_intersection(alloc.box, scalar_reduction_box);
-				if(!write_box.empty()) { alloc.record_write(write_box, instr.instruction); }
-			}
-			buffer.original_writers.update_box(scalar_reduction_box, instr.instruction);
-			buffer.original_write_memories.update_box(scalar_reduction_box, instr.memory_id);
-			buffer.newest_data_location.update_box(scalar_reduction_box, memory_mask().set(instr.memory_id));
-			continue;
-		}
-
 		auto& host_memory = buffer.memories.at(host_memory_id);
 
 		// gather space has been allocated before in order to preserve the current buffer value where necessary
