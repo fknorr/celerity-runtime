@@ -2,6 +2,8 @@
 
 #if CELERITY_ENABLE_TRACY
 
+#include <chrono>
+
 #include "print_utils.h"
 #include "types.h"
 
@@ -12,13 +14,13 @@
 #define CELERITY_DETAIL_TRACY_CAT(a, b) CELERITY_DETAIL_TRACY_CAT_2(a, b)
 #define CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tag) CELERITY_DETAIL_TRACY_CAT(tag, __COUNTER__)
 
-#define CELERITY_DETAIL_TRACY_ZONE_BEGIN(scoped_name, color_name, ...)                                                                                         \
+#define CELERITY_DETAIL_TRACY_ZONE_BEGIN(scoped_ctx, scoped_name, color_name, ...)                                                                             \
 	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
-	TracyCZone(t_ctx, true);                                                                                                                                   \
-	TracyCZoneName(t_ctx, name.c_str(), name.size());                                                                                                          \
-	TracyCZoneColor(t_ctx, tracy::Color::color_name);
+	TracyCZone(scoped_ctx, true);                                                                                                                              \
+	TracyCZoneName(scoped_ctx, name.c_str(), name.size());                                                                                                     \
+	TracyCZoneColor(scoped_ctx, tracy::Color::color_name);
 
-#define CELERITY_DETAIL_TRACY_ZONE_END() TracyCZoneEnd(t_ctx);
+#define CELERITY_DETAIL_TRACY_ZONE_END(scoped_ctx) TracyCZoneEnd(scoped_ctx);
 
 #define CELERITY_DETAIL_TRACY_SCOPED_ZONE_2(scoped_name, color_name, ...)                                                                                      \
 	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
@@ -41,6 +43,7 @@ struct tracy_async_fiber {
 	size_t index;
 	std::string fiber_name;
 	std::optional<TracyCZoneCtx> current_zone;
+	std::chrono::steady_clock::time_point current_zone_begin;
 	tracy_async_fiber(const char* const thread_name, const size_t index)
 	    : thread_name(thread_name), index(index), fiber_name(fmt::format("{} async ({})", thread_name, index)) {}
 };
@@ -62,17 +65,18 @@ struct tracy_fiber_scope_guard {
 #define CELERITY_DETAIL_TRACY_DECLARE_ASYNC_LANE(lane) ::celerity::detail::tracy_async_lane lane = nullptr;
 
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_2(scoped_ctx, scoped_name, thread_name, lane, color_name, ...)                                                  \
-	lane = celerity::detail::tracy_acquire_lane(thread_name);                                                                                                  \
+	(lane) = celerity::detail::tracy_acquire_lane((thread_name));                                                                                              \
 	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
-	TracyFiberEnter(lane->fiber_name.c_str());                                                                                                                 \
-	if(lane->current_zone.has_value()) {                                                                                                                       \
-		TracyCZoneEnd(*lane->current_zone);                                                                                                                    \
-		lane->current_zone = std::nullopt;                                                                                                                     \
+	TracyFiberEnter((lane)->fiber_name.c_str());                                                                                                               \
+	if((lane)->current_zone.has_value()) {                                                                                                                     \
+		TracyCZoneEnd(*(lane)->current_zone);                                                                                                                  \
+		(lane)->current_zone = std::nullopt;                                                                                                                   \
 	}                                                                                                                                                          \
 	TracyCZone(scoped_ctx, true);                                                                                                                              \
 	TracyCZoneName(scoped_ctx, scoped_name.c_str(), scoped_name.size());                                                                                       \
 	TracyCZoneColor(scoped_ctx, tracy::Color::color_name);                                                                                                     \
-	lane->current_zone = scoped_ctx;
+	(lane)->current_zone = scoped_ctx;                                                                                                                         \
+	(lane)->current_zone_begin = std::chrono::steady_clock::now();
 
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN(out_lane, thread_name, color_name, ...)                                                                         \
 	CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_2(CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_ctx_),                                                         \
@@ -89,7 +93,7 @@ struct tracy_fiber_scope_guard {
 
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_SUSPEND() TracyFiberLeave
 
-#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME(lane) TracyFiberEnter(lane->fiber_name.c_str())
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME(lane) TracyFiberEnter((lane)->fiber_name.c_str())
 
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME_SCOPED_2(lane, scoped_guard)                                                                                   \
 	CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME(lane)                                                                                                              \
@@ -97,6 +101,16 @@ struct tracy_fiber_scope_guard {
 
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME_SCOPED(lane)                                                                                                   \
 	CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME_SCOPED_2(lane, CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_guard_))
+
+#define CELERITY_DETAIL_TRACY_ASYNC_ELAPSED_TIME_SECONDS(lane)                                                                                                 \
+	(std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - (lane)->current_zone_begin).count())
+
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT_2(scoped_name, lane, ...)                                                                                        \
+	const auto scoped_name = fmt::format(__VA_ARGS__);                                                                                                         \
+	TracyCZoneText((lane)->current_zone.value(), scoped_name.data(), scoped_name.size());
+
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(lane, ...)                                                                                                       \
+	CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT_2(CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_name_), lane, __VA_ARGS__)
 
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_END(lane)                                                                                                             \
 	if(lane != nullptr) {                                                                                                                                      \
@@ -123,6 +137,8 @@ struct tracy_fiber_scope_guard {
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_SUSPEND(...)
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME(...)
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_RESUME_SCOPED(...)
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(...)
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_ELAPSED_TIME_SECONDS(...) (0.0)
 #define CELERITY_DETAIL_TRACY_ASYNC_ZONE_END(...)
 #define CELERITY_DETAIL_TRACY_SET_CURRENT_THREAD_NAME(...)
 
