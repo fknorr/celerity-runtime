@@ -1,6 +1,8 @@
 #include "mpi_communicator.h"
 #include "instruction_graph.h"
+#include "nd_memory.h"
 #include "ranges.h"
+#include "tracy.h"
 
 #include <cstddef>
 
@@ -8,17 +10,18 @@
 
 namespace celerity::detail {
 
-class mpi_event final : public async_event_base {
+class mpi_send_event final : public async_event_base {
   public:
-	mpi_event(MPI_Request req) : m_req(req) {}
-	mpi_event(const async_event&) = delete;
-	mpi_event(async_event&&) = delete;
-	mpi_event& operator=(const async_event&) = delete;
-	mpi_event& operator=(async_event&&) = delete;
-	~mpi_event() override {
+	mpi_send_event(MPI_Request req, void* staging_buffer) : m_req(req), m_staging_buffer(staging_buffer) {}
+	mpi_send_event(const async_event&) = delete;
+	mpi_send_event(async_event&&) = delete;
+	mpi_send_event& operator=(const async_event&) = delete;
+	mpi_send_event& operator=(async_event&&) = delete;
+	~mpi_send_event() override {
 		// MPI_Request_free is always incorrect for our use case: events originate from an Isend or Irecv, which must ensure that the user-provided buffer
 		// remains until the operation has completed.
 		MPI_Wait(&m_req, MPI_STATUS_IGNORE);
+		free(m_staging_buffer);
 	}
 
 	bool is_complete() const override {
@@ -29,6 +32,42 @@ class mpi_event final : public async_event_base {
 
   private:
 	mutable MPI_Request m_req;
+	void* m_staging_buffer;
+};
+
+class mpi_recv_event final : public async_event_base {
+  public:
+	mpi_recv_event(MPI_Request req, void* staging_buffer, void* dest_base, const communicator::stride& stride)
+	    : m_req(req), m_staging_buffer(staging_buffer), m_dest_base(dest_base), m_stride(stride) {}
+	mpi_recv_event(const async_event&) = delete;
+	mpi_recv_event(async_event&&) = delete;
+	mpi_recv_event& operator=(const async_event&) = delete;
+	mpi_recv_event& operator=(async_event&&) = delete;
+	~mpi_recv_event() override {
+		// MPI_Request_free is always incorrect for our use case: events originate from an Isend or Irecv, which must ensure that the user-provided buffer
+		// remains until the operation has completed.
+		MPI_Wait(&m_req, MPI_STATUS_IGNORE);
+		free(m_staging_buffer);
+	}
+
+	bool is_complete() const override {
+		if(m_req == MPI_REQUEST_NULL) return true;
+
+		int flag = -1;
+		MPI_Test(&m_req, &flag, MPI_STATUS_IGNORE);
+		if(flag == 0) return false;
+
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("mpi::unstage_recv", SkyBlue, "unstage MPI_Irecv");
+		nd_copy_host(m_staging_buffer, m_dest_base, m_stride.subrange.range, m_stride.allocation, zeros, m_stride.subrange.offset, m_stride.subrange.range,
+		    m_stride.element_size);
+		return true;
+	}
+
+  private:
+	mutable MPI_Request m_req;
+	void* m_staging_buffer;
+	void* m_dest_base;
+	communicator::stride m_stride;
 };
 
 mpi_communicator::collective_group* mpi_communicator::collective_group::clone() {
@@ -117,10 +156,19 @@ async_event mpi_communicator::send_payload(const node_id to, const message_id ms
 	assert(to < get_num_nodes());
 	assert(to != get_local_node_id());
 
+	void* staging_buffer = nullptr;
+	{
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("mpi::stage_send", SkyBlue, "stage MPI_Isend");
+		staging_buffer = malloc(stride.subrange.range.size() * stride.element_size);
+		nd_copy_host(base, staging_buffer, stride.allocation, stride.subrange.range, stride.subrange.offset, zeros, stride.subrange.range, stride.element_size);
+	}
 	MPI_Request req = MPI_REQUEST_NULL;
-	// TODO normalize stride and adjust base in order to re-use more datatypes
-	MPI_Isend(base, 1, get_array_type(stride), static_cast<int>(to), first_message_tag + static_cast<int>(msgid), m_root_comm, &req);
-	return make_async_event<mpi_event>(req);
+	{
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("mpi::send", LightSkyBlue, "MPI_Isend");
+		MPI_Isend(staging_buffer, static_cast<int>(stride.subrange.range.size() * stride.element_size), MPI_BYTE, static_cast<int>(to),
+		    first_message_tag + static_cast<int>(msgid), m_root_comm, &req);
+	}
+	return make_async_event<mpi_send_event>(req, staging_buffer);
 }
 
 async_event mpi_communicator::receive_payload(const node_id from, const message_id msgid, void* const base, const stride& stride) {
@@ -129,10 +177,15 @@ async_event mpi_communicator::receive_payload(const node_id from, const message_
 	assert(from < get_num_nodes());
 	assert(from != get_local_node_id());
 
+	void* staging_buffer = nullptr;
+	{
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("mpi::stage_recv", SkyBlue, "stage MPI_Irecv");
+		staging_buffer = malloc(stride.subrange.range.size() * stride.element_size);
+	}
 	MPI_Request req = MPI_REQUEST_NULL;
-	// TODO normalize stride and adjust base in order to re-use more datatypes
-	MPI_Irecv(base, 1, get_array_type(stride), static_cast<int>(from), first_message_tag + static_cast<int>(msgid), m_root_comm, &req);
-	return make_async_event<mpi_event>(req);
+	MPI_Irecv(staging_buffer, stride.subrange.range.size() * stride.element_size, MPI_BYTE, static_cast<int>(from), first_message_tag + static_cast<int>(msgid),
+	    m_root_comm, &req);
+	return make_async_event<mpi_recv_event>(req, staging_buffer, base, stride);
 }
 
 mpi_communicator::collective_group* mpi_communicator::get_collective_root() { return m_collective_groups.front(); }
