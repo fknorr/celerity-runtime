@@ -32,6 +32,10 @@ class instruction
 
 	instruction_id get_id() const { return m_id; }
 
+	// Instructions pointers are shared between threads, but `dependents` are modified after the instruction is final. This function should not exist in
+	// intrusive_graph_node (TODO), and IDAG scheduling already works without it.
+	auto get_dependents() const = delete;
+
   private:
 	instruction_id m_id;
 };

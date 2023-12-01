@@ -15,14 +15,13 @@ namespace detail {
 		true_dep = 1, // True data flow or temporal dependency
 	};
 
-	// TODO rethink this enum. It is purely debug-info, but leaks higher-level concepts into intrusive_graph.
-	// Maybe turn it into an optional annotation?
+	// TODO this is purely debug info (as is dependency_kind, as it turns out). Move into dependency records and drop `struct dependency`.
 	enum class dependency_origin {
 		dataflow,                       // buffer access dependencies generate task and command dependencies
 		collective_group_serialization, // all nodes must execute kernels within the same collective group in the same order
 		execution_front,                // horizons and epochs are temporally ordered after all preceding tasks or commands on the same node
 		last_epoch,                     // nodes without other true-dependencies require an edge to the last epoch for temporal ordering
-		instruction,
+		instruction,                    // Placeholder: IDAG dependency debug info is only available in instruction_records
 	};
 
 	// TODO: Move to utility header..?
