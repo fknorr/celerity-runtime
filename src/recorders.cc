@@ -276,11 +276,4 @@ void instruction_recorder::record_await_push_command_id(const transfer_id& trid,
 
 command_id instruction_recorder::get_await_push_command_id(const transfer_id& trid) const { return m_await_push_cids.at(trid); }
 
-void instruction_recorder::record_dependencies(const instruction& instr) {
-	auto& record = const_cast<instruction_record&>(get_instruction(instr.get_id()));
-	for(const auto dep : instr.get_dependencies()) {
-		record.dependencies.push_back(dependency_record<instruction_id>{dep, dependency_kind::true_dep, dependency_origin::instruction});
-	}
-}
-
 } // namespace celerity::detail

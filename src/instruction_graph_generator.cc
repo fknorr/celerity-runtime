@@ -405,6 +405,9 @@ class instruction_graph_generator::impl {
 
 	void add_dependency(instruction* const from, instruction* const to) {
 		from->add_dependency(to->get_id());
+		if(m_recorder != nullptr) {
+			*m_recorder << instruction_dependency_record(to->get_id(), from->get_id(), instruction_dependency_origin::other{} /* TODO */);
+		}
 		m_execution_front.erase(to->get_id());
 	}
 
@@ -456,9 +459,11 @@ class instruction_graph_generator::impl {
 
 	void collapse_execution_front_to(instruction* const horizon) {
 		for(const auto iid : m_execution_front) {
-			if(iid != horizon->get_id()) {
-				// no need to remove each item from m_execution_front individually as iggen::impl::add_dependency would do
-				horizon->add_dependency(iid);
+			if(iid == horizon->get_id()) continue;
+			// we can't use instruction_graph_generator::add_depencency, since it modifies m_execution_front which we're iterating over here
+			horizon->add_dependency(iid);
+			if(m_recorder != nullptr) {
+				*m_recorder << instruction_dependency_record(iid, horizon->get_id(), instruction_dependency_origin::execution_front{});
 			}
 		}
 		m_execution_front.clear();
@@ -1656,13 +1661,6 @@ void instruction_graph_generator::impl::compile_epoch_command(batch& command_bat
 
 
 void instruction_graph_generator::impl::flush_batch(batch&& batch) {
-	if(m_recorder != nullptr) {
-		// TODO see if there is a way to record all instructions after their dependencies are complete, then we wouldn't need this hack.
-		for(const auto instr : batch.generated_instructions) {
-			m_recorder->record_dependencies(*instr);
-		}
-	}
-
 	assert(instruction_graph_generator_detail::is_topologically_sorted(batch.generated_instructions.begin(), batch.generated_instructions.end()));
 	if(m_delegate != nullptr && !batch.generated_instructions.empty()) { m_delegate->flush_instructions(std::move(batch.generated_instructions)); }
 	if(m_delegate != nullptr && !batch.generated_pilots.empty()) { m_delegate->flush_outbound_pilots(std::move(batch.generated_pilots)); }

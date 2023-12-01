@@ -5,6 +5,8 @@
 #include "pilot.h"
 #include "task.h"
 
+#include <variant>
+
 
 namespace celerity::detail {
 
@@ -143,8 +145,77 @@ struct buffer_allocation_record {
 	friend bool operator!=(const buffer_allocation_record& lhs, const buffer_allocation_record& rhs) { return !(lhs == rhs); }
 };
 
-using instruction_dependency_list = std::vector<dependency_record<instruction_id>>;
+// TODO evaluate if the operator==/!= impls are necessary
+struct instruction_dependency_origin {
+	struct allocation_last_writer {
+		allocation_id aid;
+		region<3> region;
 
+		friend bool operator==(const allocation_last_writer& lhs, const allocation_last_writer& rhs) { return lhs.aid == rhs.aid && lhs.region == rhs.region; }
+		friend bool operator!=(const allocation_last_writer& lhs, const allocation_last_writer& rhs) { return !(lhs == rhs); }
+	};
+
+	struct allocation_access_front {
+		allocation_id aid;
+		region<3> region;
+
+		friend bool operator==(const allocation_access_front& lhs, const allocation_access_front& rhs) {
+			return lhs.aid == rhs.aid && lhs.region == rhs.region;
+		}
+		friend bool operator!=(const allocation_access_front& lhs, const allocation_access_front& rhs) { return !(lhs == rhs); }
+	};
+
+	struct side_effect {
+		host_object_id hoid;
+
+		friend bool operator==(const side_effect& lhs, const side_effect& rhs) { return lhs.hoid == rhs.hoid; }
+		friend bool operator!=(const side_effect& lhs, const side_effect& rhs) { return !(lhs == rhs); }
+	};
+
+	struct collective_group_order {
+		collective_group_id cgid;
+
+		friend bool operator==(const collective_group_order& lhs, const collective_group_order& rhs) { return lhs.cgid == rhs.cgid; }
+		friend bool operator!=(const collective_group_order& lhs, const collective_group_order& rhs) { return !(lhs == rhs); }
+	};
+
+	struct last_epoch {
+		friend bool operator==(const last_epoch& lhs, const last_epoch& rhs) { return true; }
+		friend bool operator!=(const last_epoch& lhs, const last_epoch& rhs) { return false; }
+	};
+
+	struct execution_front {
+		friend bool operator==(const execution_front& lhs, const execution_front& rhs) { return true; }
+		friend bool operator!=(const execution_front& lhs, const execution_front& rhs) { return false; }
+	};
+
+	struct other {
+		friend bool operator==(const other& lhs, const other& rhs) { return true; }
+		friend bool operator!=(const other& lhs, const other& rhs) { return false; }
+	};
+
+	using variant = std::variant<allocation_last_writer, allocation_access_front, side_effect, collective_group_order, last_epoch, execution_front, other>;
+	variant origin;
+
+	instruction_dependency_origin() : origin(other{}) {}
+	instruction_dependency_origin(const variant& origin) : origin(origin) {}
+
+	friend bool operator==(const instruction_dependency_origin& lhs, const instruction_dependency_origin& rhs) { return lhs.origin == rhs.origin; }
+	friend bool operator!=(const instruction_dependency_origin& lhs, const instruction_dependency_origin& rhs) { return !(lhs == rhs); }
+};
+
+struct instruction_dependency_record {
+	instruction_id predecessor;
+	instruction_id successor;
+	instruction_dependency_origin origin;
+
+	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor, const instruction_dependency_origin& origin)
+	    : predecessor(predecessor), successor(successor), origin(origin) {}
+	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor, const instruction_dependency_origin::variant& origin)
+	    : predecessor(predecessor), successor(successor), origin(origin) {}
+};
+
+// TODO now that the `dependencies` member is gone, can this be a variant again?
 struct instruction_record
     : matchbox::acceptor<struct clone_collective_group_instruction_record, struct alloc_instruction_record, struct free_instruction_record,
           struct copy_instruction_record, struct device_kernel_instruction_record, struct host_task_instruction_record, struct send_instruction_record,
@@ -154,7 +225,6 @@ struct instruction_record
           struct epoch_instruction_record> //
 {
 	instruction_id id;
-	instruction_dependency_list dependencies;
 
 	explicit instruction_record(const instruction& instr);
 };
@@ -388,12 +458,17 @@ class instruction_recorder {
 
 	void record_await_push_command_id(const transfer_id& trid, const command_id cid);
 	void record_instruction(std::unique_ptr<instruction_record> record) { m_recorded_instructions.push_back(std::move(record)); }
+	void record_dependency(const instruction_dependency_record& dependency) { m_recorded_dependencies.push_back(dependency); }
 	void record_outbound_pilot(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
-	void record_dependencies(const instruction& instr);
 
 	template <typename InstructionRecord>
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, InstructionRecord record) {
 		recorder.record_instruction(std::make_unique<InstructionRecord>(std::move(record)));
+		return recorder;
+	}
+
+	friend instruction_recorder& operator<<(instruction_recorder& recorder, const instruction_dependency_record& dependency) {
+		recorder.record_dependency(dependency);
 		return recorder;
 	}
 
@@ -403,6 +478,8 @@ class instruction_recorder {
 	}
 
 	const std::vector<std::unique_ptr<instruction_record>>& get_instructions() const { return m_recorded_instructions; }
+
+	const std::vector<instruction_dependency_record>& get_dependencies() const { return m_recorded_dependencies; }
 
 	const instruction_record& get_instruction(const instruction_id iid) const {
 		const auto it = std::find_if(
@@ -416,6 +493,7 @@ class instruction_recorder {
 
   private:
 	std::vector<std::unique_ptr<instruction_record>> m_recorded_instructions;
+	std::vector<instruction_dependency_record> m_recorded_dependencies;
 	std::vector<outbound_pilot> m_recorded_pilots;
 	std::unordered_map<transfer_id, command_id> m_await_push_cids;
 	std::unordered_map<buffer_id, std::string> m_buffer_debug_names;

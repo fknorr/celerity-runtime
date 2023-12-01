@@ -173,11 +173,11 @@ TEST_CASE("instruction-graph printing is unchanged", "[print_graph][instruction-
 	    "bytes>];I33[color=cyan3,shape=ellipse,label=<I33<br/><b>free</b> M2.A1<br/>B0 [0,0,0] - [1,1,1] <br/>4 "
 	    "bytes>];I34[color=cyan3,shape=ellipse,label=<I34<br/><b>free</b> M3.A1<br/>B0 [0,0,0] - [1,1,1] <br/>4 "
 	    "bytes>];I35[color=black,shape=box,margin=0.2,style=rounded,label=<I35 (T3, C8)<br/><b>epoch</b> (shutdown)<br/>collect R1<br/>collect "
-	    "M0.A2>];I0->I1[];I0->I2[];I0->I3[];I0->I4[];I0->I5[];I0->I6[];I0->I7[];I6->I7[];I0->I8[];I6->I8[];I7->I9[];I4->I9[];I8->I10[];I5->I10[];I0->I11[];I3->"
-	    "I12[];I10->I12[];I2->I13[];I9->I13[];I11->I14[];I12->I14[];I11->I15[];I13->I15[];I14->I16[];I15->I16[];I1->I16[];I16->I17[];I16->I18[];I16->I19[];I16-"
-	    ">I20[];I0->I21[];I21->I22[];I22->I23[];I16->I23[];I22->I24[];I24->I25[];I23->I25[];I18->I25[];I19->I25[];I20->I25[];I25->I26[];I25->I27[];I27->I28[];"
-	    "I10->I29[];I9->I29[];I12->I30[];I13->I31[];I27->I32[];I14->I33[];I15->I34[];I34->I35[];I33->I35[];I32->I35[];I31->I35[];I29->I35[];I28->I35[];I26->"
-	    "I35[];I30->I35[];I17->I35[];P0[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N1 MSG0<br/>T2.B0.R1<br/>for B0 "
+	    "M0.A2>];I0->I1[];I0->I2[];I0->I3[];I0->I4[];I0->I5[];I0->I6[];I0->I7[];I0->I8[];I0->I11[];I0->I21[];I1->I16[];I2->I13[];I3->I12[];I4->I9[];I5->I10[];"
+	    "I6->I7[];I6->I8[];I7->I9[];I8->I10[];I9->I13[];I9->I29[];I10->I12[];I10->I29[];I11->I14[];I11->I15[];I12->I14[];I12->I30[];I13->I15[];I13->I31[];I14->"
+	    "I16[];I14->I33[];I15->I16[];I15->I34[];I16->I17[];I16->I18[];I16->I19[];I16->I20[];I16->I23[];I17->I35[];I18->I25[];I19->I25[];I20->I25[];I21->I22[];"
+	    "I22->I23[];I22->I24[];I23->I25[];I24->I25[];I25->I26[];I25->I27[];I26->I35[];I27->I28[];I27->I32[];I28->I35[];I29->I35[];I30->I35[];I31->I35[];I32->"
+	    "I35[];I33->I35[];I34->I35[];P0[margin=0.2,shape=cds,color=\"#606060\",label=<<font color=\"#606060\"><b>pilot</b> to N1 MSG0<br/>T2.B0.R1<br/>for B0 "
 	    "[0,0,0] - [1,1,1]</font>>];P0->I18[dir=none,style=dashed,color=\"#606060\"];P1[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
 	    "color=\"#606060\"><b>pilot</b> to N2 MSG1<br/>T2.B0.R1<br/>for B0 [0,0,0] - "
 	    "[1,1,1]</font>>];P1->I19[dir=none,style=dashed,color=\"#606060\"];P2[margin=0.2,shape=cds,color=\"#606060\",label=<<font "
@@ -299,7 +299,7 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "full graph is printed if CELERITY
 		    "task</b><br/>on host [0,0,0] + [16,1,1]<br/>+ access B0 [0,0,0] - [16,1,1]<br/>via M1.A1 [0,0,0] - "
 		    "[16,1,1]>];I8[color=black,shape=box,margin=0.2,style=rounded,label=<I8 (T6, "
 		    "C6)<br/><b>horizon</b>>];I9[color=black,shape=box,margin=0.2,style=rounded,label=<I9 (T7, C7)<br/><b>epoch</b> "
-		    "(barrier)>];I0->I1[];I0->I2[];I1->I2[];I2->I3[];I3->I4[];I3->I5[];I5->I6[];I4->I6[];I5->I7[];I7->I8[];I6->I8[];I8->I9[];}";
+		    "(barrier)>];I0->I1[];I0->I2[];I1->I2[];I2->I3[];I3->I4[];I3->I5[];I4->I6[];I5->I6[];I5->I7[];I6->I8[];I7->I8[];I8->I9[];}";
 
 		const auto dot = runtime_testspy::print_instruction_graph(celerity::detail::runtime::get_instance());
 		CHECK(dot == expected);

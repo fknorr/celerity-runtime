@@ -40,9 +40,9 @@ class instruction_query {
 		std::vector<const instruction_record*> predecessors;
 		// find predecessors without duplicates (even when m_result.size() > 1) and keep them in recorder-ordering
 		for(const auto& maybe_predecessor : m_recorder->get_instructions()) {
-			if(std::any_of(m_result.begin(), m_result.end(), [&](const Record* instr) {
-				   return std::any_of(instr->dependencies.begin(), instr->dependencies.end(),
-				       [&](const dependency_record<instruction_id>& d) { return d.node == maybe_predecessor->id; });
+			if(std::any_of(m_recorder->get_dependencies().begin(), m_recorder->get_dependencies().end(), [&](const instruction_dependency_record& dep) {
+				   return dep.predecessor == maybe_predecessor->id
+				          && std::any_of(m_result.begin(), m_result.end(), [&](const Record* me) { return me->id == dep.successor; });
 			   })) {
 				predecessors.push_back(maybe_predecessor.get());
 			}
@@ -74,9 +74,9 @@ class instruction_query {
 		std::vector<const instruction_record*> successors;
 		// find successors without duplicates (even when m_result.size() > 1) and keep them in recorder-ordering
 		for(const auto& maybe_successor : m_recorder->get_instructions()) {
-			if(std::any_of(m_result.begin(), m_result.end(), [&](const Record* instr) {
-				   return std::any_of(maybe_successor->dependencies.begin(), maybe_successor->dependencies.end(),
-				       [&](const dependency_record<instruction_id>& d) { return d.node == instr->id; });
+			if(std::any_of(m_recorder->get_dependencies().begin(), m_recorder->get_dependencies().end(), [&](const instruction_dependency_record& dep) {
+				   return dep.successor == maybe_successor->id
+				          && std::any_of(m_result.begin(), m_result.end(), [&](const Record* me) { return me->id == dep.predecessor; });
 			   })) {
 				successors.push_back(maybe_successor.get());
 			}

@@ -9,6 +9,8 @@
 #include "task.h"
 #include "task_manager.h"
 
+#include <set>
+
 #include <spdlog/fmt/fmt.h>
 
 
@@ -469,11 +471,23 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		    });
 	}
 
-	for(const auto& instr : irec.get_instructions()) {
-		// since all instruction_records inherit from instruction_record_base, this *should* just compile to a pointer adjustment
-		for(const auto& dep : instr->dependencies) {
-			fmt::format_to(back, "I{}->I{}[{}];", dep.node, instr->id, dependency_style(dep));
+	struct dependency_edge {
+		instruction_id predecessor;
+		instruction_id successor;
+	};
+	struct dependency_less {
+		bool operator()(const dependency_edge& lhs, const dependency_edge& rhs) const {
+			if(lhs.predecessor < rhs.predecessor) return true;
+			if(lhs.predecessor > rhs.predecessor) return false;
+			return lhs.successor < rhs.successor;
 		}
+	};
+	std::set<dependency_edge, dependency_less> edges; // ordered and unique
+	for(const auto& dep : irec.get_dependencies()) {
+		edges.insert({dep.predecessor, dep.successor});
+	}
+	for(const auto& [predecessor, successor] : edges) {
+		fmt::format_to(back, "I{}->I{}[{}];", predecessor, successor, "" /* TODO */);
 	}
 
 	for(const auto& pilot : irec.get_outbound_pilots()) {
