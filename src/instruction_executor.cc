@@ -128,10 +128,10 @@ void instruction_executor::loop() {
 	m_host_queue.require_collective_group(root_collective_group_id);
 
 	std::vector<submission> loop_submission_queue;
-	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions;
+	std::unordered_map<const instruction*, pending_instruction_info> pending_instructions; // TODO chould be a vector?
 	std::priority_queue<const instruction*, std::vector<const instruction*>, instruction_priority_less> ready_instructions;
-	std::unordered_map<const instruction*, active_instruction_info> active_instructions; // TODO why is this a map and not a set?
-	std::unordered_map<const instruction*, incomplete_instruction_info> incomplete_instructions;
+	std::unordered_map<const instruction*, active_instruction_info> active_instructions; // TODO why is this a map and not a vector?
+	std::unordered_map<instruction_id, incomplete_instruction_info> incomplete_instructions;
 	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp;
 	bool progress_warning_emitted = false;
 	while(m_expecting_more_submissions || !incomplete_instructions.empty()) {
@@ -161,7 +161,7 @@ void instruction_executor::loop() {
 
 				CELERITY_DEBUG("[executor] completed I{}", active_instr->get_id());
 
-				const auto incomplete_it = incomplete_instructions.find(active_instr);
+				const auto incomplete_it = incomplete_instructions.find(active_instr->get_id());
 				assert(incomplete_it != incomplete_instructions.end());
 				for(const auto successor : incomplete_it->second.dependents) {
 					if(const auto pending_it = pending_instructions.find(successor); pending_it != pending_instructions.end()) {
@@ -175,7 +175,7 @@ void instruction_executor::loop() {
 					}
 				}
 				made_progress = true;
-				incomplete_instructions.erase(active_instr);
+				incomplete_instructions.erase(active_instr->get_id());
 				active_it = active_instructions.erase(active_it);
 			} else {
 				++active_it;
@@ -190,8 +190,8 @@ void instruction_executor::loop() {
 				    [&](const instruction* incoming_instr) {
 					    incomplete_instruction_info incomplete_info;
 					    size_t n_unmet_dependencies = 0;
-					    for(const auto& dep : incoming_instr->get_dependencies()) {
-						    const auto predecessor = incomplete_instructions.find(dep.node);
+					    for(const auto dep : incoming_instr->get_dependencies()) {
+						    const auto predecessor = incomplete_instructions.find(dep);
 						    if(predecessor != incomplete_instructions.end()) {
 							    predecessor->second.dependents.push_back(incoming_instr);
 							    ++n_unmet_dependencies;
@@ -202,7 +202,7 @@ void instruction_executor::loop() {
 					    } else {
 						    ready_instructions.push(incoming_instr);
 					    }
-					    incomplete_instructions.emplace(incoming_instr, incomplete_instruction_info{});
+					    incomplete_instructions.emplace(incoming_instr->get_id(), incomplete_instruction_info{});
 				    },
 				    [&](const outbound_pilot& pilot) { //
 					    m_communicator->send_outbound_pilot(pilot);
@@ -342,9 +342,9 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 
 #if CELERITY_ENABLE_TRACY
 	std::string tracy_dependency_list;
-	for(const auto& dep : instr.get_dependencies()) {
+	for(const auto dep : instr.get_dependencies()) {
 		if(!tracy_dependency_list.empty()) tracy_dependency_list += ", ";
-		fmt::format_to(std::back_inserter(tracy_dependency_list), "I{}", dep.node->get_id());
+		fmt::format_to(std::back_inserter(tracy_dependency_list), "I{}", dep);
 	}
 #endif
 

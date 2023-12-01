@@ -1,7 +1,6 @@
 #pragma once
 
 #include "grid.h"
-#include "intrusive_graph.h"
 #include "launcher.h"
 #include "ranges.h"
 #include "types.h"
@@ -11,7 +10,9 @@
 #include <memory>
 #include <vector>
 
+#include <gch/small_vector.hpp>
 #include <matchbox.hh>
+
 
 namespace celerity::detail {
 
@@ -22,22 +23,23 @@ class fence_promise;
 /// higher-level task and command graphs which track data dependencies in terms of buffers, it operates on the lower level of allocations, which (among ohter
 /// uses) can back sub-regions of the (virtual) global buffer.
 class instruction
-    : public intrusive_graph_node<instruction>,
-      public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class copy_instruction,
+    : public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class copy_instruction,
           class device_kernel_instruction, class host_task_instruction, class send_instruction, class receive_instruction, class split_receive_instruction,
           class await_receive_instruction, class gather_receive_instruction, class fill_identity_instruction, class reduce_instruction, class fence_instruction,
           class destroy_host_object_instruction, class horizon_instruction, class epoch_instruction> {
   public:
+	using edge_set = gch::small_vector<instruction_id>;
+
 	explicit instruction(const instruction_id iid) : m_id(iid) {}
 
 	instruction_id get_id() const { return m_id; }
 
-	// Instructions pointers are shared between threads, but `dependents` are modified after the instruction is final. This function should not exist in
-	// intrusive_graph_node (TODO), and IDAG scheduling already works without it.
-	auto get_dependents() const = delete;
+	const edge_set& get_dependencies() const { return m_dependencies; }
+	void add_dependency(const instruction_id iid) { m_dependencies.push_back(iid); }
 
   private:
 	instruction_id m_id;
+	edge_set m_dependencies;
 };
 
 struct instruction_id_less {
@@ -125,6 +127,7 @@ struct buffer_access_allocation {
 };
 
 /// Allocation-equivalent of a buffer_access_map. The runtime hydration and reduction mechanism are keyed by zero-based indices per instruction.
+/// We use a std::vector directly instead of a small_vector because entries are > 100 bytes each.
 using buffer_access_allocation_map = std::vector<buffer_access_allocation>;
 
 /// Launches a SYCL device kernel on a single device. Bound accessors and reductions are hydrated through buffer_access_allocation_maps.

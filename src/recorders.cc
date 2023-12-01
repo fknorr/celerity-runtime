@@ -278,8 +278,8 @@ command_id instruction_recorder::get_await_push_command_id(const transfer_id& tr
 
 void instruction_recorder::record_dependencies(const instruction& instr) {
 	auto& record = const_cast<instruction_record&>(get_instruction(instr.get_id()));
-	for(auto& d : instr.get_dependencies()) {
-		record.dependencies.push_back(dependency_record<instruction_id>{d.node->get_id(), d.kind, d.origin});
+	for(const auto dep : instr.get_dependencies()) {
+		record.dependencies.push_back(dependency_record<instruction_id>{dep, dependency_kind::true_dep, dependency_origin::instruction});
 	}
 }
 

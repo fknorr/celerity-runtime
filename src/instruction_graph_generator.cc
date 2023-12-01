@@ -104,8 +104,8 @@ box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) 
 template <typename Iterator>
 bool is_topologically_sorted(Iterator begin, Iterator end) {
 	for(auto check = begin; check != end; ++check) {
-		for(const auto& dep : (*check)->get_dependencies()) {
-			if(std::find(std::next(check), end, dep.node) != end) return false;
+		for(const auto dep : (*check)->get_dependencies()) {
+			if(std::find_if(std::next(check), end, [dep](const auto& node) { return node->get_id() == dep; }) != end) return false;
 		}
 	}
 	return true;
@@ -373,7 +373,7 @@ class instruction_graph_generator::impl {
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
 	// we iterate over m_execution_front, so to keep IDAG generation deterministic, its internal order must not depend on pointer values
-	std::unordered_set<instruction*, instruction_hash_by_id> m_execution_front;
+	std::unordered_set<instruction_id> m_execution_front;
 	std::vector<per_memory_data> m_memories;
 	std::unordered_map<buffer_id, per_buffer_data> m_buffers;
 	std::unordered_map<host_object_id, per_host_object_data> m_host_objects;
@@ -396,7 +396,7 @@ class instruction_graph_generator::impl {
 		auto instr = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
 		const auto ptr = instr.get();
 		m_idag->push_instruction(std::move(instr));
-		m_execution_front.insert(ptr);
+		m_execution_front.insert(id);
 		batch.generated_instructions.push_back(ptr);
 		return ptr;
 	}
@@ -404,8 +404,8 @@ class instruction_graph_generator::impl {
 	message_id create_outbound_pilot(batch& batch, node_id target, const transfer_id& trid, const box<3>& box);
 
 	void add_dependency(instruction* const from, instruction* const to) {
-		from->add_dependency({to, dependency_kind::true_dep, dependency_origin::instruction});
-		m_execution_front.erase(to);
+		from->add_dependency(to->get_id());
+		m_execution_front.erase(to->get_id());
 	}
 
 	template <typename BoxOrRegion>
@@ -455,11 +455,14 @@ class instruction_graph_generator::impl {
 	}
 
 	void collapse_execution_front_to(instruction* const horizon) {
-		for(const auto instr : m_execution_front) {
-			if(instr != horizon) { horizon->add_dependency({instr, dependency_kind::true_dep, dependency_origin::instruction}); }
+		for(const auto iid : m_execution_front) {
+			if(iid != horizon->get_id()) {
+				// no need to remove each item from m_execution_front individually as iggen::impl::add_dependency would do
+				horizon->add_dependency(iid);
+			}
 		}
 		m_execution_front.clear();
-		m_execution_front.insert(horizon);
+		m_execution_front.insert(horizon->get_id());
 	}
 
 	// Re-allocation of one buffer on one memory never interacts with other buffers or other memories backing the same buffer, this function can be called
@@ -1403,10 +1406,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 	for(auto& instr : cmd_instrs) {
 		// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
 		// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
-		const auto deps = instr.instruction->get_dependencies();
-		if(std::none_of(deps.begin(), deps.end(), [](const instruction::dependency& dep) { return dep.kind == dependency_kind::true_dep; })) {
-			add_dependency(instr.instruction, m_last_epoch);
-		}
+		if(instr.instruction->get_dependencies().empty()) { add_dependency(instr.instruction, m_last_epoch); }
 	}
 }
 
