@@ -6,6 +6,7 @@
 #include "task.h"
 
 #include <variant>
+#include <vector>
 
 
 namespace celerity::detail {
@@ -145,23 +146,29 @@ struct buffer_allocation_record {
 	friend bool operator!=(const buffer_allocation_record& lhs, const buffer_allocation_record& rhs) { return !(lhs == rhs); }
 };
 
-// TODO evaluate if the operator==/!= impls are necessary
+// All origin types are trivially-copyable PODs to ensure that passing an origin through one of `instruction_graph_generator::add_dependency*` is without
+// measurable overhead when recording is disabled.
 struct instruction_dependency_origin {
+	struct allocation_lifetime {
+		allocation_id aid;
+
+		friend bool operator==(const allocation_lifetime& lhs, const allocation_lifetime& rhs) { return lhs.aid == rhs.aid; }
+		friend bool operator!=(const allocation_lifetime& lhs, const allocation_lifetime& rhs) { return !(lhs == rhs); }
+	};
+
 	struct allocation_last_writer {
 		allocation_id aid;
-		region<3> region;
+		box<3> box;
 
-		friend bool operator==(const allocation_last_writer& lhs, const allocation_last_writer& rhs) { return lhs.aid == rhs.aid && lhs.region == rhs.region; }
+		friend bool operator==(const allocation_last_writer& lhs, const allocation_last_writer& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
 		friend bool operator!=(const allocation_last_writer& lhs, const allocation_last_writer& rhs) { return !(lhs == rhs); }
 	};
 
 	struct allocation_access_front {
 		allocation_id aid;
-		region<3> region;
+		box<3> box;
 
-		friend bool operator==(const allocation_access_front& lhs, const allocation_access_front& rhs) {
-			return lhs.aid == rhs.aid && lhs.region == rhs.region;
-		}
+		friend bool operator==(const allocation_access_front& lhs, const allocation_access_front& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
 		friend bool operator!=(const allocation_access_front& lhs, const allocation_access_front& rhs) { return !(lhs == rhs); }
 	};
 
@@ -194,7 +201,8 @@ struct instruction_dependency_origin {
 		friend bool operator!=(const other& lhs, const other& rhs) { return false; }
 	};
 
-	using variant = std::variant<allocation_last_writer, allocation_access_front, side_effect, collective_group_order, last_epoch, execution_front, other>;
+	using variant = std::variant<allocation_lifetime, allocation_last_writer, allocation_access_front, side_effect, collective_group_order, last_epoch,
+	    execution_front, other>;
 	variant origin;
 
 	instruction_dependency_origin() : origin(other{}) {}
@@ -207,12 +215,9 @@ struct instruction_dependency_origin {
 struct instruction_dependency_record {
 	instruction_id predecessor;
 	instruction_id successor;
-	instruction_dependency_origin origin;
+	std::vector<instruction_dependency_origin> origins;
 
-	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor, const instruction_dependency_origin& origin)
-	    : predecessor(predecessor), successor(successor), origin(origin) {}
-	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor, const instruction_dependency_origin::variant& origin)
-	    : predecessor(predecessor), successor(successor), origin(origin) {}
+	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor) : predecessor(predecessor), successor(successor) {}
 };
 
 // TODO now that the `dependencies` member is gone, can this be a variant again?
@@ -457,18 +462,21 @@ class instruction_recorder {
 	using outbound_pilots = std::vector<outbound_pilot>;
 
 	void record_await_push_command_id(const transfer_id& trid, const command_id cid);
+
 	void record_instruction(std::unique_ptr<instruction_record> record) { m_recorded_instructions.push_back(std::move(record)); }
-	void record_dependency(const instruction_dependency_record& dependency) { m_recorded_dependencies.push_back(dependency); }
+
+	void record_dependency(const instruction_id from, const instruction_id to) { insert_dependency(from, to); }
+
+	template <typename Origin>
+	void record_dependency(const instruction_id from, const instruction_id to, const Origin& origin) {
+		insert_dependency(from, to).origins.emplace_back(origin);
+	}
+
 	void record_outbound_pilot(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
 
 	template <typename InstructionRecord>
 	friend instruction_recorder& operator<<(instruction_recorder& recorder, InstructionRecord record) {
 		recorder.record_instruction(std::make_unique<InstructionRecord>(std::move(record)));
-		return recorder;
-	}
-
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, const instruction_dependency_record& dependency) {
-		recorder.record_dependency(dependency);
 		return recorder;
 	}
 
@@ -496,7 +504,12 @@ class instruction_recorder {
 	std::vector<instruction_dependency_record> m_recorded_dependencies;
 	std::vector<outbound_pilot> m_recorded_pilots;
 	std::unordered_map<transfer_id, command_id> m_await_push_cids;
-	std::unordered_map<buffer_id, std::string> m_buffer_debug_names;
+
+	instruction_dependency_record& insert_dependency(const instruction_id from, const instruction_id to) {
+		const auto existing = std::find_if(m_recorded_dependencies.begin(), m_recorded_dependencies.end(),
+		    [&](const instruction_dependency_record& existing) { return existing.successor == from && existing.predecessor == to; });
+		return existing != m_recorded_dependencies.end() ? *existing : m_recorded_dependencies.emplace_back(from, to);
+	}
 };
 
 } // namespace celerity::detail
