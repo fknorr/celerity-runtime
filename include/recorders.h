@@ -176,6 +176,7 @@ struct instruction_record
           struct epoch_instruction_record> //
 {
 	instruction_id id;
+	int priority;
 
 	explicit instruction_record(const instruction& instr);
 };

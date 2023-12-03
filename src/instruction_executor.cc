@@ -73,31 +73,8 @@ void instruction_executor::thread_main() {
 	}
 }
 
-// Heuristic: prioritize instructions with small launch overhead and long async completion times
-int instruction_priority(const instruction* instr) {
-	// - execute horizons first to unblock task generation, otherwise they are postponed indefinitely unless new alloc_instructions explicitly depend on them
-	// - execute free_instructions last because nothing ever depends on them (TODO except horizons!)
-	// TODO consider increasing instruction priority with age (where age = the instruction's epoch?)
-	return matchbox::match(
-	    *instr,                                             //
-	    [](const horizon_instruction&) { return 5; },       //
-	    [](const epoch_instruction&) { return 5; },         //
-	    [](const device_kernel_instruction&) { return 4; }, //
-	    [](const host_task_instruction&) { return 4; },     //
-	    [](const fence_instruction&) { return 3; },         //
-	    [](const send_instruction&) { return 2; },          //
-	    [](const receive_instruction&) { return 2; },       //
-	    [](const split_receive_instruction&) { return 2; }, //
-	    [](const await_receive_instruction&) { return 2; }, //
-	    [](const copy_instruction&) { return 2; },          //
-	    [](const alloc_instruction&) { return 1; },         //
-	    [](const auto&) { return 0; },                      //
-	    [](const free_instruction&) { return -1; }          //
-	);
-}
-
 struct instruction_priority_less {
-	bool operator()(const instruction* lhs, const instruction* rhs) const { return instruction_priority(lhs) < instruction_priority(rhs); }
+	bool operator()(const instruction* lhs, const instruction* rhs) const { return lhs->get_priority() < rhs->get_priority(); }
 };
 
 // TODO dupe of host_queue::future_event
@@ -348,9 +325,9 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	}
 #endif
 
-#define CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST() CELERITY_DETAIL_TRACY_ZONE_TEXT("depends: {}", tracy_dependency_list)
-#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()                                                                                                     \
-	CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "depends: {}", tracy_dependency_list)
+#define CELERITY_DETAIL_TRACY_ZONE_METADATA() CELERITY_DETAIL_TRACY_ZONE_TEXT("depends: {}\npriority: {}", tracy_dependency_list, instr.get_priority())
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()                                                                                                     \
+	CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "depends: {}\npriority: {}", tracy_dependency_list, instr.get_priority())
 
 	active_instruction_info active_instruction;
 	active_instruction.operation = matchbox::match<async_event>(
@@ -375,7 +352,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    void* ptr;
 		    {
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::alloc", Turquoise, "I{} alloc", ainstr.get_id());
-			    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+			    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 			    CELERITY_DETAIL_TRACY_ZONE_TEXT("alloc {}, {}%{} bytes", ainstr.get_allocation_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 			    ptr = m_backend_queue->alloc(ainstr.get_allocation_id().get_memory_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 		    }
@@ -392,7 +369,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 
 		    CELERITY_DEBUG("[executor] I{}: free {}", finstr.get_id(), finstr.get_allocation_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::free", Turquoise, "I{} free", finstr.get_id());
-		    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ZONE_TEXT("free {}", finstr.get_allocation_id());
 
 		    m_backend_queue->free(finstr.get_allocation_id().get_memory_id(), ptr);
@@ -410,7 +387,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    if((source_mid == user_memory_id || source_mid == host_memory_id) && (dest_mid == user_memory_id || dest_mid == host_memory_id)) {
 			    // TODO into thread pool
 			    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::copy", Lime, "I{} copy", cinstr.get_id());
-			    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+			    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 			    CELERITY_DETAIL_TRACY_ZONE_TEXT("copy {} -> {}, {} x{} bytes\n{} bytes total", cinstr.get_source_allocation(), cinstr.get_dest_allocation(),
 			        cinstr.get_copy_region(), cinstr.get_element_size(), cinstr.get_copy_region().get_area() * cinstr.get_element_size());
 			    copy_region_host(source_base, dest_base, cinstr.get_source_box(), cinstr.get_dest_box(), cinstr.get_copy_region(), cinstr.get_element_size());
@@ -419,7 +396,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 			    assert(source_mid != user_memory_id && dest_mid != user_memory_id);
 			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
 			        active_instruction.tracy_lane, "cy-executor", "executor::copy", Lime, "I{} copy", cinstr.get_id());
-			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 			    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "copy {} -> {}, {} x{} bytes\n{} bytes total",
 			        cinstr.get_source_allocation(), cinstr.get_dest_allocation(), cinstr.get_copy_region(), cinstr.get_element_size(),
 			        cinstr.get_copy_region().get_area() * cinstr.get_element_size());
@@ -432,7 +409,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        log_accesses(dkinstr.get_access_allocations()));
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
 		        active_instruction.tracy_lane, "cy-executor", "executor::device_kernel", Orange, "I{} device kernel", dkinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "kernel on D{}", dkinstr.get_device_id());
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
@@ -460,7 +437,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), log_accesses(htinstr.get_access_allocations()));
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
 		        active_instruction.tracy_lane, "cy-executor", "executor::host_task", Orange, "I{} host task", htinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "host task");
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
@@ -490,7 +467,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(),
 		        sinstr.get_message_id());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(active_instruction.tracy_lane, "cy-executor", "executor::send", Violet, "I{} send", sinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "send {}+{}, {}x{} bytes to N{}\n{} bytes total",
 		        sinstr.get_source_allocation_id(), sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(),
 		        sinstr.get_dest_node_id(), sinstr.get_send_range() * sinstr.get_element_size());
@@ -509,7 +486,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        rinstr.get_requested_region().get_area() * rinstr.get_element_size());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
 		        active_instruction.tracy_lane, "cy-executor", "executor::receive", DarkViolet, "I{} receive", rinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "receive {} {} into {} ({}), x{} bytes", rinstr.get_transfer_id(),
 		        rinstr.get_requested_region(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(), rinstr.get_element_size());
 
@@ -523,7 +500,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        srinstr.get_requested_region().get_area() * srinstr.get_element_size());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
 		        active_instruction.tracy_lane, "cy-executor", "executor::split_receive", DarkViolet, "I{} split receive", srinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "split receive {} {} into {} ({}), x{} bytes", srinstr.get_transfer_id(),
 		        srinstr.get_requested_region(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(), srinstr.get_element_size());
 
@@ -536,7 +513,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
 		        active_instruction.tracy_lane, "cy-executor", "executor::await_receive", DarkViolet, "I{} await receive", arinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(
 		        active_instruction.tracy_lane, "await receive {} {}", arinstr.get_transfer_id(), arinstr.get_received_region());
 
@@ -547,7 +524,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		        grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_BEGIN_SCOPED(
 		        active_instruction.tracy_lane, "cy-executor", "executor::gather_receive", DarkViolet, "I{} gather receive", grinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "gather receive {} into {}, {} bytes per node", grinstr.get_transfer_id(),
 		        grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
 
@@ -558,7 +535,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DEBUG("[executor] I{}: fill identity {} x{} for R{}", fiinstr.get_id(), fiinstr.get_allocation_id(), fiinstr.get_num_values(),
 		        fiinstr.get_reduction_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::fill_identity", Blue, "I{} fill identity", fiinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ZONE_TEXT("fill identity {} x{} for R{}", fiinstr.get_allocation_id(), fiinstr.get_num_values(), fiinstr.get_reduction_id());
 
 		    const auto allocation = m_allocations.at(fiinstr.get_allocation_id());
@@ -570,7 +547,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    CELERITY_DEBUG("[executor] I{}: reduce {} x{} into {} as R{}", rinstr.get_id(), rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
 		        rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::reduce", Blue, "I{} reduce", rinstr.get_id());
-		    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ZONE_TEXT("reduce {} x{} into {} as R{}", rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
 		        rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
 
@@ -585,7 +562,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    [&](const fence_instruction& finstr) {
 		    CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::fence", Blue, "fence");
-		    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 
 		    finstr.get_promise()->fulfill();
 		    return make_complete_event();
@@ -594,7 +571,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 		    assert(m_host_object_instances.count(dhoinstr.get_host_object_id()) != 0);
 		    CELERITY_DEBUG("[executor] I{}: destroy H{}", dhoinstr.get_id(), dhoinstr.get_host_object_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::destroy_host_object", Gray, "destroy host object");
-		    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 		    CELERITY_DETAIL_TRACY_ZONE_TEXT("destroy H{}", dhoinstr.get_host_object_id());
 
 		    m_host_object_instances.erase(dhoinstr.get_host_object_id());
@@ -603,7 +580,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    [&](const horizon_instruction& hinstr) {
 		    CELERITY_DEBUG("[executor] I{}: horizon", hinstr.get_id());
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::horizon", Gray, "horizon");
-		    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 
 		    if(m_delegate != nullptr) { m_delegate->horizon_reached(hinstr.get_horizon_task_id()); }
 		    collect(hinstr.get_garbage());
@@ -611,7 +588,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 	    },
 	    [&](const epoch_instruction& einstr) {
 		    CELERITY_DETAIL_TRACY_SCOPED_ZONE("executor::epoch", Gray, "epoch");
-		    CELERITY_DETAIL_TRACY_ZONE_DEPENDENCY_LIST()
+		    CELERITY_DETAIL_TRACY_ZONE_METADATA()
 
 		    switch(einstr.get_epoch_action()) {
 		    case epoch_action::none: CELERITY_DEBUG("[executor] I{}: epoch", einstr.get_id()); break;

@@ -167,7 +167,7 @@ command_record::command_record(const abstract_command& cmd, const task& tsk, con
 
 // Instructions
 
-instruction_record::instruction_record(const instruction& instr) : id(instr.get_id()) {}
+instruction_record::instruction_record(const instruction& instr) : id(instr.get_id()), priority(instr.get_priority()) {}
 
 clone_collective_group_instruction_record::clone_collective_group_instruction_record(const clone_collective_group_instruction& ccginstr)
     : acceptor_base(ccginstr), original_collective_group_id(ccginstr.get_original_collective_group_id()),

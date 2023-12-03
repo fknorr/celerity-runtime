@@ -30,15 +30,19 @@ class instruction
   public:
 	using edge_set = gch::small_vector<instruction_id>;
 
-	explicit instruction(const instruction_id iid) : m_id(iid) {}
+	/// If there are multiple instructions eligible for execution, the runtime should chose the one with the highest `priority` first. 
+	/// This provides a low-level scheduling heuristic to reduce the impact of submission latency and improve concurrency.
+	explicit instruction(const instruction_id iid, const int priority) : m_id(iid), m_priority(priority) {}
 
 	instruction_id get_id() const { return m_id; }
+	int get_priority() const { return m_priority; }
 
 	const edge_set& get_dependencies() const { return m_dependencies; }
 	void add_dependency(const instruction_id iid) { m_dependencies.push_back(iid); }
 
   private:
 	instruction_id m_id;
+	int m_priority;
 	edge_set m_dependencies;
 };
 
@@ -51,8 +55,9 @@ struct instruction_id_less {
 /// and is itself a collective operation is compiled and is itself a collective operation.
 class clone_collective_group_instruction : public matchbox::implement_acceptor<instruction, clone_collective_group_instruction> {
   public:
-	explicit clone_collective_group_instruction(const instruction_id iid, const collective_group_id original_cgid, const collective_group_id new_cgid)
-	    : acceptor_base(iid), m_original_cgid(original_cgid), m_new_cgid(new_cgid) {}
+	explicit clone_collective_group_instruction(
+	    const instruction_id iid, const int priority, const collective_group_id original_cgid, const collective_group_id new_cgid)
+	    : acceptor_base(iid, priority), m_original_cgid(original_cgid), m_new_cgid(new_cgid) {}
 
 	collective_group_id get_original_collective_group_id() const { return m_original_cgid; }
 	collective_group_id get_new_collective_group_id() const { return m_new_cgid; }
@@ -65,8 +70,8 @@ class clone_collective_group_instruction : public matchbox::implement_acceptor<i
 /// Allocates a contiguous range of memory, either for use as a backing allocation for a buffer or for other purposes i.e. staging for transfer operations.
 class alloc_instruction final : public matchbox::implement_acceptor<instruction, alloc_instruction> {
   public:
-	explicit alloc_instruction(const instruction_id iid, const allocation_id aid, const size_t size, const size_t alignment)
-	    : acceptor_base(iid), m_aid(aid), m_size(size), m_alignment(alignment) {}
+	explicit alloc_instruction(const instruction_id iid, const int priority, const allocation_id aid, const size_t size, const size_t alignment)
+	    : acceptor_base(iid, priority), m_aid(aid), m_size(size), m_alignment(alignment) {}
 
 	allocation_id get_allocation_id() const { return m_aid; }
 	size_t get_size_bytes() const { return m_size; }
@@ -81,7 +86,7 @@ class alloc_instruction final : public matchbox::implement_acceptor<instruction,
 /// Returns an allocation made with alloc_instruction to the system.
 class free_instruction final : public matchbox::implement_acceptor<instruction, free_instruction> {
   public:
-	explicit free_instruction(const instruction_id iid, const allocation_id aid) : acceptor_base(iid), m_aid(aid) {}
+	explicit free_instruction(const instruction_id iid, const int priority, const allocation_id aid) : acceptor_base(iid, priority), m_aid(aid) {}
 
 	allocation_id get_allocation_id() const { return m_aid; }
 
@@ -93,9 +98,9 @@ class free_instruction final : public matchbox::implement_acceptor<instruction, 
 /// Copies one or more subranges of elements from one allocation to another, potentially between different memories.
 class copy_instruction final : public matchbox::implement_acceptor<instruction, copy_instruction> {
   public:
-	explicit copy_instruction(const instruction_id iid, const allocation_with_offset& source_alloc, const allocation_with_offset& dest_alloc,
-	    const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size)
-	    : acceptor_base(iid), m_source_alloc(source_alloc), m_dest_alloc(dest_alloc), m_source_box(source_box), m_dest_box(dest_box),
+	explicit copy_instruction(const instruction_id iid, const int priority, const allocation_with_offset& source_alloc,
+	    const allocation_with_offset& dest_alloc, const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size)
+	    : acceptor_base(iid, priority), m_source_alloc(source_alloc), m_dest_alloc(dest_alloc), m_source_box(source_box), m_dest_box(dest_box),
 	      m_copy_region(std::move(copy_region)), m_elem_size(elem_size) {}
 
 	const allocation_with_offset& get_source_allocation() const { return m_source_alloc; }
@@ -133,10 +138,10 @@ using buffer_access_allocation_map = std::vector<buffer_access_allocation>;
 /// Launches a SYCL device kernel on a single device. Bound accessors and reductions are hydrated through buffer_access_allocation_maps.
 class device_kernel_instruction final : public matchbox::implement_acceptor<instruction, device_kernel_instruction> {
   public:
-	explicit device_kernel_instruction(const instruction_id iid, const device_id did, device_kernel_launcher launcher, const subrange<3>& execution_range,
-	    buffer_access_allocation_map access_allocations,
+	explicit device_kernel_instruction(const instruction_id iid, const int priority, const device_id did, device_kernel_launcher launcher,
+	    const subrange<3>& execution_range, buffer_access_allocation_map access_allocations,
 	    buffer_access_allocation_map reduction_allocations CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const task_id oob_task_id, std::string oob_task_name))
-	    : acceptor_base(iid), m_device_id(did), m_launcher(std::move(launcher)), m_execution_range(execution_range),
+	    : acceptor_base(iid, priority), m_device_id(did), m_launcher(std::move(launcher)), m_execution_range(execution_range),
 	      m_access_allocations(std::move(access_allocations)),
 	      m_reduction_allocations(std::move(reduction_allocations))
 	          CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, m_oob_task_id(oob_task_id), m_oob_task_name(std::move(oob_task_name))) {}
@@ -168,10 +173,10 @@ class device_kernel_instruction final : public matchbox::implement_acceptor<inst
 /// Launches a host task in a thread pool. Bound accessors are hydrated through a buffer_access_allocation_map.
 class host_task_instruction final : public matchbox::implement_acceptor<instruction, host_task_instruction> {
   public:
-	host_task_instruction(const instruction_id iid, host_task_launcher launcher, const subrange<3>& execution_range, const range<3>& global_range,
-	    buffer_access_allocation_map access_allocations,
+	host_task_instruction(const instruction_id iid, const int priority, host_task_launcher launcher, const subrange<3>& execution_range,
+	    const range<3>& global_range, buffer_access_allocation_map access_allocations,
 	    const collective_group_id cgid CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const task_id oob_task_id, std::string oob_task_name))
-	    : acceptor_base(iid), m_launcher(std::move(launcher)), m_global_range(global_range), m_execution_range(execution_range),
+	    : acceptor_base(iid, priority), m_launcher(std::move(launcher)), m_global_range(global_range), m_execution_range(execution_range),
 	      m_access_allocations(std::move(access_allocations)),
 	      m_cgid(cgid) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, m_oob_task_id(oob_task_id), m_oob_task_name(std::move(oob_task_name))) {}
 
@@ -202,9 +207,9 @@ class host_task_instruction final : public matchbox::implement_acceptor<instruct
 /// (MPI_) sends a subrange of an allocation to a single remote node. The send must have be announced by transmitting a pilot_message first.
 class send_instruction final : public matchbox::implement_acceptor<instruction, send_instruction> {
   public:
-	explicit send_instruction(const instruction_id iid, const node_id to_nid, const message_id msgid, const allocation_id source_aid,
+	explicit send_instruction(const instruction_id iid, const int priority, const node_id to_nid, const message_id msgid, const allocation_id source_aid,
 	    const range<3>& source_alloc_range, const id<3>& offset_in_alloc, const range<3>& send_range, const size_t elem_size)
-	    : acceptor_base(iid), m_to_nid(to_nid), m_message_id(msgid), m_source_aid(source_aid), m_source_range(source_alloc_range),
+	    : acceptor_base(iid, priority), m_to_nid(to_nid), m_message_id(msgid), m_source_aid(source_aid), m_source_range(source_alloc_range),
 	      m_offset_in_source(offset_in_alloc), m_send_range(send_range), m_elem_size(elem_size) {}
 
 	node_id get_dest_node_id() const { return m_to_nid; }
@@ -250,9 +255,9 @@ class receive_instruction_impl {
 /// complete once all of its constituent parts have arrived.
 class receive_instruction final : public matchbox::implement_acceptor<instruction, receive_instruction>, public receive_instruction_impl {
   public:
-	explicit receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const allocation_id dest_allocation,
+	explicit receive_instruction(const instruction_id iid, const int priority, const transfer_id& trid, region<3> request, const allocation_id dest_allocation,
 	    const box<3>& allocated_box, const size_t elem_size)
-	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_allocation, allocated_box, elem_size) {}
+	    : acceptor_base(iid, priority), receive_instruction_impl(trid, std::move(request), dest_allocation, allocated_box, elem_size) {}
 };
 
 /// Informs the receive arbiter about the bounding box allocation for a series of incoming transfers. The boxes of remote send_instructions do not necessarily
@@ -261,9 +266,9 @@ class receive_instruction final : public matchbox::implement_acceptor<instructio
 /// 2/4/8-connected component of the await_push region and passes it on to the receive_arbiter through a begin_receive_instruction.
 class split_receive_instruction final : public matchbox::implement_acceptor<instruction, split_receive_instruction>, public receive_instruction_impl {
   public:
-	explicit split_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> request, const allocation_id dest_allocation,
-	    const box<3>& allocated_box, const size_t elem_size)
-	    : acceptor_base(iid), receive_instruction_impl(trid, std::move(request), dest_allocation, allocated_box, elem_size) {}
+	explicit split_receive_instruction(const instruction_id iid, const int priority, const transfer_id& trid, region<3> request,
+	    const allocation_id dest_allocation, const box<3>& allocated_box, const size_t elem_size)
+	    : acceptor_base(iid, priority), receive_instruction_impl(trid, std::move(request), dest_allocation, allocated_box, elem_size) {}
 };
 
 /// Waits on the receive arbiter to complete part of the receive.
@@ -271,8 +276,8 @@ class split_receive_instruction final : public matchbox::implement_acceptor<inst
 /// buffer allocation that receive_arbiter would use in the "happy path" where there is a 1-to-1 correspondence between sends and receives.
 class await_receive_instruction final : public matchbox::implement_acceptor<instruction, await_receive_instruction> {
   public:
-	explicit await_receive_instruction(const instruction_id iid, const transfer_id& trid, region<3> recv_region)
-	    : acceptor_base(iid), m_trid(trid), m_recv_region(std::move(recv_region)) {}
+	explicit await_receive_instruction(const instruction_id iid, const int priority, const transfer_id& trid, region<3> recv_region)
+	    : acceptor_base(iid, priority), m_trid(trid), m_recv_region(std::move(recv_region)) {}
 
 	transfer_id get_transfer_id() const { return m_trid; }
 	const region<3>& get_received_region() const { return m_recv_region; }
@@ -286,8 +291,9 @@ class await_receive_instruction final : public matchbox::implement_acceptor<inst
 /// peer node and place the chunks side-by-side in a contiguous allocation. The offset in the output allocation are equal to the sender node id.
 class gather_receive_instruction final : public matchbox::implement_acceptor<instruction, gather_receive_instruction> {
   public:
-	explicit gather_receive_instruction(const instruction_id iid, const transfer_id& trid, const allocation_id dest_aid, const size_t node_chunk_size)
-	    : acceptor_base(iid), m_trid(trid), m_dest_aid(dest_aid), m_node_chunk_size(node_chunk_size) {}
+	explicit gather_receive_instruction(
+	    const instruction_id iid, const int priority, const transfer_id& trid, const allocation_id dest_aid, const size_t node_chunk_size)
+	    : acceptor_base(iid, priority), m_trid(trid), m_dest_aid(dest_aid), m_node_chunk_size(node_chunk_size) {}
 
 	transfer_id get_transfer_id() const { return m_trid; }
 	allocation_id get_dest_allocation_id() const { return m_dest_aid; }
@@ -303,8 +309,9 @@ class gather_receive_instruction final : public matchbox::implement_acceptor<ins
 /// contribute a partial reduction result leave the identity value in their gather slot.
 class fill_identity_instruction final : public matchbox::implement_acceptor<instruction, fill_identity_instruction> {
   public:
-	explicit fill_identity_instruction(const instruction_id iid, const reduction_id rid, const allocation_id allocation_id, const size_t num_values)
-	    : acceptor_base(iid), m_rid(rid), m_aid(allocation_id), m_num_values(num_values) {}
+	explicit fill_identity_instruction(
+	    const instruction_id iid, const int priority, const reduction_id rid, const allocation_id allocation_id, const size_t num_values)
+	    : acceptor_base(iid, priority), m_rid(rid), m_aid(allocation_id), m_num_values(num_values) {}
 
 	reduction_id get_reduction_id() const { return m_rid; }
 	allocation_id get_allocation_id() const { return m_aid; }
@@ -319,9 +326,10 @@ class fill_identity_instruction final : public matchbox::implement_acceptor<inst
 /// Performs an out-of-memory reduction by reading from a gather allocation and writing to a single (buffer) allocation.
 class reduce_instruction final : public matchbox::implement_acceptor<instruction, reduce_instruction> {
   public:
-	explicit reduce_instruction(const instruction_id iid, const reduction_id rid, const allocation_id source_allocation_id, const size_t num_source_values,
-	    const allocation_id dest_allocation_id)
-	    : acceptor_base(iid), m_rid(rid), m_source_aid(source_allocation_id), m_num_source_values(num_source_values), m_dest_aid(dest_allocation_id) {}
+	explicit reduce_instruction(const instruction_id iid, const int priority, const reduction_id rid, const allocation_id source_allocation_id,
+	    const size_t num_source_values, const allocation_id dest_allocation_id)
+	    : acceptor_base(iid, priority), m_rid(rid), m_source_aid(source_allocation_id), m_num_source_values(num_source_values), m_dest_aid(dest_allocation_id) {
+	}
 
 	reduction_id get_reduction_id() const { return m_rid; }
 	allocation_id get_source_allocation_id() const { return m_source_aid; }
@@ -338,7 +346,7 @@ class reduce_instruction final : public matchbox::implement_acceptor<instruction
 /// Fulfills a fence promise. Issued directly after the export_instruction in case of a buffer fence.
 class fence_instruction final : public matchbox::implement_acceptor<instruction, fence_instruction> {
   public:
-	explicit fence_instruction(const instruction_id iid, fence_promise* promise) : acceptor_base(iid), m_promise(promise) {}
+	explicit fence_instruction(const instruction_id iid, const int priority, fence_promise* promise) : acceptor_base(iid, priority), m_promise(promise) {}
 
 	fence_promise* get_promise() const { return m_promise; };
 
@@ -350,7 +358,8 @@ class fence_instruction final : public matchbox::implement_acceptor<instruction,
 /// deallocates that host object.
 class destroy_host_object_instruction final : public matchbox::implement_acceptor<instruction, destroy_host_object_instruction> {
   public:
-	explicit destroy_host_object_instruction(const instruction_id iid, const host_object_id hoid) : acceptor_base(iid), m_hoid(hoid) {}
+	explicit destroy_host_object_instruction(const instruction_id iid, const int priority, const host_object_id hoid)
+	    : acceptor_base(iid, priority), m_hoid(hoid) {}
 
 	host_object_id get_host_object_id() const { return m_hoid; }
 
@@ -369,8 +378,8 @@ struct instruction_garbage {
 /// IDAG equivalent of a horizon task or command.
 class horizon_instruction final : public matchbox::implement_acceptor<instruction, horizon_instruction> {
   public:
-	explicit horizon_instruction(const instruction_id iid, const task_id horizon_tid, instruction_garbage garbage)
-	    : acceptor_base(iid), m_horizon_tid(horizon_tid), m_garbage(std::move(garbage)) {}
+	explicit horizon_instruction(const instruction_id iid, const int priority, const task_id horizon_tid, instruction_garbage garbage)
+	    : acceptor_base(iid, priority), m_horizon_tid(horizon_tid), m_garbage(std::move(garbage)) {}
 
 	task_id get_horizon_task_id() const { return m_horizon_tid; }
 	const instruction_garbage& get_garbage() const { return m_garbage; }
@@ -383,8 +392,8 @@ class horizon_instruction final : public matchbox::implement_acceptor<instructio
 /// IDAG equivalent of an epoch task or command.
 class epoch_instruction final : public matchbox::implement_acceptor<instruction, epoch_instruction> {
   public:
-	explicit epoch_instruction(const instruction_id iid, const task_id epoch_tid, const epoch_action action, instruction_garbage garbage)
-	    : acceptor_base(iid), m_epoch_tid(epoch_tid), m_epoch_action(action), m_garbage(std::move(garbage)) {}
+	explicit epoch_instruction(const instruction_id iid, const int priority, const task_id epoch_tid, const epoch_action action, instruction_garbage garbage)
+	    : acceptor_base(iid, priority), m_epoch_tid(epoch_tid), m_epoch_action(action), m_garbage(std::move(garbage)) {}
 
 	task_id get_epoch_task_id() const { return m_epoch_tid; }
 	epoch_action get_epoch_action() const { return m_epoch_action; }

@@ -128,6 +128,32 @@ restart:
 	}
 }
 
+template <typename Instruction>
+constexpr int instruction_type_priority = 0; // higher means more urgent
+template <>
+constexpr int instruction_type_priority<free_instruction> = -1;
+template <>
+constexpr int instruction_type_priority<alloc_instruction> = 1;
+template <>
+constexpr int instruction_type_priority<copy_instruction> = 2;
+template <>
+constexpr int instruction_type_priority<await_receive_instruction> = 2;
+template <>
+constexpr int instruction_type_priority<split_receive_instruction> = 2;
+template <>
+constexpr int instruction_type_priority<receive_instruction> = 2;
+template <>
+constexpr int instruction_type_priority<send_instruction> = 2;
+template <>
+constexpr int instruction_type_priority<fence_instruction> = 3;
+template <>
+constexpr int instruction_type_priority<host_task_instruction> = 4;
+template <>
+constexpr int instruction_type_priority<device_kernel_instruction> = 4;
+template <>
+constexpr int instruction_type_priority<epoch_instruction> = 5;
+template <>
+constexpr int instruction_type_priority<horizon_instruction> = 5;
 
 } // namespace celerity::detail::instruction_graph_generator_detail
 
@@ -157,6 +183,7 @@ class instruction_graph_generator::impl {
 	struct batch { // NOLINT(cppcoreguidelines-special-member-functions) (do not complain about the asserting destructor)
 		std::vector<const instruction*> generated_instructions;
 		std::vector<outbound_pilot> generated_pilots;
+		int base_priority = 0;
 
 #ifndef NDEBUG
 		~batch() {
@@ -395,7 +422,8 @@ class instruction_graph_generator::impl {
 	template <typename Instruction, typename... CtorParams>
 	Instruction* create(batch& batch, CtorParams&&... ctor_args) {
 		const auto id = m_next_iid++;
-		auto instr = std::make_unique<Instruction>(id, std::forward<CtorParams>(ctor_args)...);
+		const auto priority = batch.base_priority + instruction_graph_generator_detail::instruction_type_priority<Instruction>;
+		auto instr = std::make_unique<Instruction>(id, priority, std::forward<CtorParams>(ctor_args)...);
 		const auto ptr = instr.get();
 		m_idag->push_instruction(std::move(instr));
 		m_execution_front.insert(id);
@@ -1419,6 +1447,10 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 
 void instruction_graph_generator::impl::compile_push_command(batch& command_batch, const push_command& pcmd) {
+	// Prioritize all instructions participating in a "push" to hide the latency of establishing local coherence behind the typically much longer latencies of
+	// inter-node communication
+	command_batch.base_priority = 10;
+
 	const auto trid = pcmd.get_transfer_id();
 
 	auto& buffer = m_buffers.at(trid.bid);
