@@ -174,7 +174,7 @@ class instruction_graph_generator::impl {
 	struct buffer_memory_per_allocation_data {
 		struct access_front {
 			gch::small_vector<instruction*> instructions; // ordered by id to allow equality comparison
-			enum { read, write } mode = write;
+			enum { allocate, read, write } mode = allocate;
 
 			friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.instructions == rhs.instructions && lhs.mode == rhs.mode; }
 			friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
@@ -194,9 +194,11 @@ class instruction_graph_generator::impl {
 		region_map<access_front> access_fronts; ///< in virtual-buffer coordinates
 
 		/// `buffer_dims` is only required to construct region maps, the generator itself is independent from that parameter.
-		explicit buffer_memory_per_allocation_data(
-		    const int buffer_dims, const allocation_id aid, const detail::box<3>& allocated_box, const range<3>& buffer_range)
-		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {}
+		explicit buffer_memory_per_allocation_data(const int buffer_dims, const allocation_id aid, alloc_instruction* const ainstr /* optional */,
+		    const detail::box<3>& allocated_box, const range<3>& buffer_range)
+		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {
+			if(ainstr != nullptr) { access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate}); }
+		}
 
 		// TODO accept BoxOrRegion
 		void record_read(const region<3>& region, instruction* const instr) {
@@ -403,42 +405,43 @@ class instruction_graph_generator::impl {
 
 	message_id create_outbound_pilot(batch& batch, node_id target, const transfer_id& trid, const box<3>& box);
 
-	template <typename... RecordInfo>
-	void add_dependency(instruction* const from, instruction* const to, const instruction_dependency_origin record_origin, const RecordInfo&... record_info) {
+	void add_dependency(instruction* const from, instruction* const to, const instruction_dependency_origin record_origin) {
 		from->add_dependency(to->get_id());
-		if(m_recorder != nullptr) { m_recorder->record_dependency(from->get_id(), to->get_id(), record_origin, record_info...); }
+		if(m_recorder != nullptr) { m_recorder->record_dependency(from->get_id(), to->get_id(), record_origin); }
 		m_execution_front.erase(to->get_id());
 	}
 
 	template <typename BoxOrRegion>
-	void add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_memory_per_allocation_data& allocation,
-	    const BoxOrRegion& box_or_region, const instruction_dependency_origin record_origin) {
-		for(const auto& [box, dep_instr] : allocation.last_writers.get_region_values(box_or_region)) {
-			assert(dep_instr != nullptr);
-			add_dependency(accessing_instruction, dep_instr, record_origin, allocation.aid, box);
+	void add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& region,
+	    const instruction_dependency_origin record_origin) {
+		for(const auto& [box, dep_instr] : allocation.last_writers.get_region_values(region)) {
+			// dep_instr can be null if this is an uninitialized read. We detect and report these separately, but try to handle them gracefully here
+			if(dep_instr != nullptr) { add_dependency(accessing_instruction, dep_instr, record_origin); }
 		}
 	}
 
 	template <typename BoxOrRegion>
-	void read_from_allocation(instruction* const reading_instruction, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& box_or_region) {
-		add_dependencies_on_last_writers(reading_instruction, allocation, box_or_region, instruction_dependency_origin::read);
-		allocation.record_read(box_or_region, reading_instruction);
+	void read_from_allocation(instruction* const reading_instruction, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& region) {
+		add_dependencies_on_last_writers(reading_instruction, allocation, region, instruction_dependency_origin::read_from_allocation);
+		allocation.record_read(region, reading_instruction);
 	}
 
 	template <typename BoxOrRegion>
-	void add_dependencies_on_access_front(instruction* const accessing_instruction, buffer_memory_per_allocation_data& allocation,
-	    const BoxOrRegion& box_or_region, const instruction_dependency_origin record_origin) {
-		for(const auto& [box, front] : allocation.access_fronts.get_region_values(box_or_region)) {
+	void add_dependencies_on_access_front(instruction* const accessing_instruction, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& region,
+	    const instruction_dependency_origin record_origin_for_read_write_front) {
+		for(const auto& [box, front] : allocation.access_fronts.get_region_values(region)) {
 			for(const auto dep_instr : front.instructions) {
-				add_dependency(accessing_instruction, dep_instr, record_origin, allocation.aid, box);
+				add_dependency(accessing_instruction, dep_instr,
+				    front.mode == buffer_memory_per_allocation_data::access_front::allocate ? instruction_dependency_origin::allocation_lifetime
+				                                                                            : record_origin_for_read_write_front);
 			}
 		}
 	}
 
 	template <typename BoxOrRegion>
-	void write_to_allocation(instruction* const writing_instruction, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& box_or_region) {
-		add_dependencies_on_access_front(writing_instruction, allocation, box_or_region, instruction_dependency_origin::write);
-		allocation.record_write(box_or_region, writing_instruction);
+	void write_to_allocation(instruction* const writing_instruction, buffer_memory_per_allocation_data& allocation, const BoxOrRegion& region) {
+		add_dependencies_on_access_front(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocatoin);
+		allocation.record_write(region, writing_instruction);
 	}
 
 	void apply_epoch(instruction* const epoch) {
@@ -538,7 +541,7 @@ void instruction_graph_generator::impl::create_buffer(
 
 		auto& buffer = iter->second;
 		auto& memory = buffer.memories.at(user_memory_id);
-		auto& allocation = memory.allocations.emplace_back(buffer.dims, user_aid, entire_buffer, buffer.range);
+		auto& allocation = memory.allocations.emplace_back(buffer.dims, user_aid, nullptr /* alloc_instruction */, entire_buffer, buffer.range);
 
 		allocation.record_write(entire_buffer, m_last_epoch);
 		buffer.original_writers.update_region(entire_buffer, m_last_epoch);
@@ -561,7 +564,7 @@ void instruction_graph_generator::impl::destroy_buffer(const buffer_id bid) {
 		auto& memory = buffer.memories[mid];
 		for(auto& allocation : memory.allocations) {
 			const auto free_instr = create<free_instruction>(free_batch, allocation.aid);
-			add_dependencies_on_access_front(free_instr, allocation, allocation.box, instruction_dependency_origin::lifetime);
+			add_dependencies_on_access_front(free_instr, allocation, allocation.box, instruction_dependency_origin::allocation_lifetime);
 			// no need to modify the access front - we're removing the buffer altogether!
 			if(m_recorder != nullptr) {
 				*m_recorder << free_instruction_record(
@@ -587,7 +590,7 @@ void instruction_graph_generator::impl::destroy_host_object(const host_object_id
 	if(obj.owns_instance) {
 		batch destroy_batch;
 		const auto destroy_instr = create<destroy_host_object_instruction>(destroy_batch, hoid);
-		add_dependency(destroy_instr, obj.last_side_effect, instruction_dependency_origin::lifetime, hoid);
+		add_dependency(destroy_instr, obj.last_side_effect, instruction_dependency_origin::side_effect);
 		if(m_recorder != nullptr) { *m_recorder << destroy_host_object_instruction_record(*destroy_instr); }
 		flush_batch(std::move(destroy_batch));
 	}
@@ -639,12 +642,10 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 	region new_allocations(std::move(unmerged_new_allocation));
 
 	for(const auto& dest_box : new_allocations.get_boxes()) {
-		auto& dest_allocation = memory.allocations.emplace_back(buffer.dims, new_allocation_id(mid), dest_box, buffer.range);
-		const auto alloc_instr =
-		    create<alloc_instruction>(current_batch, dest_allocation.aid, dest_allocation.box.get_area() * buffer.elem_size, buffer.elem_align);
+		const auto aid = new_allocation_id(mid);
+		const auto alloc_instr = create<alloc_instruction>(current_batch, aid, dest_box.get_area() * buffer.elem_size, buffer.elem_align);
+		auto& dest_allocation = memory.allocations.emplace_back(buffer.dims, aid, alloc_instr, dest_box, buffer.range);
 		add_dependency(alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
-		dest_allocation.record_write(
-		    dest_allocation.box, alloc_instr); // TODO figure out how to make alloc_instr the "epoch" for any subsequent reads or writes.
 
 		for(auto& source_allocation : memory.allocations) {
 			// TODO this is ugly. maybe attach a tag enum to the allocation struct to recognize "allocations that are about to be freed"?
@@ -686,7 +687,7 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 		assert(allocation != memory.allocations.end());
 
 		const auto free_instr = create<free_instruction>(current_batch, allocation->aid);
-		add_dependencies_on_access_front(free_instr, *allocation, allocation->box, instruction_dependency_origin::lifetime);
+		add_dependencies_on_access_front(free_instr, *allocation, allocation->box, instruction_dependency_origin::allocation_lifetime);
 
 		if(m_recorder != nullptr) {
 			*m_recorder << free_instruction_record(
@@ -737,7 +738,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 			// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
 			// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
 			// that there are no pending transfers for the region they are trying to read or to access (TODO).
-			add_dependencies_on_access_front(split_recv_instr, *alloc, alloc_recv_region, instruction_dependency_origin::write);
+			add_dependencies_on_access_front(split_recv_instr, *alloc, alloc_recv_region, instruction_dependency_origin::write_to_allocatoin);
 
 #ifndef NDEBUG
 			region<3> full_await_region;
@@ -1029,7 +1030,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		auto& root_cg = m_collective_groups.at(root_collective_group_id);
 		const auto clone_cg_isntr = create<clone_collective_group_instruction>(command_batch, root_collective_group_id, tsk.get_collective_group_id());
 		if(m_recorder != nullptr) { *m_recorder << clone_collective_group_instruction_record(*clone_cg_isntr); }
-		add_dependency(clone_cg_isntr, root_cg.last_host_task, instruction_dependency_origin::collective_group_order, cgid);
+		add_dependency(clone_cg_isntr, root_cg.last_host_task, instruction_dependency_origin::collective_group_order);
 		root_cg.last_host_task = clone_cg_isntr;
 		m_collective_groups.emplace(cgid, per_collective_group_data{clone_cg_isntr});
 	}
@@ -1179,7 +1180,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			if(m_recorder != nullptr) {
 				*m_recorder << copy_instruction_record(*current_value_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name);
 			}
-			add_dependency(current_value_copy_instr, red.gather_alloc_instr, instruction_dependency_origin::lifetime, red.gather_aid);
+			add_dependency(current_value_copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
 			read_from_allocation(current_value_copy_instr, *source_allocation, scalar_reduction_box);
 		}
 	}
@@ -1302,21 +1303,21 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 			for(auto& allocation : memory.allocations) {
 				add_dependencies_on_last_writers(
-				    instr.instruction, allocation, region_intersection(rw.reads, allocation.box), instruction_dependency_origin::read);
+				    instr.instruction, allocation, region_intersection(rw.reads, allocation.box), instruction_dependency_origin::read_from_allocation);
 				add_dependencies_on_access_front(
-				    instr.instruction, allocation, region_intersection(rw.writes, allocation.box), instruction_dependency_origin::write);
+				    instr.instruction, allocation, region_intersection(rw.writes, allocation.box), instruction_dependency_origin::write_to_allocatoin);
 			}
 		}
 		for(const auto& [hoid, order] : instr.se_map) {
 			assert(instr.memory_id == host_memory_id);
 			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
-				add_dependency(instr.instruction, last_side_effect, instruction_dependency_origin::side_effect, hoid);
+				add_dependency(instr.instruction, last_side_effect, instruction_dependency_origin::side_effect);
 			}
 		}
 		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
 			assert(instr.memory_id == host_memory_id);
 			auto& group = m_collective_groups.at(cgid); // created previously with clone_collective_group_instruction
-			add_dependency(instr.instruction, group.last_host_task, instruction_dependency_origin::collective_group_order, cgid);
+			add_dependency(instr.instruction, group.last_host_task, instruction_dependency_origin::collective_group_order);
 		}
 	}
 
@@ -1375,7 +1376,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			const auto copy_instr =
 			    create<copy_instruction>(command_batch, source_allocation->aid, red.gather_aid + (red.current_value_offset + j) * buffer.elem_size,
 			        source_allocation->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
-			add_dependency(copy_instr, red.gather_alloc_instr, instruction_dependency_origin::lifetime, red.gather_aid);
+			add_dependency(copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
 			read_from_allocation(copy_instr, *source_allocation, scalar_reduction_box);
 
 			if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name); }
@@ -1393,7 +1394,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			    *reduce_instr, std::nullopt, bid, buffer.name, scalar_reduction_box, reduce_instruction_record::reduction_scope::local);
 		}
 		for(auto& copy_instr : gather_copy_instrs) {
-			add_dependency(reduce_instr, copy_instr, instruction_dependency_origin::read, red.gather_aid);
+			add_dependency(reduce_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
 		}
 		write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
 		buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
@@ -1404,7 +1405,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 		const auto gather_free_instr = create<free_instruction>(command_batch, red.gather_aid);
 		if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, red.num_chunks * red.chunk_size, std::nullopt); }
-		add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::lifetime, red.gather_aid);
+		add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::allocation_lifetime);
 	}
 
 	// 7) insert epoch and horizon dependencies, apply epochs, optionally record the instruction
@@ -1527,7 +1528,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 
 	const auto fill_identity_instr = create<fill_identity_instruction>(command_batch, rid, gather_aid, m_num_nodes);
 	if(m_recorder != nullptr) { *m_recorder << fill_identity_instruction_record(*fill_identity_instr); }
-	add_dependency(fill_identity_instr, gather_alloc_instr, instruction_dependency_origin::lifetime, gather_aid);
+	add_dependency(fill_identity_instr, gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
 
 	// if the local node contributes to the reduction, copy the contribution to the appropriate position in the gather space
 
@@ -1543,7 +1544,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 		if(m_recorder != nullptr) {
 			*m_recorder << copy_instruction_record(*local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name);
 		}
-		add_dependency(local_gather_copy_instr, fill_identity_instr, instruction_dependency_origin::write, gather_aid);
+		add_dependency(local_gather_copy_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocatoin);
 		read_from_allocation(local_gather_copy_instr, *source_allocation, scalar_reduction_box);
 	}
 
@@ -1552,7 +1553,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 	const transfer_id trid(gather.consumer_tid, bid, gather.rid);
 	const auto gather_recv_instr = create<gather_receive_instruction>(command_batch, trid, gather_aid, node_chunk_size);
 	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_recv_instr, buffer.name, gather.gather_box, m_num_nodes); }
-	add_dependency(gather_recv_instr, fill_identity_instr, instruction_dependency_origin::write, gather_aid);
+	add_dependency(gather_recv_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocatoin);
 
 	// perform the global reduction
 
@@ -1567,10 +1568,8 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 		*m_recorder << reduce_instruction_record(
 		    *reduce_instr, rcmd.get_cid(), bid, buffer.name, scalar_reduction_box, reduce_instruction_record::reduction_scope::global);
 	}
-	add_dependency(reduce_instr, gather_recv_instr, instruction_dependency_origin::read, gather_aid);
-	if(local_gather_copy_instr != nullptr) {
-		add_dependency(reduce_instr, local_gather_copy_instr, instruction_dependency_origin::read, gather_aid);
-	}
+	add_dependency(reduce_instr, gather_recv_instr, instruction_dependency_origin::read_from_allocation);
+	if(local_gather_copy_instr != nullptr) { add_dependency(reduce_instr, local_gather_copy_instr, instruction_dependency_origin::read_from_allocation); }
 	write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
 	buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
 	buffer.original_write_memories.update_region(scalar_reduction_box, host_memory_id);
@@ -1580,7 +1579,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 
 	const auto gather_free_instr = create<free_instruction>(command_batch, gather_aid);
 	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
-	add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::lifetime, gather_aid);
+	add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::allocation_lifetime);
 
 	buffer.pending_gathers.clear();
 }
@@ -1619,7 +1618,7 @@ void instruction_graph_generator::impl::compile_fence_command(batch& command_bat
 		read_from_allocation(copy_instr, *host_buffer_allocation, fence_box);
 
 		const auto fence_instr = create<fence_instruction>(command_batch, tsk.get_fence_promise());
-		add_dependency(fence_instr, copy_instr, instruction_dependency_origin::read, user_allocation_id);
+		add_dependency(fence_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
 
 		// we will just assume that the runtime does not intend to re-use this allocation
 		m_unreferenced_user_allocations.push_back(user_allocation_id);
@@ -1633,7 +1632,7 @@ void instruction_graph_generator::impl::compile_fence_command(batch& command_bat
 	for(const auto [hoid, _] : sem) {
 		auto& obj = m_host_objects.at(hoid);
 		const auto fence_instr = create<fence_instruction>(command_batch, tsk.get_fence_promise());
-		add_dependency(fence_instr, obj.last_side_effect, instruction_dependency_origin::side_effect, hoid);
+		add_dependency(fence_instr, obj.last_side_effect, instruction_dependency_origin::side_effect);
 		obj.last_side_effect = fence_instr;
 
 		if(m_recorder != nullptr) { *m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), hoid); }

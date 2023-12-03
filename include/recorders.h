@@ -147,9 +147,9 @@ struct buffer_allocation_record {
 };
 
 enum class instruction_dependency_origin {
-	lifetime,
-	write,
-	read,
+	allocation_lifetime,
+	write_to_allocatoin,
+	read_from_allocation,
 	side_effect,
 	collective_group_order,
 	last_epoch,
@@ -161,10 +161,6 @@ struct instruction_dependency_record {
 	instruction_id predecessor;
 	instruction_id successor;
 	instruction_dependency_origin origin;
-	std::optional<allocation_id> allocation_id;
-	std::optional<region<3>> region;
-	std::optional<host_object_id> host_object_id;
-	std::optional<collective_group_id> collective_group_id;
 
 	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor, const instruction_dependency_origin origin)
 	    : predecessor(predecessor), successor(successor), origin(origin) {}
@@ -415,10 +411,8 @@ class instruction_recorder {
 
 	void record_instruction(std::unique_ptr<instruction_record> record) { m_recorded_instructions.push_back(std::move(record)); }
 
-	template <typename... Info>
-	void record_dependency(const instruction_id from, const instruction_id to, const instruction_dependency_origin origin, const Info&... info) {
-		auto& dep = m_recorded_dependencies.emplace_back(to, from, origin);
-		(set_dependency_info(dep, info), ...);
+	void record_dependency(const instruction_id from, const instruction_id to, const instruction_dependency_origin origin) {
+		m_recorded_dependencies.emplace_back(to, from, origin);
 	}
 
 	void record_outbound_pilot(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
@@ -453,12 +447,6 @@ class instruction_recorder {
 	std::vector<instruction_dependency_record> m_recorded_dependencies;
 	std::vector<outbound_pilot> m_recorded_pilots;
 	std::unordered_map<transfer_id, command_id> m_await_push_cids;
-
-	static void set_dependency_info(instruction_dependency_record& rec, const detail::allocation_id aid) { rec.allocation_id = aid; }
-	static void set_dependency_info(instruction_dependency_record& rec, const detail::box<3>& box) { rec.region = box; }
-	static void set_dependency_info(instruction_dependency_record& rec, const detail::region<3>& region) { rec.region = region; }
-	static void set_dependency_info(instruction_dependency_record& rec, const detail::host_object_id hoid) { rec.host_object_id = hoid; }
-	static void set_dependency_info(instruction_dependency_record& rec, const detail::collective_group_id cgid) { rec.collective_group_id = cgid; }
 };
 
 } // namespace celerity::detail
