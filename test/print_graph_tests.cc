@@ -132,7 +132,7 @@ TEST_CASE("instruction-graph printing is unchanged", "[print_graph][instruction-
 	// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graph is sane and
 	// replace the `expected` value with the new dot graph.
 	const std::string expected =
-	    "digraph G{label=<<br/>Instruction Graph<br/><b>instruction-graph printing is unchanged</b><br/>for N0 out of 4 nodes, with 2 devices / "
+	    "digraph G{label=<<br/>anstruction Graph<br/><b>instruction-graph printing is unchanged</b><br/>for N0 out of 4 nodes, with 2 devices / "
 	    "node>;pad=0.2;I0[color=black,shape=box,margin=0.2,style=rounded,label=<I0 (T0, "
 	    "C0)<br/><b>epoch</b>>];I1[color=cyan3,shape=ellipse,label=<I1<br/>buffer <b>alloc</b> M1.A1<br/>for B0 [0,0,0] - [1,1,1]<br/>4%4 "
 	    "bytes>];I2[color=cyan3,shape=ellipse,label=<I2<br/>buffer <b>alloc</b> M3.A1<br/>for B0 [0,0,0] - [1,1,1]<br/>4%4 "

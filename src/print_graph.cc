@@ -9,7 +9,9 @@
 #include "task.h"
 #include "task_manager.h"
 
-#include <set>
+#include <map>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <spdlog/fmt/fmt.h>
 
@@ -90,7 +92,7 @@ std::string get_task_label(const task_record& tsk) {
 	return label;
 }
 
-std::string make_graph_preamble(const std::string& title) { return fmt::format("digraph G{{label=<{}>;pad=0.2;", title); }
+std::string make_graph_preamble(const std::string& title) { return fmt::format("digraph G{{label=<{}>;pad=0.2;edge[fontsize=10.0,labeldistance=2.0];", title); }
 
 std::string print_task_graph(const task_recorder& recorder, const std::string& title) {
 	std::string dot = make_graph_preamble(title);
@@ -260,6 +262,30 @@ std::string print_command_reference_label(const command_record cmd, const task_r
 	fmt::format_to(std::back_inserter(cmd_label), "({})", command_type_string(cmd.type));
 	if(cmd.task_id.has_value()) { cmd_label += "<br/>from " + print_task_reference_label(trec.get_task(*cmd.task_id)); }
 	return cmd_label;
+}
+
+std::string instruction_dependency_color(const instruction_dependency_origin origin) {
+	switch(origin) {
+	case instruction_dependency_origin::lifetime: return "cyan3";
+	case instruction_dependency_origin::write: return "green3";
+	case instruction_dependency_origin::read: return {};
+	case instruction_dependency_origin::side_effect: return {};
+	case instruction_dependency_origin::collective_group_order: return "blue";
+	case instruction_dependency_origin::last_epoch: return "orchid";
+	case instruction_dependency_origin::execution_front: return "orange";
+	case instruction_dependency_origin::split_receive: return "gray";
+	}
+}
+
+std::string instruction_dependency_title(const instruction_dependency_record& dep) {
+	std::vector<std::string> label;
+	if(dep.origin == instruction_dependency_origin::read) { label.push_back("read"); }
+	if(dep.origin == instruction_dependency_origin::write) { label.push_back("write"); }
+	if(dep.allocation_id.has_value()) { label.push_back(fmt::format("{}", *dep.allocation_id)); }
+	if(dep.host_object_id.has_value()) { label.push_back(fmt::format("H{}", *dep.host_object_id)); }
+	if(dep.collective_group_id.has_value()) { label.push_back(fmt::format("CG{}", *dep.collective_group_id)); }
+	if(dep.region.has_value()) { label.push_back(fmt::format("{}", *dep.region)); }
+	return fmt::format("{}", fmt::join(label, " "));
 }
 
 std::string print_instruction_graph(const instruction_recorder& irec, const command_recorder& crec, const task_recorder& trec, const std::string& title) {
@@ -475,19 +501,33 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 		instruction_id predecessor;
 		instruction_id successor;
 	};
-	struct dependency_less {
+	struct dependency_edge_order {
 		bool operator()(const dependency_edge& lhs, const dependency_edge& rhs) const {
 			if(lhs.predecessor < rhs.predecessor) return true;
 			if(lhs.predecessor > rhs.predecessor) return false;
 			return lhs.successor < rhs.successor;
 		}
 	};
-	std::set<dependency_edge, dependency_less> edges; // ordered and unique
+	std::map<dependency_edge, std::vector<const instruction_dependency_record*>, dependency_edge_order> dependencies_by_edge; // ordered and unique
 	for(const auto& dep : irec.get_dependencies()) {
-		edges.insert({dep.predecessor, dep.successor});
+		dependencies_by_edge[{dep.predecessor, dep.successor} /* allow default-insert */].push_back(&dep);
 	}
-	for(const auto& [predecessor, successor] : edges) {
-		fmt::format_to(back, "I{}->I{}[{}];", predecessor, successor, "" /* TODO */);
+	for(const auto& [edge, dep_records] : dependencies_by_edge) {
+		const bool multi_origin = std::any_of(std::next(dep_records.begin()), dep_records.end(),
+		    [first_origin = dep_records.front()->origin](const instruction_dependency_record* dep) { return dep->origin != first_origin; });
+		const auto color = multi_origin ? "gray" : instruction_dependency_color(dep_records.front()->origin);
+		std::vector<std::string> attrs;
+		if(!color.empty()) { attrs.push_back(fmt::format("color={}", color)); }
+		std::string label;
+		for(const auto* dep : dep_records) {
+			if(const auto dep_label = instruction_dependency_title(*dep); !dep_label.empty()) {
+				if(!label.empty()) label += "<br/>";
+				label += dep_label;
+			}
+		}
+		if(!label.empty()) { attrs.push_back(fmt::format("headlabel=<{}>", label)); }
+		if(!label.empty() && !color.empty()) { attrs.push_back(fmt::format("fontcolor={}", color)); }
+		fmt::format_to(back, "I{}->I{}[{}];", edge.predecessor, edge.successor, fmt::join(attrs, ","));
 	}
 
 	for(const auto& pilot : irec.get_outbound_pilots()) {

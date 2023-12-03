@@ -146,78 +146,28 @@ struct buffer_allocation_record {
 	friend bool operator!=(const buffer_allocation_record& lhs, const buffer_allocation_record& rhs) { return !(lhs == rhs); }
 };
 
-// All origin types are trivially-copyable PODs to ensure that passing an origin through one of `instruction_graph_generator::add_dependency*` is without
-// measurable overhead when recording is disabled.
-struct instruction_dependency_origin {
-	struct allocation_lifetime {
-		allocation_id aid;
-
-		friend bool operator==(const allocation_lifetime& lhs, const allocation_lifetime& rhs) { return lhs.aid == rhs.aid; }
-		friend bool operator!=(const allocation_lifetime& lhs, const allocation_lifetime& rhs) { return !(lhs == rhs); }
-	};
-
-	struct allocation_last_writer {
-		allocation_id aid;
-		box<3> box;
-
-		friend bool operator==(const allocation_last_writer& lhs, const allocation_last_writer& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
-		friend bool operator!=(const allocation_last_writer& lhs, const allocation_last_writer& rhs) { return !(lhs == rhs); }
-	};
-
-	struct allocation_access_front {
-		allocation_id aid;
-		box<3> box;
-
-		friend bool operator==(const allocation_access_front& lhs, const allocation_access_front& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
-		friend bool operator!=(const allocation_access_front& lhs, const allocation_access_front& rhs) { return !(lhs == rhs); }
-	};
-
-	struct side_effect {
-		host_object_id hoid;
-
-		friend bool operator==(const side_effect& lhs, const side_effect& rhs) { return lhs.hoid == rhs.hoid; }
-		friend bool operator!=(const side_effect& lhs, const side_effect& rhs) { return !(lhs == rhs); }
-	};
-
-	struct collective_group_order {
-		collective_group_id cgid;
-
-		friend bool operator==(const collective_group_order& lhs, const collective_group_order& rhs) { return lhs.cgid == rhs.cgid; }
-		friend bool operator!=(const collective_group_order& lhs, const collective_group_order& rhs) { return !(lhs == rhs); }
-	};
-
-	struct last_epoch {
-		friend bool operator==(const last_epoch& lhs, const last_epoch& rhs) { return true; }
-		friend bool operator!=(const last_epoch& lhs, const last_epoch& rhs) { return false; }
-	};
-
-	struct execution_front {
-		friend bool operator==(const execution_front& lhs, const execution_front& rhs) { return true; }
-		friend bool operator!=(const execution_front& lhs, const execution_front& rhs) { return false; }
-	};
-
-	struct other {
-		friend bool operator==(const other& lhs, const other& rhs) { return true; }
-		friend bool operator!=(const other& lhs, const other& rhs) { return false; }
-	};
-
-	using variant = std::variant<allocation_lifetime, allocation_last_writer, allocation_access_front, side_effect, collective_group_order, last_epoch,
-	    execution_front, other>;
-	variant origin;
-
-	instruction_dependency_origin() : origin(other{}) {}
-	instruction_dependency_origin(const variant& origin) : origin(origin) {}
-
-	friend bool operator==(const instruction_dependency_origin& lhs, const instruction_dependency_origin& rhs) { return lhs.origin == rhs.origin; }
-	friend bool operator!=(const instruction_dependency_origin& lhs, const instruction_dependency_origin& rhs) { return !(lhs == rhs); }
+enum class instruction_dependency_origin {
+	lifetime,
+	write,
+	read,
+	side_effect,
+	collective_group_order,
+	last_epoch,
+	execution_front,
+	split_receive,
 };
 
 struct instruction_dependency_record {
 	instruction_id predecessor;
 	instruction_id successor;
-	std::vector<instruction_dependency_origin> origins;
+	instruction_dependency_origin origin;
+	std::optional<allocation_id> allocation_id;
+	std::optional<region<3>> region;
+	std::optional<host_object_id> host_object_id;
+	std::optional<collective_group_id> collective_group_id;
 
-	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor) : predecessor(predecessor), successor(successor) {}
+	instruction_dependency_record(const instruction_id predecessor, const instruction_id successor, const instruction_dependency_origin origin)
+	    : predecessor(predecessor), successor(successor), origin(origin) {}
 };
 
 // TODO now that the `dependencies` member is gone, can this be a variant again?
@@ -465,11 +415,10 @@ class instruction_recorder {
 
 	void record_instruction(std::unique_ptr<instruction_record> record) { m_recorded_instructions.push_back(std::move(record)); }
 
-	void record_dependency(const instruction_id from, const instruction_id to) { insert_dependency(from, to); }
-
-	template <typename Origin>
-	void record_dependency(const instruction_id from, const instruction_id to, const Origin& origin) {
-		insert_dependency(from, to).origins.emplace_back(origin);
+	template <typename... Info>
+	void record_dependency(const instruction_id from, const instruction_id to, const instruction_dependency_origin origin, const Info&... info) {
+		auto& dep = m_recorded_dependencies.emplace_back(to, from, origin);
+		(set_dependency_info(dep, info), ...);
 	}
 
 	void record_outbound_pilot(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
@@ -505,11 +454,11 @@ class instruction_recorder {
 	std::vector<outbound_pilot> m_recorded_pilots;
 	std::unordered_map<transfer_id, command_id> m_await_push_cids;
 
-	instruction_dependency_record& insert_dependency(const instruction_id from, const instruction_id to) {
-		const auto existing = std::find_if(m_recorded_dependencies.begin(), m_recorded_dependencies.end(),
-		    [&](const instruction_dependency_record& existing) { return existing.successor == from && existing.predecessor == to; });
-		return existing != m_recorded_dependencies.end() ? *existing : m_recorded_dependencies.emplace_back(from, to);
-	}
+	static void set_dependency_info(instruction_dependency_record& rec, const detail::allocation_id aid) { rec.allocation_id = aid; }
+	static void set_dependency_info(instruction_dependency_record& rec, const detail::box<3>& box) { rec.region = box; }
+	static void set_dependency_info(instruction_dependency_record& rec, const detail::region<3>& region) { rec.region = region; }
+	static void set_dependency_info(instruction_dependency_record& rec, const detail::host_object_id hoid) { rec.host_object_id = hoid; }
+	static void set_dependency_info(instruction_dependency_record& rec, const detail::collective_group_id cgid) { rec.collective_group_id = cgid; }
 };
 
 } // namespace celerity::detail
