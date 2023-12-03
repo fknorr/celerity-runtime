@@ -228,7 +228,7 @@ class instruction_graph_generator::impl {
 		}
 
 		// TODO accept BoxOrRegion
-		void record_read(const region<3>& region, instruction* const instr) {
+		void commit_read(const region<3>& region, instruction* const instr) {
 			if(region.empty()) return;
 			for(auto& [box, front] : access_fronts.get_region_values(region)) {
 				if(front.mode == access_front::read) {
@@ -244,7 +244,7 @@ class instruction_graph_generator::impl {
 		}
 
 		// TODO accept BoxOrRegion
-		void record_write(const region<3>& region, instruction* const instr) {
+		void commit_write(const region<3>& region, instruction* const instr) {
 			if(region.empty()) return;
 			last_writers.update_region(region, instr);
 			access_fronts.update_region(region, access_front{{instr}, access_front::write});
@@ -333,7 +333,7 @@ class instruction_graph_generator::impl {
 		size_t elem_size;
 		size_t elem_align;
 		std::vector<buffer_memory_state> memories;
-		region_map<memory_mask> newest_data_location;  // TODO rename for vs original_write_memories?
+		region_map<memory_mask> up_to_date_memories;   // TODO rename for vs original_write_memories?
 		region_map<instruction*> original_writers;     // TODO explain how and why this duplicates per_allocation_data::last_writers
 		region_map<memory_id> original_write_memories; // only meaningful if newest_data_location[box] is non-empty
 
@@ -343,8 +343,14 @@ class instruction_graph_generator::impl {
 		std::vector<gather_receive> pending_gathers;
 
 		explicit buffer_state(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
-		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), newest_data_location(range, dims),
+		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), up_to_date_memories(range, dims),
 		      original_writers(range, dims), original_write_memories(range, dims) {}
+
+		void commit_original_write(const region<3>& region, instruction* const instr, const memory_id mid) {
+			original_writers.update_region(region, instr);
+			original_write_memories.update_region(region, mid);
+			up_to_date_memories.update_region(region, memory_mask().set(mid));
+		}
 
 		void apply_epoch(instruction* const epoch) {
 			for(auto& memory : memories) {
@@ -387,6 +393,7 @@ class instruction_graph_generator::impl {
 
 	inline static const box<3> scalar_reduction_box{zeros, ones};
 
+	// construction parameters (immutable)
 	instruction_graph* m_idag;
 	const task_manager* m_tm; // TODO commands should reference tasks by pointer, not id - then we wouldn't need this member.
 	size_t m_num_nodes;
@@ -396,31 +403,32 @@ class instruction_graph_generator::impl {
 	instruction_recorder* m_recorder;
 	policy_set m_policy;
 
-	instruction_id m_next_iid = 0;
+	instruction_id m_next_instructin_id = 0;
 	message_id m_next_message_id = 0;
 
 	instruction* m_last_horizon = nullptr;
 	instruction* m_last_epoch = nullptr;
-	// we iterate over m_execution_front, so to keep IDAG generation deterministic, its internal order must not depend on pointer values
+
 	std::unordered_set<instruction_id> m_execution_front;
-	std::vector<memory_state> m_memories;
+
+	std::vector<memory_state> m_memories; // indexed by memory_id
 	std::unordered_map<buffer_id, buffer_state> m_buffers;
 	std::unordered_map<host_object_id, host_object_state> m_host_objects;
 	std::unordered_map<collective_group_id, collective_group_state> m_collective_groups;
+
 	std::vector<allocation_id> m_unreferenced_user_allocations; // from completed buffer - collected by the next horizon / epoch instruction
 
 	static memory_id next_location(const memory_mask& locations, memory_id first);
 
 	allocation_id new_allocation_id(const memory_id mid) {
 		assert(mid < m_memories.size());
-		assert(mid != user_memory_id && "user allocation ids are not controlled by the instruction graph generator");
+		assert(mid != user_memory_id && "user allocation ids are not managed by the instruction graph generator");
 		return allocation_id(mid, m_memories[mid].next_raw_aid++);
 	}
 
-
 	template <typename Instruction, typename... CtorParams>
 	Instruction* create(batch& batch, CtorParams&&... ctor_args) {
-		const auto id = m_next_iid++;
+		const auto id = m_next_instructin_id++;
 		const auto priority = batch.base_priority + instruction_graph_generator_detail::instruction_type_priority<Instruction>;
 		auto instr = std::make_unique<Instruction>(id, priority, std::forward<CtorParams>(ctor_args)...);
 		const auto ptr = instr.get();
@@ -450,7 +458,7 @@ class instruction_graph_generator::impl {
 	template <typename BoxOrRegion>
 	void read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
 		add_dependencies_on_last_writers(reading_instruction, allocation, region, instruction_dependency_origin::read_from_allocation);
-		allocation.record_read(region, reading_instruction);
+		allocation.commit_read(region, reading_instruction);
 	}
 
 	template <typename BoxOrRegion>
@@ -468,7 +476,7 @@ class instruction_graph_generator::impl {
 	template <typename BoxOrRegion>
 	void write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
 		add_dependencies_on_access_front(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocatoin);
-		allocation.record_write(region, writing_instruction);
+		allocation.commit_write(region, writing_instruction);
 	}
 
 	void apply_epoch(instruction* const epoch) {
@@ -570,10 +578,8 @@ void instruction_graph_generator::impl::create_buffer(
 		auto& memory = buffer.memories.at(user_memory_id);
 		auto& allocation = memory.allocations.emplace_back(buffer.dims, user_aid, nullptr /* alloc_instruction */, entire_buffer, buffer.range);
 
-		allocation.record_write(entire_buffer, m_last_epoch);
-		buffer.original_writers.update_region(entire_buffer, m_last_epoch);
-		buffer.newest_data_location.update_region(entire_buffer, memory_mask().set(user_memory_id));
-		buffer.original_write_memories.update_region(entire_buffer, user_memory_id);
+		allocation.commit_write(entire_buffer, m_last_epoch);
+		buffer.commit_original_write(entire_buffer, m_last_epoch, user_memory_id);
 	}
 }
 
@@ -693,7 +699,7 @@ void instruction_graph_generator::impl::allocate_contiguously(batch& current_bat
 			// TODO investigate a garbage-collection heuristic that omits these copies if we do not expect them to be read from again on this memory
 			const auto full_copy_box = box_intersection(dest_allocation.box, source_allocation.box);
 			box_vector<3> live_copy_boxes;
-			for(const auto& [copy_box, location] : buffer.newest_data_location.get_region_values(full_copy_box)) {
+			for(const auto& [copy_box, location] : buffer.up_to_date_memories.get_region_values(full_copy_box)) {
 				if(location.test(mid)) { live_copy_boxes.push_back(copy_box); }
 			}
 			region<3> live_copy_region(std::move(live_copy_boxes));
@@ -781,7 +787,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 
 				add_dependency(await_instr, split_recv_instr, instruction_dependency_origin::split_receive);
 
-				alloc->record_write(await_region, await_instr);
+				alloc->commit_write(await_region, await_instr);
 				buffer.original_writers.update_region(await_region, await_instr);
 			}
 		} else {
@@ -796,7 +802,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 	}
 
 	buffer.original_write_memories.update_region(receive.received_region, mid);
-	buffer.newest_data_location.update_region(receive.received_region, memory_mask().set(mid));
+	buffer.up_to_date_memories.update_region(receive.received_region, memory_mask().set(mid));
 }
 
 void instruction_graph_generator::impl::locally_satisfy_read_requirements(
@@ -810,7 +816,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::find_incoherent", DarkSeaGreen, "find incoherent");
 
 		box_vector<3> unsatisfied_boxes;
-		for(const auto& [box, location] : buffer.newest_data_location.get_region_values(read_region)) {
+		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
 			if(!location.test(mid)) { unsatisfied_boxes.push_back(box); }
 		}
 		region<3> unsatisfied_region(std::move(unsatisfied_boxes));
@@ -842,7 +848,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 		for(auto& reader_region : disjoint_reader_regions) {
 			if(m_policy.uninitialized_read_error != error_policy::ignore) {
 				box_vector<3> uninitialized_reads;
-				for(const auto& [box, sources] : buffer.newest_data_location.get_region_values(reader_region)) {
+				for(const auto& [box, sources] : buffer.up_to_date_memories.get_region_values(reader_region)) {
 					if(!sources.any()) { uninitialized_reads.push_back(box); }
 				}
 				if(!uninitialized_reads.empty()) {
@@ -877,7 +883,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 						required_staging_allocation.insert(copy_box);
 
 						box_vector<3> unsatisfied_boxes_on_host;
-						for(const auto& [box, location] : buffer.newest_data_location.get_region_values(copy_box)) {
+						for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(copy_box)) {
 							if(!location.test(stage_mid)) { unsatisfied_boxes_on_host.push_back(box); }
 						}
 						region<3> unsatisfied_region_on_host(std::move(unsatisfied_boxes_on_host));
@@ -928,8 +934,8 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 					read_from_allocation(copy_instr, source_allocation, copy_region);
 					write_to_allocation(copy_instr, dest, copy_region);
 
-					for(auto& [box, location] : buffer.newest_data_location.get_region_values(copy_region)) {
-						buffer.newest_data_location.update_region(box, memory_mask(location).set(copy.dest_mid));
+					for(auto& [box, location] : buffer.up_to_date_memories.get_region_values(copy_region)) {
+						buffer.up_to_date_memories.update_region(box, memory_mask(location).set(copy.dest_mid));
 					}
 				}
 			}
@@ -1006,7 +1012,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 	}
 
 	// do not preserve any received or overwritten region across receives
-	buffer.newest_data_location.update_region(discarded, memory_mask());
+	buffer.up_to_date_memories.update_region(discarded, memory_mask());
 
 	for(const auto& chunk : local_chunks) {
 		const auto chunk_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
@@ -1359,16 +1365,15 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		for(const auto& [bid, rw] : instr.rw_map) {
 			assert(instr.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
-			buffer.newest_data_location.update_region(rw.writes, memory_mask().set(instr.memory_id));
-			buffer.original_write_memories.update_region(rw.writes, instr.memory_id);
-			buffer.original_writers.update_region(rw.writes, instr.instruction);
 
 			// TODO can we merge this with loop 5) and use read_from_allocation / write_to_allocation?
 			// if so, have similar functions for side effects / collective groups
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
-				alloc.record_read(region_intersection(alloc.box, rw.reads), instr.instruction);
-				alloc.record_write(region_intersection(alloc.box, rw.writes), instr.instruction);
+				alloc.commit_read(region_intersection(alloc.box, rw.reads), instr.instruction);
+				alloc.commit_write(region_intersection(alloc.box, rw.writes), instr.instruction);
 			}
+
+			buffer.commit_original_write(rw.writes, instr.instruction, instr.memory_id);
 		}
 		for(const auto& [hoid, order] : instr.se_map) {
 			assert(instr.memory_id == host_memory_id);
@@ -1429,9 +1434,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			add_dependency(reduce_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
 		}
 		write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
-		buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
-		buffer.original_write_memories.update_region(scalar_reduction_box, host_memory_id);
-		buffer.newest_data_location.update_region(scalar_reduction_box, memory_mask().set(host_memory_id));
+		buffer.commit_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
 		// free local gather space
 
@@ -1570,7 +1573,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 	// if the local node contributes to the reduction, copy the contribution to the appropriate position in the gather space
 
 	copy_instruction* local_gather_copy_instr = nullptr;
-	const auto contribution_location = buffer.newest_data_location.get_region_values(scalar_reduction_box).front().second;
+	const auto contribution_location = buffer.up_to_date_memories.get_region_values(scalar_reduction_box).front().second;
 	if(contribution_location.any()) {
 		const auto source_mid = next_location(contribution_location, host_memory_id);
 		const auto source_allocation = buffer.memories.at(source_mid).find_contiguous_allocation(scalar_reduction_box);
@@ -1608,9 +1611,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 	add_dependency(reduce_instr, gather_recv_instr, instruction_dependency_origin::read_from_allocation);
 	if(local_gather_copy_instr != nullptr) { add_dependency(reduce_instr, local_gather_copy_instr, instruction_dependency_origin::read_from_allocation); }
 	write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
-	buffer.original_writers.update_region(scalar_reduction_box, reduce_instr);
-	buffer.original_write_memories.update_region(scalar_reduction_box, host_memory_id);
-	buffer.newest_data_location.update_region(scalar_reduction_box, memory_mask().set(host_memory_id));
+	buffer.commit_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
 	// free the gather space
 
