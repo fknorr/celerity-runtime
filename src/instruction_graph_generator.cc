@@ -76,7 +76,7 @@ bool boxes_edge_connected(const box<Dims>& box1, const box<Dims>& box2) {
 	return true;
 }
 
-// This is different from bounding_box_set merges, which work on box_intersections instead of boxes_edge_connected (TODO unit-test this)
+// This is different from merge_overlapping_bounding_boxes, which work on box_intersections instead of boxes_edge_connected (TODO unit-test this)
 template <int Dims>
 box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) {
 	auto boxes = region.get_boxes();
@@ -99,6 +99,22 @@ box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) 
 		begin = connected_end;
 	}
 	return bounding_boxes;
+}
+
+template <int Dims>
+void merge_overlapping_bounding_boxes(box_vector<Dims>& boxes) {
+restart:
+	for(auto first = boxes.begin(); first != boxes.end(); ++first) {
+		const auto last = std::remove_if(std::next(first), boxes.end(), [&](const auto& box) {
+			const auto overlapping = !box_intersection(*first, box).empty();
+			if(overlapping) { *first = bounding_box(*first, box); }
+			return overlapping;
+		});
+		if(last != boxes.end()) {
+			boxes.erase(last, boxes.end());
+			goto restart; // NOLINT(cppcoreguidelines-avoid-goto)
+		}
+	}
 }
 
 template <typename Iterator>
@@ -507,7 +523,7 @@ class instruction_graph_generator::impl {
 
 	// Re-allocation of one buffer on one memory never interacts with other buffers or other memories backing the same buffer, this function can be called
 	// in any order of allocation requirements without generating additional dependencies.
-	void allocate_contiguously(batch& batch, buffer_id bid, memory_id mid, const bounding_box_set& boxes);
+	void allocate_contiguously(batch& batch, buffer_id bid, memory_id mid, const box_vector<3>& required_contiguous_boxes);
 
 	void commit_pending_region_receive(
 	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const std::vector<std::pair<memory_id, region<3>>>& reads);
@@ -640,41 +656,40 @@ memory_id instruction_graph_generator::impl::next_location(const memory_mask& lo
 }
 
 // TODO decide if this should only receive non-contiguous boxes (and assert that) or it should filter for non-contiguous boxes itself
-void instruction_graph_generator::impl::allocate_contiguously(batch& current_batch, const buffer_id bid, const memory_id mid, const bounding_box_set& boxes) {
+void instruction_graph_generator::impl::allocate_contiguously(
+    batch& current_batch, const buffer_id bid, const memory_id mid, const box_vector<3>& required_contiguous_boxes) //
+{
+	// if (required_contiguous_boxes.empty()) return;
+
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::allocate", DodgerBlue, "allocate");
 
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories[mid];
 
-	bounding_box_set contiguous_after_reallocation;
+	auto contiguous_boxes_after_reallocation = required_contiguous_boxes;
+	const auto first_empty =
+	    std::remove_if(contiguous_boxes_after_reallocation.begin(), contiguous_boxes_after_reallocation.end(), [](const box<3>& box) { return box.empty(); });
+	contiguous_boxes_after_reallocation.erase(first_empty, contiguous_boxes_after_reallocation.end());
 	for(auto& alloc : memory.allocations) {
-		contiguous_after_reallocation.insert(alloc.box);
+		contiguous_boxes_after_reallocation.push_back(alloc.box);
 	}
-	for(auto& box : boxes) {
-		contiguous_after_reallocation.insert(box);
-	}
+	instruction_graph_generator_detail::merge_overlapping_bounding_boxes(contiguous_boxes_after_reallocation);
 
 	std::vector<allocation_id> free_after_reallocation;
 	for(auto& alloc : memory.allocations) {
-		if(std::none_of(contiguous_after_reallocation.begin(), contiguous_after_reallocation.end(), [&](auto& box) { return alloc.box == box; })) {
+		if(std::none_of(contiguous_boxes_after_reallocation.begin(), contiguous_boxes_after_reallocation.end(), [&](auto& box) { return alloc.box == box; })) {
 			free_after_reallocation.push_back(alloc.aid);
 		}
 	}
 
-	// ?? TODO what does this even do?
-	auto unmerged_new_allocation = std::move(contiguous_after_reallocation).into_vector();
-	const auto last_new_allocation = std::remove_if(unmerged_new_allocation.begin(), unmerged_new_allocation.end(),
+	auto new_allocations = std::move(contiguous_boxes_after_reallocation);
+	const auto last_new_allocation = std::remove_if(new_allocations.begin(), new_allocations.end(),
 	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
-	unmerged_new_allocation.erase(last_new_allocation, unmerged_new_allocation.end());
+	new_allocations.erase(last_new_allocation, new_allocations.end());
 
-	// region-merge adjacent boxes that need to be allocated (usually for oversubscriptions). This should not introduce problematic synchronization points since
-	// ??? TODO this is an old comment but does not seem to have an implementation
+	merge_adjacent_boxes(new_allocations);
 
-	// TODO but it does introduce synchronization between producers on the resize-copies, which we want to avoid. To resolve this, allocate the fused boxes as
-	// before, but use the non-fused boxes as copy destinations.
-	region new_allocations(std::move(unmerged_new_allocation));
-
-	for(const auto& dest_box : new_allocations.get_boxes()) {
+	for(const auto& dest_box : new_allocations) {
 		const auto aid = new_allocation_id(mid);
 		const auto alloc_instr = create<alloc_instruction>(current_batch, aid, dest_box.get_area() * buffer.elem_size, buffer.elem_align);
 		if(m_recorder != nullptr) {
@@ -838,7 +853,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 	constexpr auto stage_mid = host_memory_id;
 	std::vector<copy_template> pending_staging_copies;
 	std::vector<copy_template> pending_final_copies;
-	bounding_box_set required_staging_allocation;
+	box_vector<3> required_staging_allocation;
 	for(auto& [dest_mid, disjoint_reader_regions] : unsatisfied_reads) {
 		if(disjoint_reader_regions.empty()) continue; // if fully satisfied by incoming transfers
 
@@ -880,7 +895,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 						assert(m_system.memories[source_mid].copy_peers.test(stage_mid));
 						assert(m_system.memories[dest_mid].copy_peers.test(stage_mid));
 
-						required_staging_allocation.insert(copy_box);
+						required_staging_allocation.push_back(copy_box);
 
 						box_vector<3> unsatisfied_boxes_on_host;
 						for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(copy_box)) {
@@ -961,7 +976,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 
 	auto& buffer = m_buffers.at(bid);
 
-	std::unordered_map<memory_id, bounding_box_set> contiguous_allocations;
+	std::unordered_map<memory_id, box_vector<3>> contiguous_allocations;
 	std::vector<buffer_state::region_receive> applied_receives;
 
 	region<3> accessed;  // which elements have are accessed (to figure out applying receives)
@@ -975,12 +990,12 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 	const auto reduction = std::find_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; });
 	if(reduction != tsk.get_reductions().end()) {
 		for(const auto& chunk : local_chunks) {
-			contiguous_allocations[chunk.memory_id].insert(scalar_reduction_box);
+			contiguous_allocations[chunk.memory_id].push_back(scalar_reduction_box);
 		}
 		const auto include_current_value = local_node_is_reduction_initializer && reduction->init_from_buffer;
 		if(local_chunks.size() > 1 || include_current_value) {
 			// we insert a host-side reduce-instruction in the multi-chunk scenario; its result will end up in the host buffer allocation
-			contiguous_allocations[host_memory_id].insert(scalar_reduction_box);
+			contiguous_allocations[host_memory_id].push_back(scalar_reduction_box);
 		}
 		if(include_current_value) {
 			// scalar_reduction_box will be copied into the local-reduction gather buffer ahead of the kernel instruction
@@ -995,7 +1010,8 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
 		discarded = region_union(discarded, it->received_region);
 		// begin_receive_instruction needs contiguous allocations for the bounding boxes of potentially received fragments
-		contiguous_allocations[host_memory_id].insert(it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
+		contiguous_allocations[host_memory_id].insert(
+		    contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
 	}
 
 	if(first_applied_receive != buffer.pending_receives.end()) {
@@ -1016,7 +1032,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 
 	for(const auto& chunk : local_chunks) {
 		const auto chunk_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
-		contiguous_allocations[chunk.memory_id].insert(chunk_boxes.begin(), chunk_boxes.end());
+		contiguous_allocations[chunk.memory_id].insert(contiguous_allocations[chunk.memory_id].end(), chunk_boxes.begin(), chunk_boxes.end());
 	}
 
 	for(const auto& [mid, boxes] : contiguous_allocations) {
@@ -1466,21 +1482,20 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 
 	// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same
 	// command that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
-	std::unordered_map<instruction_id, region<3>> send_regions;
+	std::unordered_map<instruction_id, box_vector<3>> send_boxes;
 	for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
-		auto& region = send_regions[writer->get_id()]; // allow default-insert
-		region = region_union(region, box);
+		send_boxes[writer->get_id()].push_back(box);
 	}
 
-	for(auto& [_, region] : send_regions) {
+	for(auto& [_, boxes] : send_boxes) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
 		// writer without any effect from the order of operations
-		allocate_contiguously(command_batch, trid.bid, host_memory_id, bounding_box_set(region.get_boxes()));
-		locally_satisfy_read_requirements(command_batch, trid.bid, {{host_memory_id, region}});
+		allocate_contiguously(command_batch, trid.bid, host_memory_id, boxes);
+		locally_satisfy_read_requirements(command_batch, trid.bid, {{host_memory_id, region(box_vector<3>(boxes))}});
 	}
 
-	for(auto& [_, region] : send_regions) {
-		for(const auto& full_box : region.get_boxes()) {
+	for(auto& [_, boxes] : send_boxes) {
+		for(const auto& full_box : boxes) {
 			for(const auto& box : instruction_graph_generator_detail::split_into_communicator_compatible_boxes(buffer.range, full_box)) {
 				const message_id msgid = create_outbound_pilot(command_batch, pcmd.get_target(), trid, box);
 
@@ -1499,8 +1514,8 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 
 	// If not all nodes contribute partial results to a global reductions, the remaining ones need to notify their peers that they should not expect any data.
 	// This is done by announcing an empty box through the pilot message.
-	assert(push_box.empty() == send_regions.empty());
-	if(send_regions.empty()) {
+	assert(push_box.empty() == send_boxes.empty());
+	if(send_boxes.empty()) {
 		assert(trid.rid != no_reduction_id);
 		create_outbound_pilot(command_batch, pcmd.get_target(), trid, box<3>());
 	}
@@ -1597,7 +1612,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 
 	// perform the global reduction
 
-	allocate_contiguously(command_batch, bid, host_memory_id, bounding_box_set({scalar_reduction_box}));
+	allocate_contiguously(command_batch, bid, host_memory_id, {scalar_reduction_box});
 
 	auto& host_memory = buffer.memories.at(host_memory_id);
 	auto dest_allocation = host_memory.find_contiguous_allocation(scalar_reduction_box);

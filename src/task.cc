@@ -56,11 +56,14 @@ namespace detail {
 		return apply_range_mapper(m_accesses[n].second.get(), chunk<3>{sr.offset, sr.range, global_size}, kernel_dims);
 	}
 
-	bounding_box_set buffer_access_map::get_required_contiguous_boxes(
+	box_vector<3> buffer_access_map::get_required_contiguous_boxes(
 	    const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const {
-		bounding_box_set boxes;
+		box_vector<3> boxes;
 		for(const auto& [a_bid, a_rm] : m_accesses) {
-			if(a_bid == bid) { boxes.insert(apply_range_mapper(a_rm.get(), chunk<3>{sr.offset, sr.range, global_size}, kernel_dims)); }
+			if(a_bid == bid) {
+				const auto accessed_box = box(apply_range_mapper(a_rm.get(), chunk<3>{sr.offset, sr.range, global_size}, kernel_dims));
+				if(!accessed_box.empty()) { boxes.push_back(accessed_box); }
+			}
 		}
 		return boxes;
 	}

@@ -6,7 +6,6 @@
 #include <utility>
 #include <vector>
 
-#include "bounding_box_set.h"
 #include "grid.h"
 #include "hint.h"
 #include "intrusive_graph.h"
@@ -72,7 +71,7 @@ namespace detail {
 			return rms;
 		}
 
-		bounding_box_set get_required_contiguous_boxes(const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
+		box_vector<3> get_required_contiguous_boxes(const buffer_id bid, const int kernel_dims, const subrange<3>& sr, const range<3>& global_size) const;
 
 	  private:
 		std::vector<std::pair<buffer_id, std::unique_ptr<range_mapper_base>>> m_accesses;
