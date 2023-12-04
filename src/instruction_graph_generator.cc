@@ -144,32 +144,21 @@ restart:
 	}
 }
 
-template <typename Instruction>
-constexpr int instruction_type_priority = 0; // higher means more urgent
-template <>
-constexpr int instruction_type_priority<free_instruction> = -1;
-template <>
-constexpr int instruction_type_priority<alloc_instruction> = 1;
-template <>
-constexpr int instruction_type_priority<copy_instruction> = 2;
-template <>
-constexpr int instruction_type_priority<await_receive_instruction> = 2;
-template <>
-constexpr int instruction_type_priority<split_receive_instruction> = 2;
-template <>
-constexpr int instruction_type_priority<receive_instruction> = 2;
-template <>
-constexpr int instruction_type_priority<send_instruction> = 2;
-template <>
-constexpr int instruction_type_priority<fence_instruction> = 3;
-template <>
-constexpr int instruction_type_priority<host_task_instruction> = 4;
-template <>
-constexpr int instruction_type_priority<device_kernel_instruction> = 4;
-template <>
-constexpr int instruction_type_priority<epoch_instruction> = 5;
-template <>
-constexpr int instruction_type_priority<horizon_instruction> = 5;
+// clang-format off
+template <typename Instruction> constexpr int instruction_type_priority = 0; // higher means more urgent
+template <> constexpr int instruction_type_priority<free_instruction> = -1;
+template <> constexpr int instruction_type_priority<alloc_instruction> = 1;
+template <> constexpr int instruction_type_priority<copy_instruction> = 2;
+template <> constexpr int instruction_type_priority<await_receive_instruction> = 2;
+template <> constexpr int instruction_type_priority<split_receive_instruction> = 2;
+template <> constexpr int instruction_type_priority<receive_instruction> = 2;
+template <> constexpr int instruction_type_priority<send_instruction> = 2;
+template <> constexpr int instruction_type_priority<fence_instruction> = 3;
+template <> constexpr int instruction_type_priority<host_task_instruction> = 4;
+template <> constexpr int instruction_type_priority<device_kernel_instruction> = 4;
+template <> constexpr int instruction_type_priority<epoch_instruction> = 5;
+template <> constexpr int instruction_type_priority<horizon_instruction> = 5;
+// clang-format on
 
 } // namespace celerity::detail::instruction_graph_generator_detail
 
@@ -491,7 +480,7 @@ class instruction_graph_generator::impl {
 
 	template <typename BoxOrRegion>
 	void write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
-		add_dependencies_on_access_front(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocatoin);
+		add_dependencies_on_access_front(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocation);
 		allocation.commit_write(region, writing_instruction);
 	}
 
@@ -655,11 +644,10 @@ memory_id instruction_graph_generator::impl::next_location(const memory_mask& lo
 	utils::panic("data is requested to be read, but not located in any memory");
 }
 
-// TODO decide if this should only receive non-contiguous boxes (and assert that) or it should filter for non-contiguous boxes itself
 void instruction_graph_generator::impl::allocate_contiguously(
     batch& current_batch, const buffer_id bid, const memory_id mid, const box_vector<3>& required_contiguous_boxes) //
 {
-	// if (required_contiguous_boxes.empty()) return;
+	if(required_contiguous_boxes.empty()) return;
 
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::allocate", DodgerBlue, "allocate");
 
@@ -786,7 +774,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 			// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
 			// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
 			// that there are no pending transfers for the region they are trying to read or to access (TODO).
-			add_dependencies_on_access_front(split_recv_instr, *alloc, alloc_recv_region, instruction_dependency_origin::write_to_allocatoin);
+			add_dependencies_on_access_front(split_recv_instr, *alloc, alloc_recv_region, instruction_dependency_origin::write_to_allocation);
 
 #ifndef NDEBUG
 			region<3> full_await_region;
@@ -850,10 +838,8 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 		region<3> region;
 	};
 
-	constexpr auto stage_mid = host_memory_id;
 	std::vector<copy_template> pending_staging_copies;
 	std::vector<copy_template> pending_final_copies;
-	box_vector<3> required_staging_allocation;
 	for(auto& [dest_mid, disjoint_reader_regions] : unsatisfied_reads) {
 		if(disjoint_reader_regions.empty()) continue; // if fully satisfied by incoming transfers
 
@@ -892,14 +878,13 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 						auto& final_source_region = final_copy_sources[source_mid]; // allow default-insert
 						final_source_region = region_union(final_source_region, copy_box);
 					} else {
-						assert(m_system.memories[source_mid].copy_peers.test(stage_mid));
-						assert(m_system.memories[dest_mid].copy_peers.test(stage_mid));
-
-						required_staging_allocation.push_back(copy_box);
+						assert(source_mid != host_memory_id && dest_mid != host_memory_id);
+						assert(m_system.memories[source_mid].copy_peers.test(host_memory_id));
+						assert(m_system.memories[dest_mid].copy_peers.test(host_memory_id));
 
 						box_vector<3> unsatisfied_boxes_on_host;
 						for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(copy_box)) {
-							if(!location.test(stage_mid)) { unsatisfied_boxes_on_host.push_back(box); }
+							if(!location.test(host_memory_id)) { unsatisfied_boxes_on_host.push_back(box); }
 						}
 						region<3> unsatisfied_region_on_host(std::move(unsatisfied_boxes_on_host));
 
@@ -908,13 +893,13 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 							staging_source_region = region_union(staging_source_region, unsatisfied_region_on_host);
 						}
 
-						auto& final_source_region = final_copy_sources[stage_mid]; // allow default-insert
+						auto& final_source_region = final_copy_sources[host_memory_id]; // allow default-insert
 						final_source_region = region_union(final_source_region, copy_box);
 					}
 				}
 				for(auto& [source_mid, copy_region] : staging_copy_sources) {
 					assert(!copy_region.empty());
-					pending_staging_copies.push_back({source_mid, stage_mid, std::move(copy_region)});
+					pending_staging_copies.push_back({source_mid, host_memory_id, std::move(copy_region)});
 				}
 				for(auto& [source_mid, copy_region] : final_copy_sources) {
 					assert(!copy_region.empty());
@@ -923,9 +908,6 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 			}
 		}
 	}
-
-	// TODO move this allocation outside to avoid resize-chains
-	allocate_contiguously(current_batch, bid, stage_mid, required_staging_allocation);
 
 	for(auto& stage : {pending_staging_copies, pending_final_copies}) {
 		for(auto& copy : stage) {
@@ -976,7 +958,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 
 	auto& buffer = m_buffers.at(bid);
 
-	std::unordered_map<memory_id, box_vector<3>> contiguous_allocations;
+	std::vector<box_vector<3>> contiguous_allocations(m_memories.size());
 	std::vector<buffer_state::region_receive> applied_receives;
 
 	region<3> accessed;  // which elements have are accessed (to figure out applying receives)
@@ -1035,10 +1017,6 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		contiguous_allocations[chunk.memory_id].insert(contiguous_allocations[chunk.memory_id].end(), chunk_boxes.begin(), chunk_boxes.end());
 	}
 
-	for(const auto& [mid, boxes] : contiguous_allocations) {
-		allocate_contiguously(current_batch, bid, mid, boxes);
-	}
-
 	std::vector<std::pair<memory_id, region<3>>> local_chunk_reads;
 	for(const auto& chunk : local_chunks) {
 		for(const auto mode : access::consumer_modes) {
@@ -1048,6 +1026,19 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 	}
 	if(local_node_is_reduction_initializer && reduction != tsk.get_reductions().end() && reduction->init_from_buffer) {
 		local_chunk_reads.emplace_back(host_memory_id, scalar_reduction_box);
+	}
+
+	// collect all required staging allocations
+	for(const auto& [mid, read_region] : local_chunk_reads) {
+		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
+			if(location.any() && !location.test(mid) && (m_system.memories[mid].copy_peers & location).none()) {
+				contiguous_allocations[host_memory_id].push_back(box);
+			}
+		}
+	}
+
+	for(memory_id mid = 0; mid < contiguous_allocations.size(); ++mid) {
+		allocate_contiguously(current_batch, bid, mid, contiguous_allocations[mid]);
 	}
 
 	for(const auto& receive : applied_receives) {
@@ -1357,7 +1348,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 				add_dependencies_on_last_writers(
 				    instr.instruction, allocation, region_intersection(rw.reads, allocation.box), instruction_dependency_origin::read_from_allocation);
 				add_dependencies_on_access_front(
-				    instr.instruction, allocation, region_intersection(rw.writes, allocation.box), instruction_dependency_origin::write_to_allocatoin);
+				    instr.instruction, allocation, region_intersection(rw.writes, allocation.box), instruction_dependency_origin::write_to_allocation);
 			}
 		}
 		for(const auto& [hoid, order] : instr.se_map) {
@@ -1482,19 +1473,23 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 
 	// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same
 	// command that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
-	std::unordered_map<instruction_id, box_vector<3>> send_boxes;
+	std::unordered_map<instruction_id, box_vector<3>> individual_send_boxes;
+	// Since we now send boxes individually, we do not need to allocate the entire push_box contiguously.
+	box_vector<3> required_host_allocation;
 	for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
-		send_boxes[writer->get_id()].push_back(box);
+		individual_send_boxes[writer->get_id()].push_back(box);
+		required_host_allocation.push_back(box);
 	}
 
-	for(auto& [_, boxes] : send_boxes) {
+	allocate_contiguously(command_batch, trid.bid, host_memory_id, required_host_allocation);
+
+	for(auto& [_, boxes] : individual_send_boxes) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
 		// writer without any effect from the order of operations
-		allocate_contiguously(command_batch, trid.bid, host_memory_id, boxes);
 		locally_satisfy_read_requirements(command_batch, trid.bid, {{host_memory_id, region(box_vector<3>(boxes))}});
 	}
 
-	for(auto& [_, boxes] : send_boxes) {
+	for(auto& [_, boxes] : individual_send_boxes) {
 		for(const auto& full_box : boxes) {
 			for(const auto& box : instruction_graph_generator_detail::split_into_communicator_compatible_boxes(buffer.range, full_box)) {
 				const message_id msgid = create_outbound_pilot(command_batch, pcmd.get_target(), trid, box);
@@ -1514,8 +1509,8 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 
 	// If not all nodes contribute partial results to a global reductions, the remaining ones need to notify their peers that they should not expect any data.
 	// This is done by announcing an empty box through the pilot message.
-	assert(push_box.empty() == send_boxes.empty());
-	if(send_boxes.empty()) {
+	assert(push_box.empty() == individual_send_boxes.empty());
+	if(individual_send_boxes.empty()) {
 		assert(trid.rid != no_reduction_id);
 		create_outbound_pilot(command_batch, pcmd.get_target(), trid, box<3>());
 	}
@@ -1599,7 +1594,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 		if(m_recorder != nullptr) {
 			*m_recorder << copy_instruction_record(*local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.name);
 		}
-		add_dependency(local_gather_copy_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocatoin);
+		add_dependency(local_gather_copy_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocation);
 		read_from_allocation(local_gather_copy_instr, *source_allocation, scalar_reduction_box);
 	}
 
@@ -1608,7 +1603,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 	const transfer_id trid(gather.consumer_tid, bid, gather.rid);
 	const auto gather_recv_instr = create<gather_receive_instruction>(command_batch, trid, gather_aid, node_chunk_size);
 	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_recv_instr, buffer.name, gather.gather_box, m_num_nodes); }
-	add_dependency(gather_recv_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocatoin);
+	add_dependency(gather_recv_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocation);
 
 	// perform the global reduction
 

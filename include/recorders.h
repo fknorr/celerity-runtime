@@ -148,7 +148,7 @@ struct buffer_allocation_record {
 
 enum class instruction_dependency_origin {
 	allocation_lifetime,
-	write_to_allocatoin,
+	write_to_allocation,
 	read_from_allocation,
 	side_effect,
 	collective_group_order,

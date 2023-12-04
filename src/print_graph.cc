@@ -268,7 +268,7 @@ std::string print_command_reference_label(const command_record cmd, const task_r
 std::string instruction_dependency_style(const instruction_dependency_origin origin) {
 	switch(origin) {
 	case instruction_dependency_origin::allocation_lifetime: return "color=cyan3";
-	case instruction_dependency_origin::write_to_allocatoin: return "color=limegreen";
+	case instruction_dependency_origin::write_to_allocation: return "color=limegreen";
 	case instruction_dependency_origin::read_from_allocation: return {};
 	case instruction_dependency_origin::side_effect: return {};
 	case instruction_dependency_origin::collective_group_order: return "color=blue";
