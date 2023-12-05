@@ -823,52 +823,43 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 }
 
 void instruction_graph_generator::impl::locally_satisfy_read_requirements(
-    batch& current_batch, const buffer_id bid, const memory_id dest_mid, const std::vector<region<3>>& reads) {
+    batch& current_batch, const buffer_id bid, const memory_id dest_mid, const std::vector<region<3>>& concurrent_reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_coherence", Salmon, "local coherence");
 
 	auto& buffer = m_buffers.at(bid);
 
-	std::vector<region<3>> unsatisfied_reads;
-	for(const auto& read_region : reads) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::find_incoherent", DarkSeaGreen, "find incoherent");
-
+	// Given the full region to be read, find all regions not up to date in `dest_mid`.
+	std::vector<region<3>> unsatisfied_concurrent_reads;
+	for(const auto& read_region : concurrent_reads) {
 		box_vector<3> unsatisfied_boxes;
 		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
-			if(!location.test(dest_mid)) { unsatisfied_boxes.push_back(box); }
+			if(location.any() /* gracefully handle uninitialized read */ && !location.test(dest_mid)) { unsatisfied_boxes.push_back(box); }
 		}
-		region<3> unsatisfied_region(std::move(unsatisfied_boxes));
-		if(!unsatisfied_region.empty()) { unsatisfied_reads.push_back(std::move(unsatisfied_region)); }
+		if(!unsatisfied_boxes.empty()) { unsatisfied_concurrent_reads.emplace_back(std::move(unsatisfied_boxes)); }
 	}
-	if(unsatisfied_reads.empty()) return;
+	if(unsatisfied_concurrent_reads.empty()) return;
 
-	// transform vectors of potentially-overlapping unsatisfied regions into disjoint regions
-	instruction_graph_generator_detail::symmetrically_split_overlapping_regions(unsatisfied_reads);
+	// Transform vectors of potentially-overlapping unsatisfied regions into disjoint regions - e.g. if there are two overlapping regions [first, second], split
+	// them into three disjoint regions [first_only, overlap, second_only]. As soon as the coherence of either [first_only, overlap] or [overlap, second_only]
+	// is is established, the consumer of [first] or [second] can start executing.
+	instruction_graph_generator_detail::symmetrically_split_overlapping_regions(unsatisfied_concurrent_reads);
 
-	// Next, satisfy any remaining reads by copying locally from the newest data location
-	struct copy_template {
-		memory_id source_mid;
-		memory_id dest_mid;
-		region<3> region;
-	};
-
-	std::vector<copy_template> pending_copies;
-
-	for(auto& reader_region : unsatisfied_reads) {
+	std::vector<std::tuple<memory_id, region<3>>> concurrent_copies_from_source;
+	for(auto& unsatisfied_region : unsatisfied_concurrent_reads) {
 		// Split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region.
 		std::unordered_map<instruction_id, box_vector<3>> unsatisfied_boxes_by_writer;
-		for(const auto& [writer_box, original_writer] : buffer.original_writers.get_region_values(reader_region)) {
-			if(original_writer != nullptr) { // gracefully handle an uninitialized read
-				unsatisfied_boxes_by_writer[original_writer->get_id()].push_back(writer_box);
-			}
+		for(const auto& [writer_box, original_writer] : buffer.original_writers.get_region_values(unsatisfied_region)) {
+			assert(original_writer != nullptr);
+			unsatisfied_boxes_by_writer[original_writer->get_id()].push_back(writer_box);
 		}
 
 		for(auto& [_, unsatisfied_boxes] : unsatisfied_boxes_by_writer) {
 			const region unsatisfied_region(std::move(unsatisfied_boxes));
-			dense_map<memory_id, box_vector<3>> copy_from_memory(m_memories.size());
+			dense_map<memory_id, box_vector<3>> copy_from_source(m_memories.size());
 			// there can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon
 			for(const auto& [copy_box, original_write_mid] : buffer.original_write_memories.get_region_values(unsatisfied_region)) {
 				if(m_system.memories[original_write_mid].copy_peers.test(dest_mid)) {
-					copy_from_memory[original_write_mid].push_back(copy_box);
+					copy_from_source[original_write_mid].push_back(copy_box);
 				} else {
 #ifndef NDEBUG
 					assert(m_system.memories[dest_mid].copy_peers.test(host_memory_id));
@@ -876,40 +867,43 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 						assert(location.test(host_memory_id));
 					}
 #endif
-					copy_from_memory[host_memory_id].push_back(copy_box);
+					copy_from_source[host_memory_id].push_back(copy_box);
 				}
 			}
-			for(memory_id mid = 0; mid < copy_from_memory.size(); ++mid) {
-				if(!copy_from_memory[mid].empty()) { pending_copies.push_back({mid, dest_mid, region(std::move(copy_from_memory[mid]))}); }
+			for(memory_id source_mid = 0; source_mid < copy_from_source.size(); ++source_mid) {
+				if(copy_from_source[source_mid].empty()) continue;
+				concurrent_copies_from_source.emplace_back(source_mid, region(std::move(copy_from_source[source_mid])));
 			}
 		}
 	}
 
-	for(auto& copy : pending_copies) {
+	for(auto& [source_mid, copy_from_memory_region] : concurrent_copies_from_source) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::apply", LightSteelBlue, "apply");
 
-		assert(copy.dest_mid != copy.source_mid);
-		for(auto& source_allocation : buffer.memories[copy.source_mid].allocations) {
-			const auto read_region = region_intersection(copy.region, source_allocation.box);
-			if(read_region.empty()) continue;
+		assert(dest_mid != source_mid);
+		for(auto& source_allocation : buffer.memories[source_mid].allocations) {
+			const auto read_from_allocation_region = region_intersection(copy_from_memory_region, source_allocation.box);
+			if(read_from_allocation_region.empty()) continue;
 
-			for(auto& dest : buffer.memories[copy.dest_mid].allocations) {
-				const auto copy_region = region_intersection(read_region, dest.box);
-				if(copy_region.empty()) continue;
+			for(auto& dest_allocation : buffer.memories[dest_mid].allocations) {
+				const auto copy_between_allocations_region = region_intersection(read_from_allocation_region, dest_allocation.box);
+				if(copy_between_allocations_region.empty()) continue;
 
-				const auto copy_instr =
-				    create<copy_instruction>(current_batch, source_allocation.aid, dest.aid, source_allocation.box, dest.box, copy_region, buffer.elem_size);
+				const auto copy_instr = create<copy_instruction>(current_batch, source_allocation.aid, dest_allocation.aid, source_allocation.box,
+				    dest_allocation.box, copy_between_allocations_region, buffer.elem_size);
 				if(m_recorder != nullptr) {
 					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.name);
 				}
 
-				read_from_allocation(copy_instr, source_allocation, copy_region);
-				write_to_allocation(copy_instr, dest, copy_region);
-
-				for(auto& [box, location] : buffer.up_to_date_memories.get_region_values(copy_region)) {
-					buffer.up_to_date_memories.update_region(box, memory_mask(location).set(copy.dest_mid));
-				}
+				read_from_allocation(copy_instr, source_allocation, copy_between_allocations_region);
+				write_to_allocation(copy_instr, dest_allocation, copy_between_allocations_region);
 			}
+		}
+	}
+
+	for(const auto& region : unsatisfied_concurrent_reads) {
+		for(auto& [box, location] : buffer.up_to_date_memories.get_region_values(region)) {
+			buffer.up_to_date_memories.update_region(box, memory_mask(location).set(dest_mid));
 		}
 	}
 }
