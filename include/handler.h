@@ -386,7 +386,7 @@ class handler {
 	template <int Dims>
 	friend void experimental::constrain_split(handler& cgh, const range<Dims>& constraint);
 	template <typename Hint>
-	friend void experimental::hint(handler& cgh, Hint&& h);
+	friend void experimental::hint(handler& cgh, Hint&& hint);
 	friend void detail::set_task_name(handler& cgh, const std::string& debug_name);
 
 	detail::task_id m_tid;
@@ -453,17 +453,16 @@ class handler {
 	}
 
 	template <typename Hint>
-	void experimental_hint(Hint&& h) {
+	void experimental_hint(Hint&& hint) {
 		static_assert(std::is_base_of_v<detail::hint_base, std::decay_t<Hint>>, "Incompatible hint");
-		for(auto& hint : m_hints) {
+		static_assert(std::is_move_constructible_v<Hint>, "Hint must be move-constructible");
+		for(auto& h : m_hints) {
 			// We currently don't allow more than one hint of the same type for simplicity; this could be loosened in the future.
-			// This assumes no deep class hierarchies.
-			if(dynamic_cast<std::decay_t<Hint>*>(hint.get()) != nullptr) {
-				throw std::runtime_error("Providing more than one hint of the same type is not allowed");
-			}
-			hint->validate(h);
+			auto& hr = *h; // Need to do this here to avoid -Wpotentially-evaluated-expression
+			if(typeid(hr) == typeid(hint)) { throw std::runtime_error("Providing more than one hint of the same type is not allowed"); }
+			h->validate(hint);
 		}
-		m_hints.emplace_back(std::make_unique<std::decay_t<Hint>>(std::forward<Hint>(h)));
+		m_hints.emplace_back(std::make_unique<std::decay_t<Hint>>(std::forward<Hint>(hint)));
 	}
 
 	template <int Dims>
@@ -601,6 +600,9 @@ class handler {
 		for(auto& h : m_hints) {
 			m_task->add_hint(std::move(h));
 		}
+		for(auto& h : m_hints) {
+			m_task->add_hint(std::move(h));
+		}
 		return std::move(m_task);
 	}
 };
@@ -672,7 +674,7 @@ void constrain_split(handler& cgh, const range<Dims>& constraint) {
 }
 
 template <typename Hint>
-void hint(handler& cgh, Hint&& h) {
-	cgh.experimental_hint(std::forward<Hint>(h));
+void hint(handler& cgh, Hint&& hint) {
+	cgh.experimental_hint(std::forward<Hint>(hint));
 }
 } // namespace celerity::experimental

@@ -118,8 +118,8 @@ TEST_CASE("split_2d produces perfectly square chunks if possible", "[split]") {
 	const auto chunks = split_2d(full_chunk, ones, 4);
 	check_2d_split(full_chunk, chunks,
 	    {
-	        {64, {64, 64}}, //
-	        {64, {64, 64}}  //
+	        {64, {64, 64}},
+	        {64, {64, 64}},
 	    });
 }
 
@@ -129,10 +129,10 @@ TEST_CASE("split_2d respects granularity constraints") {
 		const auto chunks = split_2d(full_chunk, {8, 8, 1}, 8);
 		check_2d_split(full_chunk, chunks,
 		    {
-		        {32, {64, 64}}, //
-		        {32, {64, 64}}, //
-		        {32, {64, 64}}, //
-		        {32, {64, 64}}  //
+		        {32, {64, 64}},
+		        {32, {64, 64}},
+		        {32, {64, 64}},
+		        {32, {64, 64}},
 		    });
 	}
 	SECTION("non-square full chunk, constrained to 1D split") {

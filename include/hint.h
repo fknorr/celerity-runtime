@@ -9,7 +9,7 @@ class handler;
 // Definition is in handler.h to avoid circular dependency
 namespace celerity::experimental {
 template <typename Hint>
-void hint(handler& cgh, Hint&& h);
+void hint(handler& cgh, Hint&& hint);
 }
 
 namespace celerity::detail {
@@ -36,7 +36,7 @@ namespace celerity::experimental::hints {
  * Suggests that the task should be split into 1D chunks.
  * This is currently the default behavior.
  */
-class split_1d final : public detail::hint_base {
+class split_1d : public detail::hint_base {
   private:
 	void validate(const hint_base& other) const override;
 };
@@ -44,7 +44,7 @@ class split_1d final : public detail::hint_base {
 /**
  * Suggests that the task should be split into 2D chunks.
  */
-class split_2d final : public detail::hint_base {
+class split_2d : public detail::hint_base {
   private:
 	void validate(const hint_base& other) const override;
 };

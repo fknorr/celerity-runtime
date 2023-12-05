@@ -10,7 +10,7 @@ namespace {
 using namespace celerity;
 using namespace celerity::detail;
 
-void sanity_check_split(const chunk<3>& full_chunk, const std::vector<chunk<3>>& split) {
+[[maybe_unused]] void sanity_check_split(const chunk<3>& full_chunk, const std::vector<chunk<3>>& split) {
 	region<3> reconstructed_chunk;
 	for(auto& chnk : split) {
 		assert(region_intersection(reconstructed_chunk, box<3>(chnk)).empty());
@@ -32,6 +32,48 @@ std::tuple<std::array<size_t, Dims>, std::array<size_t, Dims>, std::array<size_t
 		num_large_chunks[d] = (full_chunk.range[d] - small_chunk_size[d] * actual_num_chunks[d]) / granularity[d];
 	}
 	return {small_chunk_size, large_chunk_size, num_large_chunks};
+}
+
+/**
+ * Given a factorization of `num_chunks` (i.e., `f0 * f1 = num_chunks`), try to find the assignment of factors to
+ * dimensions that produces more chunks under the given constraints. If they are tied, try to find the assignment
+ * that results in a "nicer" split according to some heuristics (see below).
+ *
+ * The single argument `factor` specifies both factors, as `f0 = factor` and `f1 = num_chunks / factor`.
+ *
+ * @returns The number of chunks that can be created in dimension 0 and dimension 1, respectively. These are at most
+ *          (f0, f1) or (f1, f0), however may be less if constrained by the split granularity.
+ */
+std::array<size_t, 2> assign_split_factors_2d(const chunk<3>& full_chunk, const range<3>& granularity, const size_t factor, const size_t num_chunks) {
+	assert(num_chunks % factor == 0);
+	const size_t max_chunks[2] = {full_chunk.range[0] / granularity[0], full_chunk.range[1] / granularity[1]};
+	const size_t f0 = factor;
+	const size_t f1 = num_chunks / factor;
+
+	// Decide in which direction to split by first checking which
+	// factor assignment produces more chunks under the given constraints.
+	const std::array<size_t, 2> split_0_1 = {std::min(f0, max_chunks[0]), std::min(f1, max_chunks[1])};
+	const std::array<size_t, 2> split_1_0 = {std::min(f1, max_chunks[0]), std::min(f0, max_chunks[1])};
+	const auto count0 = split_0_1[0] * split_0_1[1];
+	const auto count1 = split_1_0[0] * split_1_0[1];
+
+	if(count0 > count1) { return split_0_1; }
+	if(count0 < count1) { return split_1_0; }
+
+	// If we're tied for the number of chunks we can create, try some heuristics to decide.
+
+	// If domain is square(-ish), prefer splitting along slower dimension.
+	// (These bounds have been chosen arbitrarily!)
+	const double squareishness = std::sqrt(full_chunk.range.size()) / static_cast<double>(full_chunk.range[0]);
+	if(squareishness > 0.95 && squareishness < 1.05) { return (f0 >= f1) ? split_0_1 : split_1_0; }
+
+	// For non-square domains, prefer split that produces shorter edges (compare sum of circumferences)
+	const auto circ0 = full_chunk.range[0] / split_0_1[0] + full_chunk.range[1] / split_0_1[1];
+	const auto circ1 = full_chunk.range[0] / split_1_0[0] + full_chunk.range[1] / split_1_0[1];
+	return circ0 < circ1 ? split_0_1 : split_1_0;
+
+	// TODO: Yet another heuristic we may want to consider is how even chunk sizes are,
+	// i.e., how balanced the workload is.
 }
 
 } // namespace
@@ -79,54 +121,23 @@ std::vector<chunk<3>> split_2d(const chunk<3>& full_chunk, const range<3>& granu
 	}
 #endif
 
-	const auto assign_factors = [&full_chunk, &granularity, &num_chunks](const size_t factor) {
-		assert(num_chunks % factor == 0);
-		const size_t max_chunks[2] = {full_chunk.range[0] / granularity[0], full_chunk.range[1] / granularity[1]};
-		const size_t f0 = factor;
-		const size_t f1 = num_chunks / factor;
-
-		// Decide in which direction to split by first checking which
-		// factor assignment produces more chunks under the given constraints.
-		const std::array<size_t, 2> split0 = {std::min(f0, max_chunks[0]), std::min(f1, max_chunks[1])};
-		const std::array<size_t, 2> split1 = {std::min(f1, max_chunks[0]), std::min(f0, max_chunks[1])};
-		const auto count0 = split0[0] * split0[1];
-		const auto count1 = split1[0] * split1[1];
-
-		if(count0 == count1) {
-			// If we're tied for the number of chunks we can create, try some heuristics to decide.
-
-			// If domain is square(-ish), prefer splitting along slower dimension.
-			// (These bounds have been chosen arbitrarily!)
-			const double squareishness = std::sqrt(full_chunk.range.size()) / static_cast<double>(full_chunk.range[0]);
-			if(squareishness > 0.95 && squareishness < 1.05) { return (f0 >= f1) ? split0 : split1; }
-
-			// For non-square domains, prefer split that produces shorter edges (compare sum of circumferences)
-			const auto circ0 = full_chunk.range[0] / split0[0] + full_chunk.range[1] / split0[1];
-			const auto circ1 = full_chunk.range[0] / split1[0] + full_chunk.range[1] / split1[1];
-			return circ0 < circ1 ? split0 : split1;
-
-			// TODO: Yet another heuristic we may want to consider is how even chunk sizes are,
-			// i.e., how balanced the workload is.
-		}
-		if(count0 > count1) { return split0; }
-		return split1;
-	};
-
 	// Factorize num_chunks
-	// Try to find factors as close to the square root as possible, that also produce
-	// (or come close to) the requested number of chunks (under the given constraints).
-	size_t f = std::floor(std::sqrt(num_chunks));
-	std::array<size_t, 2> best_f_counts = {0, 0};
-	while(f >= 1) {
-		while(f > 1 && num_chunks % f != 0) {
-			f--;
+	// We start out with an initial guess of `factor = floor(sqrt(num_chunks))` (the other one is implicitly given by `num_chunks / factor`),
+	// and work our way down, keeping track of the best factorization we've found so far, until we find a factorization that produces
+	// the requested number of chunks, or until we reach (1, num_chunks), i.e., a 1D split.
+	size_t factor = std::floor(std::sqrt(num_chunks));
+	std::array<size_t, 2> best_chunk_counts = {0, 0};
+	while(factor >= 1) {
+		while(factor > 1 && num_chunks % factor != 0) {
+			factor--;
 		}
-		const auto counts = assign_factors(f);
-		if(counts[0] * counts[1] > best_f_counts[0] * best_f_counts[1]) { best_f_counts = counts; }
-		if(counts[0] * counts[1] == num_chunks) { break; }
-		f--;
+		// The returned counts are at most (factor, num_chunks / factor), however may be less if constrained by the split granularity.
+		const auto chunk_counts = assign_split_factors_2d(full_chunk, granularity, factor, num_chunks);
+		if(chunk_counts[0] * chunk_counts[1] > best_chunk_counts[0] * best_chunk_counts[1]) { best_chunk_counts = chunk_counts; }
+		if(chunk_counts[0] * chunk_counts[1] == num_chunks) { break; }
+		factor--;
 	}
-	const auto actual_num_chunks = best_f_counts;
+	const auto actual_num_chunks = best_chunk_counts;
 	const auto [small_chunk_size, large_chunk_size, num_large_chunks] = compute_small_and_large_chunks<2>(full_chunk, granularity, actual_num_chunks);
 
 	std::vector<chunk<3>> result(actual_num_chunks[0] * actual_num_chunks[1], {full_chunk.offset, full_chunk.range, full_chunk.global_size});
