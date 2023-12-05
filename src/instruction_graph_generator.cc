@@ -337,7 +337,7 @@ class instruction_graph_generator::impl {
 		range<3> range;
 		size_t elem_size;
 		size_t elem_align;
-		std::vector<buffer_memory_state> memories;
+		dense_map<memory_id, buffer_memory_state> memories;
 		region_map<memory_mask> up_to_date_memories;   // TODO rename for vs original_write_memories?
 		region_map<instruction*> original_writers;     // TODO explain how and why this duplicates per_allocation_data::last_writers
 		region_map<memory_id> original_write_memories; // only meaningful if newest_data_location[box] is non-empty
@@ -416,7 +416,7 @@ class instruction_graph_generator::impl {
 
 	std::unordered_set<instruction_id> m_execution_front;
 
-	std::vector<memory_state> m_memories; // indexed by memory_id
+	dense_map<memory_id, memory_state> m_memories; // indexed by memory_id
 	std::unordered_map<buffer_id, buffer_state> m_buffers;
 	std::unordered_map<host_object_id, host_object_state> m_host_objects;
 	std::unordered_map<collective_group_id, collective_group_state> m_collective_groups;
@@ -580,7 +580,7 @@ void instruction_graph_generator::impl::create_buffer(
 		const box entire_buffer = subrange({}, range);
 
 		auto& buffer = iter->second;
-		auto& memory = buffer.memories.at(user_memory_id);
+		auto& memory = buffer.memories[user_memory_id];
 		auto& allocation = memory.allocations.emplace_back(buffer.dims, user_aid, nullptr /* alloc_instruction */, entire_buffer, buffer.range);
 
 		allocation.commit_write(entire_buffer, m_last_epoch);
@@ -749,7 +749,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 	const auto mid = host_memory_id;
 
 	auto& buffer = m_buffers.at(bid);
-	auto& memory = buffer.memories.at(mid);
+	auto& memory = buffer.memories[mid];
 
 	std::vector<buffer_allocation_state*> allocations;
 	for(const auto& min_contiguous_box : receive.required_contiguous_allocations) {
@@ -1212,7 +1212,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 		if(red.include_current_value) {
 			auto source_allocation =
-			    buffer.memories.at(host_memory_id).find_contiguous_allocation(scalar_reduction_box); // provided by satisfy_buffer_requirements
+			    buffer.memories[host_memory_id].find_contiguous_allocation(scalar_reduction_box); // provided by satisfy_buffer_requirements
 			assert(source_allocation != nullptr);
 
 			// copy to local gather space
@@ -1403,14 +1403,14 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 		const auto [rid, bid, reduction_task_includes_buffer_value] = tsk.get_reductions()[i];
 		auto& buffer = m_buffers.at(bid);
-		auto& host_memory = buffer.memories.at(host_memory_id);
+		auto& host_memory = buffer.memories[host_memory_id];
 
 		// gather space has been allocated before in order to preserve the current buffer value where necessary
 		std::vector<copy_instruction*> gather_copy_instrs;
 		gather_copy_instrs.reserve(cmd_instrs.size());
 		for(size_t j = 0; j < cmd_instrs.size(); ++j) {
 			const auto source_mid = cmd_instrs[j].memory_id;
-			auto source_allocation = buffer.memories.at(source_mid).find_contiguous_allocation(scalar_reduction_box);
+			auto source_allocation = buffer.memories[source_mid].find_contiguous_allocation(scalar_reduction_box);
 			assert(source_allocation != nullptr);
 
 			// copy to local gather space
@@ -1494,7 +1494,7 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 			for(const auto& box : instruction_graph_generator_detail::split_into_communicator_compatible_boxes(buffer.range, full_box)) {
 				const message_id msgid = create_outbound_pilot(command_batch, pcmd.get_target(), trid, box);
 
-				const auto allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(box);
+				const auto allocation = buffer.memories[host_memory_id].find_contiguous_allocation(box);
 				assert(allocation != nullptr); // we allocate_contiguously above
 
 				const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
@@ -1586,7 +1586,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 	const auto contribution_location = buffer.up_to_date_memories.get_region_values(scalar_reduction_box).front().second;
 	if(contribution_location.any()) {
 		const auto source_mid = next_location(contribution_location, host_memory_id);
-		const auto source_allocation = buffer.memories.at(source_mid).find_contiguous_allocation(scalar_reduction_box);
+		const auto source_allocation = buffer.memories[source_mid].find_contiguous_allocation(scalar_reduction_box);
 		assert(source_allocation != nullptr); // if scalar_box is up to date in that memory, it (the single element) must also be contiguous
 
 		local_gather_copy_instr = create<copy_instruction>(command_batch, source_allocation->aid, gather_aid + m_local_nid * buffer.elem_size,
@@ -1609,7 +1609,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 
 	allocate_contiguously(command_batch, bid, host_memory_id, {scalar_reduction_box});
 
-	auto& host_memory = buffer.memories.at(host_memory_id);
+	auto& host_memory = buffer.memories[host_memory_id];
 	auto dest_allocation = host_memory.find_contiguous_allocation(scalar_reduction_box);
 	assert(dest_allocation != nullptr);
 
@@ -1656,7 +1656,7 @@ void instruction_graph_generator::impl::compile_fence_command(batch& command_bat
 		// TODO explicitly verify support for empty-range buffer fences
 
 		auto& buffer = m_buffers.at(bid);
-		const auto host_buffer_allocation = buffer.memories.at(host_memory_id).find_contiguous_allocation(fence_box);
+		const auto host_buffer_allocation = buffer.memories[host_memory_id].find_contiguous_allocation(fence_box);
 		assert(host_buffer_allocation != nullptr);
 
 		const auto user_allocation_id = tsk.get_fence_promise()->get_user_allocation_id();

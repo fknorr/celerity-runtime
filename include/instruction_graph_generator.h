@@ -16,6 +16,29 @@ class instruction_recorder;
 struct outbound_pilot;
 class task_manager;
 
+/// Like a simple std::unordered_map, but implemented by indexing into a vector with the integral key type.
+template <typename KeyId, typename Value>
+class dense_map : private std::vector<Value> {
+  private:
+	using vector = std::vector<Value>;
+
+  public:
+	dense_map() = default;
+	explicit dense_map(size_t size) : vector(size) {}
+
+	using vector::begin, vector::end, vector::cbegin, vector::cend, vector::empty, vector::size, vector::resize;
+
+	Value& operator[](const KeyId key) {
+		assert(key < size());
+		return vector::operator[](static_cast<size_t>(key));
+	}
+
+	const Value& operator[](const KeyId key) const {
+		assert(key < size());
+		return vector::operator[](static_cast<size_t>(key));
+	}
+};
+
 class instruction_graph_generator {
   public:
 	static constexpr size_t max_num_memories = 64;
@@ -28,8 +51,8 @@ class instruction_graph_generator {
 		memory_mask copy_peers;
 	};
 	struct system_info {
-		std::vector<device_info> devices;  ///< indexed by device_id
-		std::vector<memory_info> memories; ///< indexed by memory_id
+		dense_map<device_id, device_info> devices;
+		dense_map<memory_id, memory_info> memories;
 	};
 
 	/// Implement this as the owner of instruction_graph_generator to receive callbacks on generated instructions and pilot messages.
