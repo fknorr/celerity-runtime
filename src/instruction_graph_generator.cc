@@ -4,7 +4,6 @@
 #include "command.h"
 #include "grid.h"
 #include "instruction_graph.h"
-#include "intrusive_graph.h"
 #include "recorders.h"
 #include "region_map.h"
 #include "split.h"
@@ -520,11 +519,11 @@ class instruction_graph_generator::impl {
 	void allocate_contiguously(batch& batch, buffer_id bid, memory_id mid, box_vector<3>&& required_contiguous_boxes);
 
 	void commit_pending_region_receive(
-	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const std::vector<std::pair<memory_id, region<3>>>& reads);
+	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const std::unordered_map<memory_id, std::vector<region<3>>>& reads);
 
 	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
-	void locally_satisfy_read_requirements(batch& batch, buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads);
+	void locally_satisfy_read_requirements(batch& batch, buffer_id bid, memory_id dest_mid, const std::vector<region<3>>& reads);
 
 	void satisfy_buffer_requirements_for_regular_access(
 	    batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks);
@@ -754,8 +753,8 @@ void instruction_graph_generator::impl::allocate_contiguously(
 	memory.allocations.insert(memory.allocations.end(), std::make_move_iterator(new_allocations.begin()), std::make_move_iterator(new_allocations.end()));
 }
 
-void instruction_graph_generator::impl::commit_pending_region_receive(
-    batch& current_batch, const buffer_id bid, const buffer_state::region_receive& receive, const std::vector<std::pair<memory_id, region<3>>>& reads) {
+void instruction_graph_generator::impl::commit_pending_region_receive(batch& current_batch, const buffer_id bid, const buffer_state::region_receive& receive,
+    const std::unordered_map<memory_id, std::vector<region<3>>>& reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_receive", MediumOrchid, "commit recv");
 
 	const auto trid = transfer_id(receive.consumer_tid, bid, no_reduction_id);
@@ -774,9 +773,11 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 	for(const auto alloc : allocations) {
 		const auto alloc_recv_region = region_intersection(alloc->box, receive.received_region);
 		std::vector<region<3>> independent_await_regions;
-		for(const auto& [_, read_region] : reads) {
-			const auto await_region = region_intersection(read_region, alloc_recv_region);
-			if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
+		for(const auto& [_, independent_read_regions] : reads) {
+			for(const auto& read_region : independent_read_regions) {
+				const auto await_region = region_intersection(read_region, alloc_recv_region);
+				if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
+			}
 		}
 		instruction_graph_generator_detail::symmetrically_split_overlapping_regions(independent_await_regions);
 
@@ -822,27 +823,26 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 }
 
 void instruction_graph_generator::impl::locally_satisfy_read_requirements(
-    batch& current_batch, const buffer_id bid, const std::vector<std::pair<memory_id, region<3>>>& reads) {
+    batch& current_batch, const buffer_id bid, const memory_id dest_mid, const std::vector<region<3>>& reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_coherence", Salmon, "local coherence");
 
 	auto& buffer = m_buffers.at(bid);
 
-	std::unordered_map<memory_id, std::vector<region<3>>> unsatisfied_reads;
-	for(const auto& [mid, read_region] : reads) {
+	std::vector<region<3>> unsatisfied_reads;
+	for(const auto& read_region : reads) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::find_incoherent", DarkSeaGreen, "find incoherent");
 
 		box_vector<3> unsatisfied_boxes;
 		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
-			if(!location.test(mid)) { unsatisfied_boxes.push_back(box); }
+			if(!location.test(dest_mid)) { unsatisfied_boxes.push_back(box); }
 		}
 		region<3> unsatisfied_region(std::move(unsatisfied_boxes));
-		if(!unsatisfied_region.empty()) { unsatisfied_reads[mid].push_back(std::move(unsatisfied_region)); }
+		if(!unsatisfied_region.empty()) { unsatisfied_reads.push_back(std::move(unsatisfied_region)); }
 	}
+	if(unsatisfied_reads.empty()) return;
 
 	// transform vectors of potentially-overlapping unsatisfied regions into disjoint regions
-	for(auto& [mid, regions] : unsatisfied_reads) {
-		instruction_graph_generator_detail::symmetrically_split_overlapping_regions(regions);
-	}
+	instruction_graph_generator_detail::symmetrically_split_overlapping_regions(unsatisfied_reads);
 
 	// Next, satisfy any remaining reads by copying locally from the newest data location
 	struct copy_template {
@@ -853,71 +853,65 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 
 	std::vector<copy_template> pending_staging_copies;
 	std::vector<copy_template> pending_final_copies;
-	for(auto& [dest_mid, disjoint_reader_regions] : unsatisfied_reads) {
-		if(disjoint_reader_regions.empty()) continue; // if fully satisfied by incoming transfers
 
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::collect", Orchid, "collect");
-
-		auto& buffer = m_buffers.at(bid);
-		for(auto& reader_region : disjoint_reader_regions) {
-			if(m_policy.uninitialized_read_error != error_policy::ignore) {
-				box_vector<3> uninitialized_reads;
-				for(const auto& [box, sources] : buffer.up_to_date_memories.get_region_values(reader_region)) {
-					if(!sources.any()) { uninitialized_reads.push_back(box); }
-				}
-				if(!uninitialized_reads.empty()) {
-					// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
-					utils::report_error(m_policy.uninitialized_read_error,
-					    // TODO print task / buffer names
-					    "Instruction is trying to read B{} {}, which is neither found locally nor has been await-pushed before.", bid,
-					    detail::region(std::move(uninitialized_reads)));
-				}
+	for(auto& reader_region : unsatisfied_reads) {
+		if(m_policy.uninitialized_read_error != error_policy::ignore) {
+			box_vector<3> uninitialized_reads;
+			for(const auto& [box, sources] : buffer.up_to_date_memories.get_region_values(reader_region)) {
+				if(!sources.any()) { uninitialized_reads.push_back(box); }
 			}
-
-			// Split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region.
-			std::unordered_map<instruction_id, region<3>> writer_regions;
-			for(const auto& [writer_box, original_writer] : buffer.original_writers.get_region_values(reader_region)) {
-				if(original_writer == nullptr) { continue /* gracefully handle an uninitialized read */; }
-				auto& region = writer_regions[original_writer->get_id()]; // allow default-insert
-				region = region_union(region, writer_box);
+			if(!uninitialized_reads.empty()) {
+				// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
+				utils::report_error(m_policy.uninitialized_read_error,
+				    // TODO print task / buffer names
+				    "Instruction is trying to read B{} {}, which is neither found locally nor has been await-pushed before.", bid,
+				    detail::region(std::move(uninitialized_reads)));
 			}
+		}
 
-			for(const auto& [_, original_writer_region] : writer_regions) {
-				std::unordered_map<memory_id, region<3>> staging_copy_sources;
-				std::unordered_map<memory_id, region<3>> final_copy_sources;
-				// there can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon
-				for(const auto& [copy_box, source_mid] : buffer.original_write_memories.get_region_values(original_writer_region)) {
-					if(m_system.memories[source_mid].copy_peers.test(dest_mid)) {
-						auto& final_source_region = final_copy_sources[source_mid]; // allow default-insert
-						final_source_region = region_union(final_source_region, copy_box);
-					} else {
-						assert(source_mid != host_memory_id && dest_mid != host_memory_id);
-						assert(m_system.memories[source_mid].copy_peers.test(host_memory_id));
-						assert(m_system.memories[dest_mid].copy_peers.test(host_memory_id));
+		// Split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region.
+		std::unordered_map<instruction_id, region<3>> writer_regions;
+		for(const auto& [writer_box, original_writer] : buffer.original_writers.get_region_values(reader_region)) {
+			if(original_writer == nullptr) { continue /* gracefully handle an uninitialized read */; }
+			auto& region = writer_regions[original_writer->get_id()]; // allow default-insert
+			region = region_union(region, writer_box);
+		}
 
-						box_vector<3> unsatisfied_boxes_on_host;
-						for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(copy_box)) {
-							if(!location.test(host_memory_id)) { unsatisfied_boxes_on_host.push_back(box); }
-						}
-						region<3> unsatisfied_region_on_host(std::move(unsatisfied_boxes_on_host));
+		for(const auto& [_, original_writer_region] : writer_regions) {
+			std::unordered_map<memory_id, region<3>> staging_copy_sources;
+			std::unordered_map<memory_id, region<3>> final_copy_sources;
+			// there can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon
+			for(const auto& [copy_box, source_mid] : buffer.original_write_memories.get_region_values(original_writer_region)) {
+				if(m_system.memories[source_mid].copy_peers.test(dest_mid)) {
+					auto& final_source_region = final_copy_sources[source_mid]; // allow default-insert
+					final_source_region = region_union(final_source_region, copy_box);
+				} else {
+					assert(source_mid != host_memory_id && dest_mid != host_memory_id);
+					assert(m_system.memories[source_mid].copy_peers.test(host_memory_id));
+					assert(m_system.memories[dest_mid].copy_peers.test(host_memory_id));
 
-						if(!unsatisfied_region_on_host.empty()) {
-							auto& staging_source_region = staging_copy_sources[source_mid]; // allow default-insert
-							staging_source_region = region_union(staging_source_region, unsatisfied_region_on_host);
-						}
-
-						auto& final_source_region = final_copy_sources[host_memory_id]; // allow default-insert
-						final_source_region = region_union(final_source_region, copy_box);
+					box_vector<3> unsatisfied_boxes_on_host;
+					for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(copy_box)) {
+						if(!location.test(host_memory_id)) { unsatisfied_boxes_on_host.push_back(box); }
 					}
+					region<3> unsatisfied_region_on_host(std::move(unsatisfied_boxes_on_host));
+
+					if(!unsatisfied_region_on_host.empty()) {
+						auto& staging_source_region = staging_copy_sources[source_mid]; // allow default-insert
+						staging_source_region = region_union(staging_source_region, unsatisfied_region_on_host);
+					}
+
+					auto& final_source_region = final_copy_sources[host_memory_id]; // allow default-insert
+					final_source_region = region_union(final_source_region, copy_box);
 				}
-				for(auto& [source_mid, copy_region] : staging_copy_sources) {
-					assert(!copy_region.empty());
-					pending_staging_copies.push_back({source_mid, host_memory_id, std::move(copy_region)});
-				}
-				for(auto& [source_mid, copy_region] : final_copy_sources) {
-					assert(!copy_region.empty());
-					pending_final_copies.push_back({source_mid, dest_mid, std::move(copy_region)});
-				}
+			}
+			for(auto& [source_mid, copy_region] : staging_copy_sources) {
+				assert(!copy_region.empty());
+				pending_staging_copies.push_back({source_mid, host_memory_id, std::move(copy_region)});
+			}
+			for(auto& [source_mid, copy_region] : final_copy_sources) {
+				assert(!copy_region.empty());
+				pending_final_copies.push_back({source_mid, dest_mid, std::move(copy_region)});
 			}
 		}
 	}
@@ -971,7 +965,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 
 	auto& buffer = m_buffers.at(bid);
 
-	std::vector<box_vector<3>> contiguous_allocations(m_memories.size());
+	dense_map<memory_id, box_vector<3>> contiguous_allocations(m_memories.size());
 	std::vector<buffer_state::region_receive> applied_receives;
 
 	region<3> accessed;  // which elements have are accessed (to figure out applying receives)
@@ -1030,22 +1024,24 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		contiguous_allocations[chunk.memory_id].insert(contiguous_allocations[chunk.memory_id].end(), chunk_boxes.begin(), chunk_boxes.end());
 	}
 
-	std::vector<std::pair<memory_id, region<3>>> local_chunk_reads;
+	std::unordered_map<memory_id, std::vector<region<3>>> local_chunk_reads;
 	for(const auto& chunk : local_chunks) {
 		for(const auto mode : access::consumer_modes) {
-			const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
-			if(!req.empty()) { local_chunk_reads.emplace_back(chunk.memory_id, req); }
+			auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
+			if(!req.empty()) { local_chunk_reads[chunk.memory_id].push_back(std::move(req)); }
 		}
 	}
 	if(local_node_is_reduction_initializer && reduction != tsk.get_reductions().end() && reduction->init_from_buffer) {
-		local_chunk_reads.emplace_back(host_memory_id, scalar_reduction_box);
+		local_chunk_reads[host_memory_id].emplace_back(scalar_reduction_box);
 	}
 
 	// collect all required staging allocations
-	for(const auto& [mid, read_region] : local_chunk_reads) {
-		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
-			if(location.any() && !location.test(mid) && (m_system.memories[mid].copy_peers & location).none()) {
-				contiguous_allocations[host_memory_id].push_back(box);
+	for(const auto& [mid, disjoint_read_regions] : local_chunk_reads) {
+		for(auto& read_region : disjoint_read_regions) {
+			for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
+				if(location.any() && !location.test(mid) && (m_system.memories[mid].copy_peers & location).none()) {
+					contiguous_allocations[host_memory_id].push_back(box);
+				}
 			}
 		}
 	}
@@ -1060,7 +1056,9 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 
 	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
 
-	locally_satisfy_read_requirements(current_batch, bid, local_chunk_reads);
+	for(const auto& [mid, independent_reads] : local_chunk_reads) {
+		locally_satisfy_read_requirements(current_batch, bid, mid, independent_reads);
+	}
 }
 
 
@@ -1499,7 +1497,7 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 	for(auto& [_, boxes] : individual_send_boxes) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
 		// writer without any effect from the order of operations
-		locally_satisfy_read_requirements(command_batch, trid.bid, {{host_memory_id, region(box_vector<3>(boxes))}});
+		locally_satisfy_read_requirements(command_batch, trid.bid, host_memory_id, {region(box_vector<3>(boxes))});
 	}
 
 	for(auto& [_, boxes] : individual_send_boxes) {
