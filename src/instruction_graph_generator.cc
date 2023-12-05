@@ -232,10 +232,10 @@ class instruction_graph_generator::impl {
 			if(ainstr != nullptr) { access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate}); }
 		}
 
-		// TODO accept BoxOrRegion
-		void commit_read(const region<3>& region, instruction* const instr) {
-			if(region.empty()) return;
-			for(auto& [box, front] : access_fronts.get_region_values(region)) {
+		template <typename BoxOrRegion>
+		void commit_read(const BoxOrRegion& box_or_region, instruction* const instr) {
+			if(box_or_region.empty()) return;
+			for(auto& [box, front] : access_fronts.get_region_values(box_or_region)) {
 				if(front.mode == access_front::read) {
 					// we call record_read as soon as the writing instructions is generated, so inserting at the end keeps the vector sorted
 					assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
@@ -248,7 +248,12 @@ class instruction_graph_generator::impl {
 			}
 		}
 
-		// TODO accept BoxOrRegion
+		void commit_write(const detail::box<3>& box, instruction* const instr) {
+			if(box.empty()) return;
+			last_writers.update_box(box, instr);
+			access_fronts.update_box(box, access_front{{instr}, access_front::write});
+		}
+
 		void commit_write(const region<3>& region, instruction* const instr) {
 			if(region.empty()) return;
 			last_writers.update_region(region, instr);
@@ -512,7 +517,7 @@ class instruction_graph_generator::impl {
 
 	// Re-allocation of one buffer on one memory never interacts with other buffers or other memories backing the same buffer, this function can be called
 	// in any order of allocation requirements without generating additional dependencies.
-	void allocate_contiguously(batch& batch, buffer_id bid, memory_id mid, const box_vector<3>& required_contiguous_boxes);
+	void allocate_contiguously(batch& batch, buffer_id bid, memory_id mid, box_vector<3>&& required_contiguous_boxes);
 
 	void commit_pending_region_receive(
 	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const std::vector<std::pair<memory_id, region<3>>>& reads);
@@ -645,7 +650,7 @@ memory_id instruction_graph_generator::impl::next_location(const memory_mask& lo
 }
 
 void instruction_graph_generator::impl::allocate_contiguously(
-    batch& current_batch, const buffer_id bid, const memory_id mid, const box_vector<3>& required_contiguous_boxes) //
+    batch& current_batch, const buffer_id bid, const memory_id mid, box_vector<3>&& required_contiguous_boxes) //
 {
 	if(required_contiguous_boxes.empty()) return;
 
@@ -654,7 +659,10 @@ void instruction_graph_generator::impl::allocate_contiguously(
 	auto& buffer = m_buffers.at(bid);
 	auto& memory = buffer.memories[mid];
 
-	auto contiguous_boxes_after_reallocation = required_contiguous_boxes;
+	// We currently only ever *grow* the allocation of buffers on each memory, which means that we must merge (re-size) existing allocations that overlap with
+	// but do not fully contain one of the required contiguous boxes. *Overlapping* here strictly means having a non-empty intersection; two boxes that merely
+	// "touch" can continue to co-exist
+	auto&& contiguous_boxes_after_reallocation = std::move(required_contiguous_boxes);
 	const auto first_empty =
 	    std::remove_if(contiguous_boxes_after_reallocation.begin(), contiguous_boxes_after_reallocation.end(), [](const box<3>& box) { return box.empty(); });
 	contiguous_boxes_after_reallocation.erase(first_empty, contiguous_boxes_after_reallocation.end());
@@ -663,43 +671,52 @@ void instruction_graph_generator::impl::allocate_contiguously(
 	}
 	instruction_graph_generator_detail::merge_overlapping_bounding_boxes(contiguous_boxes_after_reallocation);
 
-	std::vector<allocation_id> free_after_reallocation;
-	for(auto& alloc : memory.allocations) {
-		if(std::none_of(contiguous_boxes_after_reallocation.begin(), contiguous_boxes_after_reallocation.end(), [&](auto& box) { return alloc.box == box; })) {
-			free_after_reallocation.push_back(alloc.aid);
-		}
-	}
+	// Allocations that are now fully contained in (but not equal to) one of the newly contiguous bounding boxes will be freed at the end of the reallocation
+	// step, because we currently disallow overlapping allocations for simplicity. These will function as sources for resize-copies below.
+	const auto first_old_allocations_to_be_freed =
+	    std::partition(memory.allocations.begin(), memory.allocations.end(), [&](const buffer_allocation_state& allocation) {
+		    return std::find(contiguous_boxes_after_reallocation.begin(), contiguous_boxes_after_reallocation.end(), allocation.box)
+		           != contiguous_boxes_after_reallocation.end();
+	    });
+	const auto existing_allocations_end = memory.allocations.end();
 
-	auto new_allocations = std::move(contiguous_boxes_after_reallocation);
-	const auto last_new_allocation = std::remove_if(new_allocations.begin(), new_allocations.end(),
+	// Derive the set of new boxes to allocate by removing all existing boxes from the set of contiguous boxes.
+	auto&& newly_allocated_boxes = std::move(contiguous_boxes_after_reallocation);
+	const auto last_new_allocation = std::remove_if(newly_allocated_boxes.begin(), newly_allocated_boxes.end(),
 	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
-	new_allocations.erase(last_new_allocation, new_allocations.end());
+	newly_allocated_boxes.erase(last_new_allocation, newly_allocated_boxes.end());
+	if(newly_allocated_boxes.empty()) return;
 
-	merge_adjacent_boxes(new_allocations);
+	// Opportunistically merge adjacent boxes to keep the number of allocations and the tracking overhead low. This will not introduce artificial
+	// synchronization points because resize-copies are still rooted on the original last-writers.
+	merge_adjacent_boxes(newly_allocated_boxes);
 
-	for(const auto& dest_box : new_allocations) {
+	// We collect new allocations in a vector *separate* from memory.allocations to not invalidate iterators (and avoid accidentally resize-copying from them).
+	std::vector<buffer_allocation_state> new_allocations;
+	new_allocations.reserve(newly_allocated_boxes.size());
+
+	// Allocate new memory and initialize it via resize-copies, if applicable.
+	for(const auto& new_box : newly_allocated_boxes) {
 		const auto aid = new_allocation_id(mid);
-		const auto alloc_instr = create<alloc_instruction>(current_batch, aid, dest_box.get_area() * buffer.elem_size, buffer.elem_align);
+		const auto alloc_instr = create<alloc_instruction>(current_batch, aid, new_box.get_area() * buffer.elem_size, buffer.elem_align);
 		if(m_recorder != nullptr) {
 			*m_recorder << alloc_instruction_record(
-			    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.name, dest_box}, std::nullopt);
+			    *alloc_instr, alloc_instruction_record::alloc_origin::buffer, buffer_allocation_record{bid, buffer.name, new_box}, std::nullopt);
 		}
-		auto& dest_allocation = memory.allocations.emplace_back(buffer.dims, aid, alloc_instr, dest_box, buffer.range);
 
 		add_dependency(alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
 
-		for(auto& source_allocation : memory.allocations) {
-			// TODO this is ugly. maybe attach a tag enum to the allocation struct to recognize "allocations that are about to be freed"?
-			if(std::find_if(
-			       free_after_reallocation.begin(), free_after_reallocation.end(), [&](const allocation_id aid) { return aid == source_allocation.aid; })
-			    == free_after_reallocation.end()) {
-				// we modify memory.allocations in-place, so we need to be careful not to attempt copying from a new allocation to itself.
-				// Since we don't have overlapping allocations, any copy source must currently be one that will be freed after reallocation.
-				continue;
-			}
+		// New allocations are kept in a separate vector until reallocation is complete
+		auto& dest_allocation = new_allocations.emplace_back(buffer.dims, aid, alloc_instr, new_box, buffer.range);
 
-			// only copy those boxes to the new allocation that are still up-to-date in the old allocation
-			// TODO investigate a garbage-collection heuristic that omits these copies if we do not expect them to be read from again on this memory
+		// Since allocations don't overlap, we only need to consider those to be freed as source for resize-copies
+		for(auto source_it = first_old_allocations_to_be_freed; source_it != existing_allocations_end; ++source_it) {
+			auto& source_allocation = *source_it;
+
+			// Only copy those boxes to the new allocation that are still up-to-date in the old allocation. The caller of allocate_contiguously should remove
+			// any region from up_to_date_memories that they intend to discard / overwrite immediately to avoid dead resize copies.
+			// TODO investigate a garbage-collection heuristic that omits these copies if there are other up-to-date memories and we do not expect the region to
+			// be read again on this memory.
 			const auto full_copy_box = box_intersection(dest_allocation.box, source_allocation.box);
 			box_vector<3> live_copy_boxes;
 			for(const auto& [copy_box, location] : buffer.up_to_date_memories.get_region_values(full_copy_box)) {
@@ -716,29 +733,25 @@ void instruction_graph_generator::impl::allocate_contiguously(
 		}
 	}
 
-	// TODO keep old allocations around until their box is written to (or at least until the end of compile()) in order to resolve "buffer-locking"
-	// anti-dependencies
-	for(const auto free_aid : free_after_reallocation) {
-		const auto allocation = std::find_if(memory.allocations.begin(), memory.allocations.end(), [&](const auto& a) { return a.aid == free_aid; });
-		assert(allocation != memory.allocations.end());
+	// Free old allocations now that any resize-copies have been issued.
+	// TODO consider keeping old allocations around until their box is written to (or at least until the end of the current instruction batch) in order to
+	// resolve "buffer-locking" anti-dependencies
+	for(auto it = first_old_allocations_to_be_freed; it != memory.allocations.end(); ++it) {
+		auto& allocation = *it;
 
-		const auto free_instr = create<free_instruction>(current_batch, allocation->aid);
+		const auto free_instr = create<free_instruction>(current_batch, allocation.aid);
 		if(m_recorder != nullptr) {
 			*m_recorder << free_instruction_record(
-			    *free_instr, allocation->box.get_area() * buffer.elem_size, buffer_allocation_record{bid, buffer.name, allocation->box});
+			    *free_instr, allocation.box.get_area() * buffer.elem_size, buffer_allocation_record{bid, buffer.name, allocation.box});
 		}
 
-		add_dependencies_on_access_front(free_instr, *allocation, allocation->box, instruction_dependency_origin::allocation_lifetime);
+		add_dependencies_on_access_front(free_instr, allocation, allocation.box, instruction_dependency_origin::allocation_lifetime);
 	}
 
-	// TODO garbage-collect allocations that are both stale and not written to? We cannot re-fetch buffer subranges from their original producer without
-	// some sort of inter-node pull semantics if the GC turned out to be a misprediction, but we can swap allocations to the host when we run out of device
-	// memory. Basically we would annotate each allocation with an last-used value to implement LRU semantics.
+	// TODO garbage-collect allocations that are not up-to-date and not written to in this task?
 
-	const auto end_retain_after_allocation = std::remove_if(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) {
-		return std::any_of(free_after_reallocation.begin(), free_after_reallocation.end(), [&](const auto aid) { return alloc.aid == aid; });
-	});
-	memory.allocations.erase(end_retain_after_allocation, memory.allocations.end());
+	memory.allocations.erase(first_old_allocations_to_be_freed, memory.allocations.end());
+	memory.allocations.insert(memory.allocations.end(), std::make_move_iterator(new_allocations.begin()), std::make_move_iterator(new_allocations.end()));
 }
 
 void instruction_graph_generator::impl::commit_pending_region_receive(
@@ -1038,7 +1051,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 	}
 
 	for(memory_id mid = 0; mid < contiguous_allocations.size(); ++mid) {
-		allocate_contiguously(current_batch, bid, mid, contiguous_allocations[mid]);
+		allocate_contiguously(current_batch, bid, mid, std::move(contiguous_allocations[mid]));
 	}
 
 	for(const auto& receive : applied_receives) {
@@ -1481,7 +1494,7 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 		required_host_allocation.push_back(box);
 	}
 
-	allocate_contiguously(command_batch, trid.bid, host_memory_id, required_host_allocation);
+	allocate_contiguously(command_batch, trid.bid, host_memory_id, std::move(required_host_allocation));
 
 	for(auto& [_, boxes] : individual_send_boxes) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
