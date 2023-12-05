@@ -294,8 +294,8 @@ box<Dims> bounding_box(const region<Dims>& region) {
 	return bounding_box(region.get_boxes().begin(), region.get_boxes().end());
 }
 
-template<int Dims>
-void merge_adjacent_boxes(box_vector<Dims> &boxes);
+template <int Dims>
+void merge_adjacent_boxes(box_vector<Dims>& boxes);
 
 template <int Dims>
 region<Dims> region_union(const region<Dims>& lhs, const region<Dims>& rhs);

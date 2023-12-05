@@ -326,7 +326,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 #endif
 
 #define CELERITY_DETAIL_TRACY_ZONE_METADATA() CELERITY_DETAIL_TRACY_ZONE_TEXT("depends: {}\npriority: {}", tracy_dependency_list, instr.get_priority())
-#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()                                                                                                     \
+#define CELERITY_DETAIL_TRACY_ASYNC_ZONE_METADATA()                                                                                                            \
 	CELERITY_DETAIL_TRACY_ASYNC_ZONE_TEXT(active_instruction.tracy_lane, "depends: {}\npriority: {}", tracy_dependency_list, instr.get_priority())
 
 	active_instruction_info active_instruction;

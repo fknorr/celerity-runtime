@@ -844,6 +844,8 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 	// is is established, the consumer of [first] or [second] can start executing.
 	instruction_graph_generator_detail::symmetrically_split_overlapping_regions(unsatisfied_concurrent_reads);
 
+	// Collect the regions to be copied from each memory. As long as we don't touch `buffer.up_to_date_memories` we could also create copy_instructions directly
+	// within this loop, but separating these two steps keeps code more readable at the expense of allocating one more vector.
 	std::vector<std::tuple<memory_id, region<3>>> concurrent_copies_from_source;
 	for(auto& unsatisfied_region : unsatisfied_concurrent_reads) {
 		// Split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region.
@@ -855,12 +857,16 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 
 		for(auto& [_, unsatisfied_boxes] : unsatisfied_boxes_by_writer) {
 			const region unsatisfied_region(std::move(unsatisfied_boxes));
-			dense_map<memory_id, box_vector<3>> copy_from_source(m_memories.size());
-			// there can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon
+			// There can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon.
+			std::unordered_map<memory_id, box_vector<3>> copy_from_source;
+
 			for(const auto& [copy_box, original_write_mid] : buffer.original_write_memories.get_region_values(unsatisfied_region)) {
 				if(m_system.memories[original_write_mid].copy_peers.test(dest_mid)) {
+					// Prefer copying from the original writer's memory to avoid introducing copy-chains between the instructions of multiple commands.
 					copy_from_source[original_write_mid].push_back(copy_box);
 				} else {
+					// If this is not possible, we expect that an earlier call to locally_satisfy_read_requirements has made the host memory coherent, meaning
+					// that we are in the second hop of a host-staged copy.
 #ifndef NDEBUG
 					assert(m_system.memories[dest_mid].copy_peers.test(host_memory_id));
 					for(const auto& [_, location] : buffer.up_to_date_memories.get_region_values(copy_box)) {
@@ -870,16 +876,15 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 					copy_from_source[host_memory_id].push_back(copy_box);
 				}
 			}
-			for(memory_id source_mid = 0; source_mid < copy_from_source.size(); ++source_mid) {
-				if(copy_from_source[source_mid].empty()) continue;
-				concurrent_copies_from_source.emplace_back(source_mid, region(std::move(copy_from_source[source_mid])));
+			for(auto& [source_mid, copy_boxes] : copy_from_source) {
+				assert(!copy_boxes.empty());
+				concurrent_copies_from_source.emplace_back(source_mid, region(std::move(copy_boxes)));
 			}
 		}
 	}
 
+	// Create, between pairs of source and dest allocations, the copy instructions according to the previously collected regions.
 	for(auto& [source_mid, copy_from_memory_region] : concurrent_copies_from_source) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::apply", LightSteelBlue, "apply");
-
 		assert(dest_mid != source_mid);
 		for(auto& source_allocation : buffer.memories[source_mid].allocations) {
 			const auto read_from_allocation_region = region_intersection(copy_from_memory_region, source_allocation.box);
@@ -901,13 +906,13 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 		}
 	}
 
+	// Update buffer.up_to_date_memories for the entire updated region at once.
 	for(const auto& region : unsatisfied_concurrent_reads) {
 		for(auto& [box, location] : buffer.up_to_date_memories.get_region_values(region)) {
 			buffer.up_to_date_memories.update_region(box, memory_mask(location).set(dest_mid));
 		}
 	}
 }
-
 
 void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& local_chunks) //

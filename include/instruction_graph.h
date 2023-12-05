@@ -30,7 +30,7 @@ class instruction
   public:
 	using edge_set = gch::small_vector<instruction_id>;
 
-	/// If there are multiple instructions eligible for execution, the runtime should chose the one with the highest `priority` first. 
+	/// If there are multiple instructions eligible for execution, the runtime should chose the one with the highest `priority` first.
 	/// This provides a low-level scheduling heuristic to reduce the impact of submission latency and improve concurrency.
 	explicit instruction(const instruction_id iid, const int priority) : m_id(iid), m_priority(priority) {}
 
