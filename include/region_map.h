@@ -9,8 +9,8 @@
 #include <variant>
 #include <vector>
 
+#include <fmt/format.h>
 #include <matchbox.hh>
-#include <spdlog/fmt/fmt.h>
 
 #include "grid.h"
 #include "utils.h"

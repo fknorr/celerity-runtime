@@ -166,7 +166,7 @@ enum class error_policy {
 	ignore,
 	log_warning,
 	log_error,
-	throw_exception,
+	panic,
 };
 
 enum class epoch_action {

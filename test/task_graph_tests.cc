@@ -213,8 +213,6 @@ namespace detail {
 			for(const auto& producer_mode : detail::access::producer_modes) {
 				CAPTURE(consumer_mode);
 				CAPTURE(producer_mode);
-				const bool pure_consumer = consumer_mode == mode::read;
-				const bool pure_producer = producer_mode == mode::discard_read_write || producer_mode == mode::discard_write;
 
 				auto tt = test_utils::task_test_context{};
 				auto buf = tt.mbf.create_buffer(range<1>(128), true /* mark_as_host_initialized */);
@@ -228,6 +226,8 @@ namespace detail {
 
 				const task_id tid_c =
 				    test_utils::add_compute_task<class UKN(task_c)>(tt.tm, [&](handler& cgh) { dispatch_get_access(buf, cgh, producer_mode, all()); });
+				const bool pure_consumer = consumer_mode == mode::read;
+				const bool pure_producer = producer_mode == mode::discard_read_write || producer_mode == mode::discard_write;
 				CHECK(has_dependency(tt.tm, tid_c, tid_b, pure_consumer || pure_producer ? dependency_kind::anti_dep : dependency_kind::true_dep));
 			}
 		}
@@ -725,7 +725,7 @@ namespace detail {
 
 			CHECK_THROWS_WITH((test_utils::add_compute_task(
 			                      tt.tm, [&](handler& cgh) { debug::set_task_name(cgh, "uninit_read"), buf.get_access<access_mode::read>(cgh, all{}); })),
-			    "Task T1 \"uninit_read\" declares a reading access on uninitialized B0 {[0,0,0] - [1,1,1]}. Make sure to construct the accessor with "
+			    "Device kernel T1 \"uninit_read\" declares a reading access on uninitialized B0 {[0,0,0] - [1,1,1]}. Make sure to construct the accessor with "
 			    "no_init if possible.");
 		}
 
@@ -737,7 +737,8 @@ namespace detail {
 
 			CHECK_THROWS_WITH((test_utils::add_compute_task(
 			                      tt.tm, [&](handler& cgh) { debug::set_task_name(cgh, "uninit_read"), buf.get_access<access_mode::read>(cgh, all{}); })),
-			    "Task T2 \"uninit_read\" declares a reading access on uninitialized B0 {[0,32,0] - [32,64,1], [32,0,0] - [64,64,1]}. Make sure to construct "
+			    "Device kernel T2 \"uninit_read\" declares a reading access on uninitialized B0 {[0,32,0] - [32,64,1], [32,0,0] - [64,64,1]}. Make sure to "
+			    "construct "
 			    "the accessor with no_init if possible.");
 		}
 	}

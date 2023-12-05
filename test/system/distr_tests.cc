@@ -458,5 +458,44 @@ namespace detail {
 #endif
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between commands iff access pattern diagnostics are enabled",
+	    "[runtime][diagnostics]") //
+	{
+		std::unique_ptr<celerity::test_utils::log_capture> lc;
+		{
+			distr_queue q;
+			const auto num_nodes = runtime::get_instance().get_num_nodes();
+			if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
+
+			lc = std::make_unique<celerity::test_utils::log_capture>();
+
+			buffer<int, 1> buf(1);
+
+			SECTION("in distributed device kernels") {
+				q.submit([&](handler& cgh) {
+					accessor acc(buf, cgh, celerity::access::all(), write_only, no_init);
+					cgh.parallel_for(range(num_nodes), [=](item<1>) { (void)acc; });
+				});
+			}
+
+			SECTION("in collective host tasks") {
+				q.submit([&](handler& cgh) {
+					accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+					cgh.host_task(celerity::experimental::collective, [=](experimental::collective_partition) { (void)acc; });
+				});
+			}
+
+			q.slow_full_sync();
+		}
+
+		const auto error_message = "has overlapping writes between multiple nodes in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the "
+		                           "write access or constrain the split to make the access non-overlapping.";
+#if CELERITY_ACCESS_PATTERN_DIAGNOSTICS
+		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
+#else
+		CHECK_THAT(lc->get_log(), !Catch::Matchers::ContainsSubstring(error_message));
+#endif
+	}
+
 } // namespace detail
 } // namespace celerity

@@ -8,8 +8,10 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <typeinfo>
+#include <variant>
 
-#include "fmt/format.h"
+#include <fmt/format.h>
 
 #include "types.h"
 
@@ -85,37 +87,54 @@ static auto tuple_without(const std::tuple<Ts...>& tuple) {
 	}
 }
 
-// fiddles out the base name of a task from a full, demangled input type name
-std::string simplify_task_name(const std::string& demangled_type_name);
-
-// escapes "<", ">", and "&" with their corresponding HTML escape sequences
-std::string escape_for_dot_label(std::string str);
-
-std::string get_buffer_label(const buffer_id bid, const std::string& name = "");
-
-template <typename... FmtArgs>
-[[noreturn]] void panic(const FmtArgs&... fmt_args) {
-	throw std::runtime_error(fmt::format(fmt_args...));
-}
-
 template <typename Variant, typename Alternative>
 Alternative& replace(Variant& variant, Alternative&& alternative) {
 	return std::get<Alternative>(variant = std::forward<Alternative>(alternative));
 }
 
-template <typename... FmtParams>
-[[noreturn]] void throw_error(FmtParams&&... fmt_args) {
-	throw std::runtime_error(fmt::format(std::forward<FmtParams>(fmt_args)...));
+/// Fiddles out the base name of a (possibly templated) struct or class from a full (possibly mangled) type name.
+/// The input parameter should be `typeid(Struct*)`, i.e. a _pointer_ to the desired struct type.
+std::string get_simplified_type_name_from_pointer(const std::type_info& pointer_type_info);
+
+/// Fiddles out the base name of a (possibly templated) struct or class from a full (possibly mangled) type name.
+template <typename Struct>
+std::string get_simplified_type_name() {
+	// Using a pointer will also make this function work types that have no definitions, which commonly happens for kernel name type.
+	return get_simplified_type_name_from_pointer(typeid(Struct*));
 }
 
-template <typename... FmtParams>
-void report_error(const error_policy policy, FmtParams&&... fmt_args) {
-	switch(policy) {
-	case error_policy::ignore: break;
-	case error_policy::log_warning: CELERITY_WARN(std::forward<FmtParams>(fmt_args)...); break;
-	case error_policy::log_error: CELERITY_ERROR(std::forward<FmtParams>(fmt_args)...); break;
-	case error_policy::throw_exception: throw_error(std::forward<FmtParams>(fmt_args)...); break;
-	}
+/// Escapes "<", ">", and "&" with their corresponding HTML escape sequences
+std::string escape_for_dot_label(std::string str);
+
+// TODO IDAG is this used / duped somewhere?
+std::string get_buffer_label(const buffer_id bid, const std::string& name = "");
+
+enum class panic_solution {
+	log_and_abort,     ///< default
+	throw_logic_error, ///< enabled in unit tests to detect and recover from panics
+};
+
+/// Globally and atomically sets the behavior of `utils::panic()`.
+void set_panic_solution(panic_solution solution);
+
+/// Either throws or aborts with a message, depending on the global `panic_solution` setting.
+[[noreturn]] void panic(const std::string& msg);
+
+/// Either throws or aborts with a message, depending on the global `panic_solution` setting.
+template <typename... FmtParams, std::enable_if_t<sizeof...(FmtParams) >= 2, int> = 0>
+[[noreturn]] void panic(const FmtParams&... fmt_args) {
+	// TODO also receive a std::source_location with C++20.
+	panic(fmt::format(fmt_args...));
+}
+
+/// Ignores, logs, or panics on an error depending on the `error_policy`.
+void report_error(const error_policy policy, const std::string& msg);
+
+/// Ignores, logs, or panics on an error depending on the `error_policy`.
+template <typename... FmtParams, std::enable_if_t<sizeof...(FmtParams) >= 2, int> = 0>
+void report_error(const error_policy policy, const FmtParams&... fmt_args) {
+	// TODO also receive a std::source_location with C++20.
+	if(policy != error_policy::ignore) { report_error(policy, fmt::format(fmt_args...)); }
 }
 
 } // namespace celerity::detail::utils

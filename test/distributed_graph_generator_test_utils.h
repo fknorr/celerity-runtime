@@ -7,7 +7,7 @@
 #include <vector>
 
 #include <catch2/catch_message.hpp>
-#include <spdlog/fmt/fmt.h>
+#include <fmt/format.h>
 
 #include "catch2/internal/catch_context.hpp"
 #include "command_graph.h"
@@ -66,8 +66,8 @@ class task_builder {
 			return tid;
 		}
 
-		step name(const std::string& task_name) {
-			return chain<step>([task_name](handler& cgh) { debug::set_task_name(cgh, task_name); });
+		step name(const std::string& name) {
+			return chain<step>([&name](handler& cgh) { celerity::debug::set_task_name(cgh, name); });
 		}
 
 		template <typename BufferT, typename RangeMapper>

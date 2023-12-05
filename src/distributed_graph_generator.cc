@@ -152,8 +152,30 @@ std::vector<abstract_command*> distributed_graph_generator::build_task(const tas
 	return topsort(std::move(m_current_cmd_batch));
 }
 
+void distributed_graph_generator::report_overlapping_writes(const task& tsk, const box_vector<3>& local_chunks) const {
+	const chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
+
+	// Since this check is run distributed on every node, we avoid quadratic behavior by only checking for conflicts between all local chunks and the
+	// region-union of remote chunks. This way, every conflict will be reported by at least one node.
+	const box<3> global_chunk(subrange(full_chunk.offset, full_chunk.range));
+	auto remote_chunks = region_difference(global_chunk, region(box_vector<3>(local_chunks))).into_boxes();
+
+	// detect_overlapping_writes takes a single box_vector, so we concatenate local and global chunks (the order does not matter)
+	auto distributed_chunks = std::move(remote_chunks);
+	distributed_chunks.insert(distributed_chunks.end(), local_chunks.begin(), local_chunks.end());
+
+	if(const auto overlapping_writes = detect_overlapping_writes(tsk, distributed_chunks); !overlapping_writes.empty()) {
+		auto error = fmt::format("{} has overlapping writes between multiple nodes in", print_task_debug_label(tsk, true /* title case */));
+		for(const auto& [bid, overlap] : overlapping_writes) {
+			fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
+		}
+		error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
+		utils::report_error(m_policy.overlapping_write_error, "{}", error);
+	}
+}
+
 void distributed_graph_generator::generate_distributed_commands(const task& tsk) {
-	chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
+	const chunk<3> full_chunk{tsk.get_global_offset(), tsk.get_global_size(), tsk.get_global_size()};
 	const size_t num_chunks = m_num_nodes * 1; // TODO Make configurable
 	const auto chunks = ([&] {
 		if(tsk.get_type() == task_type::collective || tsk.get_type() == task_type::fence) {
@@ -387,8 +409,9 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 			}
 
 			if(!uninitialized_reads.empty()) {
-				utils::report_error(m_policy.uninitialized_read_error, "Command C{} on N{} reads B{} {}, which has not been written by any node.",
-				    cmd->get_cid(), m_local_nid, bid, detail::region(std::move(uninitialized_reads)));
+				utils::report_error(m_policy.uninitialized_read_error,
+				    "Command C{} on N{}, which executes {} of {}, reads B{} {}, which has not been written by any node.", cmd->get_cid(), m_local_nid,
+				    box(subrange(chunks[i].offset, chunks[i].range)), print_task_debug_label(tsk), bid, detail::region(std::move(uninitialized_reads)));
 			}
 
 			if(generate_reduction) {
@@ -445,27 +468,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 	}
 
 	// Check for and report overlapping writes between local chunks, and between local and remote chunks.
-	if(m_policy.overlapping_write_error != error_policy::ignore) {
-		// Since this check is run distributed on every node, we avoid quadratic behavior by only checking for conflicts between all local chunks and the
-		// region-union of remote chunks. This way, every conflict will be reported by at least one node.
-		const box<3> global_chunk(subrange(full_chunk.offset, full_chunk.range));
-		auto remote_chunks = region_difference(global_chunk, region(box_vector<3>(local_chunks))).into_boxes();
-
-		// detect_overlapping_writes takes a single box_vector, so we concatenate local and global chunks (the order does not matter)
-		auto distributed_chunks = std::move(remote_chunks);
-		distributed_chunks.insert(distributed_chunks.end(), local_chunks.begin(), local_chunks.end());
-
-		if(const auto overlapping_writes = detect_overlapping_writes(tsk, distributed_chunks); !overlapping_writes.empty()) {
-			auto error = fmt::format("Task T{}", tsk.get_id());
-			if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
-			error += " has overlapping writes between multiple nodes in";
-			for(const auto& [bid, overlap] : overlapping_writes) {
-				fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
-			}
-			error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
-			utils::report_error(m_policy.overlapping_write_error, "{}", error);
-		}
-	}
+	if(m_policy.overlapping_write_error != error_policy::ignore) { report_overlapping_writes(tsk, local_chunks); }
 
 	// For buffers that were in a pending reduction state and a reduction was generated
 	// (i.e., the result was not discarded), set their new state.

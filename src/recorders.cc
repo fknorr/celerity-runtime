@@ -45,8 +45,8 @@ task_dependency_list build_task_dependency_list(const task& tsk) {
 }
 
 task_record::task_record(const task& from, const buffer_name_map& accessed_buffer_names)
-    : tid(from.get_id()), debug_name(utils::simplify_task_name(from.get_debug_name())), cgid(from.get_collective_group_id()), type(from.get_type()),
-      geometry(from.get_geometry()), reductions(build_reduction_list(from, accessed_buffer_names)), accesses(build_access_list(from, accessed_buffer_names)),
+    : tid(from.get_id()), debug_name(from.get_debug_name()), cgid(from.get_collective_group_id()), type(from.get_type()), geometry(from.get_geometry()),
+      reductions(build_reduction_list(from, accessed_buffer_names)), accesses(build_access_list(from, accessed_buffer_names)),
       side_effect_map(from.get_side_effect_map()), dependencies(build_task_dependency_list(from)) {}
 
 // Commands
@@ -136,7 +136,7 @@ command_dependency_list build_command_dependency_list(const abstract_command& cm
 	return ret;
 }
 
-std::string get_task_name(const task& tsk) { return utils::simplify_task_name(tsk.get_debug_name()); }
+std::string get_task_name(const task& tsk) { return tsk.get_debug_name(); } // TODO remove?
 
 std::optional<task_type> get_task_type(const abstract_command& cmd, const task_manager* task_mngr) {
 	if(const auto* tsk = get_task_for(cmd, task_mngr)) return tsk->get_type();
@@ -191,7 +191,7 @@ device_kernel_instruction_record::device_kernel_instruction_record(const device_
     const command_id execution_cid, const std::string& debug_name, const std::vector<buffer_memory_record>& buffer_memory_allocation_map,
     const std::vector<buffer_reduction_record>& buffer_memory_reduction_map)
     : acceptor_base(dkinstr), device_id(dkinstr.get_device_id()), execution_range(dkinstr.get_execution_range()), command_group_task_id(cg_tid),
-      execution_command_id(execution_cid), debug_name(utils::simplify_task_name(debug_name)) //
+      execution_command_id(execution_cid), debug_name(debug_name) //
 {
 	assert(dkinstr.get_access_allocations().size() == buffer_memory_allocation_map.size());
 	access_map.reserve(dkinstr.get_access_allocations().size());
@@ -209,7 +209,7 @@ device_kernel_instruction_record::device_kernel_instruction_record(const device_
 host_task_instruction_record::host_task_instruction_record(const host_task_instruction& htinstr, const task_id cg_tid, const command_id execution_cid,
     const std::string& debug_name, const std::vector<buffer_memory_record>& buffer_memory_allocation_map)
     : acceptor_base(htinstr), collective_group_id(htinstr.get_collective_group_id()), execution_range(htinstr.get_execution_range()),
-      command_group_task_id(cg_tid), execution_command_id(execution_cid), debug_name(utils::simplify_task_name(debug_name)) //
+      command_group_task_id(cg_tid), execution_command_id(execution_cid), debug_name(debug_name) //
 {
 	assert(htinstr.get_access_allocations().size() == buffer_memory_allocation_map.size());
 	access_map.reserve(htinstr.get_access_allocations().size());

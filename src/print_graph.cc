@@ -1,5 +1,7 @@
 #include "print_graph.h"
 
+#include <fmt/format.h>
+
 #include "access_modes.h"
 #include "command.h"
 #include "grid.h"
@@ -13,8 +15,6 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
-
-#include <spdlog/fmt/fmt.h>
 
 
 namespace celerity::detail {

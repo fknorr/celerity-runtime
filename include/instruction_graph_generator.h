@@ -58,9 +58,9 @@ class instruction_graph_generator {
 	};
 
 	struct policy_set {
-		error_policy unsafe_oversubscription_error = error_policy::throw_exception;
-		error_policy uninitialized_read_error = error_policy::throw_exception;
-		error_policy overlapping_write_error = error_policy::throw_exception;
+		error_policy unsafe_oversubscription_error = error_policy::panic;
+		error_policy uninitialized_read_error = error_policy::panic;
+		error_policy overlapping_write_error = error_policy::panic;
 	};
 
 	/// Instruction graph generation requires information about the target system. `num_nodes` and `local_nid` effect the generation of communication

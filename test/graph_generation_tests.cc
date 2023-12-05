@@ -494,22 +494,23 @@ TEST_CASE("distributed_graph_generator throws in tests if it detects an uninitia
 
 	SECTION("on a fully uninitialized buffer") {
 		auto buf = dctx.create_buffer<1>({1});
-		CHECK_THROWS_WITH((dctx.device_compute(node_range).read(buf, acc::all()).submit()),
-		    "Command C1 on N0 reads B0 {[0,0,0] - [1,1,1]}, which has not been written by any node.");
+		CHECK_THROWS_WITH((dctx.device_compute(node_range).name("uninitialized").read(buf, acc::all()).submit()),
+		    "Command C1 on N0, which executes [0,0,0] - [1,1,1] of device kernel T1 \"uninitialized\", reads B0 {[0,0,0] - [1,1,1]}, which has not been "
+		    "written by any node.");
 	}
 
 	SECTION("on a partially, locally initialized buffer") {
 		auto buf = dctx.create_buffer<1>(node_range);
 		dctx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
 		CHECK_THROWS_WITH((dctx.device_compute(node_range).read(buf, acc::all()).submit()),
-		    "Command C2 on N0 reads B0 {[1,0,0] - [2,1,1]}, which has not been written by any node.");
+		    "Command C2 on N0, which executes [0,0,0] - [1,1,1] of device kernel T2, reads B0 {[1,0,0] - [2,1,1]}, which has not been written by any node.");
 	}
 
 	SECTION("on a partially, remotely initialized buffer") {
 		auto buf = dctx.create_buffer<1>(node_range);
 		dctx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
 		CHECK_THROWS_WITH((dctx.device_compute(node_range).read(buf, acc::one_to_one()).submit()),
-		    "Command C1 on N1 reads B0 {[1,0,0] - [2,1,1]}, which has not been written by any node.");
+		    "Command C1 on N1, which executes [1,0,0] - [2,1,1] of device kernel T2, reads B0 {[1,0,0] - [2,1,1]}, which has not been written by any node.");
 	}
 }
 
@@ -519,13 +520,13 @@ TEST_CASE("distributed_graph_generator throws in tests if it detects overlapping
 
 	SECTION("on all-write") {
 		CHECK_THROWS_WITH((dctx.device_compute(buf.get_range()).discard_write(buf, acc::all()).submit()),
-		    "Task T1 has overlapping writes between multiple nodes in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping range mapper for the write access or "
-		    "constrain the split to make the access non-overlapping.");
+		    "Device kernel T1 has overlapping writes between multiple nodes in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping "
+		    "range mapper for the write access or constrain the split to make the access non-overlapping.");
 	}
 
 	SECTION("on neighborhood-write") {
-		CHECK_THROWS_WITH((dctx.device_compute(buf.get_range()).discard_write(buf, acc::neighborhood(1, 1)).submit()),
-		    "Task T1 has overlapping writes between multiple nodes in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping range mapper for the write access or "
-		    "constrain the split to make the access non-overlapping.");
+		CHECK_THROWS_WITH((dctx.host_task(buf.get_range()).name("host neighborhood").discard_write(buf, acc::neighborhood(1, 1)).submit()),
+		    "Host-compute task T1 \"host neighborhood\" has overlapping writes between multiple nodes in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping "
+		    "range mapper for the write access or constrain the split to make the access non-overlapping.");
 	}
 }

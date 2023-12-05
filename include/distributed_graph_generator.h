@@ -83,14 +83,14 @@ class distributed_graph_generator {
 
   public:
 	struct policy_set {
-		error_policy uninitialized_read_error = error_policy::throw_exception;
-		error_policy overlapping_write_error = error_policy::throw_exception;
+		error_policy uninitialized_read_error = error_policy::panic;
+		error_policy overlapping_write_error = error_policy::panic;
 	};
 
 	distributed_graph_generator(const size_t num_nodes, const node_id local_nid, command_graph& cdag, const task_manager& tm,
 	    detail::command_recorder* recorder, const policy_set& policy = default_policy_set());
 
-	void create_buffer(buffer_id bid, int dims, const range<3>& range, bool host_initialized);
+	void create_buffer(const buffer_id bid, const int dims, const range<3>& range, bool host_initialized);
 
 	void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
 
@@ -136,6 +136,8 @@ class distributed_graph_generator {
 	void generate_epoch_dependencies(abstract_command* cmd);
 
 	void prune_commands_before(const command_id epoch);
+
+	void report_overlapping_writes(const task& tsk, const box_vector<3>& local_chunks) const;
 
   private:
 	using buffer_read_map = std::unordered_map<buffer_id, region<3>>;

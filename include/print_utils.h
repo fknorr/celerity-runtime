@@ -4,7 +4,7 @@
 #include "ranges.h"
 #include "types.h"
 
-#include <spdlog/fmt/fmt.h>
+#include <fmt/format.h>
 
 template <typename Interface, int Dims>
 struct fmt::formatter<celerity::detail::coordinate<Interface, Dims>> : fmt::formatter<size_t> {

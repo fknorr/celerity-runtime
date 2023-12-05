@@ -6,7 +6,7 @@
 #include <utility>
 
 #include <CL/sycl.hpp>
-#include <spdlog/fmt/fmt.h>
+#include <fmt/format.h>
 
 #include "buffer.h"
 #include "cgf_diagnostics.h"
@@ -19,11 +19,6 @@
 #include "task.h"
 #include "types.h"
 #include "workaround.h"
-
-#if !defined(_MSC_VER)
-// Required for kernel name demangling in Clang
-#include <cxxabi.h>
-#endif
 
 namespace celerity {
 class handler;
@@ -71,18 +66,9 @@ namespace detail {
 	template <typename KernelName>
 	constexpr bool is_unnamed_kernel = std::is_same_v<KernelName, unnamed_kernel>;
 
-	template <typename Name>
+	template <typename KernelName>
 	std::string kernel_debug_name() {
-		if(is_unnamed_kernel<Name>) { return ""; }
-
-		// we need to typeid a pointer, since the name is often undefined
-		std::string name = typeid(Name*).name();
-#if !defined(_MSC_VER)
-		const std::unique_ptr<char, void (*)(void*)> demangled(abi::__cxa_demangle(name.c_str(), nullptr, nullptr, nullptr), std::free);
-		name = demangled.get();
-#endif
-		// get rid of the pointer "*"
-		return name.substr(0, name.length() - 1);
+		return !is_unnamed_kernel<KernelName> ? utils::get_simplified_type_name<KernelName>() : std::string{};
 	}
 
 	struct simple_kernel_flavor {};

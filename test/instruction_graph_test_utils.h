@@ -308,7 +308,7 @@ class instruction_query {
 	std::string filter_trace(const std::string& selector, const Filters&... filters) const {
 		auto trace = m_trace.empty() ? selector : fmt::format("{}.{}", m_trace, selector);
 		if constexpr(!std::is_same_v<GeneralRecord, SpecificRecord>) {
-			fmt::format_to(std::back_inserter(trace), "<{}>", utils::simplify_task_name(kernel_debug_name<SpecificRecord>()));
+			fmt::format_to(std::back_inserter(trace), "<{}>", kernel_debug_name<SpecificRecord>());
 		}
 
 		std::string param_trace;

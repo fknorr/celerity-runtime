@@ -1,10 +1,29 @@
 #include "utils.h"
+#include "log.h"
 
+#include <atomic>
 #include <regex>
+#include <stdexcept>
+
+#if !defined(_MSC_VER)
+// Required for kernel name demangling in Clang
+#include <cxxabi.h>
+#endif
+
 
 namespace celerity::detail::utils {
 
-std::string simplify_task_name(const std::string& demangled_type_name) {
+std::string get_simplified_type_name_from_pointer(const std::type_info& pointer_type_info) {
+#if !defined(_MSC_VER)
+	const std::unique_ptr<char, void (*)(void*)> demangle_buffer(abi::__cxa_demangle(pointer_type_info.name(), nullptr, nullptr, nullptr), std::free);
+	std::string demangled_type_name = demangle_buffer.get();
+#else
+	std::string demangled_type_name = pointer_type_info.name();
+#endif
+
+	// get rid of the pointer "*"
+	if(!demangled_type_name.empty() && demangled_type_name.back() == '*') { demangled_type_name.pop_back(); }
+
 	if(demangled_type_name.length() < 2) return demangled_type_name;
 	bool templated = false;
 	// there are two options:
@@ -40,6 +59,38 @@ std::string escape_for_dot_label(std::string str) {
 	str = std::regex_replace(str, std::regex("<"), "&lt;");
 	str = std::regex_replace(str, std::regex(">"), "&gt;");
 	return str;
+}
+
+// The panic solution defaults to `log_and_abort`, but is set to `throw_logic_error` in test binaries. Since panics are triggered from celerity library code, we
+// manage it in a global and decide which path to take at runtime. We have also considered deciding this at link time by defining a weak symbol (GCC
+// __attribute__((weak))) in the library which is overwritten by a strong symbol in the test library, but decided against this because there is no equivalent in
+// MSVC and we would have to resort to even dirtier linker hacks for that target.
+std::atomic<panic_solution> g_panic_solution = panic_solution::log_and_abort; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+void set_panic_solution(panic_solution solution) { g_panic_solution.store(solution, std::memory_order_relaxed); }
+
+[[noreturn]] void panic(const std::string& msg) {
+	switch(g_panic_solution.load(std::memory_order_relaxed)) {
+	case celerity::detail::utils::panic_solution::throw_logic_error: //
+		throw std::logic_error(msg);
+	case celerity::detail::utils::panic_solution::log_and_abort:
+	default:
+		if(spdlog::should_log(spdlog::level::critical)) {
+			CELERITY_CRITICAL("panic: {}", msg);
+		} else {
+			fmt::print(stderr, "celerity-runtime panic: {}\n", msg);
+		}
+		std::abort();
+	}
+}
+
+void report_error(const error_policy policy, const std::string& msg) {
+	switch(policy) {
+	case error_policy::ignore: break;
+	case error_policy::log_warning: CELERITY_WARN("{}", msg); break;
+	case error_policy::log_error: CELERITY_ERROR("{}", msg); break;
+	case error_policy::panic: panic(msg); break;
+	}
 }
 
 std::string get_buffer_label(const buffer_id bid, const std::string& name) {

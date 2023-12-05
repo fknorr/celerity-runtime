@@ -58,7 +58,7 @@ namespace detail {
 
 	  public:
 		struct policy_set {
-			error_policy uninitialized_read_error = error_policy::throw_exception;
+			error_policy uninitialized_read_error = error_policy::panic;
 		};
 
 		constexpr inline static task_id initial_epoch_task = 0;
@@ -66,8 +66,6 @@ namespace detail {
 		task_manager(size_t num_collective_nodes, host_queue* queue, detail::task_recorder* recorder, const policy_set& policy = default_policy_set());
 
 		virtual ~task_manager() = default;
-
-		void set_uninitialized_read_policy(const error_policy policy) { m_uninitialized_read_policy = policy; }
 
 		template <typename CGF, typename... Hints>
 		task_id submit_command_group(CGF cgf, Hints... hints) {
@@ -216,8 +214,6 @@ namespace detail {
 		const size_t m_num_collective_nodes;
 		host_queue* m_queue;
 		policy_set m_policy;
-
-		error_policy m_uninitialized_read_policy = error_policy::throw_exception;
 
 		task_ring_buffer m_task_buffer;
 

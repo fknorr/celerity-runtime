@@ -124,10 +124,10 @@ namespace detail {
 					}
 				}
 				if(!uninitialized_reads.empty()) {
+					// TODO this should output the full buffer debug label, but we don't want to pull in buffer_manager for this because its days are numbered
 					utils::report_error(m_policy.uninitialized_read_error,
-					    "Task T{}{} declares a reading access on uninitialized B{} {}. Make sure to construct the accessor with no_init if possible.",
-					    tsk.get_id(), !tsk.get_debug_name().empty() ? fmt::format(" \"{}\"", utils::simplify_task_name(tsk.get_debug_name())) : "", bid,
-					    region(std::move(uninitialized_reads)));
+					    "{} declares a reading access on uninitialized B{} {}. Make sure to construct the accessor with no_init if possible.",
+					    print_task_debug_label(tsk, true /* title case */), bid, region(std::move(uninitialized_reads)));
 				}
 			}
 
