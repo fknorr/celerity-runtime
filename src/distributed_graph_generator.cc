@@ -374,8 +374,8 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 							}
 
 							// Merge all connected boxes to determine final set of pushes
-							const auto push_boxes = region<3>(std::move(non_replicated_boxes));
-							for(auto& push_box : push_boxes.get_boxes()) {
+							const auto push_region = region<3>(std::move(non_replicated_boxes));
+							for(auto& push_box : push_region.get_boxes()) {
 								auto* const push_cmd = create_command<push_command>(nid, transfer_id(tsk.get_id(), bid, no_reduction_id), push_box.get_subrange());
 								assert(!utils::isa<await_push_command>(m_cdag.get(wcs)) && "Attempting to push non-owned data?!");
 								m_cdag.add_dependency(push_cmd, m_cdag.get(wcs), dependency_kind::true_dep, dependency_origin::dataflow);
@@ -386,7 +386,7 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 							}
 
 							// Remember that we've replicated this region
-							for(const auto& [replicated_box, nodes] : buffer_state.replicated_regions.get_region_values(push_boxes)) {
+							for(const auto& [replicated_box, nodes] : buffer_state.replicated_regions.get_region_values(push_region)) {
 								buffer_state.replicated_regions.update_box(replicated_box, node_bitset{nodes}.set(nid));
 							}
 						}

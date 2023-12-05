@@ -600,9 +600,6 @@ class handler {
 		for(auto& h : m_hints) {
 			m_task->add_hint(std::move(h));
 		}
-		for(auto& h : m_hints) {
-			m_task->add_hint(std::move(h));
-		}
 		return std::move(m_task);
 	}
 };

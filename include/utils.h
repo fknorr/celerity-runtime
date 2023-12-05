@@ -1,10 +1,7 @@
 #pragma once
 
-#include "log.h"
-
 #include <cstdint>
 #include <functional>
-#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <type_traits>

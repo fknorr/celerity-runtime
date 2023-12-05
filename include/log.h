@@ -1,14 +1,12 @@
 #pragma once
 
 #include <string>
-#include <string_view>
-#include <unordered_map>
 #include <utility>
-#include <variant>
 
 #include <spdlog/spdlog.h>
 
 #include "print_utils.h"
+
 
 #define CELERITY_LOG_SET_SCOPED_CTX(ctx) CELERITY_DETAIL_LOG_SET_SCOPED_CTX(ctx)
 
