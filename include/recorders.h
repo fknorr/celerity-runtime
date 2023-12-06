@@ -257,7 +257,7 @@ struct buffer_reduction_allocation_record : buffer_access_allocation, buffer_red
 
 struct device_kernel_instruction_record : matchbox::implement_acceptor<instruction_record, device_kernel_instruction_record> {
 	detail::device_id device_id;
-	subrange<3> execution_range;
+	box<3> execution_range;
 	std::vector<buffer_access_allocation_record> access_map;
 	std::vector<buffer_reduction_allocation_record> reduction_map;
 	task_id command_group_task_id;
@@ -270,7 +270,7 @@ struct device_kernel_instruction_record : matchbox::implement_acceptor<instructi
 
 struct host_task_instruction_record : matchbox::implement_acceptor<instruction_record, host_task_instruction_record> {
 	detail::collective_group_id collective_group_id;
-	subrange<3> execution_range;
+	box<3> execution_range;
 	std::vector<buffer_access_allocation_record> access_map;
 	task_id command_group_task_id;
 	command_id execution_command_id;

@@ -42,13 +42,12 @@ class queue {
 	virtual async_event copy_region(memory_id source_mid, memory_id dest_mid, const void* const source_base, void* const dest_base, const box<3>& source_box,
 	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) = 0;
 
-	// TODO why is this in queue again? Can't we just have a get_launch_queue(device_id)?
 	virtual async_event launch_kernel(
-	    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) = 0;
+	    device_id did, const device_kernel_launcher& launcher, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) = 0;
 };
 
 async_event launch_sycl_kernel(
-    sycl::queue& queue, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs);
+    sycl::queue& queue, const device_kernel_launcher& launcher, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs);
 
 void flush_sycl_queue(sycl::queue& queue);
 

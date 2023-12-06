@@ -19,7 +19,7 @@ class generic_queue : public queue {
 	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override;
 
 	async_event launch_kernel(
-	    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) override;
+	    device_id did, const device_kernel_launcher& launcher, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) override;
 
   private:
 	std::unordered_map<device_id, sycl::queue> m_device_queues;

@@ -397,7 +397,7 @@ class instruction_graph_generator::impl {
 
 	struct localized_chunk {
 		memory_id memory_id = host_memory_id;
-		subrange<3> subrange;
+		box<3> execution_range;
 	};
 
 	inline static const box<3> scalar_reduction_box{zeros, ones};
@@ -915,57 +915,58 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 }
 
 void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
-    const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& local_chunks) //
+    const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_local_chunks) //
 {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::coherence", SandyBrown, "B{} coherence", bid);
 
-	assert(!local_chunks.empty());
+	assert(!concurrent_local_chunks.empty());
 	const auto& bam = tsk.get_buffer_access_map();
 
-	assert(std::count_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; }) <= 1
-	       && "task defines multiple reductions on the same buffer");
-
-	// collect all receives that we must apply before execution of this command
 	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
 	// read-write access conflicts, TODO)
 
 	auto& buffer = m_buffers.at(bid);
 
-	dense_map<memory_id, box_vector<3>> contiguous_allocations(m_memories.size());
+	dense_map<memory_id, box_vector<3>> required_contiguous_allocations(m_memories.size());
 
-	region<3> accessed;  // which elements have are accessed (to figure out applying receives)
-	region<3> discarded; // which elements are received with a non-consuming access or received (these don't need to be preserved)
+	box_vector<3> accessed_boxes;  // which elements have are accessed (to figure out applying receives)
+	box_vector<3> discarded_boxes; // which elements are received with a non-consuming access or received (these don't need to be preserved)
 	for(const auto mode : access::all_modes) {
 		const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), local_sr, tsk.get_global_size());
-		accessed = region_union(accessed, req);
-		if(!access::mode_traits::is_consumer(mode)) { discarded = region_union(discarded, req); }
+		accessed_boxes.append(req.get_boxes());
+		if(!access::mode_traits::is_consumer(mode)) { discarded_boxes.append(req.get_boxes()); }
 	}
 
+	assert(std::count_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; }) <= 1
+	       && "task defines multiple reductions on the same buffer");
 	const auto reduction = std::find_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; });
 	if(reduction != tsk.get_reductions().end()) {
-		for(const auto& chunk : local_chunks) {
-			contiguous_allocations[chunk.memory_id].push_back(scalar_reduction_box);
+		for(const auto& chunk : concurrent_local_chunks) {
+			required_contiguous_allocations[chunk.memory_id].push_back(scalar_reduction_box);
 		}
 		const auto include_current_value = local_node_is_reduction_initializer && reduction->init_from_buffer;
-		if(local_chunks.size() > 1 || include_current_value) {
+		if(concurrent_local_chunks.size() > 1 || include_current_value) {
 			// we insert a host-side reduce-instruction in the multi-chunk scenario; its result will end up in the host buffer allocation
-			contiguous_allocations[host_memory_id].push_back(scalar_reduction_box);
+			required_contiguous_allocations[host_memory_id].push_back(scalar_reduction_box);
 		}
 		if(include_current_value) {
 			// scalar_reduction_box will be copied into the local-reduction gather buffer ahead of the kernel instruction
-			accessed = region_union(accessed, scalar_reduction_box);
-			discarded = region_difference(discarded, scalar_reduction_box);
+			accessed_boxes.push_back(scalar_reduction_box);
 		}
 	}
 
+	const region accessed_region(std::move(accessed_boxes));
+
+	// Collect all receives that we must apply before executing this command.
+
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
-	    [&](const buffer_state::region_receive& r) { return region_intersection(accessed, r.received_region).empty(); });
+	    [&](const buffer_state::region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
 	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
 		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
-		discarded = region_union(discarded, it->received_region);
+		discarded_boxes.append(it->received_region.get_boxes());
 		// begin_receive_instruction needs contiguous allocations for the bounding boxes of potentially received fragments
-		contiguous_allocations[host_memory_id].insert(
-		    contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
+		required_contiguous_allocations[host_memory_id].insert(
+		    required_contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
 	}
 
 	std::vector<buffer_state::region_receive> applied_receives;
@@ -979,12 +980,17 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 			return region_intersection(r.received_region, scalar_reduction_box).empty();
 		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const buffer_state::gather_receive& r) {
 			return box_intersection(r.gather_box, scalar_reduction_box).empty();
-		}) && "buffer has an unprocessed await-push in a region that is going to be used as a reduction output");
+		}) && "buffer has an unprocessed await-push into a region that is going to be used as a reduction output");
 	}
+
+	const region discarded_region(std::move(discarded_boxes));
+
+	// Detect and report uninitialized reads
 
 	if(m_policy.uninitialized_read_error != error_policy::ignore) {
 		box_vector<3> uninitialized_reads;
-		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(region_difference(accessed, discarded))) {
+		const auto consumed_region = region_difference(accessed_region, discarded_region);
+		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(consumed_region)) {
 			if(!location.any()) { uninitialized_reads.push_back(box); }
 		}
 		if(!uninitialized_reads.empty()) {
@@ -996,20 +1002,20 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		}
 	}
 
-	// do not preserve any received or overwritten region across receives
-	buffer.up_to_date_memories.update_region(discarded, memory_mask());
-
-	for(const auto& chunk : local_chunks) {
-		const auto chunk_boxes = bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
-		contiguous_allocations[chunk.memory_id].insert(contiguous_allocations[chunk.memory_id].end(), chunk_boxes.begin(), chunk_boxes.end());
-	}
+	// do not preserve any received or overwritten region across receives or buffer resizes later on
+	buffer.up_to_date_memories.update_region(discarded_region, memory_mask());
 
 	dense_map<memory_id, std::vector<region<3>>> local_chunk_reads(m_memories.size());
-	for(const auto& chunk : local_chunks) {
+	for(const auto& chunk : concurrent_local_chunks) {
+		required_contiguous_allocations[chunk.memory_id].append(
+		    bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size()));
+
+		box_vector<3> chunk_read_boxes;
 		for(const auto mode : access::consumer_modes) {
-			auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.subrange, tsk.get_global_size());
-			if(!req.empty()) { local_chunk_reads[chunk.memory_id].push_back(std::move(req)); }
+			const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size());
+			chunk_read_boxes.append(req.get_boxes());
 		}
+		if(!chunk_read_boxes.empty()) { local_chunk_reads[chunk.memory_id].push_back(region(std::move(chunk_read_boxes))); }
 	}
 	if(local_node_is_reduction_initializer && reduction != tsk.get_reductions().end() && reduction->init_from_buffer) {
 		local_chunk_reads[host_memory_id].emplace_back(scalar_reduction_box);
@@ -1022,7 +1028,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 			for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
 				if(location.any() && !location.test(read_mid) && (m_system.memories[read_mid].copy_peers & location).none()) {
 					assert(read_mid != host_memory_id);
-					contiguous_allocations[host_memory_id].push_back(box);
+					required_contiguous_allocations[host_memory_id].push_back(box);
 					host_staged_boxes.push_back(box);
 				}
 			}
@@ -1030,8 +1036,8 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		}
 	}
 
-	for(memory_id mid = 0; mid < contiguous_allocations.size(); ++mid) {
-		allocate_contiguously(current_batch, bid, mid, std::move(contiguous_allocations[mid]));
+	for(memory_id mid = 0; mid < required_contiguous_allocations.size(); ++mid) {
+		allocate_contiguously(current_batch, bid, mid, std::move(required_contiguous_allocations[mid]));
 	}
 
 	for(const auto& receive : applied_receives) {
@@ -1132,7 +1138,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		for(size_t i = 0; i < coarse_chunks.size(); ++i) {
 			for(const auto& fine_chunk : split(coarse_chunks[i], tsk.get_granularity(), oversubscribe_factor)) {
 				auto& instr = cmd_instrs.emplace_back();
-				instr.subrange = subrange<3>(fine_chunk.offset, fine_chunk.range);
+				instr.execution_range = box(subrange(fine_chunk.offset, fine_chunk.range));
 				if(tsk.get_execution_target() == execution_target::device) {
 					assert(i < m_system.devices.size());
 					instr.did = device_id(i);
@@ -1148,7 +1154,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 	if(m_policy.overlapping_write_error != error_policy::ignore) {
 		box_vector<3> local_chunk_boxes(cmd_instrs.size(), box<3>());
-		std::transform(cmd_instrs.begin(), cmd_instrs.end(), local_chunk_boxes.begin(), [](const partial_instruction& pi) { return pi.subrange; });
+		std::transform(cmd_instrs.begin(), cmd_instrs.end(), local_chunk_boxes.begin(), [](const partial_instruction& pi) { return pi.execution_range; });
 
 		if(const auto overlapping_writes = detect_overlapping_writes(tsk, local_chunk_boxes); !overlapping_writes.empty()) {
 			auto error = fmt::format("{} has overlapping writes on N{} in", print_task_debug_label(tsk, true /* title case */), m_local_nid);
@@ -1231,7 +1237,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		for(auto& insn : cmd_instrs) {
 			reads_writes rw;
 			for(const auto mode : bam.get_access_modes(bid)) {
-				const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.subrange, tsk.get_global_size());
+				const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), insn.execution_range.get_subrange(), tsk.get_global_size());
 				if(access::mode_traits::is_consumer(mode)) { rw.reads = region_union(rw.reads, req); }
 				if(access::mode_traits::is_producer(mode)) { rw.writes = region_union(rw.writes, req); }
 			}
@@ -1271,7 +1277,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
 			const auto [bid, mode] = bam.get_nth_access(i);
-			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.subrange, tsk.get_global_size());
+			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.execution_range.get_subrange(), tsk.get_global_size());
 			const auto& buffer = m_buffers.at(bid);
 			if(!accessed_box.empty()) {
 				const auto& allocations = buffer.memories[instr.memory_id].allocations;
@@ -1302,11 +1308,11 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		}
 
 		if(tsk.get_execution_target() == execution_target::device) {
-			assert(instr.subrange.range.size() > 0);
+			assert(instr.execution_range.get_area() > 0);
 			assert(instr.memory_id != host_memory_id);
 			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
 			const auto device_kernel_instr =
-			    create<device_kernel_instruction>(command_batch, instr.did, tsk.get_launcher<device_kernel_launcher>(), instr.subrange,
+			    create<device_kernel_instruction>(command_batch, instr.did, tsk.get_launcher<device_kernel_launcher>(), instr.execution_range,
 			        std::move(allocation_map), std::move(reduction_map) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_id(), tsk.get_debug_name()));
 			if(m_recorder != nullptr) {
 				*m_recorder << device_kernel_instruction_record(
@@ -1318,7 +1324,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			assert(instr.memory_id == host_memory_id);
 			assert(reduction_map.empty());
 			const auto host_task_instr =
-			    create<host_task_instruction>(command_batch, tsk.get_launcher<host_task_launcher>(), instr.subrange, tsk.get_global_size(),
+			    create<host_task_instruction>(command_batch, tsk.get_launcher<host_task_launcher>(), instr.execution_range, tsk.get_global_size(),
 			        std::move(allocation_map), tsk.get_collective_group_id() CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_id(), tsk.get_debug_name()));
 			if(m_recorder != nullptr) {
 				*m_recorder << host_task_instruction_record(*host_task_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map);

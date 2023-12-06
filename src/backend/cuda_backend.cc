@@ -269,8 +269,9 @@ async_event cuda_queue::copy_region(const memory_id source_mid, memory_id dest_m
 }
 
 async_event cuda_queue::launch_kernel(
-    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+    device_id did, const device_kernel_launcher& launcher, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
 {
+	// TODO, with special hipSYCL patch: Post the kernel to the same stream as its last incomplete dependency to avoid round-trip latency
 	return launch_sycl_kernel(m_impl->devices.at(did).sycl_queue, launcher, execution_range, reduction_ptrs);
 }
 

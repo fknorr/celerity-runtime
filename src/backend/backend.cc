@@ -14,7 +14,7 @@ bool sycl_event::is_complete() const {
 }
 
 async_event launch_sycl_kernel(
-    sycl::queue& queue, const device_kernel_launcher& launch, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
+    sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
 	auto event = queue.submit([&](sycl::handler& sycl_cgh) { launch(sycl_cgh, execution_range, reduction_ptrs); });
 	flush_sycl_queue(queue);
 	return make_async_event<sycl_event>(std::vector{std::move(event)});

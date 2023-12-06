@@ -107,8 +107,8 @@ TEMPLATE_TEST_CASE_SIG(
 		REQUIRE(writer->access_map.size() == 1);
 
 		// instruction_graph_generator guarantees the default dim0 split
-		CHECK(writer->execution_range.range == range_cast<3>(half_range));
-		CHECK((writer->execution_range.offset[0] == 0 || writer->execution_range.offset[0] == half_range[0]));
+		CHECK(writer->execution_range.get_range() == range_cast<3>(half_range));
+		CHECK((writer->execution_range.get_offset()[0] == 0 || writer->execution_range.get_offset()[0] == half_range[0]));
 
 		// the IDAG allocates appropriate boxes on the memories native to each executing device.
 		const auto alloc = writer.predecessors().assert_unique<alloc_instruction_record>();

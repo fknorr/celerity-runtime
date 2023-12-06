@@ -532,22 +532,22 @@ class handler {
 		// Although the diagnostics should always be available, we currently disable them for some test cases.
 		if(detail::cgf_diagnostics::is_available()) { detail::cgf_diagnostics::get_instance().check<target::device>(kernel, m_access_map); }
 
-		return [=](sycl::handler& sycl_cgh, const subrange<3>& execution_sr, const std::vector<void*>& reduction_ptrs) {
+		return [=](sycl::handler& sycl_cgh, const detail::box<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
 			constexpr int sycl_dims = std::max(1, Dims);
 			// Copy once to hydrate accessors
 			auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate<target::device>(sycl_cgh, kernel);
 			if constexpr(std::is_same_v<KernelFlavor, detail::simple_kernel_flavor>) {
-				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
+				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_range.get_range()));
 				detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, sycl_global_range,
 				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices])...,
-				    detail::bind_simple_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset)));
+				    detail::bind_simple_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_range.get_offset())));
 			} else if constexpr(std::is_same_v<KernelFlavor, detail::nd_range_kernel_flavor>) {
-				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_sr.range));
+				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_range.get_range()));
 				const auto sycl_local_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(local_range));
 				detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, cl::sycl::nd_range{sycl_global_range, sycl_local_range},
 				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices])...,
-				    detail::bind_nd_range_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_sr.offset),
-				        global_range / local_range, detail::id_cast<Dims>(execution_sr.offset) / local_range));
+				    detail::bind_nd_range_kernel(hydrated_kernel, global_range, global_offset, detail::id_cast<Dims>(execution_range.get_offset()),
+				        global_range / local_range, detail::id_cast<Dims>(execution_range.get_offset()) / local_range));
 			} else {
 				static_assert(detail::constexpr_false<KernelFlavor>);
 			}
@@ -569,26 +569,26 @@ class handler {
 			detail::cgf_diagnostics::get_instance().check<target::host_task>(kernel, m_access_map, m_non_void_side_effects_count);
 		}
 
-		return [kernel, cgid, global_range](detail::host_queue& q, const subrange<3>& execution_sr, const MPI_Comm comm) {
+		return [kernel, cgid, global_range](detail::host_queue& q, const detail::box<3>& execution_range, const MPI_Comm comm) {
 			auto hydrated_kernel = detail::closure_hydrator::get_instance().hydrate<target::host_task>(kernel);
-			return q.submit(cgid, [hydrated_kernel, global_range, execution_sr, comm] {
+			return q.submit(cgid, [hydrated_kernel, global_range, execution_range, comm] {
 				(void)global_range;
 				(void)comm;
 				if constexpr(Dims > 0) {
 					if constexpr(Collective) {
 						static_assert(Dims == 1);
-						const auto part = detail::make_collective_partition(detail::range_cast<1>(global_range), detail::subrange_cast<1>(execution_sr), comm);
+						const auto part = detail::make_collective_partition(detail::range_cast<1>(global_range), detail::box_cast<1>(execution_range), comm);
 						hydrated_kernel(part);
 					} else {
-						const auto part = detail::make_partition<Dims>(detail::range_cast<Dims>(global_range), detail::subrange_cast<Dims>(execution_sr));
+						const auto part = detail::make_partition<Dims>(detail::range_cast<Dims>(global_range), detail::box_cast<Dims>(execution_range));
 						hydrated_kernel(part);
 					}
 				} else if constexpr(std::is_invocable_v<Kernel, const partition<0>&>) {
-					(void)execution_sr;
+					(void)execution_range;
 					const auto part = detail::make_partition<0>(range<0>(), subrange<0>());
 					hydrated_kernel(part);
 				} else {
-					(void)execution_sr;
+					(void)execution_range;
 					hydrated_kernel();
 				}
 			});

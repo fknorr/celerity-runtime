@@ -77,7 +77,7 @@ async_event generic_queue::copy_region(const memory_id source_mid, memory_id des
 }
 
 async_event generic_queue::launch_kernel(
-    device_id did, const device_kernel_launcher& launcher, const subrange<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+    device_id did, const device_kernel_launcher& launcher, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
 {
 	return launch_sycl_kernel(m_device_queues.at(did), launcher, execution_range, reduction_ptrs);
 }

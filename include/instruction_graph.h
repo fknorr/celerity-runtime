@@ -139,7 +139,7 @@ using buffer_access_allocation_map = std::vector<buffer_access_allocation>;
 class device_kernel_instruction final : public matchbox::implement_acceptor<instruction, device_kernel_instruction> {
   public:
 	explicit device_kernel_instruction(const instruction_id iid, const int priority, const device_id did, device_kernel_launcher launcher,
-	    const subrange<3>& execution_range, buffer_access_allocation_map access_allocations,
+	    const box<3>& execution_range, buffer_access_allocation_map access_allocations,
 	    buffer_access_allocation_map reduction_allocations CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const task_id oob_task_id, std::string oob_task_name))
 	    : acceptor_base(iid, priority), m_device_id(did), m_launcher(std::move(launcher)), m_execution_range(execution_range),
 	      m_access_allocations(std::move(access_allocations)),
@@ -148,7 +148,7 @@ class device_kernel_instruction final : public matchbox::implement_acceptor<inst
 
 	device_id get_device_id() const { return m_device_id; }
 	const device_kernel_launcher& get_launcher() const { return m_launcher; }
-	const subrange<3>& get_execution_range() const { return m_execution_range; }
+	const box<3>& get_execution_range() const { return m_execution_range; }
 	const buffer_access_allocation_map& get_access_allocations() const { return m_access_allocations; }
 	const buffer_access_allocation_map& get_reduction_allocations() const { return m_reduction_allocations; }
 
@@ -160,7 +160,7 @@ class device_kernel_instruction final : public matchbox::implement_acceptor<inst
   private:
 	device_id m_device_id;
 	device_kernel_launcher m_launcher;
-	subrange<3> m_execution_range;
+	box<3> m_execution_range;
 	buffer_access_allocation_map m_access_allocations;
 	buffer_access_allocation_map m_reduction_allocations;
 
@@ -173,7 +173,7 @@ class device_kernel_instruction final : public matchbox::implement_acceptor<inst
 /// Launches a host task in a thread pool. Bound accessors are hydrated through a buffer_access_allocation_map.
 class host_task_instruction final : public matchbox::implement_acceptor<instruction, host_task_instruction> {
   public:
-	host_task_instruction(const instruction_id iid, const int priority, host_task_launcher launcher, const subrange<3>& execution_range,
+	host_task_instruction(const instruction_id iid, const int priority, host_task_launcher launcher, const box<3>& execution_range,
 	    const range<3>& global_range, buffer_access_allocation_map access_allocations,
 	    const collective_group_id cgid CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, const task_id oob_task_id, std::string oob_task_name))
 	    : acceptor_base(iid, priority), m_launcher(std::move(launcher)), m_global_range(global_range), m_execution_range(execution_range),
@@ -183,7 +183,7 @@ class host_task_instruction final : public matchbox::implement_acceptor<instruct
 	const range<3>& get_global_range() const { return m_global_range; }
 	const host_task_launcher& get_launcher() const { return m_launcher; }
 	collective_group_id get_collective_group_id() const { return m_cgid; }
-	const subrange<3>& get_execution_range() const { return m_execution_range; }
+	const box<3>& get_execution_range() const { return m_execution_range; }
 	const buffer_access_allocation_map& get_access_allocations() const { return m_access_allocations; }
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
@@ -194,7 +194,7 @@ class host_task_instruction final : public matchbox::implement_acceptor<instruct
   private:
 	host_task_launcher m_launcher;
 	range<3> m_global_range;
-	subrange<3> m_execution_range;
+	box<3> m_execution_range;
 	buffer_access_allocation_map m_access_allocations;
 	collective_group_id m_cgid;
 

@@ -27,7 +27,7 @@ TEST_CASE("a command group without data access compiles to a trivial graph", "[i
 
 	const auto kernel = all_instrs.select_unique<device_kernel_instruction_record>("kernel");
 	CHECK(kernel->access_map.empty());
-	CHECK(kernel->execution_range == subrange<3>(zeros, range_cast<3>(test_range)));
+	CHECK(kernel->execution_range == box(subrange<3>(zeros, range_cast<3>(test_range))));
 	CHECK(kernel->device_id == device_id(0));
 	CHECK(kernel.predecessors().is_unique<epoch_instruction_record>());
 	CHECK(kernel.successors().is_unique<epoch_instruction_record>());
@@ -477,8 +477,8 @@ TEMPLATE_TEST_CASE_SIG("hints::split_2d results in a 2d split", "[instruction_gr
 	box_vector<3> kernel_boxes;
 	for(const auto& kernel : all_kernels.iterate()) {
 		// 2D split means that no tile spans either dimension 0 or 1 entirely
-		CHECK(kernel->execution_range.range[0] < range[0]);
-		CHECK(kernel->execution_range.range[1] < range[1]);
+		CHECK(kernel->execution_range.get_range()[0] < range[0]);
+		CHECK(kernel->execution_range.get_range()[1] < range[1]);
 		REQUIRE(kernel->access_map.size() == 1);
 		const auto& write = kernel->access_map.front();
 		CHECK(write.accessed_box_in_buffer == box(kernel->execution_range));
