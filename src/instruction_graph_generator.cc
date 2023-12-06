@@ -990,9 +990,9 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		if(!uninitialized_reads.empty()) {
 			// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
 			utils::report_error(m_policy.uninitialized_read_error,
-			    // TODO print task / buffer names
-			    "Instruction is trying to read B{} {}, which is neither found locally nor has been await-pushed before.", bid,
-			    detail::region(std::move(uninitialized_reads)));
+			    // TODO buffer names
+			    "Instructions for {} are trying to read B{} {}, which is neither found locally nor has been await-pushed before.", print_task_debug_label(tsk),
+			    bid, detail::region(std::move(uninitialized_reads)));
 		}
 	}
 
@@ -1038,8 +1038,9 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		commit_pending_region_receive(current_batch, bid, receive, local_chunk_reads);
 	}
 
-	// 3) create device <-> host or device <-> device copy instructions to satisfy all command-instruction reads
-
+	// Create the necessary coherence copy instructions to satisfy all remaining requirements locally. The iterations of this loop are independent with the
+	// notable exception of host_memory_id in the presence of staging copies: There we rely on the fact that `host_memory_id < device_memory_id` to allow
+	// coherence copies to device memory to create device -> host -> device copy chains.
 	for(memory_id mid = 0; mid < local_chunk_reads.size(); ++mid) {
 		locally_satisfy_read_requirements(current_batch, bid, mid, local_chunk_reads[mid]);
 	}
@@ -1150,10 +1151,9 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		std::transform(cmd_instrs.begin(), cmd_instrs.end(), local_chunk_boxes.begin(), [](const partial_instruction& pi) { return pi.subrange; });
 
 		if(const auto overlapping_writes = detect_overlapping_writes(tsk, local_chunk_boxes); !overlapping_writes.empty()) {
-			auto error = fmt::format("Task T{}", tsk.get_id());
-			if(!tsk.get_debug_name().empty()) { fmt::format_to(std::back_inserter(error), " \"{}\"", tsk.get_debug_name()); }
-			fmt::format_to(std::back_inserter(error), " has overlapping writes on N{} in", m_local_nid);
+			auto error = fmt::format("{} has overlapping writes on N{} in", print_task_debug_label(tsk, true /* title case */), m_local_nid);
 			for(const auto& [bid, overlap] : overlapping_writes) {
+				// TODO buffer names
 				fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
 			}
 			error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";

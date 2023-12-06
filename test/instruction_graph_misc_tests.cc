@@ -381,27 +381,27 @@ TEST_CASE("instruction_graph_generator throws in tests if it detects an uninitia
 	SECTION("from a read-accessor on a fully uninitialized buffer") {
 		auto buf = ictx.create_buffer<1>({1});
 		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::all()).submit()),
-		    "Instruction is trying to read B0 {[0,0,0] - [1,1,1]}, which is neither found locally nor has been await-pushed before.");
+		    "Instructions for device kernel T1 are trying to read B0 {[0,0,0] - [1,1,1]}, which is neither found locally nor has been await-pushed before.");
 	}
 
 	SECTION("from a read-accessor on a partially, locally initialized buffer") {
 		auto buf = ictx.create_buffer<1>(device_range);
 		ictx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
 		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::all()).submit()),
-		    "Instruction is trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
+		    "Instructions for device kernel T2 are trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
 	}
 
 	SECTION("from a read-accessor on a partially, remotely initialized buffer") {
 		auto buf = ictx.create_buffer<1>(device_range);
 		ictx.device_compute(range(1)).discard_write(buf, acc::one_to_one()).submit();
 		CHECK_THROWS_WITH((ictx.device_compute(device_range).read(buf, acc::one_to_one()).submit()),
-		    "Instruction is trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
+		    "Instructions for device kernel T2 are trying to read B0 {[1,0,0] - [2,1,1]}, which is neither found locally nor has been await-pushed before.");
 	}
 
 	SECTION("from a reduction including the current value of an uninitialized buffer") {
 		auto buf = ictx.create_buffer<1>({1});
 		CHECK_THROWS_WITH((ictx.device_compute(device_range).reduce(buf, true /* include current buffer value */).submit()),
-		    "Instruction is trying to read B0 {[0,0,0] - [1,1,1]}, which is neither found locally nor has been await-pushed before.");
+		    "Instructions for device kernel T1 are trying to read B0 {[0,0,0] - [1,1,1]}, which is neither found locally nor has been await-pushed before.");
 	}
 }
 
@@ -412,14 +412,14 @@ TEST_CASE("instruction_graph_generator throws in tests if it detects overlapping
 
 	SECTION("on all-write") {
 		CHECK_THROWS_WITH((ictx.device_compute(buf.get_range()).discard_write(buf, acc::all()).submit()),
-		    "Task T1 has overlapping writes on N0 in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping range mapper for the write access or constrain the "
-		    "split to make the access non-overlapping.");
+		    "Device kernel T1 has overlapping writes on N0 in B0 {[0,0,0] - [20,20,1]}. Choose a non-overlapping range mapper for the write access or "
+		    "constrain the split to make the access non-overlapping.");
 	}
 
 	SECTION("on neighborhood-write") {
 		CHECK_THROWS_WITH((ictx.device_compute(buf.get_range()).discard_write(buf, acc::neighborhood(1, 1)).submit()),
-		    "Task T1 has overlapping writes on N0 in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping range mapper for the write access or constrain the "
-		    "split to make the access non-overlapping.");
+		    "Device kernel T1 has overlapping writes on N0 in B0 {[9,0,0] - [11,20,1]}. Choose a non-overlapping range mapper for the write access or "
+		    "constrain the split to make the access non-overlapping.");
 	}
 }
 

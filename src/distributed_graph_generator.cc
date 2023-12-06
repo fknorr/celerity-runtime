@@ -167,6 +167,7 @@ void distributed_graph_generator::report_overlapping_writes(const task& tsk, con
 	if(const auto overlapping_writes = detect_overlapping_writes(tsk, distributed_chunks); !overlapping_writes.empty()) {
 		auto error = fmt::format("{} has overlapping writes between multiple nodes in", print_task_debug_label(tsk, true /* title case */));
 		for(const auto& [bid, overlap] : overlapping_writes) {
+			// TODO buffer names
 			fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
 		}
 		error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
