@@ -432,30 +432,84 @@ TEST_CASE("instruction_graph_generator gracefully handles uninitialized reads wh
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, 1 /* num devices */, true /* supports d2d copies */, policy);
 	auto buf = ictx.create_buffer<1>({1});
 
-	SECTION("from a read-accessor") { //
+	SECTION("from a device-kernel read-accessor") { //
 		ictx.device_compute(range(1)).read(buf, acc::all()).submit();
-	}
-	SECTION("from a reduction including the current buffer value") {
-		ictx.device_compute(range(1)).reduce(buf, true /* include current buffer value */).submit();
+		ictx.finish();
+
+		const auto all_instrs = ictx.query_instructions();
+		const auto kernel = all_instrs.select_unique<device_kernel_instruction_record>();
+		const auto alloc = all_instrs.select_unique<alloc_instruction_record>();
+		const auto free = all_instrs.select_unique<free_instruction_record>();
+		CHECK(kernel.predecessors().contains(alloc));
+		CHECK(kernel.successors().contains(free));
 	}
 
-	ictx.finish();
-	SUCCEED();
+	SECTION("from a reduction including the current buffer value") {
+		ictx.device_compute(range(1)).reduce(buf, true /* include current buffer value */).submit();
+
+		const auto all_instrs = ictx.query_instructions();
+		const auto kernel = all_instrs.select_unique<device_kernel_instruction_record>();
+		const auto local_reduce = all_instrs.select_unique<reduce_instruction_record>();
+		const auto alloc_device = all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) {
+			return ainstr.origin == alloc_instruction_record::alloc_origin::buffer && ainstr.allocation_id.get_memory_id() != host_memory_id;
+		});
+		const auto alloc_host = all_instrs.select_unique<alloc_instruction_record>([](const alloc_instruction_record& ainstr) {
+			return ainstr.origin == alloc_instruction_record::alloc_origin::buffer && ainstr.allocation_id.get_memory_id() == host_memory_id;
+		});
+		const auto free_device = all_instrs.select_unique<free_instruction_record>(
+		    [&](const free_instruction_record& finstr) { return finstr.allocation_id == alloc_device->allocation_id; });
+		const auto free_host = all_instrs.select_unique<free_instruction_record>(
+		    [&](const free_instruction_record& finstr) { return finstr.allocation_id == alloc_host->allocation_id; });
+
+		CHECK(kernel.predecessors().contains(alloc_device));
+		CHECK(kernel.transitive_successors_across<copy_instruction_record>().contains(free_device));
+		CHECK(local_reduce.predecessors().contains(alloc_host));
+		CHECK(local_reduce.successors().contains(free_host));
+	}
+
+	SECTION("from a host-task read-accessor") { //
+		ictx.host_task(range(1)).read(buf, acc::all()).submit();
+
+		const auto all_instrs = ictx.query_instructions();
+		const auto host_task = all_instrs.select_unique<host_task_instruction_record>();
+		const auto alloc = all_instrs.select_unique<alloc_instruction_record>();
+		const auto free = all_instrs.select_unique<free_instruction_record>();
+		CHECK(host_task.predecessors().contains(alloc));
+		CHECK(host_task.successors().contains(free));
+	}
 }
 
 TEST_CASE("instruction_graph_generator gracefully handles overlapping writes when check is disabled", "[instruction_graph_generator]") {
-	const size_t num_devices = 2;
+	size_t num_devices = 1;
+	size_t oversubscription = 1;
+	SECTION("between chunks of one kernel split among multiple devices") {
+		num_devices = 2;
+		oversubscription = 1;
+	}
+	SECTION("between an oversubscribed kernel on a single device") {
+		num_devices = 1;
+		oversubscription = 2;
+	}
 
 	test_utils::idag_test_context::policy_set policy;
 	policy.dggen.overlapping_write_error = error_policy::ignore;
 	policy.iggen.overlapping_write_error = error_policy::ignore;
 
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* local nid */, num_devices, true /* supports d2d copies */, policy);
-
 	auto buf = ictx.create_buffer<1>({1});
-	ictx.device_compute(range(num_devices)).discard_write(buf, acc::all()).submit();
+	ictx.device_compute(range(2)).name("writer").hint(hints::oversubscribe(oversubscription)).discard_write(buf, acc::all()).submit();
+	ictx.device_compute(range(1)).name("reader").read(buf, acc::all()).submit();
 	ictx.finish();
-	SUCCEED();
+
+	const auto all_instrs = ictx.query_instructions();
+	const auto alloc = all_instrs.select_unique<alloc_instruction_record>();
+	const auto all_writers = all_instrs.select_unique<device_kernel_instruction_record>("writer");
+	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
+	const auto free = all_instrs.select_unique<free_instruction_record>();
+
+	CHECK(alloc.successors().contains(all_writers));
+	CHECK(reader.predecessors().contains(all_writers));
+	CHECK(reader.successors() == free);
 }
 
 TEMPLATE_TEST_CASE_SIG("hints::split_2d results in a 2d split", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 2, 3) {

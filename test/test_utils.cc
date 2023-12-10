@@ -222,12 +222,14 @@ namespace celerity::test_utils_detail {
 
 // These error and warning messages will appear depending on the system the (runtime) tests are executed on, so we must not fail tests because of them.
 
-const char* const expected_runtime_init_warnings_regex = "Celerity has detected that only .* logical cores are available to this process.*|Celerity detected "
-                                                         "more than one node \\(MPI rank\\) on this host, which is not recommended.*";
+const char* const expected_runtime_init_warnings_regex = "Celerity has detected that only .* logical cores are available to this process.*|"
+                                                         "Celerity detected more than one node \\(MPI rank\\) on this host, which is not recommended.*|"
+                                                         "\\[executor\\] no progress for .* seconds, potentially stuck.*";
 
 const char* const expected_device_enumeration_warnings_regex =
-    "Selected devices are of different type and/or do not belong to the same platform.*|No suitable platform found that can provide.*|No backend "
-    "specialization available for selected platform.*|Selected platform .* is compatible with specialized .* backend, but it has not been compiled.*";
+    "Selected devices are of different type and/or do not belong to the same platform.*|No suitable platform found that can provide.*|"
+    "No backend specialization available for selected platform.*|"
+    "Selected platform .* is compatible with specialized .* backend, but it has not been compiled.*";
 
 } // namespace celerity::test_utils_detail
 
