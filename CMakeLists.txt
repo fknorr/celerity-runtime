@@ -33,7 +33,7 @@ set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CELERITY_CMAKE_DIR}")
 find_package(MPI 2.0 REQUIRED)
 find_package(Threads REQUIRED)
 
-set(CELERITY_SYCL_IMPL "OFF" CACHE STRING "hipSYCL|DPC++")
+set(CELERITY_SYCL_IMPL "OFF" CACHE STRING "hipSYCL|DPC++|SimSYCL")
 
 include("${CELERITY_CMAKE_DIR}/TestDPCXX.cmake")
 test_cxx_compiler_is_dpcpp(CXX_COMPILER_IS_DPCPP)
@@ -48,6 +48,8 @@ elseif(CELERITY_SYCL_IMPL STREQUAL "DPC++")
   if(NOT CXX_COMPILER_IS_DPCPP)
     message(FATAL_ERROR "CELERITY_SYCL_IMPL set to DPC++, but CXX compiler at ${CMAKE_CXX_COMPILER} is not DPC++")
   endif()
+elseif(CELERITY_SYCL_IMPL STREQUAL "SimSYCL")
+  find_package(SimSYCL CONFIG REQUIRED)
 elseif(NOT "${CELERITY_SYCL_IMPL}x" STREQUAL "OFFx")
   message(FATAL_ERROR "Invalid SYCL implementation ${CELERITY_SYCL_IMPL} specified")
 else()
@@ -61,13 +63,19 @@ else()
     list(APPEND AVAILABLE_SYCL_IMPLS hipSYCL)
   endif()
 
+  find_package(SimSYCL QUIET CONFIG)
+  if(SimSYCL_FOUND)
+    message(STATUS "Found SimSYCL: ${SimSYCL_DIR}")
+    list(APPEND AVAILABLE_SYCL_IMPLS SimSYCL)
+  endif()
+
   list(LENGTH AVAILABLE_SYCL_IMPLS NUM_AVAILABLE_SYCL_IMPLS)
   if(NUM_AVAILABLE_SYCL_IMPLS EQUAL 0)
     message(FATAL_ERROR "No SYCL implementation found. You might need to add an install path for hipSYCL to CMAKE_PREFIX_PATH.")
   elseif(NUM_AVAILABLE_SYCL_IMPLS GREATER 1)
     list(JOIN AVAILABLE_SYCL_IMPLS " and " AVAILABLE_SYCL_IMPLS_STR)
     message(FATAL_ERROR "More than one SYCL implementation available: Found ${AVAILABLE_SYCL_IMPLS_STR}. "
-      "Please choose one implementation using -DCELERITY_SYCL_IMPL=hipSYCL|DPC++.")
+      "Please choose one implementation using -DCELERITY_SYCL_IMPL=hipSYCL|DPC++|SimSYCL.")
   else()
     set(CELERITY_SYCL_IMPL "${AVAILABLE_SYCL_IMPLS}")
     message(STATUS "Automatically choosing ${CELERITY_SYCL_IMPL} because it is the only SYCL implementation available")
@@ -103,10 +111,16 @@ endif()
 
 if(CELERITY_SYCL_IMPL STREQUAL hipSYCL AND HIPSYCL_SUPPORTS_SYCL_2020_REDUCTIONS)
   set(CELERITY_FEATURE_SCALAR_REDUCTIONS ON)
-elseif(CELERITY_SYCL_IMPL STREQUAL "DPC++")
+elseif(CELERITY_SYCL_IMPL STREQUAL "DPC++" OR CELERITY_SYCL_IMPL STREQUAL "SimSYCL")
   set(CELERITY_FEATURE_SCALAR_REDUCTIONS ON)
 else()
   set(CELERITY_FEATURE_SCALAR_REDUCTIONS OFF)
+endif()
+
+if(CELERITY_SYCL_IMPL STREQUAL SimSYCL)
+  set(CELERITY_CXX_STANDARD 20)
+else()
+  set(CELERITY_CXX_STANDARD 17)
 endif()
 
 set(CELERITY_RUNTIME_LIBRARY celerity_runtime)
@@ -224,7 +238,7 @@ add_library(
   ${INCLUDES}
 )
 
-set_property(TARGET celerity_runtime PROPERTY CXX_STANDARD 17)
+set_property(TARGET celerity_runtime PROPERTY CXX_STANDARD "${CELERITY_CXX_STANDARD}")
 
 target_include_directories(celerity_runtime PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
@@ -241,6 +255,8 @@ if(WIN32 AND CELERITY_SYCL_IMPL STREQUAL "DPC++")
     $<$<CONFIG:Debug>:sycl6d>
     $<$<CONFIG:Release>:sycl6>
   )
+elseif(CELERITY_SYCL_IMPL STREQUAL SimSYCL)
+  set(SYCL_LIB SimSYCL::simsycl)
 endif()
 
 if(CELERITY_USE_MIMALLOC)
