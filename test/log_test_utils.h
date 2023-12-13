@@ -4,6 +4,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <spdlog/sinks/ostream_sink.h>
 
+#include <sstream>
+
 namespace celerity::test_utils {
 
 class log_capture {
