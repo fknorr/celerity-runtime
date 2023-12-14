@@ -412,7 +412,7 @@ namespace detail {
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "0-dimensional kernels can access arbitrary-dimensional buffers", "[buffer]") {
 		buffer<float, 0> buf_0d;
-		buffer<float, 1> buf_1d({100});
+		buffer<float, 1> buf_1d(100);
 		buffer<float, 2> buf_2d({10, 10});
 		buffer<float, 3> buf_3d({5, 5, 5});
 
