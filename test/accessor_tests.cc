@@ -167,7 +167,6 @@ namespace detail {
 		auto bid = bm.template register_buffer<size_t, Dims>(range_cast<3>(range));
 
 		auto& q = accessor_fixture<Dims>::get_device_queue();
-		auto sr = subrange<3>({}, range_cast<3>(range));
 
 		// this kernel initializes the buffer what will be read after.
 		auto acc_write = accessor_fixture<Dims>::template get_device_accessor<size_t, Dims, access_mode::discard_write>(bid, range, {});
@@ -382,7 +381,11 @@ namespace detail {
 		q.submit([&](handler& cgh) {
 			accessor acc_0(buf_0, cgh, read_write_host_task);
 			cgh.host_task(on_master_node, [=] {
-				CHECK(acc_0 == value_a);
+				// accessor<T, 0, read> is implicitly convertible to const T&, but due to a bug in GCC, that conversion is not considered in overload resolution
+				// for operator==, so we implicitly convert by assigning to a variable (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=113052)
+				const float val = acc_0;
+				CHECK(val == value_a);
+
 				CHECK(*acc_0 == value_a);
 				CHECK(*acc_0.operator->() == value_a);
 				CHECK(acc_0[id<0>()] == value_a);
@@ -454,7 +457,10 @@ namespace detail {
 			accessor acc_2d(buf_2d, cgh, all(), read_only_host_task);
 			accessor acc_3d(buf_3d, cgh, all(), read_only_host_task);
 			cgh.host_task(on_master_node, [=] {
-				CHECK(acc_0d == 10);
+				// accessor<T, 0, read> is implicitly convertible to const T&, but due to a bug in GCC, that conversion is not considered in overload resolution
+				// for operator==, so we implicitly convert by assigning to a variable (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=113052)
+				const float val = acc_0d;
+				CHECK(val == 10);
 				CHECK(*acc_0d == 10);
 				CHECK(*acc_0d.operator->() == 10);
 				CHECK(acc_0d[id<0>()] == 10);
@@ -630,7 +636,7 @@ namespace detail {
 			local_acc[itm.get_local_id()] = 100 + itm.get_local_id(0) * 10;
 			sycl::group_barrier(itm.get_group());
 			// Write other item's value
-			result[itm.get_local_id(0)] = local_acc[1 - itm.get_local_id()];
+			result[itm.get_local_id(0)] = local_acc[1 - itm.get_local_id(0)];
 		};
 		closure_hydrator::get_instance().arm(target::device, {});
 		q.submit([&](sycl::handler& cgh) {
