@@ -23,7 +23,9 @@ namespace detail {
 	    "[handler][deprecated]") {
 		distr_queue q;
 		buffer<size_t, 1> buf{32};
+#if CELERITY_FEATURE_SCALAR_REDUCTIONS
 		buffer<size_t, 1> reduction_buf{1};
+#endif
 		experimental::host_object<size_t> ho;
 		int my_int = 33;
 		q.submit(allow_by_ref, [= /* capture buffer/host-object by value */, &my_int](handler& cgh) {
@@ -38,9 +40,10 @@ namespace detail {
 		q.submit([= /* capture by value */](handler& cgh) {
 			accessor acc{buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
 #if CELERITY_FEATURE_SCALAR_REDUCTIONS
-			auto red = reduction(reduction_buf, cgh, std::plus<size_t>{});
-#endif
+			cgh.parallel_for(range<1>{32}, reduction(reduction_buf, cgh, std::plus<size_t>{}), [=](item<1>, auto&) { (void)acc; });
+#else
 			cgh.parallel_for(range<1>{32}, [=](item<1>) { (void)acc; });
+#endif
 		});
 		SUCCEED();
 	}
