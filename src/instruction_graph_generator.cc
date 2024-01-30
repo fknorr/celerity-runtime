@@ -211,14 +211,6 @@ class instruction_graph_generator::impl {
 			friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
 		};
 
-		struct writer { // TODO rename to producer / buffer_version / data_origin / origin / .... ?
-			instruction* instr = nullptr;
-			enum { allocate, write } mode = allocate;
-
-			friend bool operator==(const writer& lhs, const writer& rhs) { return lhs.instr == rhs.instr && lhs.mode == rhs.mode; }
-			friend bool operator!=(const writer& lhs, const writer& rhs) { return !(lhs == rhs); }
-		};
-
 		struct allocated_box {
 			allocation_id aid;
 			box<3> box;
@@ -229,7 +221,7 @@ class instruction_graph_generator::impl {
 
 		allocation_id aid;
 		detail::box<3> box;                     ///< in virtual-buffer coordinates
-		region_map<writer> last_writers;        ///< in virtual-buffer coordinates
+		region_map<access_front> last_writers;  ///< in virtual-buffer coordinates
 		region_map<access_front> access_fronts; ///< in virtual-buffer coordinates
 
 		/// `buffer_dims` is only required to construct region maps, the generator itself is independent from that parameter.
@@ -237,7 +229,7 @@ class instruction_graph_generator::impl {
 		    const detail::box<3>& allocated_box, const range<3>& buffer_range)
 		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {
 			if(ainstr != nullptr) {
-				last_writers.update_box(allocated_box, writer{ainstr, writer::allocate});
+				last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
 				access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
 			}
 		}
@@ -260,22 +252,44 @@ class instruction_graph_generator::impl {
 
 		void commit_write(const detail::box<3>& box, instruction* const instr) {
 			if(box.empty()) return;
-			last_writers.update_box(box, writer{instr, writer::write});
+			last_writers.update_box(box, access_front{{instr}, access_front::write});
 			access_fronts.update_box(box, access_front{{instr}, access_front::write});
 		}
 
 		void commit_write(const region<3>& region, instruction* const instr) {
 			if(region.empty()) return;
-			last_writers.update_region(region, writer{instr, writer::write});
+			last_writers.update_region(region, access_front{{instr}, access_front::write});
 			access_fronts.update_region(region, access_front{{instr}, access_front::write});
 		}
 
+		void begin_combined_write(const detail::box<3>& box) {
+			if(box.empty()) return;
+			last_writers.update_box(box, access_front{{}, access_front::write});
+			access_fronts.update_box(box, access_front{{}, access_front::write});
+		}
+
+		void begin_combined_write(const region<3>& region) {
+			if(region.empty()) return;
+			last_writers.update_region(region, access_front{{}, access_front::write});
+			access_fronts.update_region(region, access_front{{}, access_front::write});
+		}
+
+		template <typename BoxOrRegion>
+		void commit_combined_write(const BoxOrRegion& box_or_region, instruction* const instr) {
+			if(box_or_region.empty()) return;
+			for(auto& [box, front] : last_writers.get_region_values(box_or_region)) {
+				assert(front.mode == access_front::write); // must call begin_overlapping_write first
+				// we call commit() in order of generated instructions, so push_back is a sorted insert
+				assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
+				front.instructions.push_back(instr);
+				assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
+				last_writers.update_region(box, front);
+				access_fronts.update_region(box, front);
+			}
+		}
+
 		void apply_epoch(instruction* const epoch) {
-			last_writers.apply_to_values([epoch](writer writer) { //
-				if(writer.instr != nullptr && writer.instr->get_id() < epoch->get_id()) { writer.instr = epoch; }
-				return writer;
-			});
-			access_fronts.apply_to_values([epoch](const access_front& old_front) {
+			const auto apply_epoch_to_front = [epoch](const access_front& old_front) {
 				const auto first_retained = std::upper_bound(old_front.instructions.begin(), old_front.instructions.end(), epoch, instruction_id_less());
 				const auto last_retained = old_front.instructions.end();
 
@@ -289,7 +303,9 @@ class instruction_graph_generator::impl {
 				std::copy(first_retained, last_retained, std::next(new_front.instructions.begin()));
 				assert(std::is_sorted(new_front.instructions.begin(), new_front.instructions.end(), instruction_id_less()));
 				return new_front;
-			});
+			};
+			last_writers.apply_to_values(apply_epoch_to_front);
+			access_fronts.apply_to_values(apply_epoch_to_front);
 		}
 	};
 
@@ -470,12 +486,11 @@ class instruction_graph_generator::impl {
 	template <typename BoxOrRegion>
 	void add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
 	    const instruction_dependency_origin record_origin_for_initialized_data) {
-		for(const auto& [box, writer] : allocation.last_writers.get_region_values(region)) {
-			// dep_instr can be null if this is an uninitialized read. We detect and report these separately, but try to handle them gracefully here
-			if(writer.instr != nullptr) {
-				add_dependency(accessing_instruction, writer.instr,
-				    writer.mode == buffer_allocation_state::writer::allocate ? instruction_dependency_origin::allocation_lifetime
-				                                                             : record_origin_for_initialized_data);
+		for(const auto& [box, front] : allocation.last_writers.get_region_values(region)) {
+			for(const auto writer : front.instructions) {
+				add_dependency(accessing_instruction, writer,
+				    front.mode == buffer_allocation_state::access_front::allocate ? instruction_dependency_origin::allocation_lifetime
+				                                                                  : record_origin_for_initialized_data);
 			}
 		}
 	}
@@ -1381,10 +1396,25 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		}
 	}
 
-	// 6) update data locations and last writers resulting from command instructions
+	// 6a) clear region maps in the areas we write to - we gracefully handle overlapping writes by treating the set of all conflicting writers as last writers
+	// of an allocation
 
 	for(const auto& instr : cmd_instrs) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::record_access", LightSeaGreen, "record accesses");
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::begin_access", LightSeaGreen, "begin accesses");
+
+		for(const auto& [bid, rw] : instr.rw_map) {
+			assert(instr.instruction != nullptr);
+			auto& buffer = m_buffers.at(bid);
+			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
+				alloc.begin_combined_write(region_intersection(alloc.box, rw.writes));
+			}
+		}
+	}
+
+	// 6b) update data locations and last writers resulting from command instructions
+
+	for(const auto& instr : cmd_instrs) {
+		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_access", LightSeaGreen, "commit accesses");
 
 		for(const auto& [bid, rw] : instr.rw_map) {
 			assert(instr.instruction != nullptr);
@@ -1394,7 +1424,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			// if so, have similar functions for side effects / collective groups
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
 				alloc.commit_read(region_intersection(alloc.box, rw.reads), instr.instruction);
-				alloc.commit_write(region_intersection(alloc.box, rw.writes), instr.instruction);
+				alloc.commit_combined_write(region_intersection(alloc.box, rw.writes), instr.instruction);
 			}
 
 			buffer.commit_original_write(rw.writes, instr.instruction, instr.memory_id);

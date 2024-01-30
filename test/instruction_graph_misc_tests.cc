@@ -508,13 +508,21 @@ TEST_CASE("instruction_graph_generator gracefully handles overlapping writes whe
 	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
 	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
 	const auto all_frees = all_instrs.select_all<free_instruction_record>();
+	const auto free_after_reader =
+	    all_frees.select_unique([&](const free_instruction_record& finstr) { return finstr.allocation_id == reader->access_map.at(0).allocation_id; });
 
 	CHECK(all_allocs.count() == num_devices);
 	CHECK(all_writers.count() == num_devices * oversubscription);
 	CHECK(all_allocs.successors().contains(all_writers));
 	CHECK(reader.transitive_predecessors().contains(all_writers));
-	CHECK(reader.successors() == all_frees);
+	CHECK(reader.successors() == free_after_reader);
 	CHECK(all_frees.count() == all_allocs.count());
+
+	for(const auto& writer : all_writers.iterate()) {
+		const auto free_after_writer =
+		    all_frees.select_unique([&](const free_instruction_record& finstr) { return finstr.allocation_id == writer->access_map.at(0).allocation_id; });
+		CHECK(writer.transitive_successors().contains(free_after_writer));
+	}
 }
 
 TEMPLATE_TEST_CASE_SIG("hints::split_2d results in a 2d split", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 2, 3) {
