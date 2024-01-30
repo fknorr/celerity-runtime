@@ -1,10 +1,12 @@
 #pragma once
 
 #include "grid.h"
+#include "intrusive_graph.h"
 #include "ranges.h"
 #include "types.h"
 
 #include <fmt/format.h>
+
 
 template <typename Interface, int Dims>
 struct fmt::formatter<celerity::detail::coordinate<Interface, Dims>> : fmt::formatter<size_t> {
@@ -73,7 +75,56 @@ struct fmt::formatter<celerity::chunk<Dims>> : fmt::formatter<celerity::subrange
 	}
 };
 
-// TODO implement formatters for all phantom types
+
+// TODO prefix type aliases like in GDB pretty_printers (requires removing explicit prefixes elsewhere in the code)
+#define CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(TYPE_ALIAS)                                                                              \
+	template <>                                                                                                                                                \
+	struct fmt::formatter<celerity::detail::TYPE_ALIAS> : fmt::formatter<celerity::detail::TYPE_ALIAS::value_type> {};
+
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(task_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(buffer_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(node_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(command_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(collective_group_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(reduction_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(host_object_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(hydration_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(memory_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(device_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(raw_allocation_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(instruction_id)
+CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(message_id)
+
+
+template <>
+struct fmt::formatter<celerity::detail::dependency_kind> : fmt::formatter<std::string_view> {
+	format_context::iterator format(const celerity::detail::dependency_kind kind, format_context& ctx) const {
+		const auto repr = [=]() -> std::string_view {
+			switch(kind) {
+			case celerity::detail::dependency_kind::anti_dep: return "anti_dep";
+			case celerity::detail::dependency_kind::true_dep: return "true_dep";
+			default: return "???";
+			}
+		}();
+		return std::copy(repr.begin(), repr.end(), ctx.out());
+	}
+};
+
+template <>
+struct fmt::formatter<celerity::detail::dependency_origin> : fmt::formatter<std::string_view> {
+	format_context::iterator format(const celerity::detail::dependency_origin origin, format_context& ctx) const {
+		const auto repr = [=]() -> std::string_view {
+			switch(origin) {
+			case celerity::detail::dependency_origin::dataflow: return "dataflow";
+			case celerity::detail::dependency_origin::collective_group_serialization: return "collective_group_serialization";
+			case celerity::detail::dependency_origin::execution_front: return "execution_front";
+			case celerity::detail::dependency_origin::last_epoch: return "last_epoch";
+			default: return "???";
+			}
+		}();
+		return std::copy(repr.begin(), repr.end(), ctx.out());
+	}
+};
 
 template <>
 struct fmt::formatter<celerity::detail::allocation_id> {

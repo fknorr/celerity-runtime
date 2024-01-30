@@ -76,7 +76,7 @@ TEMPLATE_TEST_CASE_SIG("backend_queue::nd_copy works correctly on all source- an
 		source_mid = backend_devices[0].native_memory;
 		dest_mid = backend_devices[1].native_memory;
 		break;
-	default: assert(!"unreachable");
+	default: throw std::runtime_error("Unknown test type");
 	}
 	CAPTURE(source_mid, dest_mid);
 

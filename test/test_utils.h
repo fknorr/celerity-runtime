@@ -44,7 +44,7 @@
 namespace celerity {
 namespace detail {
 
-	const std::unordered_map<std::string, std::string> recording_enabled_env_setting{{"CELERITY_RECORDING", "1"}};
+	const std::unordered_map<std::string, std::string> print_graphs_env_setting{{"CELERITY_PRINT_GRAPHS", "1"}};
 
 	struct scheduler_testspy {
 		static std::thread& get_thread(scheduler& schdlr) { return schdlr.m_thread; }
@@ -159,6 +159,20 @@ namespace test_utils {
 	} else if(!(__VA_ARGS__)) {                                                                                                                                \
 		REQUIRE(__VA_ARGS__);                                                                                                                                  \
 	}
+
+	/// By default, tests fail if their log contains a warning, error or critical message. This function allows tests to pass when higher-severity messages
+	/// are expected. The property is re-set at the beginning of each test-case run (even when it is re-entered due to a generator or section).
+	void allow_max_log_level(detail::log_level level);
+
+	/// Like allow_max_log_level(), but only applies to messages that match a regex. This is used in test fixtures to allow common system-dependent messages.
+	void allow_higher_level_log_messages(detail::log_level level, const std::string& text_regex);
+
+	/// Returns whether the log of the current test so far contains a message that exactly equals the given log level and message. Time stamps and the log level
+	/// are not part of the text, but any active log_context is.
+	bool log_contains_exact(detail::log_level level, const std::string& text);
+
+	/// Returns whether the log of the current test so far contains a message with exactly the given log level and a message that contains `substring`.
+	bool log_contains_substring(detail::log_level level, const std::string& substring);
 
 	template <int Dims, typename F>
 	void for_each_in_range(range<Dims> range, id<Dims> offset, F&& f) {
@@ -345,23 +359,22 @@ namespace test_utils {
 	class mpi_fixture {
 	  public:
 		mpi_fixture() { detail::runtime::test_require_mpi(); }
-
 		mpi_fixture(const mpi_fixture&) = delete;
+		mpi_fixture(mpi_fixture&&) = delete;
 		mpi_fixture& operator=(const mpi_fixture&) = delete;
+		mpi_fixture& operator=(mpi_fixture&&) = delete;
+		~mpi_fixture() = default;
 	};
 
 	// This fixture (or a subclass) must be used by all tests that transitively instantiate the runtime.
 	class runtime_fixture : public mpi_fixture {
 	  public:
-		runtime_fixture() { detail::runtime::test_case_enter(); }
-
+		runtime_fixture();
 		runtime_fixture(const runtime_fixture&) = delete;
+		runtime_fixture(runtime_fixture&&) = delete;
 		runtime_fixture& operator=(const runtime_fixture&) = delete;
-
-		~runtime_fixture() {
-			if(!detail::runtime::test_runtime_was_instantiated()) { WARN("Test specified a runtime_fixture, but did not end up instantiating the runtime"); }
-			detail::runtime::test_case_exit();
-		}
+		runtime_fixture& operator=(runtime_fixture&&) = delete;
+		~runtime_fixture();
 	};
 
 	class sycl_queue_fixture {

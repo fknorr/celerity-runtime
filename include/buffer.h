@@ -82,7 +82,7 @@ class buffer {
 
   private:
 	struct impl {
-		impl(range<Dims> rng, const void* host_init_ptr) : range(rng) {
+		impl(celerity::range<Dims> rng, const void* host_init_ptr) : range(rng) {
 			if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
 			const auto user_aid = host_init_ptr != nullptr
 			                          ? detail::runtime::get_instance().create_user_allocation(const_cast<void*>(host_init_ptr) /* pinky promise */)

@@ -7,7 +7,6 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
-#include "log_test_utils.h"
 #include "test_utils.h"
 
 using dt = sycl::info::device_type;
@@ -130,6 +129,8 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "check_required_device_aspects throws 
 }
 
 TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices prefers user-specified device list", "[device-selection]") {
+	celerity::test_utils::allow_max_log_level(celerity::detail::log_level::warn);
+
 	config cfg(nullptr, nullptr);
 	auto [mp] = create_mock_platforms(std::nullopt);
 
@@ -180,6 +181,8 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices selects the largest subs
 }
 
 TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices falls back to other device types if no GPUs are available", "[device-selection]") {
+	celerity::test_utils::allow_max_log_level(celerity::detail::log_level::warn);
+
 	config cfg(nullptr, nullptr);
 	auto [mp_1, mp_2, mp_3] = create_mock_platforms(std::nullopt, std::nullopt, std::nullopt);
 	mp_1.create_devices(dt::cpu);
@@ -327,8 +330,9 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices attempts to evenly distr
 	    {13, {3, 3, 3, 2, 2}} //
 	};
 
+	celerity::test_utils::allow_max_log_level(celerity::detail::log_level::warn);
+
 	config cfg(nullptr, nullptr);
-	test_utils::log_capture lc;
 
 	for(const auto& dist : distributions) {
 		auto [mp] = create_mock_platforms(std::nullopt);
@@ -350,8 +354,8 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices attempts to evenly distr
 		}
 	}
 
-	CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring("Celerity detected more than one node (MPI rank) on this host, which is not recommended. Will "
-	                                                            "attempt to distribute local devices evenly across nodes."));
+	CHECK(test_utils::log_contains_exact(log_level::warn, "Celerity detected more than one node (MPI rank) on this host, which is not recommended. Will "
+	                                                      "attempt to distribute local devices evenly across nodes."));
 }
 
 TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices distributes devices in round-robin fashion if there are fewer than local nodes", "[device-selection]") {
@@ -360,8 +364,9 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices distributes devices in r
 
 	const size_t num_ranks = GENERATE(4, 5, 6);
 
+	test_utils::allow_max_log_level(log_level::warn);
+
 	config cfg(nullptr, nullptr);
-	test_utils::log_capture lc;
 
 	for(size_t i = 0; i < num_ranks; ++i) {
 		host_config h_cfg{num_ranks, i};
@@ -369,8 +374,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices distributes devices in r
 		const auto selected = pick_devices(cfg, auto_select_devices{}, std::vector<mock_platform>{mp});
 		REQUIRE(selected.size() == 1);
 		CHECK(selected[0] == devices[i % 3]);
-		CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring(
-		                             fmt::format("Found fewer devices (3) than local nodes ({}), multiple nodes will use the same device(s).", num_ranks)));
+		CHECK(test_utils::log_contains_exact(log_level::warn, fmt::format("Found fewer devices (3) than local nodes ({}), multiple nodes will use the same device(s).", num_ranks)));
 	}
 }
 
@@ -380,25 +384,22 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices prints device and platfo
 	auto mds = mp.create_devices(type_and_name{dt::gpu, "My first device"}, type_and_name{dt::gpu, "My second device"});
 
 	SECTION("when devices are provided by user") {
-		test_utils::log_capture lc;
 		pick_devices(cfg, std::vector<mock_device>{mds[0], mds[1]}, std::vector<mock_platform>{mp});
-		CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring("Using platform 'My platform', device 'My first device' (specified by user)"));
-		CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring("Using platform 'My platform', device 'My second device' (specified by user)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My first device' (specified by user)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My second device' (specified by user)"));
 	}
 
 	SECTION("when automatically selecting a device") {
-		test_utils::log_capture lc;
 		pick_devices(cfg, auto_select_devices{}, std::vector<mock_platform>{mp});
-		CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring("Using platform 'My platform', device 'My first device' (automatically selected)"));
-		CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring("Using platform 'My platform', device 'My second device' (automatically selected)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My first device' (automatically selected)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My second device' (automatically selected)"));
 	}
 
 	SECTION("when a device selector is provided") {
-		test_utils::log_capture lc;
 		const auto selector = [mds](const mock_device&) { return 100; };
 		pick_devices(cfg, selector, std::vector<mock_platform>{mp});
-		CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring("Using platform 'My platform', device 'My first device' (via user-provided selector)"));
-		CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring("Using platform 'My platform', device 'My second device' (via user-provided selector)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My first device' (via user-provided selector)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My second device' (via user-provided selector)"));
 	}
 }
 
@@ -417,17 +418,15 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices prints information about
 		}
 	}
 
-	test_utils::log_capture lc(spdlog::level::debug);
-
 	SECTION("warns when using generic backend") {
 		if(!generic_device.has_value()) {
 			SKIP("No generic device available");
 		} else {
+			celerity::test_utils::allow_max_log_level(celerity::detail::log_level::warn);
 			pick_devices(cfg, std::vector<sycl::device>{*generic_device}, std::vector<sycl::platform>{});
-			CHECK_THAT(lc.get_log(),
-			    Catch::Matchers::ContainsSubstring(
-			        fmt::format("No backend specialization available for selected platform '{}', falling back to generic. Performance may be degraded.",
-			            generic_device->get_platform().get_info<sycl::info::platform::name>())));
+			CHECK(celerity::test_utils::log_contains_substring(celerity::detail::log_level::warn,
+			    fmt::format("No backend specialization available for selected platform '{}', falling back to generic. Performance may be degraded.",
+			        generic_device->get_platform().get_info<sycl::info::platform::name>())));
 		}
 	}
 
@@ -436,8 +435,8 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices prints information about
 			SKIP("No CUDA device available or CUDA backend not enabled");
 		} else {
 			pick_devices(cfg, std::vector<sycl::device>{*cuda_device}, std::vector<sycl::platform>{});
-			CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring(fmt::format("Using CUDA backend for selected platform '{}'.",
-			                             cuda_device->get_platform().get_info<sycl::info::platform::name>())));
+			CHECK(celerity::test_utils::log_contains_substring(celerity::detail::log_level::info,
+			    fmt::format("Using CUDA backend for selected platform '{}'.", cuda_device->get_platform().get_info<sycl::info::platform::name>())));
 		}
 	}
 
@@ -445,10 +444,11 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices prints information about
 		if(!cuda_device.has_value() || backend_detail::is_enabled_v<backend::type::cuda>) {
 			SKIP("No CUDA device available or CUDA backend is enabled");
 		} else {
+			celerity::test_utils::allow_max_log_level(celerity::detail::log_level::warn);
 			pick_devices(cfg, std::vector<sycl::device>{*cuda_device}, std::vector<sycl::platform>{});
-			CHECK_THAT(lc.get_log(), Catch::Matchers::ContainsSubstring(
-			                             fmt::format("Selected platform '{}' is compatible with specialized CUDA backend, but it has not been compiled.",
-			                                 cuda_device->get_platform().get_info<sycl::info::platform::name>())));
+			CHECK(celerity::test_utils::log_contains_substring(celerity::detail::log_level::warn,
+			    fmt::format("Selected platform '{}' is compatible with specialized CUDA backend, but it has not been compiled.",
+			        cuda_device->get_platform().get_info<sycl::info::platform::name>())));
 		}
 	}
 }

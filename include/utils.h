@@ -55,7 +55,7 @@ struct pair_hash {
 namespace celerity::detail::utils_detail {
 
 template <typename... Without, typename... ToKeep, typename T, typename... Ts>
-static auto tuple_without_impl(const std::tuple<ToKeep...>& to_keep, const std::tuple<T, Ts...>& to_check) {
+constexpr auto tuple_without_impl(const std::tuple<ToKeep...>& to_keep, const std::tuple<T, Ts...>& to_check) {
 	if constexpr((std::is_same_v<T, Without> || ...)) {
 		if constexpr(sizeof...(Ts) == 0) {
 			return to_keep;
@@ -71,17 +71,32 @@ static auto tuple_without_impl(const std::tuple<ToKeep...>& to_keep, const std::
 	}
 }
 
+template <typename Tuple, typename Callback>
+constexpr void tuple_for_each_pair_impl(const Tuple&, Callback&&, std::index_sequence<>) {}
+
+template <typename Tuple, size_t I1, size_t I2, size_t... Is, typename Callback>
+constexpr void tuple_for_each_pair_impl(const Tuple& tuple, const Callback& cb, std::index_sequence<I1, I2, Is...>) {
+	cb(std::get<I1>(tuple), std::get<I2>(tuple));
+	tuple_for_each_pair_impl(tuple, cb, std::index_sequence<Is...>{});
+}
+
 } // namespace celerity::detail::utils_detail
 
 namespace celerity::detail::utils {
 
 template <typename... Without, typename... Ts>
-static auto tuple_without(const std::tuple<Ts...>& tuple) {
+constexpr auto tuple_without(const std::tuple<Ts...>& tuple) {
 	if constexpr(sizeof...(Ts) > 0) {
 		return utils_detail::tuple_without_impl<Without...>({}, tuple);
 	} else {
 		return tuple;
 	}
+}
+
+template <typename Tuple, typename Callback>
+constexpr void tuple_for_each_pair(const Tuple& tuple, const Callback& cb) {
+	static_assert(std::tuple_size_v<Tuple> % 2 == 0, "an even number of entries is required");
+	utils_detail::tuple_for_each_pair_impl(tuple, cb, std::make_index_sequence<std::tuple_size_v<Tuple>>{});
 }
 
 template <typename Variant, typename Alternative>
@@ -128,10 +143,10 @@ template <typename... FmtParams, std::enable_if_t<sizeof...(FmtParams) >= 2, int
 void report_error(const error_policy policy, const std::string& msg);
 
 /// Ignores, logs, or panics on an error depending on the `error_policy`.
-template <typename... FmtParams, std::enable_if_t<sizeof...(FmtParams) >= 2, int> = 0>
-void report_error(const error_policy policy, const FmtParams&... fmt_args) {
+template <typename... FmtParams, std::enable_if_t<sizeof...(FmtParams) >= 1, int> = 0>
+void report_error(const error_policy policy, const fmt::format_string<FmtParams...> fmt_string, FmtParams&&... fmt_args) {
 	// TODO also receive a std::source_location with C++20.
-	if(policy != error_policy::ignore) { report_error(policy, fmt::format(fmt_args...)); }
+	if(policy != error_policy::ignore) { report_error(policy, fmt::format(fmt_string, std::forward<FmtParams>(fmt_args)...)); }
 }
 
 } // namespace celerity::detail::utils

@@ -7,7 +7,7 @@ include(ParseAndAddCatchTests)
 # Function for setting all relevant test parameters
 function(set_test_target_parameters TARGET SOURCE)
   target_link_libraries(${TARGET} PUBLIC Catch2::Catch2)
-  set_property(TARGET ${TARGET} PROPERTY CXX_STANDARD 17)
+  set_property(TARGET ${TARGET} PROPERTY CXX_STANDARD ${CELERITY_CXX_STANDARD})
   set_property(TARGET ${TARGET} PROPERTY FOLDER "tests")
   set_property(TARGET ${TARGET} PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -55,8 +55,8 @@ set(TEST_TARGETS
   device_selection_tests
 )
 
-add_library(test_main test_main.cc grid_test_utils.cc)
-set_test_target_parameters(test_main test_main.cc grid_test_utils.cc)
+add_library(test_main test_main.cc test_utils.cc grid_test_utils.cc)
+set_test_target_parameters(test_main test_main.cc test_utils.cc grid_test_utils.cc)
 
 set(TEST_OBJ_LIST "")
 foreach(TEST_TARGET ${TEST_TARGETS})

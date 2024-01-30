@@ -77,10 +77,11 @@ installed first.
 
 - A supported SYCL implementation, either
     - [hipSYCL](https://github.com/illuhad/hipsycl),
-    - [DPC++](https://github.com/intel/llvm)
+    - [DPC++](https://github.com/intel/llvm), or
+    - [SimSYCL](https://github.com/celerity/SimSYCL)
 - A MPI 2 implementation (tested with OpenMPI 4.0, MPICH 3.3 should work as well)
 - [CMake](https://www.cmake.org) (3.13 or newer)
-- A C++17 compiler
+- A C++17 compiler (C++20 when working with SimSYCL)
 
 See the [platform support guide](docs/platform-support.md) on which library and OS versions are supported and
 automatically tested.
@@ -122,7 +123,7 @@ Celerity's runtime behavior:
   automatically assign a unique device to each worker on a host.
 - `CELERITY_PROFILE_KERNEL` controls whether SYCL queue profiling information
   should be queried (currently not supported when using hipSYCL).
-- `CELERITY_RECORDING` enables recording of the generated tasks and commands,
-  which allows printing dot graphs for debugging and analysis.
+- `CELERITY_PRINT_GRAPHS` controls whether task and command graphs are logged
+  at the end of execution (requires log level `info` or higher).
 - `CELERITY_DRY_RUN_NODES` takes a number and simulates a run with that many nodes
   without actually executing the commands.

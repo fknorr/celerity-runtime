@@ -22,8 +22,8 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "freeing task ring buffer capacity
 		reached_ringbuffer_capacity = true;
 	});
 
-	int init = 0;
-	celerity::buffer<int, 1> dependency(&init, 1);
+	int init = 42;
+	celerity::buffer<int, 1> dependency{&init, 1};
 
 	for(size_t i = 0; i < task_ringbuffer_size + 10; ++i) {
 		q.submit([&](celerity::handler& cgh) {
@@ -38,6 +38,8 @@ TEST_CASE_METHOD(test_utils::runtime_fixture, "freeing task ring buffer capacity
 	}
 
 	observer.join();
+
+	q.slow_full_sync(); // `reach_ringbuffer_capacity` must not go out of scope before the host task has finished
 }
 
 TEST_CASE_METHOD(test_utils::runtime_fixture, "deadlock in task ring buffer due to slot exhaustion is reported", "[task_ring_buffer]") {

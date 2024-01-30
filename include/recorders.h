@@ -53,13 +53,13 @@ struct task_record {
 	task_geometry geometry;
 	reduction_list reductions;
 	access_list accesses;
-	side_effect_map side_effect_map;
+	detail::side_effect_map side_effect_map;
 	task_dependency_list dependencies;
 };
 
 class task_recorder {
   public:
-	using task_records = std::vector<task_record>;
+	using task_records = std::vector<detail::task_record>;
 
 	void record_task(task_record&& record) { m_recorded_tasks.push_back(std::move(record)); }
 
@@ -88,25 +88,25 @@ struct command_record {
 	command_id cid;
 	command_type type;
 
-	std::optional<epoch_action> epoch_action;
+	std::optional<detail::epoch_action> epoch_action;
 	std::optional<subrange<3>> execution_range;
-	std::optional<reduction_id> reduction_id;
-	std::optional<buffer_id> buffer_id;
+	std::optional<detail::reduction_id> reduction_id;
+	std::optional<detail::buffer_id> buffer_id;
 	std::string buffer_name;
 	std::optional<node_id> target;
 	std::optional<region<3>> await_region;
 	std::optional<subrange<3>> push_range;
-	std::optional<transfer_id> transfer_id;
-	std::optional<task_id> task_id;
-	std::optional<task_geometry> task_geometry;
+	std::optional<detail::transfer_id> transfer_id;
+	std::optional<detail::task_id> task_id;
+	std::optional<detail::task_geometry> task_geometry;
 	bool is_reduction_initializer;
 	std::optional<access_list> accesses;
 	std::optional<reduction_list> reductions;
 	std::optional<side_effect_map> side_effects;
 	command_dependency_list dependencies;
 	std::string task_name;
-	std::optional<task_type> task_type;
-	std::optional<collective_group_id> collective_group_id;
+	std::optional<detail::task_type> task_type;
+	std::optional<detail::collective_group_id> collective_group_id;
 	std::vector<detail::reduction_id> completed_reductions;
 
 	command_record(const abstract_command& cmd, const task& tsk, const buffer_name_map& accessed_buffer_names);
@@ -114,7 +114,7 @@ struct command_record {
 
 class command_recorder {
   public:
-	using command_records = std::vector<command_record>;
+	using command_records = std::vector<detail::command_record>;
 
 	void record_command(command_record&& record) { m_recorded_commands.push_back(std::move(record)); }
 

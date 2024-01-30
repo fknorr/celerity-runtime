@@ -107,6 +107,7 @@ class instruction_executor {
 	// immutable
 	delegate* m_delegate;
 	std::unique_ptr<communicator> m_communicator;
+	// TODO bool m_dry_run
 
 	// accessed by by main and executor threads
 	double_buffered_queue<submission> m_submission_queue;

@@ -11,7 +11,6 @@
 
 #include <celerity.h>
 
-#include "../log_test_utils.h"
 
 namespace celerity {
 namespace detail {
@@ -74,7 +73,7 @@ namespace detail {
 
 		const int N = 1000;
 
-		buffer<int, 1> sum(range{1});
+		buffer<int, 1> sum(range(1));
 		q.submit([&](handler& cgh) {
 			cgh.parallel_for<class UKN(kernel)>(range{N}, reduction(sum, cgh, cl::sycl::plus<int>{}, cl::sycl::property::reduction::initialize_to_identity{}),
 			    [=](celerity::item<1> item, auto& sum) { sum += 1; });
@@ -97,7 +96,7 @@ namespace detail {
 
 		const int N = 1000;
 
-		buffer<int, 1> sum(range{1});
+		buffer<int, 1> sum(range(1));
 		q.submit([&](handler& cgh) {
 			cgh.parallel_for<class UKN(produce)>(range{N}, reduction(sum, cgh, cl::sycl::plus<int>{}, cl::sycl::property::reduction::initialize_to_identity{}),
 			    [=](celerity::item<1> item, auto& sum) { sum += static_cast<int>(item.get_linear_id()); });
@@ -121,16 +120,15 @@ namespace detail {
 
 	TEST_CASE_METHOD(
 	    test_utils::runtime_fixture, "runtime-shutdown graph printing works in the presence of a finished reduction", "[reductions][print_graph][smoke-test]") {
-		env::scoped_test_environment test_env(recording_enabled_env_setting);
+		env::scoped_test_environment test_env(print_graphs_env_setting);
 		// init runtime early so the distr_queue ctor doesn't override the log level set by log_capture
 		runtime::init(nullptr, nullptr);
 
 		const bool is_node_0 = runtime::get_instance().get_local_nid() == 0; // runtime instance is gone after queue destruction
-		test_utils::log_capture log_capture;
 
 		{
 			distr_queue q;
-			buffer<int, 1> sum(range{1});
+			buffer<int, 1> sum(range(1));
 			q.submit([&](handler& cgh) {
 				cgh.parallel_for<class UKN(produce)>(range{100},
 				    reduction(sum, cgh, cl::sycl::plus<int>{}, cl::sycl::property::reduction::initialize_to_identity{}),
@@ -143,11 +141,9 @@ namespace detail {
 		} // shutdown runtime and print graph
 
 		if(is_node_0) { // We log graphs only on node 0
-			using Catch::Matchers::ContainsSubstring;
-			const auto log = log_capture.get_log();
-			CHECK_THAT(log, ContainsSubstring("digraph G{label=<Command Graph>"));
-			CHECK_THAT(log, ContainsSubstring("(R1) <b>await push</b>"));
-			CHECK_THAT(log, ContainsSubstring("<b>reduction</b> R1<br/> B0 {[0,0,0] - [1,1,1]}"));
+			CHECK(test_utils::log_contains_substring(log_level::info, "digraph G{label=<Command Graph>"));
+			CHECK(test_utils::log_contains_substring(log_level::info, "(R1) <b>await push</b>"));
+			CHECK(test_utils::log_contains_substring(log_level::info, "<b>reduction</b> R1<br/> B0 {[0,0,0] - [1,1,1]}"));
 		}
 	}
 
@@ -189,13 +185,12 @@ namespace detail {
 		const auto global_range = test_utils::truncate_range<Dims>({n * 4 * 3, 3 * 5, 2 * 11});
 		const auto local_range = test_utils::truncate_range<Dims>({3, 5, 11});
 		const auto group_range = global_range / local_range;
-		const auto global_offset = test_utils::truncate_id<Dims>({47, 53, 59});
 
 		buffer<geometry, Dims> geo(global_range);
 
 		q.submit([&](handler& cgh) {
 			accessor g{geo, cgh, celerity::access::one_to_one{}, write_only, no_init};
-			cgh.parallel_for<kernel_name_nd_geometry<Dims>>(celerity::nd_range{global_range, local_range}, /* global_offset,*/ [=](nd_item<Dims> item) {
+			cgh.parallel_for<kernel_name_nd_geometry<Dims>>(celerity::nd_range{global_range, local_range}, [=](nd_item<Dims> item) {
 				auto group = item.get_group();
 				g[item.get_global_id()] = geometry{//
 				    {item.get_group_linear_id(), range_cast<3>(item.get_group_range()), id_cast<3>(item.get_local_id()), item.get_local_linear_id(),
@@ -244,7 +239,7 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "generating same task graph on different nodes", "[task-graph]") {
-		env::scoped_test_environment tenv(recording_enabled_env_setting);
+		env::scoped_test_environment tenv(print_graphs_env_setting);
 		distr_queue q;
 		REQUIRE(runtime::get_instance().get_num_nodes() > 1);
 
@@ -355,7 +350,7 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "command graph can be collected across distributed nodes", "[print_graph]") {
-		env::scoped_test_environment tenv(recording_enabled_env_setting);
+		env::scoped_test_environment tenv(print_graphs_env_setting);
 
 		int global_size = 0;
 		MPI_Comm_size(MPI_COMM_WORLD, &global_size);
@@ -422,79 +417,33 @@ namespace detail {
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between commands iff access pattern diagnostics are enabled",
 	    "[runtime][diagnostics]") //
 	{
-		std::unique_ptr<celerity::test_utils::log_capture> lc;
-		{
-			distr_queue q;
-			const auto num_nodes = runtime::get_instance().get_num_nodes();
-			if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
+		test_utils::allow_max_log_level(detail::log_level::err);
 
-			lc = std::make_unique<celerity::test_utils::log_capture>();
+		distr_queue q;
+		const auto num_nodes = runtime::get_instance().get_num_nodes();
+		if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
 
-			buffer<int, 1> buf(1);
+		buffer<int, 1> buf(1);
 
-			SECTION("in distributed device kernels") {
-				q.submit([&](handler& cgh) {
-					accessor acc(buf, cgh, celerity::access::all(), write_only, no_init);
-					cgh.parallel_for(range(num_nodes), [=](item<1>) { (void)acc; });
-				});
-			}
-
-			SECTION("in collective host tasks") {
-				q.submit([&](handler& cgh) {
-					accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
-					cgh.host_task(celerity::experimental::collective, [=](experimental::collective_partition) { (void)acc; });
-				});
-			}
-
-			q.slow_full_sync();
+		SECTION("in distributed device kernels") {
+			q.submit([&](handler& cgh) {
+				accessor acc(buf, cgh, celerity::access::all(), write_only, no_init);
+				cgh.parallel_for(range(num_nodes), [=](item<1>) { (void)acc; });
+			});
 		}
+
+		SECTION("in collective host tasks") {
+			q.submit([&](handler& cgh) {
+				accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
+				cgh.host_task(celerity::experimental::collective, [=](experimental::collective_partition) { (void)acc; });
+			});
+		}
+
+		q.slow_full_sync();
 
 		const auto error_message = "has overlapping writes between multiple nodes in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the "
 		                           "write access or constrain the split to make the access non-overlapping.";
-#if CELERITY_ACCESS_PATTERN_DIAGNOSTICS
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
-#else
-		CHECK_THAT(lc->get_log(), !Catch::Matchers::ContainsSubstring(error_message));
-#endif
-	}
-
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime logs errors on overlapping writes between commands iff access pattern diagnostics are enabled",
-	    "[runtime][diagnostics]") //
-	{
-		std::unique_ptr<celerity::test_utils::log_capture> lc;
-		{
-			distr_queue q;
-			const auto num_nodes = runtime::get_instance().get_num_nodes();
-			if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
-
-			lc = std::make_unique<celerity::test_utils::log_capture>();
-
-			buffer<int, 1> buf(1);
-
-			SECTION("in distributed device kernels") {
-				q.submit([&](handler& cgh) {
-					accessor acc(buf, cgh, celerity::access::all(), write_only, no_init);
-					cgh.parallel_for(range(num_nodes), [=](item<1>) { (void)acc; });
-				});
-			}
-
-			SECTION("in collective host tasks") {
-				q.submit([&](handler& cgh) {
-					accessor acc(buf, cgh, celerity::access::all(), write_only_host_task, no_init);
-					cgh.host_task(celerity::experimental::collective, [=](experimental::collective_partition) { (void)acc; });
-				});
-			}
-
-			q.slow_full_sync();
-		}
-
-		const auto error_message = "has overlapping writes between multiple nodes in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the "
-		                           "write access or constrain the split to make the access non-overlapping.";
-#if CELERITY_ACCESS_PATTERN_DIAGNOSTICS
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(error_message));
-#else
-		CHECK_THAT(lc->get_log(), !Catch::Matchers::ContainsSubstring(error_message));
-#endif
+		CHECK(test_utils::log_contains_substring(log_level::err, error_message) == CELERITY_ACCESS_PATTERN_DIAGNOSTICS);
 	}
 
 } // namespace detail

@@ -1,6 +1,7 @@
 #include "split.h"
 
 #include <array>
+#include <cmath>
 #include <tuple>
 
 #include "grid.h"
@@ -20,11 +21,11 @@ using namespace celerity::detail;
 }
 
 template <int Dims>
-std::tuple<std::array<size_t, Dims>, std::array<size_t, Dims>, std::array<size_t, Dims>> compute_small_and_large_chunks(
+std::tuple<range<Dims>, range<Dims>, range<Dims>> compute_small_and_large_chunks(
     const chunk<3>& full_chunk, const range<3>& granularity, const std::array<size_t, Dims>& actual_num_chunks) {
-	std::array<size_t, Dims> small_chunk_size{};
-	std::array<size_t, Dims> large_chunk_size{};
-	std::array<size_t, Dims> num_large_chunks{};
+	range<Dims> small_chunk_size{zeros};
+	range<Dims> large_chunk_size{zeros};
+	range<Dims> num_large_chunks{zeros};
 	for(int d = 0; d < Dims; ++d) {
 		const size_t ideal_chunk_size = full_chunk.range[d] / actual_num_chunks[d];
 		small_chunk_size[d] = (ideal_chunk_size / granularity[d]) * granularity[d];

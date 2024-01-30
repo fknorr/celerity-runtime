@@ -52,7 +52,7 @@ namespace {
 
 size_t parse_validate_graph_print_max_verts(const std::string_view str) {
 	throw env::validation_error{"Support for CELERITY_GRAPH_PRINT_MAX_VERTS has been removed with Celerity 0.5.0.\n"
-	                            "Opt into graph recording by setting CELERITY_RECORDING."};
+	                            "Opt into graph printing by setting CELERITY_PRINT_GRAPHS=1."};
 	return 0;
 }
 
@@ -124,11 +124,9 @@ namespace detail {
 		    "LOG_LEVEL", {log_level::trace, log_level::debug, log_level::info, log_level::warn, log_level::err, log_level::critical, log_level::off});
 		[[maybe_unused]] const auto env_devs =
 		    pref.register_variable<std::vector<size_t>>("DEVICES", [this](const std::string_view str) { return parse_validate_devices(str, m_host_cfg); });
-		const auto env_profile_kernel =
-		    pref.register_variable<bool>("PROFILE_KERNEL", [](const std::string_view str) { return parse_validate_profile_kernel(str); });
-		const auto env_dry_run_nodes =
-		    pref.register_variable<size_t>("DRY_RUN_NODES", [](const std::string_view str) { return parse_validate_dry_run_nodes(str); });
-		const auto env_recording = pref.register_variable<bool>("RECORDING");
+		const auto env_profile_kernel = pref.register_variable<bool>("PROFILE_KERNEL", parse_validate_profile_kernel);
+		const auto env_dry_run_nodes = pref.register_variable<size_t>("DRY_RUN_NODES", parse_validate_dry_run_nodes);
+		const auto env_print_graphs = pref.register_variable<bool>("PRINT_GRAPHS");
 		constexpr int horizon_max = 1024 * 64;
 		const auto env_horizon_step = pref.register_range<int>("HORIZON_STEP", 1, horizon_max);
 		const auto env_horizon_max_para = pref.register_range<int>("HORIZON_MAX_PARALLELISM", 1, horizon_max);
@@ -143,17 +141,10 @@ namespace detail {
 			// ------------------------------- CELERITY_LOG_LEVEL ---------------------------------
 
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
-			const auto log_lvl = parsed_and_validated_envs.get_or(env_log_level, log_level::debug);
+			m_log_lvl = parsed_and_validated_envs.get_or(env_log_level, log_level::debug);
 #else
-			const auto log_lvl = parsed_and_validated_envs.get_or(env_log_level, log_level::info);
+			m_log_lvl = parsed_and_validated_envs.get_or(env_log_level, log_level::info);
 #endif
-			// Set both the global log level and the default sink level so that the console logger adheres to CELERITY_LOG_LEVEL even if we temporarily
-			// override the global level in test_utils::log_capture.
-			// TODO do not modify global state in the constructor, but factor the LOG_LEVEL part out of detail::config entirely.
-			spdlog::set_level(log_lvl);
-			for(auto& sink : spdlog::default_logger_raw()->sinks()) {
-				sink->set_level(log_lvl);
-			}
 
 			// ----------------------------- CELERITY_PROFILE_KERNEL ------------------------------
 
@@ -165,16 +156,16 @@ namespace detail {
 			const auto has_dry_run_nodes = parsed_and_validated_envs.get(env_dry_run_nodes);
 			if(has_dry_run_nodes) { m_dry_run_nodes = *has_dry_run_nodes; }
 
-			m_recording = parsed_and_validated_envs.get_or(env_recording, false);
+			m_should_print_graphs = parsed_and_validated_envs.get_or(env_print_graphs, false);
 			m_horizon_step = parsed_and_validated_envs.get(env_horizon_step);
 			m_horizon_max_parallelism = parsed_and_validated_envs.get(env_horizon_max_para);
 
 		} else {
 			for(const auto& warn : parsed_and_validated_envs.warnings()) {
-				CELERITY_ERROR(warn.what());
+				CELERITY_ERROR("{}", warn.what());
 			}
 			for(const auto& err : parsed_and_validated_envs.errors()) {
-				CELERITY_ERROR(err.what());
+				CELERITY_ERROR("{}", err.what());
 			}
 			throw std::runtime_error("Failed to parse/validate environment variables.");
 		}

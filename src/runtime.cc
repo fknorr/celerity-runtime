@@ -101,6 +101,8 @@ namespace detail {
 		return fmt::format("hipSYCL {}.{}.{}", HIPSYCL_VERSION_MAJOR, HIPSYCL_VERSION_MINOR, HIPSYCL_VERSION_PATCH);
 #elif CELERITY_DPCPP
 		return "DPC++ / Clang " __clang_version__;
+#elif CELERITY_SIMSYCL
+		return "SimSYCL " SIMSYCL_VERSION;
 #else
 #error "unknown SYCL implementation"
 #endif
@@ -129,7 +131,10 @@ namespace detail {
 		MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 		m_local_nid = world_rank;
 
-		spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", world_rank, int(ceil(log10(world_size)))));
+		if(!s_test_mode) { // do not touch logger settings in tests, where the full (trace) logs are captured
+			spdlog::set_level(m_cfg->get_log_level());
+			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", world_rank, int(ceil(log10(world_size)))));
+		}
 
 #ifndef __APPLE__
 		if(const uint32_t cores = affinity_cores_available(); cores < min_cores_needed) {
@@ -147,7 +152,7 @@ namespace detail {
 
 		m_h_queue = std::make_unique<host_queue>();
 
-		if(m_cfg->is_recording()) {
+		if(m_cfg->should_record()) {
 			m_task_recorder = std::make_unique<task_recorder>();
 			m_command_recorder = std::make_unique<command_recorder>();
 			m_instruction_recorder = std::make_unique<instruction_recorder>();
@@ -270,17 +275,17 @@ namespace detail {
 		// TODO does this actually do anything? Once the executor has exited we are guaranteed to arrived at this epoch anyway
 		m_task_mngr->await_epoch(shutdown_epoch);
 
-		if(spdlog::should_log(log_level::trace) && m_cfg->is_recording()) {
+		if(spdlog::should_log(log_level::info) && m_cfg->should_print_graphs()) {
 			if(m_local_nid == 0) { // It's the same across all nodes
 				assert(m_task_recorder.get() != nullptr);
 				const auto graph_str = detail::print_task_graph(*m_task_recorder);
-				CELERITY_TRACE("Task graph:\n\n{}\n", graph_str);
+				CELERITY_INFO("Task graph:\n\n{}\n", graph_str);
 			}
 			// must be called on all nodes
 			auto cmd_graph = gather_command_graph();
 			if(m_local_nid == 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Avoid racing on stdout with other nodes (funneled through mpirun)
-				CELERITY_TRACE("Command graph:\n\n{}\n", cmd_graph);
+				CELERITY_INFO("Command graph:\n\n{}\n", cmd_graph);
 
 				// IDAGs become unreadable when all nodes print them at the same time - TODO attempt gathering them as well?
 				// we are allowed to deref m_instruction_recorder / m_command_recorder because the scheduler thread has exited at this point

@@ -6,7 +6,6 @@
 
 #include <celerity.h>
 
-#include "log_test_utils.h"
 #include "test_utils.h"
 
 namespace celerity {
@@ -401,7 +400,11 @@ namespace detail {
 		q.submit([&](handler& cgh) {
 			accessor acc_0(buf_0, cgh, read_write_host_task);
 			cgh.host_task(on_master_node, [=] {
-				CHECK(acc_0 == value_a);
+				// accessor<T, 0, read> is implicitly convertible to const T&, but due to a bug in GCC, that conversion is not considered in overload resolution
+				// for operator==, so we implicitly convert by assigning to a variable (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=113052)
+				const float val = acc_0;
+				CHECK(val == value_a);
+
 				CHECK(*acc_0 == value_a);
 				CHECK(*acc_0.operator->() == value_a);
 				CHECK(acc_0[id<0>()] == value_a);
@@ -431,7 +434,7 @@ namespace detail {
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "0-dimensional kernels can access arbitrary-dimensional buffers", "[buffer]") {
 		buffer<float, 0> buf_0d;
-		buffer<float, 1> buf_1d({100});
+		buffer<float, 1> buf_1d(100);
 		buffer<float, 2> buf_2d({10, 10});
 		buffer<float, 3> buf_3d({5, 5, 5});
 
@@ -473,7 +476,10 @@ namespace detail {
 			accessor acc_2d(buf_2d, cgh, all(), read_only_host_task);
 			accessor acc_3d(buf_3d, cgh, all(), read_only_host_task);
 			cgh.host_task(on_master_node, [=] {
-				CHECK(acc_0d == 10);
+				// accessor<T, 0, read> is implicitly convertible to const T&, but due to a bug in GCC, that conversion is not considered in overload resolution
+				// for operator==, so we implicitly convert by assigning to a variable (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=113052)
+				const float val = acc_0d;
+				CHECK(val == 10);
 				CHECK(*acc_0d == 10);
 				CHECK(*acc_0d.operator->() == 10);
 				CHECK(acc_0d[id<0>()] == 10);
@@ -644,7 +650,7 @@ namespace detail {
 			local_acc[itm.get_local_id()] = 100 + itm.get_local_id(0) * 10;
 			sycl::group_barrier(itm.get_group());
 			// Write other item's value
-			result[itm.get_local_id(0)] = local_acc[1 - itm.get_local_id()];
+			result[itm.get_local_id(0)] = local_acc[1 - itm.get_local_id(0)];
 		};
 		closure_hydrator::get_instance().arm(target::device, {});
 		get_sycl_queue()
@@ -664,6 +670,10 @@ namespace detail {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif
+		test_utils::allow_max_log_level(spdlog::level::err);
+
+		distr_queue q;
+
 		buffer<int, Dims> unnamed_buff(test_utils::truncate_range<Dims>({10, 20, 30}));
 		buffer<int, Dims> named_buff(test_utils::truncate_range<Dims>({10, 20, 30}));
 		const auto accessible_sr = test_utils::truncate_subrange<Dims>({{5, 10, 15}, {1, 2, 3}});
@@ -673,14 +683,6 @@ namespace detail {
 		const auto task_name = "oob_task";
 
 		celerity::debug::set_buffer_name(named_buff, buffer_name);
-
-		// we need to be careful about the ordering of the construction and destruction
-		// of the Celerity queue and the log capturing utility here
-		std::unique_ptr<celerity::test_utils::log_capture> lc;
-		{
-			distr_queue q;
-
-			lc = std::make_unique<celerity::test_utils::log_capture>();
 
 			q.submit([&](handler& cgh) {
 				debug::set_task_name(cgh, task_name);
@@ -691,30 +693,33 @@ namespace detail {
 					unnamed_acc[oob_idx_lo] = 0;
 					unnamed_acc[oob_idx_hi] = 0;
 
-					named_acc[oob_idx_lo] = 0;
-					named_acc[oob_idx_hi] = 0;
-				});
+				named_acc[oob_idx_lo] = 0;
+				named_acc[oob_idx_hi] = 0;
 			});
-			q.slow_full_sync();
-		}
+		});
+		q.slow_full_sync();
 
 		const auto accessible_box = box(subrange_cast<3>(accessible_sr));
 		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
 		const auto unnamed_error_message = fmt::format("Out-of-bounds access detected in device kernel T1 \"{}\": accessor 0 attempted to access buffer B0 "
 		                                               "indicies between {} and outside the declared range {}.",
 		    task_name, attempted_box, accessible_box);
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
+		CHECK(test_utils::log_contains_substring(log_level::err, unnamed_error_message));
 
 		const auto named_error_message = fmt::format("Out-of-bounds access detected in device kernel T1 \"{}\": accessor 1 attempted to access buffer B1 "
 		                                             "\"{}\" indicies between {} and outside the declared range {}.",
 		    task_name, buffer_name, attempted_box, accessible_box);
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
+		CHECK(test_utils::log_contains_substring(log_level::err, named_error_message));
 	}
 
 	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif
+		test_utils::allow_max_log_level(spdlog::level::err);
+
+		distr_queue q;
+
 		buffer<int, Dims> unnamed_buff(test_utils::truncate_range<Dims>({10, 20, 30}));
 		buffer<int, Dims> named_buff(test_utils::truncate_range<Dims>({10, 20, 30}));
 		const auto accessible_sr = test_utils::truncate_subrange<Dims>({{5, 10, 15}, {1, 2, 3}});
@@ -725,42 +730,33 @@ namespace detail {
 
 		celerity::debug::set_buffer_name(named_buff, buffer_name);
 
-		// we need to be careful about the ordering of the construction and destruction
-		// of the Celerity queue and the log capturing utility here
-		std::unique_ptr<celerity::test_utils::log_capture> lc;
-		{
-			distr_queue q;
-
-			lc = std::make_unique<celerity::test_utils::log_capture>();
-
-			q.submit([&](handler& cgh) {
+		q.submit([&](handler& cgh) {
 				debug::set_task_name(cgh, task_name);
-				accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
-				accessor nambed_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
+			accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
+			accessor nambed_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
 
-				cgh.host_task(range<Dims>(ones), [=](partition<Dims>) {
-					unnamed_acc[oob_idx_lo] = 0;
-					unnamed_acc[oob_idx_hi] = 0;
+			cgh.host_task(range<Dims>(ones), [=](partition<Dims>) {
+				unnamed_acc[oob_idx_lo] = 0;
+				unnamed_acc[oob_idx_hi] = 0;
 
-					nambed_acc[oob_idx_lo] = 0;
-					nambed_acc[oob_idx_hi] = 0;
-				});
+				nambed_acc[oob_idx_lo] = 0;
+				nambed_acc[oob_idx_hi] = 0;
 			});
+		});
 
-			q.slow_full_sync();
-		}
+		q.slow_full_sync();
 
 		const auto accessible_box = box(subrange_cast<3>(accessible_sr));
 		const auto attempted_box = box_cast<3>(box(oob_idx_lo, oob_idx_hi + id<Dims>(ones)));
 		const auto unnamed_error_message = fmt::format("Out-of-bounds access detected in host task T1 \"{}\": accessor 0 attempted to access buffer B0 "
 		                                               "indicies between {} and outside the declared range {}.",
 		    task_name, attempted_box, accessible_box);
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(unnamed_error_message));
+		CHECK(test_utils::log_contains_substring(log_level::err, unnamed_error_message));
 
 		const auto named_error_message = fmt::format("Out-of-bounds access detected in host task T1 \"{}\": accessor 1 attempted to access buffer B1 \"{}\" "
 		                                             "indicies between {} and outside the declared range {}.",
 		    task_name, buffer_name, attempted_box, accessible_box);
-		CHECK_THAT(lc->get_log(), Catch::Matchers::ContainsSubstring(named_error_message));
+		CHECK(test_utils::log_contains_substring(log_level::err, named_error_message));
 	}
 
 	TEST_CASE_METHOD(test_utils::sycl_queue_fixture, "accessor correctly handles backing buffer offsets", "[accessor]") {

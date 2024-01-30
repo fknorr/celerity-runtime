@@ -11,7 +11,6 @@
 #include "buffer.h"
 #include "cgf_diagnostics.h"
 #include "closure_hydrator.h"
-#include "hint.h"
 #include "host_queue.h"
 #include "item.h"
 #include "range_mapper.h"
@@ -454,7 +453,7 @@ class handler {
 
 	template <typename Hint>
 	void experimental_hint(Hint&& hint) {
-		static_assert(std::is_base_of_v<detail::hint_base, std::decay_t<Hint>>, "Incompatible hint");
+		static_assert(std::is_base_of_v<detail::hint_base, std::decay_t<Hint>>, "Hint must extend hint_base");
 		static_assert(std::is_move_constructible_v<Hint>, "Hint must be move-constructible");
 		for(auto& h : m_hints) {
 			// We currently don't allow more than one hint of the same type for simplicity; this could be loosened in the future.

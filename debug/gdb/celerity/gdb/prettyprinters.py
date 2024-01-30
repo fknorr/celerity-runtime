@@ -17,10 +17,10 @@ def get_variant_content(variant: gdb.Value) -> gdb.Value:
     return gdb.default_visualizer(variant).contained_value
 
 
-class PhantomTypePrinter:
+class StrongTypeAliasPrinter:
     def __init__(self, prefix: str, val: gdb.Value):
         self.prefix = prefix
-        self.value = val['m_value']
+        self.value = val['value']
     
     def to_string(self) -> str:
         return self.prefix + str(self.value)
@@ -152,7 +152,7 @@ class RegionMapPrinter:
 
 class WriteCommandStatePrinter:
     def __init__(self, val: gdb.Value):
-        bits = int(val['m_cid']['m_value'])
+        bits = int(val['m_cid']['value'])
         self.cid = (bits & 0x3fff_ffff_ffff_ffff)
         self.fresh = (bits & 0x8000_0000_0000_0000) == 0
         self.replicated = (bits & 0x4000_0000_0000_0000) != 0
@@ -163,26 +163,25 @@ class WriteCommandStatePrinter:
                                    ', replicated' if self.replicated else '')
 
 
-def add_phantom_type_printer(pp: gdb.printing.RegexpCollectionPrettyPrinter, type: str, prefix: str):
-    pp.add_printer(type, '^celerity::detail::PhantomType<.*celerity::detail::{}_PhantomType>$'.format(type),
-                   lambda val: PhantomTypePrinter(prefix, val))
+def add_strong_type_alias_printer(pp: gdb.printing.RegexpCollectionPrettyPrinter, type: str, prefix: str):
+    pp.add_printer(type, '^celerity::detail::{}$'.format(type), lambda val: StrongTypeAliasPrinter(prefix, val))
 
 
 def build_pretty_printer():
     pp = gdb.printing.RegexpCollectionPrettyPrinter("Celerity")
-    add_phantom_type_printer(pp, 'task_id', 'T')
-    add_phantom_type_printer(pp, 'buffer_id', 'B')
-    add_phantom_type_printer(pp, 'node_id', 'N')
-    add_phantom_type_printer(pp, 'command_id', 'C')
-    add_phantom_type_printer(pp, 'collective_group_id', 'CG')
-    add_phantom_type_printer(pp, 'reduction_id', 'R')
-    add_phantom_type_printer(pp, 'host_object_id', 'H')
-    add_phantom_type_printer(pp, 'hydration_id', 'HY')
-    add_phantom_type_printer(pp, 'memory_id', 'M')
-    add_phantom_type_printer(pp, 'device_id', 'D')
-    add_phantom_type_printer(pp, 'raw_allocation_id', 'A')
-    add_phantom_type_printer(pp, 'instruction_id', 'I')
-    add_phantom_type_printer(pp, 'message_id', 'MSG')
+    add_strong_type_alias_printer(pp, 'task_id', 'T')
+    add_strong_type_alias_printer(pp, 'buffer_id', 'B')
+    add_strong_type_alias_printer(pp, 'node_id', 'N')
+    add_strong_type_alias_printer(pp, 'command_id', 'C')
+    add_strong_type_alias_printer(pp, 'collective_group_id', 'CG')
+    add_strong_type_alias_printer(pp, 'reduction_id', 'R')
+    add_strong_type_alias_printer(pp, 'host_object_id', 'H')
+    add_strong_type_alias_printer(pp, 'hydration_id', 'HY')
+    add_strong_type_alias_printer(pp, 'memory_id', 'M')
+    add_strong_type_alias_printer(pp, 'device_id', 'D')
+    add_strong_type_alias_printer(pp, 'raw_allocation_id', 'A')
+    add_strong_type_alias_printer(pp, 'instruction_id', 'I')
+    add_strong_type_alias_printer(pp, 'message_id', 'MSG')
     pp.add_printer('allocation_id', '^celerity::detail::allocation_id$', AllocationIdPrinter)
     pp.add_printer('allocation_with_offset', '^celerity::detail::allocation_with_offset$', AllocationWithOffsetPrinter)
     pp.add_printer('transfer_id', '^celerity::detail::transfer_id$', TransferIdPrinter)
