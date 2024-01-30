@@ -1156,12 +1156,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 			if(is_splittable_locally && tsk.get_reductions().empty()) {
 				oversubscribe_factor = oversubscribe->get_factor();
 			} else if(m_policy.unsafe_oversubscription_error != error_policy::ignore) {
-				utils::report_error(m_policy.unsafe_oversubscription_error, "Refusing to oversubscribe{} T{}{}{}.",
-				    tsk.get_execution_target() == execution_target::device ? " device kernel"
-				    : tsk.get_execution_target() == execution_target::host ? " host task"
-				                                                           : "",
-				    tsk.get_id(), //
-				    !tsk.get_debug_name().empty() ? fmt::format(" \"{}\"", tsk.get_debug_name()) : "",
+				utils::report_error(m_policy.unsafe_oversubscription_error, "Refusing to oversubscribe {}{}.", print_task_debug_label(tsk),
 				    !tsk.get_reductions().empty()                              ? " because it performs a reduction"
 				    : !tsk.get_side_effect_map().empty()                       ? " because it has side effects"
 				    : tsk.get_collective_group_id() != non_collective_group_id ? " because it participates in a collective group"

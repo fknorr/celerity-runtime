@@ -627,17 +627,17 @@ TEST_CASE("instruction_graph_generator throws in tests when detecting unsafe ove
 
 	SECTION("in master-node host tasks") {
 		CHECK_THROWS_WITH(ictx.master_node_host_task().hint(hints::oversubscribe(2)).submit(),
-		    "Refusing to oversubscribe host task T1 because its iteration space cannot be split.");
+		    "Refusing to oversubscribe master-node host task T1 because its iteration space cannot be split.");
 	}
 
 	SECTION("in collective tasks") {
 		CHECK_THROWS_WITH(ictx.collective_host_task().hint(hints::oversubscribe(2)).submit(),
-		    "Refusing to oversubscribe host task T1 because it participates in a collective group.");
+		    "Refusing to oversubscribe collective host task T1 because it participates in a collective group.");
 	}
 
 	SECTION("in host tasks with side effects") {
 		CHECK_THROWS_WITH(ictx.host_task(range(256)).hint(hints::oversubscribe(2)).affect(ho).submit(),
-		    "Refusing to oversubscribe host task T1 because it has side effects.");
+		    "Refusing to oversubscribe host-compute task T1 because it has side effects.");
 	}
 }
 
