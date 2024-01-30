@@ -446,6 +446,7 @@ TEST_CASE("instruction_graph_generator gracefully handles uninitialized reads wh
 
 	SECTION("from a reduction including the current buffer value") {
 		ictx.device_compute(range(1)).reduce(buf, true /* include current buffer value */).submit();
+		ictx.finish();
 
 		const auto all_instrs = ictx.query_instructions();
 		const auto kernel = all_instrs.select_unique<device_kernel_instruction_record>();
@@ -461,14 +462,15 @@ TEST_CASE("instruction_graph_generator gracefully handles uninitialized reads wh
 		const auto free_host = all_instrs.select_unique<free_instruction_record>(
 		    [&](const free_instruction_record& finstr) { return finstr.allocation_id == alloc_host->allocation_id; });
 
-		CHECK(kernel.predecessors().contains(alloc_device));
+		CHECK(kernel.transitive_predecessors().contains(alloc_device));
 		CHECK(kernel.transitive_successors_across<copy_instruction_record>().contains(free_device));
-		CHECK(local_reduce.predecessors().contains(alloc_host));
+		CHECK(local_reduce.transitive_predecessors().contains(alloc_host));
 		CHECK(local_reduce.successors().contains(free_host));
 	}
 
 	SECTION("from a host-task read-accessor") { //
 		ictx.host_task(range(1)).read(buf, acc::all()).submit();
+		ictx.finish();
 
 		const auto all_instrs = ictx.query_instructions();
 		const auto host_task = all_instrs.select_unique<host_task_instruction_record>();
@@ -502,14 +504,17 @@ TEST_CASE("instruction_graph_generator gracefully handles overlapping writes whe
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	const auto alloc = all_instrs.select_unique<alloc_instruction_record>();
-	const auto all_writers = all_instrs.select_unique<device_kernel_instruction_record>("writer");
+	const auto all_allocs = all_instrs.select_all<alloc_instruction_record>();
+	const auto all_writers = all_instrs.select_all<device_kernel_instruction_record>("writer");
 	const auto reader = all_instrs.select_unique<device_kernel_instruction_record>("reader");
-	const auto free = all_instrs.select_unique<free_instruction_record>();
+	const auto all_frees = all_instrs.select_all<free_instruction_record>();
 
-	CHECK(alloc.successors().contains(all_writers));
-	CHECK(reader.predecessors().contains(all_writers));
-	CHECK(reader.successors() == free);
+	CHECK(all_allocs.count() == num_devices);
+	CHECK(all_writers.count() == num_devices * oversubscription);
+	CHECK(all_allocs.successors().contains(all_writers));
+	CHECK(reader.transitive_predecessors().contains(all_writers));
+	CHECK(reader.successors() == all_frees);
+	CHECK(all_frees.count() == all_allocs.count());
 }
 
 TEMPLATE_TEST_CASE_SIG("hints::split_2d results in a 2d split", "[instruction_graph_generator][instruction-graph]", ((int Dims), Dims), 2, 3) {
