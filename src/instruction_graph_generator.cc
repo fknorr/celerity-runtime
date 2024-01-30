@@ -211,6 +211,14 @@ class instruction_graph_generator::impl {
 			friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
 		};
 
+		struct writer { // TODO rename to producer / buffer_version / data_origin / origin / .... ?
+			instruction* instr = nullptr;
+			enum { allocate, write } mode = allocate;
+
+			friend bool operator==(const writer& lhs, const writer& rhs) { return lhs.instr == rhs.instr && lhs.mode == rhs.mode; }
+			friend bool operator!=(const writer& lhs, const writer& rhs) { return !(lhs == rhs); }
+		};
+
 		struct allocated_box {
 			allocation_id aid;
 			box<3> box;
@@ -221,14 +229,17 @@ class instruction_graph_generator::impl {
 
 		allocation_id aid;
 		detail::box<3> box;                     ///< in virtual-buffer coordinates
-		region_map<instruction*> last_writers;  ///< in virtual-buffer coordinates
+		region_map<writer> last_writers;        ///< in virtual-buffer coordinates
 		region_map<access_front> access_fronts; ///< in virtual-buffer coordinates
 
 		/// `buffer_dims` is only required to construct region maps, the generator itself is independent from that parameter.
 		explicit buffer_allocation_state(const int buffer_dims, const allocation_id aid, alloc_instruction* const ainstr /* optional */,
 		    const detail::box<3>& allocated_box, const range<3>& buffer_range)
 		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {
-			if(ainstr != nullptr) { access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate}); }
+			if(ainstr != nullptr) {
+				last_writers.update_box(allocated_box, writer{ainstr, writer::allocate});
+				access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
+			}
 		}
 
 		template <typename BoxOrRegion>
@@ -249,19 +260,20 @@ class instruction_graph_generator::impl {
 
 		void commit_write(const detail::box<3>& box, instruction* const instr) {
 			if(box.empty()) return;
-			last_writers.update_box(box, instr);
+			last_writers.update_box(box, writer{instr, writer::write});
 			access_fronts.update_box(box, access_front{{instr}, access_front::write});
 		}
 
 		void commit_write(const region<3>& region, instruction* const instr) {
 			if(region.empty()) return;
-			last_writers.update_region(region, instr);
+			last_writers.update_region(region, writer{instr, writer::write});
 			access_fronts.update_region(region, access_front{{instr}, access_front::write});
 		}
 
 		void apply_epoch(instruction* const epoch) {
-			last_writers.apply_to_values([epoch](instruction* const instr) { //
-				return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr;
+			last_writers.apply_to_values([epoch](writer writer) { //
+				if(writer.instr != nullptr && writer.instr->get_id() < epoch->get_id()) { writer.instr = epoch; }
+				return writer;
 			});
 			access_fronts.apply_to_values([epoch](const access_front& old_front) {
 				const auto first_retained = std::upper_bound(old_front.instructions.begin(), old_front.instructions.end(), epoch, instruction_id_less());
@@ -457,10 +469,14 @@ class instruction_graph_generator::impl {
 
 	template <typename BoxOrRegion>
 	void add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
-	    const instruction_dependency_origin record_origin) {
-		for(const auto& [box, dep_instr] : allocation.last_writers.get_region_values(region)) {
+	    const instruction_dependency_origin record_origin_for_initialized_data) {
+		for(const auto& [box, writer] : allocation.last_writers.get_region_values(region)) {
 			// dep_instr can be null if this is an uninitialized read. We detect and report these separately, but try to handle them gracefully here
-			if(dep_instr != nullptr) { add_dependency(accessing_instruction, dep_instr, record_origin); }
+			if(writer.instr != nullptr) {
+				add_dependency(accessing_instruction, writer.instr,
+				    writer.mode == buffer_allocation_state::writer::allocate ? instruction_dependency_origin::allocation_lifetime
+				                                                             : record_origin_for_initialized_data);
+			}
 		}
 	}
 
