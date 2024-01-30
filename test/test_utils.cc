@@ -246,6 +246,17 @@ runtime_fixture::~runtime_fixture() {
 	detail::runtime::test_case_exit();
 }
 
+bool g_print_graphs = false;
+
+task_test_context::~task_test_context() {
+	if(g_print_graphs) {
+		fmt::print("{}\n", std::string(79, '-'));
+		if(const auto capture = Catch::getCurrentContext().getResultCapture()) { fmt::print("DAGs for [{}]\n", capture->getCurrentTestName()); }
+		fmt::print("\n{}\n", detail::print_task_graph(trec));
+		fmt::print("\n{}\n\n", std::string(79, '-'));
+	}
+}
+
 } // namespace celerity::test_utils
 
 CATCH_REGISTER_LISTENER(celerity::test_utils_detail::global_setup_and_teardown);

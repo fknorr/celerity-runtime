@@ -642,13 +642,16 @@ class dist_cdag_test_context {
 	}
 
 	void maybe_log_graphs() {
-		if(test_utils::print_graphs) {
-			CELERITY_INFO("Task graph:\n\n{}\n", print_task_graph());
+		if(test_utils::g_print_graphs) {
+			fmt::print("{}\n", std::string(79, '-'));
+			if(const auto capture = Catch::getCurrentContext().getResultCapture()) { fmt::print("DAGs for [{}]\n", capture->getCurrentTestName()); }
+			fmt::print("\n{}\n", print_task_graph());
 			std::vector<std::string> graphs;
 			for(node_id nid = 0; nid < m_num_nodes; ++nid) {
 				graphs.push_back(print_command_graph(nid));
 			}
-			CELERITY_INFO("Command graph:\n\n{}\n", combine_command_graphs(graphs, make_test_graph_title("Command Graph")));
+			fmt::print("\n{}\n", combine_command_graphs(graphs, make_test_graph_title("Command Graph")));
+			fmt::print("\n{}\n\n", std::string(79, '-'));
 		}
 	}
 

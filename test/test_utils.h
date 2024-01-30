@@ -401,20 +401,7 @@ namespace test_utils {
 	};
 
 	// Printing of graphs can be enabled using the "--print-graphs" command line flag
-	inline bool print_graphs = false;
-
-	inline void maybe_print_task_graph(const detail::task_recorder& trec) {
-		if(print_graphs) { CELERITY_INFO("Task graph:\n\n{}\n", detail::print_task_graph(trec)); }
-	}
-
-	inline void maybe_print_command_graph(const detail::node_id local_nid, const detail::command_recorder& crec) {
-		if(print_graphs) { CELERITY_INFO("Command graph:\n\n{}\n", detail::print_command_graph(local_nid, crec)); }
-	}
-
-	inline void maybe_print_instruction_graph(
-	    const detail::instruction_recorder& irec, const detail::command_recorder& crec, const detail::task_recorder& trec) {
-		if(print_graphs) { CELERITY_INFO("Command graph:\n\n{}\n", detail::print_instruction_graph(irec, crec, trec)); }
-	}
+	extern bool g_print_graphs;
 
 	struct task_test_context {
 		detail::task_recorder trec;
@@ -424,7 +411,11 @@ namespace test_utils {
 		mock_reduction_factory mrf;
 
 		explicit task_test_context(const detail::task_manager::policy_set& policy = {}) : tm(1, nullptr, &trec, policy), mbf(tm), mhof(tm) {}
-		~task_test_context() { maybe_print_task_graph(trec); }
+		task_test_context(const task_test_context&) = delete;
+		task_test_context(task_test_context&&) = delete;
+		task_test_context& operator=(const task_test_context&) = delete;
+		task_test_context& operator=(task_test_context&&) = delete;
+		~task_test_context();
 	};
 
 	// explicitly invoke a copy constructor without repeating the type

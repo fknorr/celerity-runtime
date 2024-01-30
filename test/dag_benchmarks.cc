@@ -152,7 +152,7 @@ static constexpr instruction_graph_generator::policy_set benchmark_instruction_g
 struct task_manager_benchmark_context {
 	const size_t num_nodes = 1;
 	task_recorder trec;
-	task_manager tm{1, nullptr, test_utils::print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
+	task_manager tm{1, nullptr, test_utils::g_print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
 	test_utils::mock_buffer_factory mbf{tm};
 
 	~task_manager_benchmark_context() { tm.generate_epoch_task(celerity::detail::epoch_action::shutdown); }
@@ -171,14 +171,14 @@ struct command_graph_generator_benchmark_context {
 	const size_t num_nodes;
 	command_graph cdag;
 	task_recorder trec;
-	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
+	task_manager tm{num_nodes, nullptr, test_utils::g_print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
 	command_recorder crec;
 	distributed_graph_generator dggen{
-	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
+	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::g_print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
 	test_utils::mock_buffer_factory mbf{tm, dggen};
 
 	explicit command_graph_generator_benchmark_context(const size_t num_nodes)
-	    : num_nodes{num_nodes}, crec(), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
+	    : num_nodes{num_nodes}, crec(), dggen{num_nodes, 0 /* local_nid */, cdag, tm, test_utils::g_print_graphs ? &crec : nullptr}, mbf{tm, dggen} {
 		tm.register_task_callback([this](const task* tsk) { dggen.build_task(*tsk); });
 	}
 
@@ -222,14 +222,14 @@ struct instruction_graph_generator_benchmark_context {
 	const size_t num_devices;
 	command_graph cdag;
 	task_recorder trec;
-	task_manager tm{num_nodes, nullptr, test_utils::print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
+	task_manager tm{num_nodes, nullptr, test_utils::g_print_graphs ? &trec : nullptr, benchmark_task_manager_policy};
 	command_recorder crec;
 	distributed_graph_generator dggen{
-	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
+	    num_nodes, 0 /* local_nid */, cdag, tm, test_utils::g_print_graphs ? &crec : nullptr, benchmark_command_graph_generator_policy};
 	instruction_recorder irec;
 	instruction_graph idag;
 	instruction_graph_generator iggen{tm, num_nodes, 0 /* local nid */, make_system_info(num_devices), idag, nullptr /* delegate */,
-	    test_utils::print_graphs ? &irec : nullptr, benchmark_instruction_graph_generator_policy};
+	    test_utils::g_print_graphs ? &irec : nullptr, benchmark_instruction_graph_generator_policy};
 	test_utils::mock_buffer_factory mbf{tm, dggen, iggen};
 
 	explicit instruction_graph_generator_benchmark_context(const size_t num_nodes, const size_t num_devices) : num_nodes(num_nodes), num_devices(num_devices) {
@@ -554,14 +554,15 @@ void debug_graphs(BenchmarkContextFactory&& make_ctx, BenchmarkContextConsumer&&
 }
 
 TEST_CASE("printing benchmark task graphs", "[.][debug-graphs][task-graph]") {
-	debug_graphs([] { return task_manager_benchmark_context{}; }, [](auto&& ctx) { test_utils::maybe_print_task_graph(ctx.trec); });
+	debug_graphs([] { return task_manager_benchmark_context{}; }, [](auto&& ctx) { fmt::print("{}\n\n", detail::print_task_graph(ctx.trec)); });
 }
 
 TEST_CASE("printing benchmark command graphs", "[.][debug-graphs][command-graph]") {
-	debug_graphs([] { return command_graph_generator_benchmark_context{2}; }, [](auto&& ctx) { test_utils::maybe_print_command_graph(0, ctx.crec); });
+	debug_graphs(
+	    [] { return command_graph_generator_benchmark_context{2}; }, [](auto&& ctx) { fmt::print("{}\n\n", detail::print_command_graph(0, ctx.crec)); });
 }
 
 TEST_CASE("printing benchmark instruction graphs", "[.][debug-graphs][instruction-graph]") {
 	debug_graphs([] { return instruction_graph_generator_benchmark_context(2, 2); },
-	    [](auto&& ctx) { test_utils::maybe_print_instruction_graph(ctx.irec, ctx.crec, ctx.trec); });
+	    [](auto&& ctx) { fmt::print("{}\n\n", detail::print_instruction_graph(ctx.irec, ctx.crec, ctx.trec)); });
 }
