@@ -684,14 +684,14 @@ namespace detail {
 
 		celerity::debug::set_buffer_name(named_buff, buffer_name);
 
-			q.submit([&](handler& cgh) {
-				debug::set_task_name(cgh, task_name);
-				accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
-				accessor named_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
+		q.submit([&](handler& cgh) {
+			debug::set_task_name(cgh, task_name);
+			accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
+			accessor named_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only, celerity::no_init);
 
-				cgh.parallel_for(range<Dims>(ones), [=](item<Dims>) {
-					unnamed_acc[oob_idx_lo] = 0;
-					unnamed_acc[oob_idx_hi] = 0;
+			cgh.parallel_for(range<Dims>(ones), [=](item<Dims>) {
+				unnamed_acc[oob_idx_lo] = 0;
+				unnamed_acc[oob_idx_hi] = 0;
 
 				named_acc[oob_idx_lo] = 0;
 				named_acc[oob_idx_hi] = 0;
@@ -731,7 +731,7 @@ namespace detail {
 		celerity::debug::set_buffer_name(named_buff, buffer_name);
 
 		q.submit([&](handler& cgh) {
-				debug::set_task_name(cgh, task_name);
+			debug::set_task_name(cgh, task_name);
 			accessor unnamed_acc(unnamed_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
 			accessor nambed_acc(named_buff, cgh, celerity::access::fixed(accessible_sr), celerity::write_only_host_task, celerity::no_init);
 

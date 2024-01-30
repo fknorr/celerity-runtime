@@ -374,7 +374,8 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices distributes devices in r
 		const auto selected = pick_devices(cfg, auto_select_devices{}, std::vector<mock_platform>{mp});
 		REQUIRE(selected.size() == 1);
 		CHECK(selected[0] == devices[i % 3]);
-		CHECK(test_utils::log_contains_exact(log_level::warn, fmt::format("Found fewer devices (3) than local nodes ({}), multiple nodes will use the same device(s).", num_ranks)));
+		CHECK(test_utils::log_contains_exact(
+		    log_level::warn, fmt::format("Found fewer devices (3) than local nodes ({}), multiple nodes will use the same device(s).", num_ranks)));
 	}
 }
 
