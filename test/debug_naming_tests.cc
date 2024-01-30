@@ -63,7 +63,7 @@ template <typename T>
 class MyThirdKernel;
 
 TEST_CASE("device_compute tasks derive debug name from kernel name", "[task]") {
-	auto tm = celerity::detail::task_manager(1, nullptr, {});
+	auto tm = celerity::detail::task_manager(1, nullptr);
 	const auto t1 = tm.get_task(tm.submit_command_group([](handler& cgh) { cgh.parallel_for<class MyFirstKernel>(range<1>{1}, [](id<1>) {}); }));
 	const auto t2 = tm.get_task(tm.submit_command_group([](handler& cgh) { cgh.parallel_for<foo::MySecondKernel>(range<1>{1}, [](id<1>) {}); }));
 	const auto t3 = tm.get_task(tm.submit_command_group([](handler& cgh) { cgh.parallel_for<MyThirdKernel<int>>(range<1>{1}, [](id<1>) {}); }));

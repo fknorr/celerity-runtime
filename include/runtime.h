@@ -3,14 +3,11 @@
 #include <memory>
 #include <unordered_set>
 
-#include "command.h"
 #include "config.h"
 #include "device_selection.h"
-#include "host_queue.h"
 #include "instruction_executor.h"
 #include "recorders.h"
 #include "scheduler.h"
-#include "task.h"
 #include "types.h"
 
 namespace celerity {
@@ -21,9 +18,8 @@ namespace experimental::bench::detail {
 
 namespace detail {
 
-	class command_graph;
+	class host_queue;
 	class runtime_reduction;
-	class scheduler;
 	class task_manager;
 	struct host_object_instance;
 

@@ -226,7 +226,7 @@ namespace detail {
 	}
 
 	TEST_CASE("task_manager invokes callback upon task creation", "[task_manager]") {
-		task_manager tm{1, nullptr, nullptr};
+		task_manager tm{1, nullptr};
 		size_t call_counter = 0;
 		tm.register_task_callback([&call_counter](const task*) { call_counter++; });
 		range<2> gs = {1, 1};
@@ -238,7 +238,7 @@ namespace detail {
 	}
 
 	TEST_CASE("task_manager correctly records compute task information", "[task_manager][task][device_compute_task]") {
-		task_manager tm{1, nullptr, nullptr};
+		task_manager tm{1, nullptr};
 		test_utils::mock_buffer_factory mbf(tm);
 		auto buf_a = mbf.create_buffer(range<2>(64, 152), true /* host_initialized */);
 		auto buf_b = mbf.create_buffer(range<3>(7, 21, 99));

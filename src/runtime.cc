@@ -18,7 +18,6 @@
 
 #include "affinity.h"
 #include "cgf_diagnostics.h"
-#include "command_graph.h"
 #include "device_selection.h"
 #include "distributed_graph_generator.h"
 #include "host_object.h"
@@ -150,8 +149,6 @@ namespace detail {
 
 		cgf_diagnostics::make_available();
 
-		m_h_queue = std::make_unique<host_queue>();
-
 		if(m_cfg->should_record()) {
 			m_task_recorder = std::make_unique<task_recorder>();
 			m_command_recorder = std::make_unique<command_recorder>();
@@ -164,7 +161,7 @@ namespace detail {
 		// https://github.com/celerity/meta/issues/74).
 		task_mngr_policy.uninitialized_read_error = CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_warning : error_policy::ignore;
 
-		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_h_queue.get(), m_task_recorder.get(), task_mngr_policy);
+		m_task_mngr = std::make_unique<task_manager>(m_num_nodes, m_task_recorder.get(), task_mngr_policy);
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
 
@@ -269,9 +266,6 @@ namespace detail {
 		// with the scheduler gone, nobody will submit instructions and pilots to the runtime anymore and we can get rid of the executor.
 		m_exec.reset();
 
-		// when the executor is gone, the host queue is guaranteed to not have any work left to do
-		m_h_queue.reset();
-
 		// TODO does this actually do anything? Once the executor has exited we are guaranteed to arrived at this epoch anyway
 		m_task_mngr->await_epoch(shutdown_epoch);
 
@@ -299,7 +293,6 @@ namespace detail {
 		// all buffers and host objects should have unregistered themselves by now.
 		assert(m_live_buffers.empty());
 		assert(m_live_host_objects.empty());
-		m_h_queue.reset();
 
 		m_instruction_recorder.reset();
 		m_command_recorder.reset();

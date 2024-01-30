@@ -410,7 +410,7 @@ namespace test_utils {
 		mock_host_object_factory mhof;
 		mock_reduction_factory mrf;
 
-		explicit task_test_context(const detail::task_manager::policy_set& policy = {}) : tm(1, nullptr, &trec, policy), mbf(tm), mhof(tm) {}
+		explicit task_test_context(const detail::task_manager::policy_set& policy = {}) : tm(1, &trec, policy), mbf(tm), mhof(tm) {}
 		task_test_context(const task_test_context&) = delete;
 		task_test_context(task_test_context&&) = delete;
 		task_test_context& operator=(const task_test_context&) = delete;
