@@ -20,6 +20,7 @@
 #include "cgf_diagnostics.h"
 #include "device_selection.h"
 #include "distributed_graph_generator.h"
+#include "dry_run_executor.h"
 #include "host_object.h"
 #include "instruction_executor.h"
 #include "instruction_graph_generator.h"
@@ -119,20 +120,24 @@ namespace detail {
 			mpi_initialize_once(argc, argv);
 		}
 
-		int world_size;
-		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-		m_num_nodes = world_size;
-
 		m_cfg = std::make_unique<config>(argc, argv);
-		if(m_cfg->is_dry_run()) { m_num_nodes = m_cfg->get_dry_run_nodes(); }
 
-		int world_rank;
-		MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-		m_local_nid = world_rank;
+		if(m_cfg->is_dry_run()) {
+			m_num_nodes = m_cfg->get_dry_run_nodes();
+			m_local_nid = 0;
+		} else {
+			int world_size;
+			MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+			m_num_nodes = world_size;
+
+			int world_rank;
+			MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+			m_local_nid = world_rank;
+		}
 
 		if(!s_test_mode) { // do not touch logger settings in tests, where the full (trace) logs are captured
 			spdlog::set_level(m_cfg->get_log_level());
-			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", world_rank, int(ceil(log10(world_size)))));
+			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", m_local_nid, int(ceil(log10(double(m_num_nodes))))));
 		}
 
 #ifndef __APPLE__
@@ -145,7 +150,7 @@ namespace detail {
 
 		if(CELERITY_ENABLE_TRACY) { CELERITY_WARN("Instrumentation for profiling with Tracy is enabled. Performance may be negatively impacted."); }
 
-		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, static_cast<node_id>(world_rank));
+		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, m_local_nid);
 
 		cgf_diagnostics::make_available();
 
@@ -214,8 +219,12 @@ namespace detail {
 		}
 		m_num_local_devices = devices.size();
 
-		m_exec = std::make_unique<instruction_executor>(backend::make_queue(backend_type, backend_devices), std::make_unique<mpi_communicator>(MPI_COMM_WORLD),
-		    static_cast<instruction_executor::delegate*>(this));
+		if(m_cfg->is_dry_run()) {
+			m_exec = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
+		} else {
+			m_exec = std::make_unique<instruction_executor>(
+			    backend::make_queue(backend_type, backend_devices), std::make_unique<mpi_communicator>(MPI_COMM_WORLD), static_cast<executor::delegate*>(this));
+		}
 
 		scheduler::policy_set schdlr_policy;
 		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
@@ -283,7 +292,7 @@ namespace detail {
 
 				// IDAGs become unreadable when all nodes print them at the same time - TODO attempt gathering them as well?
 				// we are allowed to deref m_instruction_recorder / m_command_recorder because the scheduler thread has exited at this point
-				CELERITY_TRACE(
+				CELERITY_INFO(
 				    "Instruction graph on node 0:\n\n{}\n", detail::print_instruction_graph(*m_instruction_recorder, *m_command_recorder, *m_task_recorder));
 			}
 		}
@@ -320,7 +329,9 @@ namespace detail {
 		require_call_from_application_thread();
 
 		assert(m_command_recorder.get() != nullptr);
-		const auto graph_str = print_command_graph(m_local_nid, *m_command_recorder);
+		auto graph_str = print_command_graph(m_local_nid, *m_command_recorder);
+
+		if(m_cfg->is_dry_run()) return graph_str;
 
 		// Send local graph to rank 0 on all other nodes
 		if(m_local_nid != 0) {
@@ -354,20 +365,16 @@ namespace detail {
 		assert(m_exec != nullptr);
 		// TODO avoid this loop because it will acquire and release the executor queue lock every iteration
 		for(const auto instr : instrs) {
-			if(!is_dry_run() || utils::isa<epoch_instruction>(instr) || utils::isa<horizon_instruction>(instr) || utils::isa<fence_instruction>(instr)) {
-				m_exec->submit_instruction(*instr);
-			}
+			m_exec->submit_instruction(instr);
 		}
 	}
 
 	void runtime::flush_outbound_pilots(std::vector<outbound_pilot> pilots) {
 		// thread-safe
 		assert(m_exec != nullptr);
-		if(!is_dry_run()) {
-			// TODO avoid this loop because it will acquire and release the executor queue lock every iteration
-			for(const auto& pilot : pilots) {
-				m_exec->submit_pilot(pilot);
-			}
+		// TODO avoid this loop because it will acquire and release the executor queue lock every iteration
+		for(const auto& pilot : pilots) {
+			m_exec->submit_pilot(pilot);
 		}
 	}
 

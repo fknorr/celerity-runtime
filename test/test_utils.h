@@ -68,7 +68,7 @@ namespace detail {
 
 	struct runtime_testspy {
 		static scheduler& get_schdlr(runtime& rt) { return *rt.m_schdlr; }
-		static instruction_executor& get_exec(runtime& rt) { return *rt.m_exec; }
+		static executor& get_exec(runtime& rt) { return *rt.m_exec; }
 
 		static std::string print_task_graph(runtime& rt) {
 			scheduler_testspy::wait_idle(get_schdlr(rt));

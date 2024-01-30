@@ -1031,7 +1031,7 @@ namespace detail {
 
 		auto& rt = runtime::get_instance();
 		auto& schdlr = runtime_testspy::get_schdlr(rt);
-		auto& exec = runtime_testspy::get_exec(rt);
+		auto& exec = *utils::as<instruction_executor>(&runtime_testspy::get_exec(rt));
 
 		const auto scheduler_thread_name = get_thread_name(scheduler_testspy::get_thread(schdlr).native_handle());
 		CHECK(scheduler_thread_name == "cy-scheduler");

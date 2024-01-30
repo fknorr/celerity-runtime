@@ -3,6 +3,7 @@
 #include "backend/queue.h"
 #include "communicator.h"
 #include "double_buffered_queue.h"
+#include "executor.h"
 #include "instruction_graph.h"
 #include "pilot.h"
 #include "receive_arbiter.h"
@@ -15,40 +16,25 @@
 
 namespace celerity::detail {
 
-struct host_object_instance;
 struct oob_bounding_box;
 
-class instruction_executor {
+class instruction_executor final : public executor {
   public:
-	class delegate {
-	  protected:
-		delegate() = default;
-		delegate(const delegate&) = default;
-		delegate(delegate&&) = default;
-		delegate& operator=(const delegate&) = default;
-		delegate& operator=(delegate&&) = default;
-		~delegate() = default; // do not allow destruction through base pointer
-
-	  public:
-		virtual void horizon_reached(task_id tid) = 0;
-		virtual void epoch_reached(task_id tid) = 0;
-	};
-
 	instruction_executor(std::unique_ptr<backend::queue> backend_queue, std::unique_ptr<communicator> comm, delegate* dlg);
 	instruction_executor(const instruction_executor&) = delete;
 	instruction_executor(instruction_executor&&) = delete;
 	instruction_executor& operator=(const instruction_executor&) = delete;
 	instruction_executor& operator=(instruction_executor&&) = delete;
-	~instruction_executor();
+	~instruction_executor() override;
 
-	void wait();
+	void wait() override;
 
-	void submit_instruction(const instruction& instr); // TODO should receive pointer
-	void submit_pilot(const outbound_pilot& pilot);
+	void submit_instruction(const instruction* instr) override;
+	void submit_pilot(const outbound_pilot& pilot) override;
 
-	void announce_user_allocation(allocation_id aid, void* ptr);
-	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance);
-	void announce_reduction(reduction_id rid, std::unique_ptr<runtime_reduction> reduction);
+	void announce_user_allocation(allocation_id aid, void* ptr) override;
+	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
+	void announce_reduction(reduction_id rid, std::unique_ptr<runtime_reduction> reduction) override;
 
   private:
 	friend struct executor_testspy;
@@ -107,7 +93,6 @@ class instruction_executor {
 	// immutable
 	delegate* m_delegate;
 	std::unique_ptr<communicator> m_communicator;
-	// TODO bool m_dry_run
 
 	// accessed by by main and executor threads
 	double_buffered_queue<submission> m_submission_queue;

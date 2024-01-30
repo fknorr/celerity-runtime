@@ -5,7 +5,6 @@
 #include "instruction_graph.h"
 #include "mpi_communicator.h" // TODO
 #include "nd_memory.h"
-#include "print_utils.h"
 #include "receive_arbiter.h"
 #include "tracy.h"
 #include "types.h"
@@ -45,7 +44,7 @@ void instruction_executor::wait() {
 	if(m_thread.joinable()) { m_thread.join(); }
 }
 
-void instruction_executor::submit_instruction(const instruction& instr) { m_submission_queue.push_back(&instr); }
+void instruction_executor::submit_instruction(const instruction* instr) { m_submission_queue.push_back(instr); }
 
 void instruction_executor::submit_pilot(const outbound_pilot& pilot) { m_submission_queue.push_back(pilot); }
 

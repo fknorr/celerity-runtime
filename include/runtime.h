@@ -5,7 +5,7 @@
 
 #include "config.h"
 #include "device_selection.h"
-#include "instruction_executor.h"
+#include "executor.h"
 #include "recorders.h"
 #include "scheduler.h"
 #include "types.h"
@@ -23,7 +23,7 @@ namespace detail {
 	class task_manager;
 	struct host_object_instance;
 
-	class runtime final : private abstract_scheduler::delegate, private instruction_executor::delegate {
+	class runtime final : private abstract_scheduler::delegate, private executor::delegate {
 		friend struct runtime_testspy;
 
 	  public:
@@ -112,7 +112,7 @@ namespace detail {
 		std::unique_ptr<scheduler> m_schdlr;
 
 		std::unique_ptr<task_manager> m_task_mngr;
-		std::unique_ptr<instruction_executor> m_exec;
+		std::unique_ptr<executor> m_exec;
 
 		std::optional<task_id> m_latest_horizon_reached; // only accessed by executor thread
 

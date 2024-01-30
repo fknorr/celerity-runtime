@@ -200,6 +200,7 @@ set(SOURCES
   src/command_graph.cc
   src/config.cc
   src/distributed_graph_generator.cc
+  src/dry_run_executor.cc
   src/grid.cc
   src/instruction_executor.cc
   src/instruction_graph_generator.cc
