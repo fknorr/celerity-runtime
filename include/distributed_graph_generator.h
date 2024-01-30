@@ -147,6 +147,8 @@ class distributed_graph_generator {
 	// initializers, within its surrounding class (Clang)
 	constexpr static policy_set default_policy_set() { return {}; }
 
+	std::string print_buffer_debug_label(buffer_id bid) const;
+
 	size_t m_num_nodes;
 	node_id m_local_nid;
 	policy_set m_policy;

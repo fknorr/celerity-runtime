@@ -167,8 +167,7 @@ void distributed_graph_generator::report_overlapping_writes(const task& tsk, con
 	if(const auto overlapping_writes = detect_overlapping_writes(tsk, distributed_chunks); !overlapping_writes.empty()) {
 		auto error = fmt::format("{} has overlapping writes between multiple nodes in", print_task_debug_label(tsk, true /* title case */));
 		for(const auto& [bid, overlap] : overlapping_writes) {
-			// TODO buffer names
-			fmt::format_to(std::back_inserter(error), " B{} {}", bid, overlap);
+			fmt::format_to(std::back_inserter(error), " {} {}", print_buffer_debug_label(bid), overlap);
 		}
 		error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
 		utils::report_error(m_policy.overlapping_write_error, "{}", error);
@@ -412,8 +411,9 @@ void distributed_graph_generator::generate_distributed_commands(const task& tsk)
 
 			if(!uninitialized_reads.empty()) {
 				utils::report_error(m_policy.uninitialized_read_error,
-				    "Command C{} on N{}, which executes {} of {}, reads B{} {}, which has not been written by any node.", cmd->get_cid(), m_local_nid,
-				    box(subrange(chunks[i].offset, chunks[i].range)), print_task_debug_label(tsk), bid, detail::region(std::move(uninitialized_reads)));
+				    "Command C{} on N{}, which executes {} of {}, reads {} {}, which has not been written by any node.", cmd->get_cid(), m_local_nid,
+				    box(subrange(chunks[i].offset, chunks[i].range)), print_task_debug_label(tsk), print_buffer_debug_label(bid),
+				    detail::region(std::move(uninitialized_reads)));
 			}
 
 			if(generate_reduction) {
@@ -735,6 +735,11 @@ void distributed_graph_generator::prune_commands_before(const command_id epoch) 
 		});
 		m_epoch_last_pruned_before = epoch;
 	}
+}
+
+std::string distributed_graph_generator::print_buffer_debug_label(const buffer_id bid) const {
+	const auto& debug_name = m_buffer_states.at(bid).debug_name;
+	return !debug_name.empty() ? fmt::format("B{} \"{}\"", bid, debug_name) : fmt::format("B{}", bid);
 }
 
 } // namespace celerity::detail

@@ -290,6 +290,8 @@ namespace detail {
 
 		// Returns a callback which blocks until any epoch task has executed, freeing new task slots
 		task_ring_buffer::wait_callback await_free_task_slot_callback();
+
+		std::string print_buffer_debug_label(buffer_id bid) const;
 	};
 
 } // namespace detail

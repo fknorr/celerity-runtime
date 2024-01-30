@@ -124,10 +124,9 @@ namespace detail {
 					}
 				}
 				if(!uninitialized_reads.empty()) {
-					// TODO this should output the full buffer debug label, but we don't want to pull in buffer_manager for this because its days are numbered
 					utils::report_error(m_policy.uninitialized_read_error,
-					    "{} declares a reading access on uninitialized B{} {}. Make sure to construct the accessor with no_init if possible.",
-					    print_task_debug_label(tsk, true /* title case */), bid, region(std::move(uninitialized_reads)));
+					    "{} declares a reading access on uninitialized {} {}. Make sure to construct the accessor with no_init if possible.",
+					    print_task_debug_label(tsk, true /* title case */), print_buffer_debug_label(bid), region(std::move(uninitialized_reads)));
 				}
 			}
 
@@ -332,6 +331,11 @@ namespace detail {
 			task_id reached_epoch = m_latest_epoch_reached.await(previous_free_tid + 1);
 			m_task_buffer.delete_up_to(reached_epoch);
 		};
+	}
+
+	std::string task_manager::print_buffer_debug_label(const buffer_id bid) const {
+		const auto& debug_name = m_buffers.at(bid).debug_name;
+		return !debug_name.empty() ? fmt::format("B{} \"{}\"", bid, debug_name) : fmt::format("B{}", bid);
 	}
 
 } // namespace detail

@@ -312,7 +312,7 @@ instruction_executor::active_instruction_info instruction_executor::begin_execut
 			auto& aa = map[i];
 			const auto accessed_box_in_allocation = box(aa.accessed_box_in_buffer.get_min() - aa.allocated_box_in_buffer.get_offset(),
 			    aa.accessed_box_in_buffer.get_max() - aa.allocated_box_in_buffer.get_offset());
-			fmt::format_to(std::back_inserter(acc_log), "{} A{} {}", i == 0 ? ", accessing" : ",", aa.allocation_id, accessed_box_in_allocation);
+			fmt::format_to(std::back_inserter(acc_log), "{} {} {}", i == 0 ? ", accessing" : ",", aa.allocation_id, accessed_box_in_allocation);
 		}
 		return acc_log;
 	};

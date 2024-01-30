@@ -19,7 +19,6 @@ namespace detail {
 	class command_graph;
 	class command_recorder;
 	class instruction;
-	class instruction_executor;
 	class instruction_graph;
 	class instruction_recorder;
 	struct outbound_pilot;
