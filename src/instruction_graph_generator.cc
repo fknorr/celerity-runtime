@@ -211,14 +211,6 @@ class instruction_graph_generator::impl {
 			friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
 		};
 
-		struct allocated_box {
-			allocation_id aid;
-			box<3> box;
-
-			friend bool operator==(const allocated_box& lhs, const allocated_box& rhs) { return lhs.aid == rhs.aid && lhs.box == rhs.box; }
-			friend bool operator!=(const allocated_box& lhs, const allocated_box& rhs) { return !(lhs == rhs); }
-		};
-
 		allocation_id aid;
 		detail::box<3> box;                     ///< in virtual-buffer coordinates
 		region_map<access_front> last_writers;  ///< in virtual-buffer coordinates
@@ -226,7 +218,7 @@ class instruction_graph_generator::impl {
 
 		explicit buffer_allocation_state(
 		    const allocation_id aid, alloc_instruction* const ainstr /* optional */, const detail::box<3>& allocated_box, const range<3>& buffer_range)
-		    : aid(aid), box(allocated_box), last_writers(buffer_range), access_fronts(buffer_range) {
+		    : aid(aid), box(allocated_box), last_writers(allocated_box), access_fronts(allocated_box) {
 			if(ainstr != nullptr) {
 				last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
 				access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
