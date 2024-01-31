@@ -1344,8 +1344,8 @@ namespace detail {
 		});
 		q.slow_full_sync();
 
-		const auto expected_error_message = "has overlapping writes on N0 in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper for the write "
-		                                    "access or constrain the split to make the access non-overlapping.";
+		const auto expected_error_message = "Device kernel T1 has overlapping writes on N0 in B0 {[0,0,0] - [1,1,1]}. Choose a non-overlapping range mapper "
+		                                    "for the write access or constrain the split to make the access non-overlapping.";
 		CHECK(test_utils::log_contains_exact(log_level::err, expected_error_message) == CELERITY_ACCESS_PATTERN_DIAGNOSTICS);
 	}
 

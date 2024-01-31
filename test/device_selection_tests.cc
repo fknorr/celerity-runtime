@@ -436,7 +436,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "pick_devices prints information about
 			SKIP("No CUDA device available or CUDA backend not enabled");
 		} else {
 			pick_devices(cfg, std::vector<sycl::device>{*cuda_device}, std::vector<sycl::platform>{});
-			CHECK(celerity::test_utils::log_contains_substring(celerity::detail::log_level::info,
+			CHECK(celerity::test_utils::log_contains_substring(celerity::detail::log_level::debug,
 			    fmt::format("Using CUDA backend for selected platform '{}'.", cuda_device->get_platform().get_info<sycl::info::platform::name>())));
 		}
 	}

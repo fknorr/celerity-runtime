@@ -30,7 +30,7 @@ namespace detail {
 		});
 		q.submit([= /* capture by value */](handler& cgh) {
 			accessor acc{buf, cgh, celerity::access::one_to_one{}, celerity::read_only};
-			cgh.parallel_for(range<1>(32), reduction(reduction_buf, cgh, std::plus<size_t>{}, property::reduction::initialize_to_identity{}),
+			cgh.parallel_for(range<1>(32), reduction(reduction_buf, cgh, sycl::plus<size_t>{}, property::reduction::initialize_to_identity{}),
 			    [=](item<1>, auto&) { (void)acc; });
 		});
 		q.slow_full_sync(); // `my_int` must not go out of scope before host task finishes executing
