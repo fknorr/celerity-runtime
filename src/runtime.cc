@@ -421,8 +421,8 @@ namespace detail {
 
 		const auto bid = m_next_buffer_id++;
 		m_live_buffers.emplace(bid);
-		m_task_mngr->create_buffer(bid, dims, range, user_aid != null_allocation_id);
-		m_schdlr->notify_buffer_created(bid, dims, range, elem_size, elem_align, user_aid);
+		m_task_mngr->create_buffer(bid, range, user_aid != null_allocation_id);
+		m_schdlr->notify_buffer_created(bid, range, elem_size, elem_align, user_aid);
 		return bid;
 	}
 

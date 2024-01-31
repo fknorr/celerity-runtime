@@ -522,9 +522,9 @@ class idag_test_context {
 		const uncaught_exception_guard guard(this);
 		const buffer_id bid = m_next_buffer_id++;
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
-		m_tm.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
-		m_dggen.create_buffer(bid, Dims, range_cast<3>(size), mark_as_host_initialized);
-		m_iggen.create_buffer(bid, Dims, range_cast<3>(size), sizeof(DataT), alignof(DataT),
+		m_tm.create_buffer(bid, range_cast<3>(size), mark_as_host_initialized);
+		m_dggen.create_buffer(bid, range_cast<3>(size), mark_as_host_initialized);
+		m_iggen.create_buffer(bid, range_cast<3>(size), sizeof(DataT), alignof(DataT),
 		    mark_as_host_initialized ? detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++) : detail::null_allocation_id);
 		m_managed_objects.emplace_back(bid);
 		return buf;

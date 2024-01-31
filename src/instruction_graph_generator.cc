@@ -168,7 +168,7 @@ class instruction_graph_generator::impl {
 	impl(const task_manager& tm, size_t num_nods, node_id local_nid, system_info system, instruction_graph& idag, delegate* dlg, instruction_recorder* recorder,
 	    const policy_set& policy);
 
-	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid = null_allocation_id);
+	void create_buffer(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid = null_allocation_id);
 
 	void set_buffer_debug_name(buffer_id bid, const std::string& name);
 
@@ -224,10 +224,9 @@ class instruction_graph_generator::impl {
 		region_map<access_front> last_writers;  ///< in virtual-buffer coordinates
 		region_map<access_front> access_fronts; ///< in virtual-buffer coordinates
 
-		/// `buffer_dims` is only required to construct region maps, the generator itself is independent from that parameter.
-		explicit buffer_allocation_state(const int buffer_dims, const allocation_id aid, alloc_instruction* const ainstr /* optional */,
-		    const detail::box<3>& allocated_box, const range<3>& buffer_range)
-		    : aid(aid), box(allocated_box), last_writers(buffer_range, buffer_dims), access_fronts(buffer_range, buffer_dims) {
+		explicit buffer_allocation_state(
+		    const allocation_id aid, alloc_instruction* const ainstr /* optional */, const detail::box<3>& allocated_box, const range<3>& buffer_range)
+		    : aid(aid), box(allocated_box), last_writers(buffer_range), access_fronts(buffer_range) {
 			if(ainstr != nullptr) {
 				last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
 				access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
@@ -365,7 +364,6 @@ class instruction_graph_generator::impl {
 		};
 
 		std::string debug_name;
-		int dims;
 		range<3> range;
 		size_t elem_size;
 		size_t elem_align;
@@ -379,9 +377,9 @@ class instruction_graph_generator::impl {
 		std::vector<region_receive> pending_receives;
 		std::vector<gather_receive> pending_gathers;
 
-		explicit buffer_state(int dims, const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
-		    : dims(dims), range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), up_to_date_memories(range, dims),
-		      original_writers(range, dims), original_write_memories(range, dims) {}
+		explicit buffer_state(const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
+		    : range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), up_to_date_memories(range), original_writers(range),
+		      original_write_memories(range) {}
 
 		void commit_original_write(const region<3>& region, instruction* const instr, const memory_id mid) {
 			original_writers.update_region(region, instr);
@@ -606,10 +604,10 @@ instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes
 }
 
 void instruction_graph_generator::impl::create_buffer(
-    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, allocation_id user_aid) //
+    const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, allocation_id user_aid) //
 {
 	const auto [iter, inserted] =
-	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(dims, range, elem_size, elem_align, m_system.memories.size()));
+	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(range, elem_size, elem_align, m_system.memories.size()));
 	assert(inserted);
 
 	if(user_aid != null_allocation_id) {
@@ -618,7 +616,7 @@ void instruction_graph_generator::impl::create_buffer(
 
 		auto& buffer = iter->second;
 		auto& memory = buffer.memories[user_memory_id];
-		auto& allocation = memory.allocations.emplace_back(buffer.dims, user_aid, nullptr /* alloc_instruction */, entire_buffer, buffer.range);
+		auto& allocation = memory.allocations.emplace_back(user_aid, nullptr /* alloc_instruction */, entire_buffer, buffer.range);
 
 		allocation.commit_write(entire_buffer, m_last_epoch);
 		buffer.commit_original_write(entire_buffer, m_last_epoch, user_memory_id);
@@ -739,7 +737,7 @@ void instruction_graph_generator::impl::allocate_contiguously(
 		add_dependency(alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
 
 		// New allocations are kept in a separate vector until reallocation is complete
-		auto& dest_allocation = new_allocations.emplace_back(buffer.dims, aid, alloc_instr, new_box, buffer.range);
+		auto& dest_allocation = new_allocations.emplace_back(aid, alloc_instr, new_box, buffer.range);
 
 		// Since allocations don't overlap, we only need to consider those to be freed as source for resize-copies
 		for(auto source_it = first_old_allocations_to_be_freed; source_it != existing_allocations_end; ++source_it) {
@@ -1800,10 +1798,10 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 instruction_graph_generator::~instruction_graph_generator() = default;
 
 void instruction_graph_generator::create_buffer(
-    const buffer_id bid, const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
+    const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::create_buffer", NavyBlue, "IDAG");
 	CELERITY_DETAIL_TRACY_ZONE_TEXT("create buffer B{}", bid);
-	m_impl->create_buffer(bid, dims, range, elem_size, elem_align, user_allocation_id);
+	m_impl->create_buffer(bid, range, elem_size, elem_align, user_allocation_id);
 }
 
 void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, const std::string& name) {

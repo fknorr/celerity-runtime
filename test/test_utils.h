@@ -252,10 +252,10 @@ namespace test_utils {
 			const auto buf = mock_buffer<Dims>(bid, size);
 			const auto user_allocation_id =
 			    mark_as_host_initialized ? detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++) : detail::null_allocation_id;
-			if(m_task_mngr != nullptr) { m_task_mngr->create_buffer(bid, Dims, detail::range_cast<3>(size), mark_as_host_initialized); }
-			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_created(bid, Dims, detail::range_cast<3>(size), 1, 1, user_allocation_id); }
-			if(m_dggen != nullptr) { m_dggen->create_buffer(bid, Dims, detail::range_cast<3>(size), mark_as_host_initialized); }
-			if(m_iggen != nullptr) { m_iggen->create_buffer(bid, Dims, detail::range_cast<3>(size), sizeof(int), alignof(int), user_allocation_id); }
+			if(m_task_mngr != nullptr) { m_task_mngr->create_buffer(bid, detail::range_cast<3>(size), mark_as_host_initialized); }
+			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_created(bid, detail::range_cast<3>(size), 1, 1, user_allocation_id); }
+			if(m_dggen != nullptr) { m_dggen->create_buffer(bid, detail::range_cast<3>(size), mark_as_host_initialized); }
+			if(m_iggen != nullptr) { m_iggen->create_buffer(bid, detail::range_cast<3>(size), sizeof(int), alignof(int), user_allocation_id); }
 			return buf;
 		}
 

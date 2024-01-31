@@ -15,8 +15,8 @@ namespace detail {
 		m_task_buffer.put(std::move(reserve), std::move(initial_epoch));
 	}
 
-	void task_manager::create_buffer(const buffer_id bid, const int dims, const range<3>& range, const bool host_initialized) {
-		const auto [iter, inserted] = m_buffers.emplace(std::piecewise_construct, std::tuple{bid}, std::tuple{dims, range});
+	void task_manager::create_buffer(const buffer_id bid, const range<3>& range, const bool host_initialized) {
+		const auto [iter, inserted] = m_buffers.emplace(bid, range);
 		assert(inserted);
 		auto& buffer = iter->second;
 		if(host_initialized) { buffer.last_writers.update_region(subrange<3>({}, range), m_epoch_for_new_tasks); }

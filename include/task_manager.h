@@ -108,7 +108,7 @@ namespace detail {
 		 * @brief Adds a new buffer for dependency tracking
 		 * @param host_initialized Whether this buffer has been initialized using a host pointer (i.e., it contains useful data before any write-task)
 		 */
-		void create_buffer(buffer_id bid, const int dims, const range<3>& range, bool host_initialized);
+		void create_buffer(buffer_id bid, const range<3>& range, bool host_initialized);
 
 		void set_buffer_debug_name(buffer_id bid, const std::string& name);
 
@@ -197,7 +197,7 @@ namespace detail {
 			// TODO turn into non-null task pointer - the last writer should start out with the last epoch
 			region_map<std::optional<task_id>> last_writers;
 
-			per_buffer_data(const int dims, const range<3>& range) : last_writers(range, dims) {}
+			explicit per_buffer_data(const range<3>& range) : last_writers(range) {}
 		};
 
 		struct per_host_object_data {

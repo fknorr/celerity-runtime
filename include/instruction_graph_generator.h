@@ -112,7 +112,7 @@ class instruction_graph_generator {
 	///
 	/// Passing `user_allocation_id != null_allocation_id` means that the buffer is considered coherent in user memory and data will be lazily copied from that
 	/// allocation when read from host tasks or device kernels.
-	void create_buffer(buffer_id bid, int dims, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_allocation_id);
+	void create_buffer(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_allocation_id);
 
 	/// Changing an existing buffer's debug name causes all future instructions to refer to that buffer by the new name (if a recorder is present).
 	void set_buffer_debug_name(buffer_id bid, const std::string& name);

@@ -90,7 +90,7 @@ class distributed_graph_generator {
 	distributed_graph_generator(const size_t num_nodes, const node_id local_nid, command_graph& cdag, const task_manager& tm,
 	    detail::command_recorder* recorder, const policy_set& policy = default_policy_set());
 
-	void create_buffer(buffer_id bid, int dims, const range<3>& range, bool host_initialized);
+	void create_buffer(buffer_id bid, const range<3>& range, bool host_initialized);
 
 	void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
 

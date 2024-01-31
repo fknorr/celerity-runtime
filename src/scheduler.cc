@@ -54,8 +54,8 @@ namespace detail {
 				    },
 				    [&](const event_buffer_created& e) {
 					    assert(!shutdown);
-					    m_dggen->create_buffer(e.bid, e.dims, e.range, e.user_allocation_id != null_allocation_id);
-					    m_iggen->create_buffer(e.bid, e.dims, e.range, e.elem_size, e.elem_align, e.user_allocation_id);
+					    m_dggen->create_buffer(e.bid, e.range, e.user_allocation_id != null_allocation_id);
+					    m_iggen->create_buffer(e.bid, e.range, e.elem_size, e.elem_align, e.user_allocation_id);
 				    },
 				    [&](const event_set_buffer_debug_name& e) {
 					    assert(!shutdown);
