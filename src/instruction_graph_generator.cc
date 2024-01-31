@@ -1760,7 +1760,11 @@ void instruction_graph_generator::impl::compile_epoch_command(batch& command_bat
 
 
 void instruction_graph_generator::impl::flush_batch(batch&& batch) {
+	// sanity check: every instruction except the initial epoch must be temporally anchored through at least one dependency
+	assert(std::all_of(batch.generated_instructions.begin(), batch.generated_instructions.end(),
+	    [](const auto instr) { return instr->get_id() == 0 || !instr->get_dependencies().empty(); }));
 	assert(instruction_graph_generator_detail::is_topologically_sorted(batch.generated_instructions.begin(), batch.generated_instructions.end()));
+
 	if(m_delegate != nullptr && !batch.generated_instructions.empty()) { m_delegate->flush_instructions(std::move(batch.generated_instructions)); }
 	if(m_delegate != nullptr && !batch.generated_pilots.empty()) { m_delegate->flush_outbound_pilots(std::move(batch.generated_pilots)); }
 

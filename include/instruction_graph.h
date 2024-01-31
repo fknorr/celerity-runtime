@@ -101,7 +101,12 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
 	explicit copy_instruction(const instruction_id iid, const int priority, const allocation_with_offset& source_alloc,
 	    const allocation_with_offset& dest_alloc, const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size)
 	    : acceptor_base(iid, priority), m_source_alloc(source_alloc), m_dest_alloc(dest_alloc), m_source_box(source_box), m_dest_box(dest_box),
-	      m_copy_region(std::move(copy_region)), m_elem_size(elem_size) {}
+	      m_copy_region(std::move(copy_region)), m_elem_size(elem_size) //
+	{
+		assert(!m_copy_region.empty());
+		assert(m_source_box.covers(bounding_box(m_copy_region)));
+		assert(m_dest_box.covers(bounding_box(m_copy_region)));
+	}
 
 	const allocation_with_offset& get_source_allocation() const { return m_source_alloc; }
 	const allocation_with_offset& get_dest_allocation() const { return m_dest_alloc; }
