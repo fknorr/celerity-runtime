@@ -63,6 +63,8 @@ type get_effective_type(const sycl::device& device) {
 }
 
 bool enable_copy_between_peer_memories(sycl::device& a, sycl::device& b) {
+	if(CELERITY_SIMSYCL) return true; // Simulates a system with d2d copies by default - set CELERITY_DISABLE_P2P_COPY=false for testing the opposite
+
 	if(a == b) return true;
 	const auto type_a = get_type(a);
 	const auto type_b = get_type(b);

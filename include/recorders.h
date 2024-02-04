@@ -138,7 +138,7 @@ class command_recorder {
 struct buffer_allocation_record {
 	detail::buffer_id buffer_id;
 	std::string buffer_name;
-	box<3> box;
+	detail::box<3> box;
 
 	friend bool operator==(const buffer_allocation_record& lhs, const buffer_allocation_record& rhs) {
 		return lhs.buffer_id == rhs.buffer_id && lhs.buffer_name == rhs.buffer_name && lhs.box == rhs.box;
@@ -228,7 +228,7 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 	region<3> copy_region;
 	size_t element_size;
 	copy_origin origin;
-	buffer_id buffer_id;
+	detail::buffer_id buffer_id;
 	std::string buffer_name;
 
 	copy_instruction_record(const copy_instruction& cinstr, copy_origin origin, detail::buffer_id buffer_id, std::string buffer_name);
@@ -325,9 +325,9 @@ struct await_receive_instruction_record : matchbox::implement_acceptor<instructi
 };
 
 struct gather_receive_instruction_record : matchbox::implement_acceptor<instruction_record, gather_receive_instruction_record> {
-	transfer_id transfer_id;
+	detail::transfer_id transfer_id;
 	std::string buffer_name;
-	allocation_id allocation_id;
+	detail::allocation_id allocation_id;
 	size_t node_chunk_size;
 	box<3> gather_box;
 	size_t num_nodes;
@@ -336,8 +336,8 @@ struct gather_receive_instruction_record : matchbox::implement_acceptor<instruct
 };
 
 struct fill_identity_instruction_record : matchbox::implement_acceptor<instruction_record, fill_identity_instruction_record> {
-	reduction_id reduction_id;
-	allocation_id allocation_id;
+	detail::reduction_id reduction_id;
+	detail::allocation_id allocation_id;
 	size_t num_values;
 
 	fill_identity_instruction_record(const fill_identity_instruction& fiinstr);
@@ -349,14 +349,14 @@ struct reduce_instruction_record : matchbox::implement_acceptor<instruction_reco
 		local,
 	};
 
-	reduction_id reduction_id;
+	detail::reduction_id reduction_id;
 	allocation_id source_allocation_id;
 	size_t num_source_values;
 	allocation_id dest_allocation_id;
 	std::optional<command_id> reduction_command_id;
-	buffer_id buffer_id;
+	detail::buffer_id buffer_id;
 	std::string buffer_name;
-	box<3> box;
+	detail::box<3> box;
 	reduction_scope scope;
 
 	reduce_instruction_record(const reduce_instruction& rinstr, std::optional<detail::command_id> reduction_cid, detail::buffer_id bid, std::string buffer_name,
@@ -367,7 +367,7 @@ struct fence_instruction_record : matchbox::implement_acceptor<instruction_recor
 	struct buffer_variant {
 		buffer_id bid;
 		std::string name;
-		box<3> box;
+		detail::box<3> box;
 	};
 	struct host_object_variant {
 		host_object_id hoid;
@@ -398,7 +398,7 @@ struct horizon_instruction_record : matchbox::implement_acceptor<instruction_rec
 struct epoch_instruction_record : matchbox::implement_acceptor<instruction_record, epoch_instruction_record> {
 	task_id epoch_task_id;
 	command_id epoch_command_id;
-	epoch_action epoch_action;
+	detail::epoch_action epoch_action;
 	instruction_garbage garbage;
 
 	epoch_instruction_record(const epoch_instruction& einstr, command_id epoch_cid);

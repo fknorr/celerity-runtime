@@ -36,6 +36,7 @@ namespace detail {
 		int get_dry_run_nodes() const { return m_dry_run_nodes; }
 		std::optional<int> get_horizon_step() const { return m_horizon_step; }
 		std::optional<int> get_horizon_max_parallelism() const { return m_horizon_max_parallelism; }
+		bool disable_d2d_copy() const { return m_disable_d2d_copy; }
 
 	  private:
 		log_level m_log_lvl;
@@ -45,6 +46,7 @@ namespace detail {
 		bool m_should_print_graphs = false;
 		std::optional<int> m_horizon_step;
 		std::optional<int> m_horizon_max_parallelism;
+		bool m_disable_d2d_copy = false;
 	};
 
 } // namespace detail

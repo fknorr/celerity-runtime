@@ -33,8 +33,8 @@ namespace detail {
 		using delegate = instruction_graph_generator::delegate;
 
 		struct policy_set {
-			distributed_graph_generator::policy_set command_graph_generator;
-			instruction_graph_generator::policy_set instruction_graph_generator;
+			detail::distributed_graph_generator::policy_set command_graph_generator;
+			detail::instruction_graph_generator::policy_set instruction_graph_generator;
 		};
 
 		abstract_scheduler(size_t num_nodes, node_id local_node_id, instruction_graph_generator::system_info system_info, const task_manager& tm,

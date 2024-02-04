@@ -21,7 +21,7 @@ class sycl_event final : public async_event_base {
 };
 
 struct device_config {
-	device_id device_id = 0;
+	detail::device_id device_id = 0;
 	memory_id native_memory = first_device_memory_id;
 	sycl::device sycl_device;
 };

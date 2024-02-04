@@ -126,7 +126,7 @@ class copy_instruction final : public matchbox::implement_acceptor<instruction, 
 
 /// Description of an accessor or a reduction write in terms of the buffer's backing allocation at that location.
 struct buffer_access_allocation {
-	allocation_id allocation_id = null_allocation_id;
+	detail::allocation_id allocation_id = null_allocation_id;
 	box<3> allocated_box_in_buffer;
 	box<3> accessed_box_in_buffer;
 

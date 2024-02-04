@@ -11,7 +11,7 @@ namespace celerity::detail {
 struct pilot_message {
 	detail::message_id id = -1;
 	detail::transfer_id transfer_id;
-	box<3> box;
+	detail::box<3> box;
 };
 
 /// A pilot message as packaged on the sender side.

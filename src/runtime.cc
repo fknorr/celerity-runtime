@@ -205,15 +205,19 @@ namespace detail {
 			CELERITY_DEBUG("Device D{} with native memory M{} is {}", backend_devices[did].device_id, backend_devices[did].native_memory,
 			    backend_devices[did].sycl_device.get_info<sycl::info::device::name>());
 		}
-		for(device_id did_a = 0; did_a < devices.size(); ++did_a) {
-			const auto mid_a = system_info.devices[did_a].native_memory;
-			for(device_id did_b = did_a + 1; did_b < devices.size(); ++did_b) {
-				const auto mid_b = system_info.devices[did_b].native_memory;
-				if(backend::enable_copy_between_peer_memories(devices[did_a], devices[did_b])) {
-					system_info.memories[mid_a].copy_peers.set(mid_b);
-					system_info.memories[mid_b].copy_peers.set(mid_a);
-				} else {
-					CELERITY_DEBUG("No peer copies possible between D{} and D{}, will stage through host memory", did_a, did_b);
+		if(m_cfg->disable_d2d_copy()) {
+			CELERITY_DEBUG("CELERITY_DISABLE_P2P_COPY is set, peer copies are disabled between all devices");
+		} else {
+			for(device_id did_a = 0; did_a < devices.size(); ++did_a) {
+				const auto mid_a = system_info.devices[did_a].native_memory;
+				for(device_id did_b = did_a + 1; did_b < devices.size(); ++did_b) {
+					const auto mid_b = system_info.devices[did_b].native_memory;
+					if(backend::enable_copy_between_peer_memories(devices[did_a], devices[did_b])) {
+						system_info.memories[mid_a].copy_peers.set(mid_b);
+						system_info.memories[mid_b].copy_peers.set(mid_a);
+					} else {
+						CELERITY_DEBUG("No peer copies possible between D{} and D{}, will stage through host memory", did_a, did_b);
+					}
 				}
 			}
 		}

@@ -135,6 +135,7 @@ namespace detail {
 		    pref.register_variable<bool>("FORCE_WG", [](const std::string_view str) { return parse_validate_force_wg(str); });
 		[[maybe_unused]] const auto env_profile_ocl =
 		    pref.register_variable<bool>("PROFILE_OCL", [](const std::string_view str) { return parse_validate_profile_ocl(str); });
+		const auto env_disable_d2d_copy = pref.register_variable<bool>("DISABLE_D2D_COPY");
 
 		const auto parsed_and_validated_envs = pref.parse_and_validate();
 		if(parsed_and_validated_envs.ok()) {
@@ -159,6 +160,7 @@ namespace detail {
 			m_should_print_graphs = parsed_and_validated_envs.get_or(env_print_graphs, false);
 			m_horizon_step = parsed_and_validated_envs.get(env_horizon_step);
 			m_horizon_max_parallelism = parsed_and_validated_envs.get(env_horizon_max_para);
+			m_disable_d2d_copy = parsed_and_validated_envs.get_or(env_disable_d2d_copy, false);
 
 		} else {
 			for(const auto& warn : parsed_and_validated_envs.warnings()) {

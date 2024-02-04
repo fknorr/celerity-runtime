@@ -356,7 +356,7 @@ class instruction_graph_generator::impl {
 		};
 
 		std::string debug_name;
-		range<3> range;
+		celerity::range<3> range;
 		size_t elem_size;
 		size_t elem_align;
 		dense_map<memory_id, buffer_memory_state> memories;
@@ -414,7 +414,7 @@ class instruction_graph_generator::impl {
 	};
 
 	struct localized_chunk {
-		memory_id memory_id = host_memory_id;
+		detail::memory_id memory_id = host_memory_id;
 		box<3> execution_range;
 	};
 
@@ -1114,7 +1114,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 		device_id did = -1;
 		std::unordered_map<buffer_id, reads_writes> rw_map;
 		side_effect_map se_map;
-		instruction* instruction = nullptr;
+		detail::instruction* instruction = nullptr;
 	};
 
 	if(tsk.get_execution_target() == execution_target::device && m_system.devices.empty()) { utils::panic("no device on which to execute device kernel"); }
