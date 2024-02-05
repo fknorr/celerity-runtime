@@ -20,8 +20,10 @@
 
 namespace celerity::detail::instruction_graph_generator_detail {
 
+// TODO move to communicator.h? types.h? Should not be duplicated or private to IGGEN
 constexpr size_t communicator_max_coordinate = INT_MAX;
 
+/// Helper for split_into_communicator_compatible_boxes().
 void split_into_communicator_compatible_boxes_recurse(
     box_vector<3>& comm_boxes, const box<3>& full_box, id<3> min, id<3> max, const int slice_dim, const int dim) {
 	assert(dim <= slice_dim);
@@ -41,8 +43,8 @@ void split_into_communicator_compatible_boxes_recurse(
 	}
 }
 
-// We split boxes if the stride within the buffer becomes too large (as opposed to within the sender's allocation) to guarantee that the receiver ends up with a
-// stride that is within bounds even when receiving into a larger (potentially full-buffer) allocation,
+/// The (MPI) communicator can only exchange boxes sized up to `communicator_max_coordinate` in each dimension. Larger boxes must be split - at the implied
+/// transfer sizes, this will not have any measurable performance impact.
 box_vector<3> split_into_communicator_compatible_boxes(const range<3>& buffer_range, const box<3>& full_box) {
 	assert(box(subrange<3>(zeros, buffer_range)).covers(full_box));
 
@@ -56,7 +58,8 @@ box_vector<3> split_into_communicator_compatible_boxes(const range<3>& buffer_ra
 	return comm_boxes;
 }
 
-// 2-connectivity for 1d boxes, 4-connectivity for 2d boxes and 6-connectivity for 3d boxes.
+/// Determines whether two boxes are either overlapping or touching on edges (not corners). This means on 2-connectivity for 1d boxes, 4-connectivity for 2d
+/// boxes and 6-connectivity for 3d boxes. For 0-dimensional boxes, always returns true.
 template <int Dims>
 bool boxes_edge_connected(const box<Dims>& box1, const box<Dims>& box2) {
 	if(box1.empty() || box2.empty()) return false;
@@ -75,7 +78,11 @@ bool boxes_edge_connected(const box<Dims>& box1, const box<Dims>& box2) {
 	return true;
 }
 
-// This is different from merge_overlapping_bounding_boxes, which work on box_intersections instead of boxes_edge_connected (TODO unit-test this)
+/// Subdivide a region into connected partitions (where connectivity is established by `boxes_edge_connected`) and return the bounding box of each partition.
+/// Note that the returned boxes are not necessarily disjoint event through the partitions always are.
+///
+/// This logic is employed to find connected subregions that might be satisfied by a peer through a single `send_instruction` and thus requires a contiguous
+/// backing allocation.
 template <int Dims>
 box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) {
 	auto boxes = region.get_boxes();
@@ -100,6 +107,11 @@ box_vector<Dims> connected_subregion_bounding_boxes(const region<Dims>& region) 
 	return bounding_boxes;
 }
 
+/// Iteratively replaces each pair of overlapping boxes by their bounding box such that in the modified set of boxes, no two boxes overlap, but all original
+/// input boxes are covered.
+///
+/// When a kernel or host task has multiple accessors into a single allocation, each must be backed by a contiguous allocation. This makes it necessary to
+/// contiguously allocate the bounding box of all overlapping accesses.
 template <int Dims>
 void merge_overlapping_bounding_boxes(box_vector<Dims>& boxes) {
 restart:
@@ -116,6 +128,7 @@ restart:
 	}
 }
 
+/// Returns whether an iterator range of instruction pointers is topologically sorted, i.e. sequential execution would satisfy all internal dependencies.
 template <typename Iterator>
 bool is_topologically_sorted(Iterator begin, Iterator end) {
 	for(auto check = begin; check != end; ++check) {
@@ -126,6 +139,10 @@ bool is_topologically_sorted(Iterator begin, Iterator end) {
 	return true;
 }
 
+/// In a set of potentially regions, removes the overlap between any two regions {A, B} by replacing them with {A ∖ B, A ∩ B, B ∖ A}.
+///
+/// This is used when generating copy and receive-instructions such that every data item is only copied or received once, but the following device kernels /
+/// host tasks have their dependencies satisfied as soon as their subset of input data is available.
 void symmetrically_split_overlapping_regions(std::vector<region<3>>& regions) {
 restart:
 	for(size_t i = 0; i < regions.size(); ++i) {
@@ -143,19 +160,21 @@ restart:
 	}
 }
 
+// We can probably employ exceedingly smart heuristics to prioritize instructions in the executor, but for the time being, we stick with a simple mapping based
+// on instruction types alone.
 // clang-format off
 template <typename Instruction> constexpr int instruction_type_priority = 0; // higher means more urgent
-template <> constexpr int instruction_type_priority<free_instruction> = -1;
-template <> constexpr int instruction_type_priority<alloc_instruction> = 1;
+template <> constexpr int instruction_type_priority<free_instruction> = -1; // only free when forced to - nothing except an epoch or horizon will depend on this
+template <> constexpr int instruction_type_priority<alloc_instruction> = 1; // allocations have very high latency, so we postpone them as much as possible
 template <> constexpr int instruction_type_priority<copy_instruction> = 2;
 template <> constexpr int instruction_type_priority<await_receive_instruction> = 2;
 template <> constexpr int instruction_type_priority<split_receive_instruction> = 2;
 template <> constexpr int instruction_type_priority<receive_instruction> = 2;
 template <> constexpr int instruction_type_priority<send_instruction> = 2;
 template <> constexpr int instruction_type_priority<fence_instruction> = 3;
-template <> constexpr int instruction_type_priority<host_task_instruction> = 4;
-template <> constexpr int instruction_type_priority<device_kernel_instruction> = 4;
-template <> constexpr int instruction_type_priority<epoch_instruction> = 5;
+template <> constexpr int instruction_type_priority<host_task_instruction> = 4; // we expect kernels to have the highest latency of any instruction
+template <> constexpr int instruction_type_priority<device_kernel_instruction> = 4; 
+template <> constexpr int instruction_type_priority<epoch_instruction> = 5; // epochs and horizons are low-latency and stop the task buffers from reaching capacity
 template <> constexpr int instruction_type_priority<horizon_instruction> = 5;
 // clang-format on
 
@@ -220,6 +239,7 @@ class instruction_graph_generator::impl {
 		    const allocation_id aid, alloc_instruction* const ainstr /* optional */, const detail::box<3>& allocated_box, const range<3>& buffer_range)
 		    : aid(aid), box(allocated_box), last_writers(allocated_box), access_fronts(allocated_box) {
 			if(ainstr != nullptr) {
+				// TODO can this be part of ctor call?
 				last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
 				access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
 			}
@@ -265,6 +285,7 @@ class instruction_graph_generator::impl {
 			access_fronts.update_region(region, access_front{{}, access_front::write});
 		}
 
+		// TODO (all commit / read / write fns): naming?
 		template <typename BoxOrRegion>
 		void commit_combined_write(const BoxOrRegion& box_or_region, instruction* const instr) {
 			if(box_or_region.empty()) return;
@@ -303,6 +324,7 @@ class instruction_graph_generator::impl {
 	/// Per-memory state for a single buffer. Dependencies and last writers are tracked on the contained allocations.
 	struct buffer_memory_state {
 		// TODO bound the number of allocations per buffer in order to avoid runaway tracking overhead (similar to horizons)
+		// TODO evaluate if it ever makes sense to use a region_map here, or if we're better off expecting very few allocations and sticking to a vector here
 		std::vector<buffer_allocation_state> allocations; // disjoint
 
 		const buffer_allocation_state& get_allocation(const allocation_id aid) const {

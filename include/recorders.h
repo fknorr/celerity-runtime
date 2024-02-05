@@ -167,6 +167,7 @@ struct instruction_dependency_record {
 };
 
 // TODO now that the `dependencies` member is gone, can this be a variant again?
+/// IDAG base record type for `detail::instruction`.
 struct instruction_record
     : matchbox::acceptor<struct clone_collective_group_instruction_record, struct alloc_instruction_record, struct free_instruction_record,
           struct copy_instruction_record, struct device_kernel_instruction_record, struct host_task_instruction_record, struct send_instruction_record,
@@ -181,6 +182,7 @@ struct instruction_record
 	explicit instruction_record(const instruction& instr);
 };
 
+/// IDAG record type for `clone_collective_group_instruction`.
 struct clone_collective_group_instruction_record : matchbox::implement_acceptor<instruction_record, clone_collective_group_instruction_record> {
 	collective_group_id original_collective_group_id;
 	collective_group_id new_collective_group_id;
@@ -188,6 +190,7 @@ struct clone_collective_group_instruction_record : matchbox::implement_acceptor<
 	explicit clone_collective_group_instruction_record(const clone_collective_group_instruction& ccginstr);
 };
 
+/// IDAG record type for `alloc_instruction`.
 struct alloc_instruction_record : matchbox::implement_acceptor<instruction_record, alloc_instruction_record> {
 	enum class alloc_origin {
 		buffer,
@@ -205,6 +208,7 @@ struct alloc_instruction_record : matchbox::implement_acceptor<instruction_recor
 	    const alloc_instruction& ainstr, alloc_origin origin, std::optional<buffer_allocation_record> buffer_allocation, std::optional<size_t> num_chunks);
 };
 
+/// IDAG record type for `free_instruction`.
 struct free_instruction_record : matchbox::implement_acceptor<instruction_record, free_instruction_record> {
 	detail::allocation_id allocation_id;
 	size_t size;
@@ -213,6 +217,7 @@ struct free_instruction_record : matchbox::implement_acceptor<instruction_record
 	free_instruction_record(const free_instruction& finstr, size_t size, std::optional<buffer_allocation_record> buffer_allocation);
 };
 
+/// IDAG record type for `copy_instruction`.
 struct copy_instruction_record : matchbox::implement_acceptor<instruction_record, copy_instruction_record> {
 	enum class copy_origin {
 		resize,
@@ -234,27 +239,32 @@ struct copy_instruction_record : matchbox::implement_acceptor<instruction_record
 	copy_instruction_record(const copy_instruction& cinstr, copy_origin origin, detail::buffer_id buffer_id, std::string buffer_name);
 };
 
+/// IDAG debug info for device-kernel / host-task access to a single allocation (not part of the actual graph).
 struct buffer_memory_record {
 	detail::buffer_id buffer_id;
 	std::string buffer_name;
 };
 
+/// IDAG debug info for a device-kernel access to a reduction output buffer (not part of the actual graph).
 struct buffer_reduction_record {
 	detail::buffer_id buffer_id;
 	std::string buffer_name;
 	detail::reduction_id reduction_id;
 };
 
+/// IDAG combined record for a device-kernel / host-task buffer access via a single allocation.
 struct buffer_access_allocation_record : buffer_access_allocation, buffer_memory_record {
 	buffer_access_allocation_record(const buffer_access_allocation& aa, buffer_memory_record mr)
 	    : buffer_access_allocation(aa), buffer_memory_record(std::move(mr)) {}
 };
 
+/// IDAG combined record for a device-kernel access to a reduction-output buffer allocation.
 struct buffer_reduction_allocation_record : buffer_access_allocation, buffer_reduction_record {
 	buffer_reduction_allocation_record(const buffer_access_allocation& aa, buffer_reduction_record mrr)
 	    : buffer_access_allocation(aa), buffer_reduction_record(std::move(mrr)) {}
 };
 
+/// IDAG record type for a `device_kernel_instruction`.
 struct device_kernel_instruction_record : matchbox::implement_acceptor<instruction_record, device_kernel_instruction_record> {
 	detail::device_id device_id;
 	box<3> execution_range;
@@ -268,6 +278,7 @@ struct device_kernel_instruction_record : matchbox::implement_acceptor<instructi
 	    const std::vector<buffer_memory_record>& buffer_memory_allocation_map, const std::vector<buffer_reduction_record>& buffer_memory_reduction_map);
 };
 
+/// IDAG record type for a `host_task_instruction`.
 struct host_task_instruction_record : matchbox::implement_acceptor<instruction_record, host_task_instruction_record> {
 	detail::collective_group_id collective_group_id;
 	box<3> execution_range;
@@ -280,6 +291,7 @@ struct host_task_instruction_record : matchbox::implement_acceptor<instruction_r
 	    const std::vector<buffer_memory_record>& buffer_memory_allocation_map);
 };
 
+/// IDAG record type for a `send_instruction`.
 struct send_instruction_record : matchbox::implement_acceptor<instruction_record, send_instruction_record> {
 	node_id dest_node_id;
 	detail::message_id message_id;
@@ -297,6 +309,7 @@ struct send_instruction_record : matchbox::implement_acceptor<instruction_record
 	    const send_instruction& sinstr, command_id push_cid, const detail::transfer_id& trid, std::string buffer_name, const celerity::id<3>& offset_in_buffer);
 };
 
+/// Base implementation for IDAG record types of `receive_instruction` and `split_receive_instruction.
 struct receive_instruction_record_impl {
 	detail::transfer_id transfer_id;
 	std::string buffer_name;
@@ -308,14 +321,17 @@ struct receive_instruction_record_impl {
 	receive_instruction_record_impl(const receive_instruction_impl& rinstr, std::string buffer_name);
 };
 
+/// IDAG record type for a `receive_instruction`.
 struct receive_instruction_record : matchbox::implement_acceptor<instruction_record, receive_instruction_record>, receive_instruction_record_impl {
 	receive_instruction_record(const receive_instruction& rinstr, std::string buffer_name);
 };
 
+/// IDAG record type for a `split_receive_instruction`.
 struct split_receive_instruction_record : matchbox::implement_acceptor<instruction_record, split_receive_instruction_record>, receive_instruction_record_impl {
 	split_receive_instruction_record(const split_receive_instruction& srinstr, std::string buffer_name);
 };
 
+/// IDAG record type for a `await_receive_instruction`.
 struct await_receive_instruction_record : matchbox::implement_acceptor<instruction_record, await_receive_instruction_record> {
 	detail::transfer_id transfer_id;
 	std::string buffer_name;
@@ -324,6 +340,7 @@ struct await_receive_instruction_record : matchbox::implement_acceptor<instructi
 	await_receive_instruction_record(const await_receive_instruction& arinstr, std::string buffer_name);
 };
 
+/// IDAG record type for a `gather_receive_instruction`.
 struct gather_receive_instruction_record : matchbox::implement_acceptor<instruction_record, gather_receive_instruction_record> {
 	detail::transfer_id transfer_id;
 	std::string buffer_name;
@@ -335,6 +352,7 @@ struct gather_receive_instruction_record : matchbox::implement_acceptor<instruct
 	gather_receive_instruction_record(const gather_receive_instruction& grinstr, std::string buffer_name, const box<3>& gather_box, size_t num_nodes);
 };
 
+/// IDAG record type for a `fill_identity_instruction`.
 struct fill_identity_instruction_record : matchbox::implement_acceptor<instruction_record, fill_identity_instruction_record> {
 	detail::reduction_id reduction_id;
 	detail::allocation_id allocation_id;
@@ -343,6 +361,7 @@ struct fill_identity_instruction_record : matchbox::implement_acceptor<instructi
 	fill_identity_instruction_record(const fill_identity_instruction& fiinstr);
 };
 
+/// IDAG record type for a `reduce_instruction`.
 struct reduce_instruction_record : matchbox::implement_acceptor<instruction_record, reduce_instruction_record> {
 	enum class reduction_scope {
 		global,
@@ -363,6 +382,7 @@ struct reduce_instruction_record : matchbox::implement_acceptor<instruction_reco
 	    const detail::box<3>& box, reduction_scope scope);
 };
 
+/// IDAG record type for a `fence_instruction`.
 struct fence_instruction_record : matchbox::implement_acceptor<instruction_record, fence_instruction_record> {
 	struct buffer_variant {
 		buffer_id bid;
@@ -381,12 +401,14 @@ struct fence_instruction_record : matchbox::implement_acceptor<instruction_recor
 	fence_instruction_record(const fence_instruction& finstr, task_id tid, command_id cid, host_object_id hoid);
 };
 
+/// IDAG record type for a `destroy_host_object_instruction`.
 struct destroy_host_object_instruction_record : matchbox::implement_acceptor<instruction_record, destroy_host_object_instruction_record> {
 	detail::host_object_id host_object_id;
 
 	explicit destroy_host_object_instruction_record(const destroy_host_object_instruction& dhoinstr);
 };
 
+/// IDAG record type for a `horizon_instruction`.
 struct horizon_instruction_record : matchbox::implement_acceptor<instruction_record, horizon_instruction_record> {
 	task_id horizon_task_id;
 	command_id horizon_command_id;
@@ -395,6 +417,7 @@ struct horizon_instruction_record : matchbox::implement_acceptor<instruction_rec
 	horizon_instruction_record(const horizon_instruction& hinstr, command_id horizon_cid);
 };
 
+/// IDAG record type for a `epoch_instruction`.
 struct epoch_instruction_record : matchbox::implement_acceptor<instruction_record, epoch_instruction_record> {
 	task_id epoch_task_id;
 	command_id epoch_command_id;
@@ -404,6 +427,7 @@ struct epoch_instruction_record : matchbox::implement_acceptor<instruction_recor
 	epoch_instruction_record(const epoch_instruction& einstr, command_id epoch_cid);
 };
 
+/// Records instructions and outbound pilots on instruction-graph generation.
 class instruction_recorder {
   public:
 	using outbound_pilots = std::vector<outbound_pilot>;

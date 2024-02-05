@@ -285,7 +285,6 @@ std::string print_instruction_graph(const instruction_recorder& irec, const comm
 	const auto back = std::back_inserter(dot);
 
 	const auto begin_node = [&](const instruction_record& instr, const std::string_view& shape, const std::string_view& color) {
-		// TODO consider moving the task-reference / command-reference printing here.
 		fmt::format_to(back, "I{}[color={},shape={},label=<", instr.id, color, shape);
 	};
 

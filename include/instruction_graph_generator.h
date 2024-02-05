@@ -24,7 +24,7 @@ class dense_map : private std::vector<Value> {
 
   public:
 	dense_map() = default;
-	explicit dense_map(size_t size) : vector(size) {}
+	explicit dense_map(const size_t size) : vector(size) {}
 
 	using vector::begin, vector::end, vector::cbegin, vector::cend, vector::empty, vector::size, vector::resize;
 
@@ -39,6 +39,8 @@ class dense_map : private std::vector<Value> {
 	}
 };
 
+/// Tracks the node-local state of buffers and host objects, receives commands at node granularity and emits instructions to allocate memory, establish
+/// coherence between devices and distribute work among the devices on the local system.
 class instruction_graph_generator {
   public:
 	static constexpr size_t max_num_memories = 64;
@@ -117,6 +119,7 @@ class instruction_graph_generator {
 	/// Changing an existing buffer's debug name causes all future instructions to refer to that buffer by the new name (if a recorder is present).
 	void set_buffer_debug_name(buffer_id bid, const std::string& name);
 
+	/// End tracking buffer with the id `bid`. Emits `free_instructions` for all current allocations of that buffer.
 	void destroy_buffer(buffer_id bid);
 
 	/// Begin tracking dependencies on the host object with id `hoid`. If `owns_instance` is true, a `destroy_host_object_instruction` will be emitted when

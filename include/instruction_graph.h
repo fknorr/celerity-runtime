@@ -46,6 +46,7 @@ class instruction
 	edge_set m_dependencies;
 };
 
+/// Orders instruction pointers by instruction id.
 struct instruction_id_less {
 	bool operator()(const instruction* const lhs, const instruction* const rhs) const { return lhs->get_id() < rhs->get_id(); }
 	bool operator()(const std::unique_ptr<instruction>& lhs, const std::unique_ptr<instruction>& rhs) const { return lhs->get_id() < rhs->get_id(); }
@@ -380,7 +381,7 @@ struct instruction_garbage {
 	std::vector<allocation_id> user_allocations;
 };
 
-/// IDAG equivalent of a horizon task or command.
+/// Instruction-graph equivalent of a horizon task or command.
 class horizon_instruction final : public matchbox::implement_acceptor<instruction, horizon_instruction> {
   public:
 	explicit horizon_instruction(const instruction_id iid, const int priority, const task_id horizon_tid, instruction_garbage garbage)
@@ -394,7 +395,7 @@ class horizon_instruction final : public matchbox::implement_acceptor<instructio
 	instruction_garbage m_garbage;
 };
 
-/// IDAG equivalent of an epoch task or command.
+/// Instruction-graph equivalent of an epoch task or command.
 class epoch_instruction final : public matchbox::implement_acceptor<instruction, epoch_instruction> {
   public:
 	explicit epoch_instruction(const instruction_id iid, const int priority, const task_id epoch_tid, const epoch_action action, instruction_garbage garbage)
@@ -408,24 +409,6 @@ class epoch_instruction final : public matchbox::implement_acceptor<instruction,
 	task_id m_epoch_tid;
 	epoch_action m_epoch_action;
 	instruction_garbage m_garbage;
-};
-
-// Standard map / set collections of pointers have non-deterministic behavior because addresses change with every run of the program. Unordered types also have
-// implicit state based on insertion order and previous re-hashes and have generally implementation-dependent order. To at least guarantee consistency between
-// multiple runs of the same binary, we use unordered_map<..., instruction_hash_by_id> or map<..., instruction_order_by_id>. Equality continues to be
-// well-defined on pointers.
-struct instruction_hash_by_id {
-	template <typename Pointer>
-	constexpr size_t operator()(const Pointer instr) const {
-		return std::hash<instruction_id>()(instr->get_id());
-	}
-};
-
-struct instruction_order_by_id {
-	template <typename Pointer>
-	constexpr bool operator()(const Pointer lhs, const Pointer rhs) const {
-		return lhs->get_id() < rhs->get_id();
-	}
 };
 
 /// Keeps ownership of all instructions that have not yet been pruned by epoch or horizon application.
