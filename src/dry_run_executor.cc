@@ -25,7 +25,7 @@ void dry_run_executor::submit_instruction(const instruction* instr) {
 			    m_delegate->epoch_reached(einstr.get_epoch_task_id());
 		    }
 		    if(einstr.get_epoch_action() == epoch_action::shutdown) {
-			    std::lock_guard(m_resume_mutex), (m_has_shut_down = true); // trust me I'm a software engineer
+			    (std::lock_guard(m_resume_mutex), m_has_shut_down = true); // trust me I'm a software engineer
 			    m_resume.notify_all();
 		    }
 	    },

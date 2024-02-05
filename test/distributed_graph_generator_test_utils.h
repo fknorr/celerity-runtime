@@ -544,12 +544,12 @@ class dist_cdag_test_context {
 
 	template <typename Name = unnamed_kernel, int Dims>
 	auto device_compute(const range<Dims>& global_size, const id<Dims>& global_offset = {}) {
-		return task_builder(*this).device_compute<Name>(global_size, global_offset);
+		return task_builder(*this).template device_compute<Name>(global_size, global_offset);
 	}
 
 	template <typename Name = unnamed_kernel, int Dims>
 	auto device_compute(const nd_range<Dims>& execution_range) {
-		return task_builder(*this).device_compute<Name>(execution_range);
+		return task_builder(*this).template device_compute<Name>(execution_range);
 	}
 
 	template <int Dims>

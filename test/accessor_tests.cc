@@ -760,7 +760,6 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::sycl_queue_fixture, "accessor correctly handles backing buffer offsets", "[accessor]") {
-		const auto buffer_range = range<2>(64, 64);
 		const box<2> allocation({16, 0}, {64, 32});
 		const auto kernel_range = range<2>(32, 32);
 		const auto kernel_offset = id<2>(32, 0);

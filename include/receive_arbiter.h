@@ -63,7 +63,7 @@ class receive_arbiter {
 	};
 
 	struct incoming_region_fragment {
-		box<3> box;
+		detail::box<3> box;
 		async_event communication;
 	};
 

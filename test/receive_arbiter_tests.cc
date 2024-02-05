@@ -137,7 +137,6 @@ std::vector<std::vector<std::pair<receive_event, node_id>>> enumerate_receive_ev
 
 TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]") {
 	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
-	const range<3> buffer_range = {40, 10, 12};
 	const box<3> alloc_box = {{2, 1, 0}, {39, 10, 10}};
 	const box<3> recv_box = {{4, 2, 1}, {37, 9, 8}};
 	const size_t elem_size = sizeof(int);
@@ -215,7 +214,6 @@ TEST_CASE("receive_arbiter aggregates receives of subsets", "[receive_arbiter]")
 
 TEST_CASE("receive_arbiter can await supersets of incoming fragments", "[receive_arbiter]") {
 	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
-	const range<3> buffer_range = {20, 20, 1};
 	const box<3> alloc_box = {{2, 1, 0}, {19, 20, 1}};
 	const region<3> recv_regions[] = {
 	    region<3>{{{{4, 1, 0}, {14, 10, 1}}, {{14, 1, 0}, {19, 18, 1}}}},
@@ -260,7 +258,6 @@ TEST_CASE("receive_arbiter can await supersets of incoming fragments", "[receive
 
 TEST_CASE("receive_arbiter single-instruction receive works", "[receive_arbiter]") {
 	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
-	const range<3> buffer_range = {20, 20, 1};
 	const box<3> alloc_box = {{2, 1, 0}, {19, 20, 1}};
 	const region<3> recv_region{{{{4, 1, 0}, {14, 10, 1}}, {{14, 1, 0}, {19, 18, 1}}}};
 	const size_t num_fragments = recv_region.get_boxes().size();
@@ -350,7 +347,6 @@ TEST_CASE("receive_arbiter::gather_receive works", "[receive_arbiter]") {
 
 TEST_CASE("receive_arbiter handles multiple receive instructions for the same transfer id", "[receive_arbiter]") {
 	const transfer_id trid(task_id(1), buffer_id(420), no_reduction_id);
-	const range<3> buffer_range = {20, 20, 1};
 	const box<3> alloc_box = {{0, 0, 0}, {20, 20, 1}};
 	const std::map<node_id, box<3>> receives{
 	    {node_id(1), box<3>({2, 2, 0}, {8, 18, 1})},

@@ -139,7 +139,6 @@ TEST_CASE("data-dependencies are generated between kernels on the same memory", 
 	const auto all_instrs = ictx.query_instructions();
 
 	const auto predecessor_kernels = [](const auto& q) { return q.predecessors().template select_all<device_kernel_instruction_record>(); };
-	const auto successor_kernels = [](const auto& q) { return q.successors().template select_all<device_kernel_instruction_record>(); };
 
 	const auto write_buf1 = all_instrs.select_unique<device_kernel_instruction_record>("write buf1");
 	CHECK(predecessor_kernels(write_buf1).count() == 0);

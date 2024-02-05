@@ -204,41 +204,14 @@ class instruction_query {
 
 	template <typename... InstructionQueries>
 	friend instruction_query<> union_of(const instruction_query& head, const InstructionQueries&... tail) {
-		const auto recorder = head.m_recorder;
-		assert(((head.m_recorder == tail.m_recorder) && ...));
-
-		// construct union in recorder-ordering without duplicates - always returns the base type
-		std::vector<const instruction_record*> union_query;
-		for(const auto& instr : recorder->get_instructions()) {
-			if(std::find(head.m_result.begin(), head.m_result.end(), instr.get()) != head.m_result.end()
-			    || ((std::find(tail.m_result.begin(), tail.m_result.end(), instr.get()) != tail.m_result.end()) || ...)) { //
-				union_query.push_back(instr.get());
-			}
-		}
-
-		std::string trace = fmt::format("union_of({}", head.m_trace);
-		(((trace += ", ") += tail.m_trace), ...);
-		trace += ")";
-		return instruction_query<>(recorder, std::move(union_query), std::move(trace));
+		// call through a proper member function, because GCC will not extend friendship with InstructionQueries... to inline-friend functions
+		return head.union_with(tail...);
 	}
 
 	template <typename... InstructionQueries>
 	friend instruction_query intersection_of(const instruction_query& head, const InstructionQueries&... tail) {
-		const auto recorder = head.m_recorder;
-		assert(((head.m_recorder == tail.m_recorder) && ...));
-
-		// construct intersection in recorder-ordering without duplicates - returns the type of `head`
-		std::vector<const Record*> intersection_query;
-		for(const auto& instr : head.m_result) {
-			if(((std::find(tail.m_result.begin(), tail.m_result.end(), instr) != tail.m_result.end()) && ...)) { //
-				intersection_query.push_back(instr);
-			}
-		}
-
-		std::string trace = fmt::format("intersection_of({}", head.m_trace);
-		(((trace += ", ") += tail.m_trace), ...);
-		trace += ")";
-		return instruction_query(recorder, std::move(intersection_query), std::move(trace));
+		// call through a proper member function, because GCC will not extend friendship with InstructionQueries... to inline-friend functions
+		return head.intersection_with(tail...);
 	}
 
   private:
@@ -310,13 +283,51 @@ class instruction_query {
 		if constexpr(!std::is_same_v<GeneralRecord, SpecificRecord>) { fmt::format_to(std::back_inserter(trace), "<{}>", kernel_debug_name<SpecificRecord>()); }
 
 		std::string param_trace;
-		const auto format_filter_param = [&](const auto& f) {
+		// [[maybe_unused]]: GCC will emit an unused-warning if `Filters...` is empty and the comma-fold expression below expands to nothing
+		[[maybe_unused]] const auto format_filter_param = [&](const auto& f) {
 			if(!param_trace.empty()) { param_trace += ", "; }
 			param_trace += instruction_query<SpecificRecord>::print_filter(f);
 		};
 		(format_filter_param(filters), ...);
 		fmt::format_to(std::back_inserter(trace), "({})", param_trace);
 		return trace;
+	}
+
+	template <typename... InstructionQueries>
+	instruction_query<> union_with(const InstructionQueries&... tail) const {
+		assert(((m_recorder == tail.m_recorder) && ...));
+
+		// construct union in recorder-ordering without duplicates - always returns the base type
+		std::vector<const instruction_record*> union_query;
+		for(const auto& instr : m_recorder->get_instructions()) {
+			if(std::find(m_result.begin(), m_result.end(), instr.get()) != m_result.end()
+			    || ((std::find(tail.m_result.begin(), tail.m_result.end(), instr.get()) != tail.m_result.end()) || ...)) { //
+				union_query.push_back(instr.get());
+			}
+		}
+
+		std::string trace = fmt::format("union_of({}", m_trace);
+		(((trace += ", ") += tail.m_trace), ...);
+		trace += ")";
+		return instruction_query<>(m_recorder, std::move(union_query), std::move(trace));
+	}
+
+	template <typename... InstructionQueries>
+	instruction_query intersection_with(const InstructionQueries&... tail) const {
+		assert(((m_recorder == tail.m_recorder) && ...));
+
+		// construct intersection in recorder-ordering without duplicates - returns the type of `head`
+		std::vector<const Record*> intersection_query;
+		for(const auto& instr : m_result) {
+			if(((std::find(tail.m_result.begin(), tail.m_result.end(), instr) != tail.m_result.end()) && ...)) { //
+				intersection_query.push_back(instr);
+			}
+		}
+
+		std::string trace = fmt::format("intersection_of({}", m_trace);
+		(((trace += ", ") += tail.m_trace), ...);
+		trace += ")";
+		return instruction_query(m_recorder, std::move(intersection_query), std::move(trace));
 	}
 
 	instruction_query(const instruction_recorder* recorder, std::vector<const Record*> query, std::string trace)
@@ -550,12 +561,12 @@ class idag_test_context {
 
 	template <typename Name = unnamed_kernel, int Dims>
 	auto device_compute(const range<Dims>& global_size, const id<Dims>& global_offset = {}) {
-		return task_builder(*this).device_compute<Name>(global_size, global_offset);
+		return task_builder(*this).template device_compute<Name>(global_size, global_offset);
 	}
 
 	template <typename Name = unnamed_kernel, int Dims>
 	auto device_compute(const nd_range<Dims>& execution_range) {
-		return task_builder(*this).device_compute<Name>(execution_range);
+		return task_builder(*this).template device_compute<Name>(execution_range);
 	}
 
 	template <int Dims>

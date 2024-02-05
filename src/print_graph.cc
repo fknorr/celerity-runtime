@@ -117,6 +117,7 @@ const char* get_epoch_label(epoch_action action) {
 	case epoch_action::none: return "<b>epoch</b>";
 	case epoch_action::barrier: return "<b>epoch</b> (barrier)";
 	case epoch_action::shutdown: return "<b>epoch</b> (shutdown)";
+	default: abort();
 	}
 }
 
@@ -275,6 +276,7 @@ std::string instruction_dependency_style(const instruction_dependency_origin ori
 	case instruction_dependency_origin::last_epoch: return "color=orchid";
 	case instruction_dependency_origin::execution_front: return "color=orange";
 	case instruction_dependency_origin::split_receive: return "color=gray";
+	default: abort();
 	}
 }
 

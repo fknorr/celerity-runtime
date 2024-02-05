@@ -25,7 +25,7 @@ class communicator {
 
 	struct stride {
 		range<3> allocation;
-		subrange<3> subrange;
+		celerity::subrange<3> subrange;
 		size_t element_size = 1;
 
 		friend bool operator==(const stride& lhs, const stride& rhs) {

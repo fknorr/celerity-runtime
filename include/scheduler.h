@@ -51,8 +51,8 @@ namespace detail {
 		 */
 		void notify_task_created(const task* const tsk) { notify(event_task_available{tsk}); }
 
-		void notify_buffer_created(const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align,
-		    const allocation_id user_allocation_id) {
+		void notify_buffer_created(
+		    const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
 			notify(event_buffer_created{bid, range, elem_size, elem_align, user_allocation_id});
 		}
 
