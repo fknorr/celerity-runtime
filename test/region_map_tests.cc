@@ -815,3 +815,9 @@ TEMPLATE_TEST_CASE_SIG("update(<empty-box>) has no effect", "[region_map]", ((in
 	const auto unit_box = box_cast<3>(box<0>());
 	CHECK(rm.get_region_values(unit_box) == std::vector{std::pair{unit_box, 0}});
 }
+
+TEST_CASE("query regions are clamped from both sides in region maps with non-zero offset", "[region_map]") {
+	const auto region_box = box<3>({1, 2, 3}, {7, 9, 11});
+	region_map<int> rm(region_box, 42);
+	CHECK(rm.get_region_values(box<3>::full_range({20, 19, 18})) == std::vector{std::pair{region_box, 42}});
+}
