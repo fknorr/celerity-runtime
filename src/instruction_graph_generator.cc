@@ -453,7 +453,7 @@ class instruction_graph_generator::impl {
 	instruction_recorder* m_recorder;
 	policy_set m_policy;
 
-	instruction_id m_next_instructin_id = 0;
+	instruction_id m_next_instruction_id = 0;
 	message_id m_next_message_id = 0;
 
 	instruction* m_last_horizon = nullptr;
@@ -478,7 +478,7 @@ class instruction_graph_generator::impl {
 
 	template <typename Instruction, typename... CtorParams>
 	Instruction* create(batch& batch, CtorParams&&... ctor_args) {
-		const auto id = m_next_instructin_id++;
+		const auto id = m_next_instruction_id++;
 		const auto priority = batch.base_priority + instruction_graph_generator_detail::instruction_type_priority<Instruction>;
 		auto instr = std::make_unique<Instruction>(id, priority, std::forward<CtorParams>(ctor_args)...);
 		const auto ptr = instr.get();
