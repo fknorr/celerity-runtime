@@ -62,6 +62,12 @@ enum class side_effect_order { sequential };
 
 namespace celerity::detail {
 
+inline constexpr node_id master_node_id = 0;
+
+/// Uniquely identifies an allocation across all memories on the local node. This is the instruction-graph equivalent of a USM pointer.
+///
+/// As allocation_ids are used extensively within the code but its constituents (memory_id and raw_allocation_id) rarely need to be inspected, it is bit-encoded
+/// into a single integer member.
 class allocation_id {
   public:
 	constexpr static size_t memory_id_bits = 8;
@@ -69,6 +75,7 @@ class allocation_id {
 	constexpr static size_t raw_allocation_id_bits = sizeof(size_t) * 8 - memory_id_bits;
 	constexpr static size_t max_raw_allocation_id = (size_t(1) << raw_allocation_id_bits) - 1;
 
+	/// Constructs an allocation_id that does not point to memory (equivalent to `null_allocation_id`).
 	allocation_id() = default;
 
 	constexpr allocation_id(const memory_id mid, const raw_allocation_id raid) {
@@ -88,13 +95,18 @@ class allocation_id {
 	size_t m_bits = 0;
 };
 
-inline constexpr node_id master_node_id = 0;
+/// Memory id for (unpinned) host memory allocated for or by the user. This memory id is assumed for pointers passed for buffer host-initialization and for the
+/// explicit user-side allocation of a buffer_snapshot that is performed before a buffer fence.
+inline constexpr memory_id user_memory_id = 0;
 
-inline constexpr memory_id user_memory_id = 0; // (unpinned) host memory allocated for or by the user
-inline constexpr memory_id host_memory_id = 1; // (pinned) host memory for buffer-backing allocations
+/// Memory id for (pinned) host memory that the executor will obtain from the backend for buffer allocations and staging buffers.
+inline constexpr memory_id host_memory_id = 1;
+
+/// Memory id for the first device-native memory, if any.
 inline constexpr memory_id first_device_memory_id = 2;
 
-inline constexpr allocation_id null_allocation_id{}; // allocation_id equivalent of a null pointer
+/// allocation_id equivalent of a null pointer.
+inline constexpr allocation_id null_allocation_id{};
 
 inline constexpr collective_group_id non_collective_group_id = 0;
 inline constexpr collective_group_id root_collective_group_id = 1;
@@ -115,11 +127,15 @@ struct transfer_id {
 	friend bool operator!=(const transfer_id& lhs, const transfer_id& rhs) { return !(lhs == rhs); }
 };
 
+/// Instruction-graph equivalent of a USM pointer that permits pointer arithmetic.
+/// The offset will be applied by the executor once the allocation pointer is known.
 struct allocation_with_offset {
 	allocation_id id = null_allocation_id;
 	size_t offset_bytes = 0;
 
+	/// Constructs the equivalent of a null pointer.
 	allocation_with_offset() = default;
+
 	allocation_with_offset(const detail::allocation_id aid, const size_t offset_bytes = 0) : id(aid), offset_bytes(offset_bytes) {}
 
 	friend bool operator==(const allocation_with_offset& lhs, const allocation_with_offset& rhs) {

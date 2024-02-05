@@ -20,7 +20,8 @@
 
 namespace celerity::detail::instruction_graph_generator_detail {
 
-// TODO move to communicator.h? types.h? Should not be duplicated or private to IGGEN
+/// MPI, our only "production" communicator implementation, limits the extent of send/receive operations to INT_MAX elements in each dimension. Since we do not
+/// require this value anywhere else we define it in instruction_graph_generator.cc, even though it does not logically originate here.
 constexpr size_t communicator_max_coordinate = INT_MAX;
 
 /// Helper for split_into_communicator_compatible_boxes().
@@ -162,6 +163,7 @@ restart:
 
 // We can probably employ exceedingly smart heuristics to prioritize instructions in the executor, but for the time being, we stick with a simple mapping based
 // on instruction types alone.
+
 // clang-format off
 template <typename Instruction> constexpr int instruction_type_priority = 0; // higher means more urgent
 template <> constexpr int instruction_type_priority<free_instruction> = -1; // only free when forced to - nothing except an epoch or horizon will depend on this
@@ -231,24 +233,23 @@ class instruction_graph_generator::impl {
 		};
 
 		allocation_id aid;
-		detail::box<3> box;                     ///< in virtual-buffer coordinates
-		region_map<access_front> last_writers;  ///< in virtual-buffer coordinates
-		region_map<access_front> access_fronts; ///< in virtual-buffer coordinates
+		detail::box<3> box;                                ///< in virtual-buffer coordinates
+		region_map<access_front> last_writers;             ///< in virtual-buffer coordinates
+		region_map<access_front> last_concurrent_accesses; ///< in virtual-buffer coordinates
 
-		explicit buffer_allocation_state(
-		    const allocation_id aid, alloc_instruction* const ainstr /* optional */, const detail::box<3>& allocated_box, const range<3>& buffer_range)
-		    : aid(aid), box(allocated_box), last_writers(allocated_box), access_fronts(allocated_box) {
+		explicit buffer_allocation_state(const allocation_id aid, alloc_instruction* const ainstr /* optional: null for user allocations */,
+		    const detail::box<3>& allocated_box, const range<3>& buffer_range)
+		    : aid(aid), box(allocated_box), last_writers(allocated_box), last_concurrent_accesses(allocated_box) {
 			if(ainstr != nullptr) {
-				// TODO can this be part of ctor call?
 				last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
-				access_fronts.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
+				last_concurrent_accesses.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
 			}
 		}
 
 		template <typename BoxOrRegion>
 		void commit_read(const BoxOrRegion& box_or_region, instruction* const instr) {
 			if(box_or_region.empty()) return;
-			for(auto& [box, front] : access_fronts.get_region_values(box_or_region)) {
+			for(auto& [box, front] : last_concurrent_accesses.get_region_values(box_or_region)) {
 				if(front.mode == access_front::read) {
 					// we call record_read as soon as the writing instructions is generated, so inserting at the end keeps the vector sorted
 					assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
@@ -257,32 +258,32 @@ class instruction_graph_generator::impl {
 					front = {{instr}, access_front::read};
 				}
 				assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
-				access_fronts.update_region(box, front);
+				last_concurrent_accesses.update_region(box, front);
 			}
 		}
 
 		void commit_write(const detail::box<3>& box, instruction* const instr) {
 			if(box.empty()) return;
 			last_writers.update_box(box, access_front{{instr}, access_front::write});
-			access_fronts.update_box(box, access_front{{instr}, access_front::write});
+			last_concurrent_accesses.update_box(box, access_front{{instr}, access_front::write});
 		}
 
 		void commit_write(const region<3>& region, instruction* const instr) {
 			if(region.empty()) return;
 			last_writers.update_region(region, access_front{{instr}, access_front::write});
-			access_fronts.update_region(region, access_front{{instr}, access_front::write});
+			last_concurrent_accesses.update_region(region, access_front{{instr}, access_front::write});
 		}
 
 		void begin_combined_write(const detail::box<3>& box) {
 			if(box.empty()) return;
 			last_writers.update_box(box, access_front{{}, access_front::write});
-			access_fronts.update_box(box, access_front{{}, access_front::write});
+			last_concurrent_accesses.update_box(box, access_front{{}, access_front::write});
 		}
 
 		void begin_combined_write(const region<3>& region) {
 			if(region.empty()) return;
 			last_writers.update_region(region, access_front{{}, access_front::write});
-			access_fronts.update_region(region, access_front{{}, access_front::write});
+			last_concurrent_accesses.update_region(region, access_front{{}, access_front::write});
 		}
 
 		// TODO (all commit / read / write fns): naming?
@@ -296,7 +297,7 @@ class instruction_graph_generator::impl {
 				front.instructions.push_back(instr);
 				assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
 				last_writers.update_region(box, front);
-				access_fronts.update_region(box, front);
+				last_concurrent_accesses.update_region(box, front);
 			}
 		}
 
@@ -317,7 +318,7 @@ class instruction_graph_generator::impl {
 				return new_front;
 			};
 			last_writers.apply_to_values(apply_epoch_to_front);
-			access_fronts.apply_to_values(apply_epoch_to_front);
+			last_concurrent_accesses.apply_to_values(apply_epoch_to_front);
 		}
 	};
 
@@ -516,7 +517,7 @@ class instruction_graph_generator::impl {
 	template <typename BoxOrRegion>
 	void add_dependencies_on_access_front(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
 	    const instruction_dependency_origin record_origin_for_read_write_front) {
-		for(const auto& [box, front] : allocation.access_fronts.get_region_values(region)) {
+		for(const auto& [box, front] : allocation.last_concurrent_accesses.get_region_values(region)) {
 			for(const auto dep_instr : front.instructions) {
 				add_dependency(accessing_instruction, dep_instr,
 				    front.mode == buffer_allocation_state::access_front::allocate ? instruction_dependency_origin::allocation_lifetime
@@ -1012,8 +1013,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 	// Boxes that are accessed but not consumed do not need to be preserved across resizes. This set operation is not equivalent to accumulating all
 	// non-consumer mode accesses above, since a kernel can have both a read_only and a discard_write access for the same buffer element, and Celerity must
 	// treat the overlap as-if it were a read_write access according to the SYCL spec.
-	// We maintain a box_vector here because we also add all received boxes, as these are overwritten by a recv_instruction before being read from the kernel,
-	// and these are issued after the allocation (and resize) phase.
+	// We maintain a box_vector here because we also add all received boxes, as these are overwritten by a recv_instruction before being read from the kernel.
 	box_vector<3> discarded_boxes = region_difference(accessed_region, consumed_region).into_boxes();
 
 	// Collect all receives that we must apply before executing this command.

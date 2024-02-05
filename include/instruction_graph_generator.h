@@ -23,12 +23,24 @@ class instruction_graph_generator {
 	static constexpr size_t max_num_memories = 64;
 	using memory_mask = std::bitset<max_num_memories>;
 
+	/// Information about a single device in the local system.
 	struct device_info {
+		/// Before accessing any memory on a device, instruction_graph_generator will prepare a corresponding allocation on its `native_memory`. Multiple
+		/// devices can share the same native memory. No attempts at reading from peer or shared memory to elide copies are currently made, but could be in the
+		/// future.
 		memory_id native_memory;
 	};
+
+	/// Information about a single memory in the local system.
 	struct memory_info {
+		/// This mask contains a 1-bit for every memory_id that the associated backend queue can copy data from or to directly. instruction_graph_generator
+		/// expects this mapping to be reflexive, i.e. `system_info::memories[a].copy_peers[b] == system_info::memories[b].copy_peers[a]`.
+		/// Further, copies must always be possible between `host_memory_id` and `user_memory_id` as well as between `host_memory_id` and every other memory.
+		/// instruction_graph_generator will create a staging copy in host memory if data must be transferred between two memories that are not copy peers.
 		memory_mask copy_peers;
 	};
+
+	/// All information about the local system that influence the generated instruction graph.
 	struct system_info {
 		dense_map<device_id, device_info> devices;
 		dense_map<memory_id, memory_info> memories;
@@ -48,10 +60,10 @@ class instruction_graph_generator {
 		/// Called whenever new instructions have been generated and inserted into the instruction graph.
 		///
 		/// The vector of instructions is in topological order of dependencies, and so is the concatenation of all vectors that are passed through this
-		/// function. Topological order here means that sequential execution in that order would fulfill all instruction dependencies.
+		/// function. Topological order here means that sequential execution in that order would fulfill all internal dependencies.
 		///
-		/// The instruction graph generator guarantees that these pointers are stable and the pointed-to instructions are not modified _except_ for
-		/// intrusive_graph_node::get_dependents(), so other threads are safe to read from these pointers as long as they do not examine that member.
+		/// The instruction graph generator guarantees that these pointers are stable and the pointed-to instructions are both immutable and safe to read from
+		/// other threads.
 		virtual void flush_instructions(std::vector<const instruction*> instrs) = 0;
 
 		/// Called whenever new pilot messages have been generated that must be transmitted to peer nodes before they can accept data transmitted through
@@ -60,8 +72,16 @@ class instruction_graph_generator {
 	};
 
 	struct policy_set {
+		/// Reported when the user requests a `hint::oversubscribe`, but oversubscription is unsafe because the task has side effects, participates in a
+		/// collective-group operation, performs a reduction (current limitation of our implementation) or its iteration space simply cannot be split.
 		error_policy unsafe_oversubscription_error = error_policy::panic;
+
+		/// Reported when a task attempts to read data that has neither been await-pushed nor generated on the local node. This error is usually caught on a
+		/// higher level by the task and command graph generator.
 		error_policy uninitialized_read_error = error_policy::panic;
+
+		/// Reported when two or more chunks of a device kernel or host task attempt to write the same buffer elements. instruction_graph_generator will produce
+		/// an executable graph even when this error is being ignored, but will cause race conditions between instructions on the executor level.
 		error_policy overlapping_write_error = error_policy::panic;
 	};
 
