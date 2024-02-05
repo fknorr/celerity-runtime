@@ -740,13 +740,13 @@ void instruction_graph_generator::impl::allocate_contiguously(
 			// TODO investigate a garbage-collection heuristic that omits these copies if there are other up-to-date memories and we do not expect the region to
 			// be read again on this memory.
 			const auto full_copy_box = box_intersection(dest_allocation.box, source_allocation.box);
-			if (full_copy_box.empty()) continue; // not every freed allocation necessarily intersects with every new allocation
+			if(full_copy_box.empty()) continue; // not every freed allocation necessarily intersects with every new allocation
 
 			box_vector<3> live_copy_boxes;
 			for(const auto& [copy_box, location] : buffer.up_to_date_memories.get_region_values(full_copy_box)) {
 				if(location.test(mid)) { live_copy_boxes.push_back(copy_box); }
 			}
-			if (live_copy_boxes.empty()) continue; // even if allocations intersect, the entire intersection might be overwritten
+			if(live_copy_boxes.empty()) continue; // even if allocations intersect, the entire intersection might be overwritten
 
 			region<3> live_copy_region(std::move(live_copy_boxes));
 			const auto copy_instr = create<copy_instruction>(
@@ -957,12 +957,12 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 
 	dense_map<memory_id, box_vector<3>> required_contiguous_allocations(m_memories.size());
 
-	box_vector<3> accessed_boxes;  // which elements have are accessed (to figure out applying receives)
-	box_vector<3> discarded_boxes; // which elements are received with a non-consuming access or received (these don't need to be preserved)
+	box_vector<3> accessed_boxes; // which elements have are accessed (to figure out applying receives)
+	box_vector<3> consumed_boxes; // which elements are accessed with a consuming access (these need to be preserved across resizes)
 	for(const auto mode : access::all_modes) {
 		const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), local_sr, tsk.get_global_size());
 		accessed_boxes.append(req.get_boxes());
-		if(!access::mode_traits::is_consumer(mode)) { discarded_boxes.append(req.get_boxes()); }
+		if(access::mode_traits::is_consumer(mode)) { consumed_boxes.append(req.get_boxes()); }
 	}
 
 	assert(std::count_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; }) <= 1
@@ -980,22 +980,26 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		if(include_current_value) {
 			// scalar_reduction_box will be copied into the local-reduction gather buffer ahead of the kernel instruction
 			accessed_boxes.push_back(scalar_reduction_box);
+			consumed_boxes.push_back(scalar_reduction_box);
 		}
 	}
 
 	const region accessed_region(std::move(accessed_boxes));
+	const region consumed_region(std::move(consumed_boxes));
 
 	// Collect all receives that we must apply before executing this command.
 
+	box_vector<3> received_boxes;
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
 	    [&](const buffer_state::region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
 	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
 		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
-		discarded_boxes.append(it->received_region.get_boxes());
+		received_boxes.append(it->received_region.get_boxes());
 		// begin_receive_instruction needs contiguous allocations for the bounding boxes of potentially received fragments
 		required_contiguous_allocations[host_memory_id].insert(
 		    required_contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
 	}
+	const region received_region(std::move(received_boxes));
 
 	std::vector<buffer_state::region_receive> applied_receives;
 	if(first_applied_receive != buffer.pending_receives.end()) {
@@ -1011,27 +1015,30 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		}) && "buffer has an unprocessed await-push into a region that is going to be used as a reduction output");
 	}
 
-	const region discarded_region(std::move(discarded_boxes));
+	// Boxes that are accessed but not consumed do not need to be preserved across resizes. This set operation is not equivalent to accumulating all
+	// non-consumer mode accesses above, since a kernel can have both a read_only and a discard_write access for the same buffer element, and Celerity must
+	// treat the overlap as-if it were a read_write access according to the SYCL spec.
+	// Boxes received from a peer node will be overwritten by a recv_instruction before being read from the kernel and so do not need to be preserved either.
+	const region locally_discarded_region = region_union(region_difference(accessed_region, consumed_region), received_region);
 
 	// Detect and report uninitialized reads
 
 	if(m_policy.uninitialized_read_error != error_policy::ignore) {
 		box_vector<3> uninitialized_reads;
-		const auto consumed_region = region_difference(accessed_region, discarded_region);
-		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(consumed_region)) {
+		const auto locally_required_region = region_difference(consumed_region, received_region);
+		for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(locally_required_region)) {
 			if(!location.any()) { uninitialized_reads.push_back(box); }
 		}
 		if(!uninitialized_reads.empty()) {
 			// Observing an uninitialized read that is not visible in the TDAG means we have a bug.
 			utils::report_error(m_policy.uninitialized_read_error,
-			    // TODO buffer names
 			    "Instructions for {} are trying to read {} {}, which is neither found locally nor has been await-pushed before.", print_task_debug_label(tsk),
 			    print_buffer_debug_label(bid), detail::region(std::move(uninitialized_reads)));
 		}
 	}
 
 	// do not preserve any received or overwritten region across receives or buffer resizes later on
-	buffer.up_to_date_memories.update_region(discarded_region, memory_mask());
+	buffer.up_to_date_memories.update_region(locally_discarded_region, memory_mask());
 
 	dense_map<memory_id, std::vector<region<3>>> local_chunk_reads(m_memories.size());
 	for(const auto& chunk : concurrent_local_chunks) {

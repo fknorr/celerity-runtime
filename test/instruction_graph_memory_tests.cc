@@ -563,16 +563,22 @@ TEST_CASE("resize-copy instructions are only generated from allocations that are
 	CHECK(all_instrs.select_unique("alloc 2nd").is_concurrent_with(all_instrs.select_unique("resize")));
 }
 
-TEST_CASE("TODO this was the first iteration of the test case above, but we don't seem to handle overlapping read + discard_write properly",
-    "[instruction_graph_generator][instruction-graph][memory]") {
+TEST_CASE(
+    "overlapping accessors with read + discard_write modes are equivalent to a read_write access", "[instruction_graph_generator][instruction-graph][memory]") {
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
 	auto buf = ictx.create_buffer<float, 1>(32);
-	// trigger two separate allocations for the same buffer and memory
-	ictx.device_compute(range(1)).name("init").discard_write(buf, acc::fixed<1>({0, 8})).discard_write(buf, acc::fixed<1>({16, 8})).submit();
-	// resize to the full buffer range, but only read from the first allocation and discard the second
-	ictx.device_compute(range(1)).name("resize").read(buf, acc::fixed<1>({0, 8})).discard_write(buf, acc::all()).submit();
+	ictx.device_compute(range(1)).name("alloc").discard_write(buf, acc::fixed<1>({0, 16})).submit();
+	ictx.device_compute(range(1)).name("alloc").discard_write(buf, acc::fixed<1>({16, 16})).submit();
+	ictx.device_compute(range(1)).name("read + discard_write").read(buf, acc::all()).discard_write(buf, acc::all()).submit();
+	ictx.device_compute(range(1)).name("consume").read(buf, acc::all()).submit();
 	ictx.finish();
 
 	const auto all_instrs = ictx.query_instructions();
-	CHECK(all_instrs.count<copy_instruction_record>() > 0); // TODO I believe there should be a resize - talk to @psalz about this
+	const auto both_alloc_kernels = all_instrs.select_all<device_kernel_instruction_record>("alloc");
+	CHECK(both_alloc_kernels.count() == 2);
+	const auto read_discard_write_kernel = all_instrs.select_unique<device_kernel_instruction_record>("read + discard_write");
+	const auto consume_kernel = all_instrs.select_unique<device_kernel_instruction_record>("consume");
+
+	CHECK(read_discard_write_kernel.transitive_predecessors_across<copy_instruction_record>().contains(both_alloc_kernels));
+	CHECK(consume_kernel.predecessors() == read_discard_write_kernel);
 }
