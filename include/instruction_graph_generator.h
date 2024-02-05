@@ -1,10 +1,10 @@
 #pragma once
 
+#include "dense_map.h"
 #include "ranges.h"
 #include "types.h"
 
 #include <bitset>
-#include <vector>
 
 
 namespace celerity::detail {
@@ -15,29 +15,6 @@ class instruction_graph;
 class instruction_recorder;
 struct outbound_pilot;
 class task_manager;
-
-/// Like a simple std::unordered_map, but implemented by indexing into a vector with the integral key type.
-template <typename KeyId, typename Value>
-class dense_map : private std::vector<Value> {
-  private:
-	using vector = std::vector<Value>;
-
-  public:
-	dense_map() = default;
-	explicit dense_map(const size_t size) : vector(size) {}
-
-	using vector::begin, vector::end, vector::cbegin, vector::cend, vector::empty, vector::size, vector::resize;
-
-	Value& operator[](const KeyId key) {
-		assert(key < size());
-		return vector::operator[](static_cast<size_t>(key));
-	}
-
-	const Value& operator[](const KeyId key) const {
-		assert(key < size());
-		return vector::operator[](static_cast<size_t>(key));
-	}
-};
 
 /// Tracks the node-local state of buffers and host objects, receives commands at node granularity and emits instructions to allocate memory, establish
 /// coherence between devices and distribute work among the devices on the local system.
