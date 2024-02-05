@@ -740,12 +740,15 @@ void instruction_graph_generator::impl::allocate_contiguously(
 			// TODO investigate a garbage-collection heuristic that omits these copies if there are other up-to-date memories and we do not expect the region to
 			// be read again on this memory.
 			const auto full_copy_box = box_intersection(dest_allocation.box, source_allocation.box);
+			if (full_copy_box.empty()) continue; // not every freed allocation necessarily intersects with every new allocation
+
 			box_vector<3> live_copy_boxes;
 			for(const auto& [copy_box, location] : buffer.up_to_date_memories.get_region_values(full_copy_box)) {
 				if(location.test(mid)) { live_copy_boxes.push_back(copy_box); }
 			}
-			region<3> live_copy_region(std::move(live_copy_boxes));
+			if (live_copy_boxes.empty()) continue; // even if allocations intersect, the entire intersection might be overwritten
 
+			region<3> live_copy_region(std::move(live_copy_boxes));
 			const auto copy_instr = create<copy_instruction>(
 			    current_batch, source_allocation.aid, dest_allocation.aid, source_allocation.box, dest_allocation.box, live_copy_region, buffer.elem_size);
 			if(m_recorder != nullptr) {

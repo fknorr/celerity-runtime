@@ -525,3 +525,54 @@ TEST_CASE("oddly-shaped resize copies generate a single region-copy instruction"
 	const auto copy = all_instrs.select_unique<copy_instruction_record>();
 	CHECK(copy->copy_region == region_cast<3>(region_difference(box(id(0, 0), id(128, 256)), box(id(64, 64), id(192, 192)))));
 }
+
+TEST_CASE("fully overwriting an allocated region which requires a resize does not generate copy instructions",
+    "[instruction_graph_generator][instruction-graph][memory]") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
+	auto buf = ictx.create_buffer<float, 1>(32);
+	ictx.device_compute(range(1)).name("write 1st half").discard_write(buf, acc::fixed<1>({0, 16})).submit();
+	ictx.device_compute(range(1)).name("write 2nd half").discard_write(buf, acc::fixed<1>({0, 32})).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	CHECK(all_instrs.count<copy_instruction_record>() == 0);
+
+	CHECK(all_instrs.select_unique("write 1st half").is_concurrent_with(all_instrs.select_unique("write 2nd half")));
+}
+
+TEST_CASE("resize-copy instructions are only generated from allocations that are not fully overwritten in the same task",
+    "[instruction_graph_generator][instruction-graph][memory]") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
+	auto buf = ictx.create_buffer<float, 1>(32);
+	// trigger two separate allocations for the same buffer and memory
+	ictx.device_compute(range(1)).name("alloc 1st").discard_write(buf, acc::fixed<1>({0, 16})).submit();
+	ictx.device_compute(range(1)).name("alloc 2nd").discard_write(buf, acc::fixed<1>({16, 16})).submit();
+	// resize to the full buffer range, but only read from the first allocation and discard the second
+	ictx.device_compute(range(1)).name("resize").read(buf, acc::fixed<1>({0, 8})).discard_write(buf, acc::fixed<1>({8, 24})).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto alloc_1st = all_instrs.select_unique<alloc_instruction_record>(
+	    [](const alloc_instruction_record& alloc) { return alloc.buffer_allocation->box == box_cast<3>(box<1>(0, 16)); });
+	const auto alloc_2nd = all_instrs.select_unique<alloc_instruction_record>(
+	    [](const alloc_instruction_record& alloc) { return alloc.buffer_allocation->box == box_cast<3>(box<1>(16, 32)); });
+	const auto resize_copy_from_1st = all_instrs.select_unique<copy_instruction_record>();
+	CHECK(resize_copy_from_1st->source_allocation == alloc_1st->allocation_id);
+
+	CHECK(all_instrs.select_unique("alloc 2nd").is_concurrent_with(all_instrs.select_unique("resize")));
+}
+
+TEST_CASE("TODO this was the first iteration of the test case above, but we don't seem to handle overlapping read + discard_write properly",
+    "[instruction_graph_generator][instruction-graph][memory]") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 1 /* num devices */);
+	auto buf = ictx.create_buffer<float, 1>(32);
+	// trigger two separate allocations for the same buffer and memory
+	ictx.device_compute(range(1)).name("init").discard_write(buf, acc::fixed<1>({0, 8})).discard_write(buf, acc::fixed<1>({16, 8})).submit();
+	// resize to the full buffer range, but only read from the first allocation and discard the second
+	ictx.device_compute(range(1)).name("resize").read(buf, acc::fixed<1>({0, 8})).discard_write(buf, acc::all()).submit();
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	CHECK(all_instrs.count<copy_instruction_record>() > 0); // TODO I believe there should be a resize - talk to @psalz about this
+}
