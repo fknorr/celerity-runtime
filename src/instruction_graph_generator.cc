@@ -1706,50 +1706,61 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 
 void instruction_graph_generator::impl::compile_fence_command(batch& command_batch, const fence_command& fcmd) {
 	const auto& tsk = *m_tm->get_task(fcmd.get_tid());
+	assert(tsk.get_reductions().empty());
 
 	const auto& bam = tsk.get_buffer_access_map();
 	const auto& sem = tsk.get_side_effect_map();
 	assert(bam.get_num_accesses() + sem.size() == 1);
 
-	for(const auto bid : bam.get_accessed_buffers()) {
+	if(bam.get_num_accesses() != 0) {
 		// fences encode their buffer requirements through buffer_access_map with a fixed range mapper (this is rather ugly)
-		const subrange<3> local_sr{};
-		const std::vector chunks{localized_chunk{host_memory_id, local_sr}};
-		assert(tsk.get_reductions().empty()); // it doesn't matter what we pass to is_reduction_initializer next
-
-		// We make the host buffer coherent first in order to apply pending await-pushes.
-		// TODO this enforces a contiguous host-buffer allocation which may cause unnecessary resizes.
-		satisfy_buffer_requirements(command_batch, bid, tsk, local_sr, false /* is_reduction_initializer */, chunks);
-
-		const auto region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros);
-		assert(region.get_boxes().size() == 1); // the user allocation exactly fits the fence box
-		const auto fence_box = region.get_boxes().front();
-		// TODO explicitly verify support for empty-range buffer fences
-
-		auto& buffer = m_buffers.at(bid);
-		const auto host_buffer_allocation = buffer.memories[host_memory_id].find_contiguous_allocation(fence_box);
-		assert(host_buffer_allocation != nullptr);
+		const auto bid = *bam.get_accessed_buffers().begin();
+		const auto fence_region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros);
+		const auto fence_box = !fence_region.empty() ? fence_region.get_boxes().front() : box<3>();
 
 		const auto user_allocation_id = tsk.get_fence_promise()->get_user_allocation_id();
+		auto& buffer = m_buffers.at(bid);
 
-		const auto copy_instr = create<copy_instruction>(
-		    command_batch, host_buffer_allocation->aid, user_allocation_id, host_buffer_allocation->box, fence_box, fence_box, buffer.elem_size);
-		if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::fence, bid, buffer.debug_name); }
+		copy_instruction* copy_instr = nullptr;
+		// gracefully handle empty-range buffer fences
+		if(!fence_box.empty()) {
+			// We make the host buffer coherent first in order to apply pending await-pushes.
+			// TODO this enforces a contiguous host-buffer allocation which may cause unnecessary resizes.
+			const std::vector chunks{localized_chunk{host_memory_id, {}}};
+			satisfy_buffer_requirements(command_batch, bid, tsk, {}, false /* is_reduction_initializer: irrelevant */, chunks);
 
-		read_from_allocation(copy_instr, *host_buffer_allocation, fence_box);
+			const auto host_buffer_allocation = buffer.memories[host_memory_id].find_contiguous_allocation(fence_box);
+			assert(host_buffer_allocation != nullptr);
+
+			copy_instr = create<copy_instruction>(
+			    command_batch, host_buffer_allocation->aid, user_allocation_id, host_buffer_allocation->box, fence_box, fence_box, buffer.elem_size);
+			if(m_recorder != nullptr) {
+				*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::fence, bid, buffer.debug_name);
+			}
+
+			read_from_allocation(copy_instr, *host_buffer_allocation, fence_box);
+		}
 
 		const auto fence_instr = create<fence_instruction>(command_batch, tsk.get_fence_promise());
 		if(m_recorder != nullptr) {
 			*m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), bid, buffer.debug_name, fence_box.get_subrange());
 		}
 
-		add_dependency(fence_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
+		if(!fence_box.empty()) {
+			add_dependency(fence_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
+		} else {
+			// an empty-range buffer fence has no data dependencies but must still be executed to fulfill its promise - attach it to the current epoch.
+			add_dependency(fence_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
+		}
 
 		// we will just assume that the runtime does not intend to re-use this allocation
 		m_unreferenced_user_allocations.push_back(user_allocation_id);
 	}
 
-	for(const auto [hoid, _] : sem) {
+	if(!sem.empty()) {
+		// host-object fences encode their host-object id in the task side effect map (which is also very ugly)
+		const auto [hoid, _] = *sem.begin();
+
 		auto& obj = m_host_objects.at(hoid);
 		const auto fence_instr = create<fence_instruction>(command_batch, tsk.get_fence_promise());
 		if(m_recorder != nullptr) { *m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), hoid); }

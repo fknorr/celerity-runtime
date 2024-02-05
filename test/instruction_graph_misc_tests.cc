@@ -177,6 +177,34 @@ TEMPLATE_TEST_CASE_SIG("buffer fences export data to user memory", "[instruction
 	CHECK(staging_copy->buffer_id == buf.get_id());
 }
 
+TEST_CASE("instruction_graph_generator gracefully handles empty-range buffer fences", "[instruction_graph_generator][instruction-graph][fence]") {
+	const auto local_nid = GENERATE(values<node_id>({0, 1}));
+
+	test_utils::idag_test_context ictx(2 /* nodes */, local_nid, 1 /* devices */);
+	auto buf = ictx.create_buffer<int>(range(256));
+	ictx.device_compute(buf.get_range()).discard_write(buf, acc::one_to_one()).submit();
+	ictx.fence(buf, subrange<1>());
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+
+	const auto init_epoch = all_instrs.select_unique(task_manager::initial_epoch_task);
+	const auto fence = all_instrs.select_unique<fence_instruction_record>();
+	const auto shutdown_epoch = all_instrs.select_unique<epoch_instruction_record>(
+	    [](const epoch_instruction_record& einstr) { return einstr.epoch_action == epoch_action::shutdown; });
+	CHECK(fence.predecessors() == init_epoch);
+	CHECK(fence.successors() == shutdown_epoch);
+
+	REQUIRE(shutdown_epoch->garbage.user_allocations.size() == 1);
+	CHECK(shutdown_epoch->garbage.user_allocations.front().get_memory_id() == user_memory_id);
+
+	CHECK(all_instrs.count<send_instruction_record>() == 0);
+	CHECK(all_instrs.count<receive_instruction_record>() == 0);
+	CHECK(all_instrs.count<split_receive_instruction_record>() == 0);
+	CHECK(all_instrs.count<await_receive_instruction_record>() == 0);
+	CHECK(all_instrs.count<copy_instruction_record>() == 0);
+}
+
 TEST_CASE("horizons and epochs notify the executor of unreferenced user allocations after buffer fences",
     "[instruction_graph_generator][instruction-graph][fence]") //
 {
