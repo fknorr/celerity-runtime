@@ -42,6 +42,8 @@ TEST_CASE_METHOD(test_utils::sycl_queue_fixture, "SYCL has working simple scalar
 	    .wait();
 
 	CHECK(static_cast<size_t>(*buf) == N);
+
+	sycl::free(buf, get_sycl_queue());
 }
 
 TEST_CASE("SYCL implements by-value equality-comparison of device information", "[sycl][device-selection][!mayfail]") {
