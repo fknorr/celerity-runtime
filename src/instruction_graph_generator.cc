@@ -164,6 +164,7 @@ restart:
 constexpr auto max_num_memories = instruction_graph_generator::max_num_memories;
 using memory_mask = instruction_graph_generator::memory_mask;
 
+/// Starting from `first`, selects the next memory_id which is set in `location`.
 memory_id next_location(const memory_mask& location, memory_id first) {
 	for(size_t i = 0; i < max_num_memories; ++i) {
 		const memory_id mem = (first + i) % max_num_memories;
@@ -177,103 +178,97 @@ struct memory_state {
 	raw_allocation_id next_raw_aid = 1; // 0 is reserved for null_allocation_id
 };
 
-/// Per-allocation state for a single buffer. This is where we track last-writer instructions and access fronts.
-struct buffer_allocation_state {
-	struct access_front {
-		gch::small_vector<instruction*> instructions; // ordered by id to allow equality comparison
-		enum { allocate, read, write } mode = allocate;
+class access_front {
+  public:
+	enum mode { none, allocate, read, write };
 
-		friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.instructions == rhs.instructions && lhs.mode == rhs.mode; }
-		friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
+	access_front() = default;
+	explicit access_front(const mode mode) : m_mode(mode) {}
+	explicit access_front(instruction* const instr, const mode mode) : m_instructions{instr}, m_mode(mode) {}
+
+	void add_instruction(instruction* const instr) {
+		// we insert instructions as soon as they are generated, so inserting at the end keeps the vector sorted
+		m_instructions.push_back(instr);
+		assert(std::is_sorted(m_instructions.begin(), m_instructions.end(), instruction_id_less()));
+	}
+
+	[[nodiscard]] access_front apply_epoch(instruction* const epoch) const {
+		const auto first_retained = std::upper_bound(m_instructions.begin(), m_instructions.end(), epoch, instruction_id_less());
+		const auto last_retained = m_instructions.end();
+
+		// only include the new epoch in the access front if it in fact subsumes another instruction
+		if(first_retained == m_instructions.begin()) return *this;
+
+		access_front pruned(m_mode);
+		pruned.m_instructions.resize(1 + static_cast<size_t>(std::distance(first_retained, last_retained)));
+		pruned.m_instructions.front() = epoch;
+		std::copy(first_retained, last_retained, std::next(pruned.m_instructions.begin()));
+		assert(std::is_sorted(pruned.m_instructions.begin(), pruned.m_instructions.end(), instruction_id_less()));
+		return pruned;
 	};
 
+	const gch::small_vector<instruction*>& get_instructions() const { return m_instructions; }
+	mode get_mode() const { return m_mode; }
+
+	friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.m_instructions == rhs.m_instructions && lhs.m_mode == rhs.m_mode; }
+	friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
+
+  private:
+	gch::small_vector<instruction*> m_instructions; // ordered by id to allow equality comparison
+	mode m_mode = none;
+};
+
+/// Per-allocation state for a single buffer. This is where we track last-writer instructions and access fronts.
+struct buffer_allocation_state {
 	allocation_id aid;
-	detail::box<3> box;                                ///< in virtual-buffer coordinates
-	region_map<access_front> last_writers;             ///< in virtual-buffer coordinates
-	region_map<access_front> last_concurrent_accesses; ///< in virtual-buffer coordinates
+	detail::box<3> box;                                ///< in buffer coordinates
+	region_map<access_front> last_writers;             ///< in buffer coordinates
+	region_map<access_front> last_concurrent_accesses; ///< in buffer coordinates
 
 	explicit buffer_allocation_state(const allocation_id aid, alloc_instruction* const ainstr /* optional: null for user allocations */,
 	    const detail::box<3>& allocated_box, const range<3>& buffer_range)
-	    : aid(aid), box(allocated_box), last_writers(allocated_box), last_concurrent_accesses(allocated_box) {
-		if(ainstr != nullptr) {
-			last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
-			last_concurrent_accesses.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
-		}
-	}
+	    : aid(aid), box(allocated_box), //
+	      last_writers(allocated_box, ainstr != nullptr ? access_front(ainstr, access_front::allocate) : access_front()),
+	      last_concurrent_accesses(allocated_box, ainstr != nullptr ? access_front(ainstr, access_front::allocate) : access_front()) {}
 
 	template <typename BoxOrRegion>
-	void commit_read(const BoxOrRegion& box_or_region, instruction* const instr) {
+	void track_concurrent_read(const BoxOrRegion& box_or_region, instruction* const instr) {
 		if(box_or_region.empty()) return;
 		for(auto& [box, front] : last_concurrent_accesses.get_region_values(box_or_region)) {
-			if(front.mode == access_front::read) {
-				// we call record_read as soon as the writing instructions is generated, so inserting at the end keeps the vector sorted
-				assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
-				front.instructions.push_back(instr);
+			if(front.get_mode() == access_front::read) {
+				front.add_instruction(instr);
 			} else {
-				front = {{instr}, access_front::read};
+				front = access_front(instr, access_front::read);
 			}
-			assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
 			last_concurrent_accesses.update_region(box, front);
 		}
 	}
 
-	void commit_write(const detail::box<3>& box, instruction* const instr) {
-		if(box.empty()) return;
-		last_writers.update_box(box, access_front{{instr}, access_front::write});
-		last_concurrent_accesses.update_box(box, access_front{{instr}, access_front::write});
-	}
-
-	void commit_write(const region<3>& region, instruction* const instr) {
+	void track_atomic_write(const region<3>& region, instruction* const instr) {
 		if(region.empty()) return;
-		last_writers.update_region(region, access_front{{instr}, access_front::write});
-		last_concurrent_accesses.update_region(region, access_front{{instr}, access_front::write});
+		last_writers.update_region(region, access_front(instr, access_front::write));
+		last_concurrent_accesses.update_region(region, access_front(instr, access_front::write));
 	}
 
-	void begin_combined_write(const detail::box<3>& box) {
-		if(box.empty()) return;
-		last_writers.update_box(box, access_front{{}, access_front::write});
-		last_concurrent_accesses.update_box(box, access_front{{}, access_front::write});
-	}
-
-	void begin_combined_write(const region<3>& region) {
+	void begin_overlapping_writes(const region<3>& region) {
 		if(region.empty()) return;
-		last_writers.update_region(region, access_front{{}, access_front::write});
-		last_concurrent_accesses.update_region(region, access_front{{}, access_front::write});
+		last_writers.update_region(region, access_front(access_front::write));
+		last_concurrent_accesses.update_region(region, access_front(access_front::write));
 	}
 
-	// TODO (all commit / read / write fns): naming?
-	template <typename BoxOrRegion>
-	void commit_combined_write(const BoxOrRegion& box_or_region, instruction* const instr) {
-		if(box_or_region.empty()) return;
-		for(auto& [box, front] : last_writers.get_region_values(box_or_region)) {
-			assert(front.mode == access_front::write); // must call begin_overlapping_write first
-			// we call commit() in order of generated instructions, so push_back is a sorted insert
-			assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
-			front.instructions.push_back(instr);
-			assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
+	void track_overlapping_write(const region<3>& region, instruction* const instr) {
+		if(region.empty()) return;
+		for(auto& [box, front] : last_writers.get_region_values(region)) {
+			assert(front.get_mode() == access_front::write); // must call begin_concurrent_writes first
+			front.add_instruction(instr);
 			last_writers.update_region(box, front);
 			last_concurrent_accesses.update_region(box, front);
 		}
 	}
 
 	void apply_epoch(instruction* const epoch) {
-		const auto apply_epoch_to_front = [epoch](const access_front& old_front) {
-			const auto first_retained = std::upper_bound(old_front.instructions.begin(), old_front.instructions.end(), epoch, instruction_id_less());
-			const auto last_retained = old_front.instructions.end();
-
-			// only include the new epoch in the access front if it in fact subsumes another instruction
-			if(first_retained == old_front.instructions.begin()) return old_front;
-
-			access_front new_front;
-			new_front.mode = old_front.mode;
-			new_front.instructions.resize(1 + static_cast<size_t>(std::distance(first_retained, last_retained)));
-			new_front.instructions.front() = epoch;
-			std::copy(first_retained, last_retained, std::next(new_front.instructions.begin()));
-			assert(std::is_sorted(new_front.instructions.begin(), new_front.instructions.end(), instruction_id_less()));
-			return new_front;
-		};
-		last_writers.apply_to_values(apply_epoch_to_front);
-		last_concurrent_accesses.apply_to_values(apply_epoch_to_front);
+		last_writers.apply_to_values([epoch](const access_front& front) { return front.apply_epoch(epoch); });
+		last_concurrent_accesses.apply_to_values([epoch](const access_front& front) { return front.apply_epoch(epoch); });
 	}
 };
 
@@ -309,28 +304,28 @@ struct buffer_memory_state {
 	}
 };
 
+/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
+struct region_receive {
+	task_id consumer_tid;
+	region<3> received_region;
+	box_vector<3> required_contiguous_allocations;
+
+	region_receive(const task_id consumer_tid, region<3> received_region, box_vector<3> required_contiguous_allocations)
+	    : consumer_tid(consumer_tid), received_region(std::move(received_region)), required_contiguous_allocations(std::move(required_contiguous_allocations)) {
+	}
+};
+
+struct gather_receive {
+	task_id consumer_tid;
+	reduction_id rid;
+	box<3> gather_box;
+
+	gather_receive(const task_id consumer_tid, const reduction_id rid, const box<3> gather_box)
+	    : consumer_tid(consumer_tid), rid(rid), gather_box(gather_box) {}
+};
+
 /// State for a single buffer.
 struct buffer_state {
-	/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
-	struct region_receive {
-		task_id consumer_tid;
-		region<3> received_region;
-		box_vector<3> required_contiguous_allocations;
-
-		region_receive(const task_id consumer_tid, region<3> received_region, box_vector<3> required_contiguous_allocations)
-		    : consumer_tid(consumer_tid), received_region(std::move(received_region)),
-		      required_contiguous_allocations(std::move(required_contiguous_allocations)) {}
-	};
-
-	struct gather_receive {
-		task_id consumer_tid;
-		reduction_id rid;
-		box<3> gather_box;
-
-		gather_receive(const task_id consumer_tid, const reduction_id rid, const box<3> gather_box)
-		    : consumer_tid(consumer_tid), rid(rid), gather_box(gather_box) {}
-	};
-
 	std::string debug_name;
 	celerity::range<3> range;
 	size_t elem_size;
@@ -440,13 +435,6 @@ class impl {
 	void compile(const abstract_command& cmd);
 
   private:
-	using batch = instruction_graph_generator_detail::batch;
-	using buffer_allocation_state = instruction_graph_generator_detail::buffer_allocation_state;
-	using access_front = instruction_graph_generator_detail::buffer_allocation_state::access_front;
-	using localized_chunk = instruction_graph_generator_detail::localized_chunk;
-	using gather_receive = instruction_graph_generator_detail::buffer_state::gather_receive;
-	using region_receive = instruction_graph_generator_detail::buffer_state::region_receive;
-
 	inline static const box<3> scalar_reduction_box{zeros, ones};
 
 	// construction parameters (immutable)
@@ -574,7 +562,7 @@ void impl::create_buffer(const buffer_id bid, const range<3>& range, const size_
 		auto& memory = buffer.memories[user_memory_id];
 		auto& allocation = memory.allocations.emplace_back(user_aid, nullptr /* alloc_instruction */, entire_buffer, buffer.range);
 
-		allocation.commit_write(entire_buffer, m_last_epoch);
+		allocation.track_atomic_write(entire_buffer, m_last_epoch);
 		buffer.commit_original_write(entire_buffer, m_last_epoch, user_memory_id);
 	}
 }
@@ -663,9 +651,9 @@ template <typename BoxOrRegion>
 void impl::add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
     const instruction_dependency_origin record_origin_for_initialized_data) {
 	for(const auto& [box, front] : allocation.last_writers.get_region_values(region)) {
-		for(const auto writer : front.instructions) {
+		for(const auto writer : front.get_instructions()) {
 			add_dependency(accessing_instruction, writer,
-			    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_initialized_data);
+			    front.get_mode() == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_initialized_data);
 		}
 	}
 }
@@ -673,16 +661,16 @@ void impl::add_dependencies_on_last_writers(instruction* const accessing_instruc
 template <typename BoxOrRegion>
 void impl::read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
 	add_dependencies_on_last_writers(reading_instruction, allocation, region, instruction_dependency_origin::read_from_allocation);
-	allocation.commit_read(region, reading_instruction);
+	allocation.track_concurrent_read(region, reading_instruction);
 }
 
 template <typename BoxOrRegion>
 void impl::add_dependencies_on_access_front(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
     const instruction_dependency_origin record_origin_for_read_write_front) {
 	for(const auto& [box, front] : allocation.last_concurrent_accesses.get_region_values(region)) {
-		for(const auto dep_instr : front.instructions) {
+		for(const auto dep_instr : front.get_instructions()) {
 			add_dependency(accessing_instruction, dep_instr,
-			    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_read_write_front);
+			    front.get_mode() == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_read_write_front);
 		}
 	}
 }
@@ -690,7 +678,7 @@ void impl::add_dependencies_on_access_front(instruction* const accessing_instruc
 template <typename BoxOrRegion>
 void impl::write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
 	add_dependencies_on_access_front(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocation);
-	allocation.commit_write(region, writing_instruction);
+	allocation.track_atomic_write(region, writing_instruction);
 }
 
 void impl::apply_epoch(instruction* const epoch) {
@@ -879,7 +867,7 @@ void impl::commit_pending_region_receive(
 
 				add_dependency(await_instr, split_recv_instr, instruction_dependency_origin::split_receive);
 
-				alloc->commit_write(await_region, await_instr);
+				alloc->track_atomic_write(await_region, await_instr);
 				buffer.original_writers.update_region(await_region, await_instr);
 			}
 		} else {
@@ -1443,7 +1431,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 			assert(instr.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
-				alloc.begin_combined_write(region_intersection(alloc.box, rw.writes));
+				alloc.begin_overlapping_writes(region_intersection(alloc.box, rw.writes));
 			}
 		}
 	}
@@ -1460,8 +1448,8 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 			// TODO can we merge this with loop 5) and use read_from_allocation / write_to_allocation?
 			// if so, have similar functions for side effects / collective groups
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
-				alloc.commit_read(region_intersection(alloc.box, rw.reads), instr.instruction);
-				alloc.commit_combined_write(region_intersection(alloc.box, rw.writes), instr.instruction);
+				alloc.track_concurrent_read(region_intersection(alloc.box, rw.reads), instr.instruction);
+				alloc.track_overlapping_write(region_intersection(alloc.box, rw.writes), instr.instruction);
 			}
 
 			buffer.commit_original_write(rw.writes, instr.instruction, instr.memory_id);
