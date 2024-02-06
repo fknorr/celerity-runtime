@@ -405,7 +405,9 @@ struct host_object_state {
 
 struct collective_group_state {
 	/// Collective host tasks will be serialized wrt/ the collective group to ensure that the user can freely submit MPI collectives on their communicator.
-	instruction* last_host_task = nullptr;
+	instruction* last_host_task;
+
+	explicit collective_group_state(instruction* const last_host_task) : last_host_task(last_host_task) {}
 
 	/// Replace all tracked instructions that older than `epoch` with `epoch`.
 	void apply_epoch(instruction* const epoch) {
