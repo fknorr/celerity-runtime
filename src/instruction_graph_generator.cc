@@ -20,6 +20,9 @@
 
 namespace celerity::detail::instruction_graph_generator_detail {
 
+constexpr auto max_num_memories = instruction_graph_generator::max_num_memories;
+using memory_mask = instruction_graph_generator::memory_mask;
+
 /// MPI, our only "production" communicator implementation, limits the extent of send/receive operations to INT_MAX elements in each dimension. Since we do not
 /// require this value anywhere else we define it in instruction_graph_generator.cc, even though it does not logically originate here.
 constexpr size_t communicator_max_coordinate = INT_MAX;
@@ -161,6 +164,243 @@ restart:
 	}
 }
 
+/// `allocation_id`s are "namespaced" to their memory ID, so we maintain the next `raw_allocation_id` for each memory separately.
+struct memory_state {
+	raw_allocation_id next_raw_aid = 1; // 0 is reserved for null_allocation_id
+};
+
+/// Per-allocation state for a single buffer. This is where we track last-writer instructions and access fronts.
+struct buffer_allocation_state {
+	struct access_front {
+		gch::small_vector<instruction*> instructions; // ordered by id to allow equality comparison
+		enum { allocate, read, write } mode = allocate;
+
+		friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.instructions == rhs.instructions && lhs.mode == rhs.mode; }
+		friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
+	};
+
+	allocation_id aid;
+	detail::box<3> box;                                ///< in virtual-buffer coordinates
+	region_map<access_front> last_writers;             ///< in virtual-buffer coordinates
+	region_map<access_front> last_concurrent_accesses; ///< in virtual-buffer coordinates
+
+	explicit buffer_allocation_state(const allocation_id aid, alloc_instruction* const ainstr /* optional: null for user allocations */,
+	    const detail::box<3>& allocated_box, const range<3>& buffer_range)
+	    : aid(aid), box(allocated_box), last_writers(allocated_box), last_concurrent_accesses(allocated_box) {
+		if(ainstr != nullptr) {
+			last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
+			last_concurrent_accesses.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
+		}
+	}
+
+	template <typename BoxOrRegion>
+	void commit_read(const BoxOrRegion& box_or_region, instruction* const instr) {
+		if(box_or_region.empty()) return;
+		for(auto& [box, front] : last_concurrent_accesses.get_region_values(box_or_region)) {
+			if(front.mode == access_front::read) {
+				// we call record_read as soon as the writing instructions is generated, so inserting at the end keeps the vector sorted
+				assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
+				front.instructions.push_back(instr);
+			} else {
+				front = {{instr}, access_front::read};
+			}
+			assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
+			last_concurrent_accesses.update_region(box, front);
+		}
+	}
+
+	void commit_write(const detail::box<3>& box, instruction* const instr) {
+		if(box.empty()) return;
+		last_writers.update_box(box, access_front{{instr}, access_front::write});
+		last_concurrent_accesses.update_box(box, access_front{{instr}, access_front::write});
+	}
+
+	void commit_write(const region<3>& region, instruction* const instr) {
+		if(region.empty()) return;
+		last_writers.update_region(region, access_front{{instr}, access_front::write});
+		last_concurrent_accesses.update_region(region, access_front{{instr}, access_front::write});
+	}
+
+	void begin_combined_write(const detail::box<3>& box) {
+		if(box.empty()) return;
+		last_writers.update_box(box, access_front{{}, access_front::write});
+		last_concurrent_accesses.update_box(box, access_front{{}, access_front::write});
+	}
+
+	void begin_combined_write(const region<3>& region) {
+		if(region.empty()) return;
+		last_writers.update_region(region, access_front{{}, access_front::write});
+		last_concurrent_accesses.update_region(region, access_front{{}, access_front::write});
+	}
+
+	// TODO (all commit / read / write fns): naming?
+	template <typename BoxOrRegion>
+	void commit_combined_write(const BoxOrRegion& box_or_region, instruction* const instr) {
+		if(box_or_region.empty()) return;
+		for(auto& [box, front] : last_writers.get_region_values(box_or_region)) {
+			assert(front.mode == access_front::write); // must call begin_overlapping_write first
+			// we call commit() in order of generated instructions, so push_back is a sorted insert
+			assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
+			front.instructions.push_back(instr);
+			assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
+			last_writers.update_region(box, front);
+			last_concurrent_accesses.update_region(box, front);
+		}
+	}
+
+	void apply_epoch(instruction* const epoch) {
+		const auto apply_epoch_to_front = [epoch](const access_front& old_front) {
+			const auto first_retained = std::upper_bound(old_front.instructions.begin(), old_front.instructions.end(), epoch, instruction_id_less());
+			const auto last_retained = old_front.instructions.end();
+
+			// only include the new epoch in the access front if it in fact subsumes another instruction
+			if(first_retained == old_front.instructions.begin()) return old_front;
+
+			access_front new_front;
+			new_front.mode = old_front.mode;
+			new_front.instructions.resize(1 + static_cast<size_t>(std::distance(first_retained, last_retained)));
+			new_front.instructions.front() = epoch;
+			std::copy(first_retained, last_retained, std::next(new_front.instructions.begin()));
+			assert(std::is_sorted(new_front.instructions.begin(), new_front.instructions.end(), instruction_id_less()));
+			return new_front;
+		};
+		last_writers.apply_to_values(apply_epoch_to_front);
+		last_concurrent_accesses.apply_to_values(apply_epoch_to_front);
+	}
+};
+
+/// Per-memory state for a single buffer. Dependencies and last writers are tracked on the contained allocations.
+struct buffer_memory_state {
+	// TODO bound the number of allocations per buffer in order to avoid runaway tracking overhead (similar to horizons)
+	// TODO evaluate if it ever makes sense to use a region_map here, or if we're better off expecting very few allocations and sticking to a vector here
+	std::vector<buffer_allocation_state> allocations; // disjoint
+
+	const buffer_allocation_state& get_allocation(const allocation_id aid) const {
+		const auto it = std::find_if(allocations.begin(), allocations.end(), [=](const buffer_allocation_state& a) { return a.aid == aid; });
+		assert(it != allocations.end());
+		return *it;
+	}
+
+	buffer_allocation_state& get_allocation(const allocation_id aid) { return const_cast<buffer_allocation_state&>(std::as_const(*this).get_allocation(aid)); }
+
+	const buffer_allocation_state* find_contiguous_allocation(const box<3>& box) const {
+		const auto it = std::find_if(allocations.begin(), allocations.end(), [&](const buffer_allocation_state& a) { return a.box.covers(box); });
+		return it != allocations.end() ? &*it : nullptr;
+	}
+
+	buffer_allocation_state* find_contiguous_allocation(const box<3>& box) {
+		return const_cast<buffer_allocation_state*>(std::as_const(*this).find_contiguous_allocation(box));
+	}
+
+	bool is_allocated_contiguously(const box<3>& box) const { return find_contiguous_allocation(box) != nullptr; }
+
+	void apply_epoch(instruction* const epoch) {
+		for(auto& alloc : allocations) {
+			alloc.apply_epoch(epoch);
+		}
+	}
+};
+
+/// State for a single buffer.
+struct buffer_state {
+	/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
+	struct region_receive {
+		task_id consumer_tid;
+		region<3> received_region;
+		box_vector<3> required_contiguous_allocations;
+
+		region_receive(const task_id consumer_tid, region<3> received_region, box_vector<3> required_contiguous_allocations)
+		    : consumer_tid(consumer_tid), received_region(std::move(received_region)),
+		      required_contiguous_allocations(std::move(required_contiguous_allocations)) {}
+	};
+
+	struct gather_receive {
+		task_id consumer_tid;
+		reduction_id rid;
+		box<3> gather_box;
+
+		gather_receive(const task_id consumer_tid, const reduction_id rid, const box<3> gather_box)
+		    : consumer_tid(consumer_tid), rid(rid), gather_box(gather_box) {}
+	};
+
+	std::string debug_name;
+	celerity::range<3> range;
+	size_t elem_size;
+	size_t elem_align;
+	dense_map<memory_id, buffer_memory_state> memories;
+	region_map<instruction_graph_generator::memory_mask> up_to_date_memories; // TODO rename for vs original_write_memories?
+	region_map<instruction*> original_writers;                                // TODO explain how and why this duplicates per_allocation_data::last_writers
+	region_map<memory_id> original_write_memories;                            // only meaningful if newest_data_location[box] is non-empty
+
+	// We store pending receives (await push regions) in a vector instead of a region map since we must process their entire regions en-bloc rather than on
+	// a per-element basis.
+	std::vector<region_receive> pending_receives;
+	std::vector<gather_receive> pending_gathers;
+
+	explicit buffer_state(const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
+	    : range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), up_to_date_memories(range), original_writers(range),
+	      original_write_memories(range) {}
+
+	void commit_original_write(const region<3>& region, instruction* const instr, const memory_id mid) {
+		original_writers.update_region(region, instr);
+		original_write_memories.update_region(region, mid);
+		up_to_date_memories.update_region(region, memory_mask().set(mid));
+	}
+
+	void apply_epoch(instruction* const epoch) {
+		for(auto& memory : memories) {
+			memory.apply_epoch(epoch);
+		}
+		original_writers.apply_to_values(
+		    [epoch](instruction* const instr) -> instruction* { return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr; });
+
+		// This is an opportune point to verify that all await-pushes are fully consumed eventually. On epoch application,
+		// original_writers[*].await_receives potentially points to instructions before the new epoch, but when compiling a horizon or epoch command, all
+		// previous await-pushes should have been consumed by the task command they were generated for.
+		assert(pending_receives.empty());
+		assert(pending_gathers.empty());
+	}
+};
+
+struct host_object_state {
+	bool owns_instance;
+	instruction* last_side_effect = nullptr;
+
+	explicit host_object_state(const bool owns_instance, instruction* const last_epoch) : owns_instance(owns_instance), last_side_effect(last_epoch) {}
+
+	void apply_epoch(instruction* const epoch) {
+		if(last_side_effect != nullptr && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
+	}
+};
+
+struct collective_group_state {
+	instruction* last_host_task = nullptr;
+
+	void apply_epoch(instruction* const epoch) {
+		if(last_host_task != nullptr && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
+	}
+};
+
+/// We submit the set of instructions and pilots generated for a call to compile() en-bloc to relieve contention on the executor queue lock. To collect all
+/// instructions that are generated in the call stack without polluting internal state, we pass a `batch&` output parameter to any function that
+/// transitively generates instructions or pilots.
+struct batch { // NOLINT(cppcoreguidelines-special-member-functions) (do not complain about the asserting destructor)
+	std::vector<const instruction*> generated_instructions;
+	std::vector<outbound_pilot> generated_pilots;
+	int base_priority = 0;
+
+#ifndef NDEBUG
+	~batch() {
+		if(std::uncaught_exceptions() == 0) { assert(generated_instructions.empty() && generated_pilots.empty() && "unflushed batch detected"); }
+	}
+#endif
+};
+
+struct localized_chunk {
+	detail::memory_id memory_id = host_memory_id;
+	box<3> execution_range;
+};
+
 // We can probably employ exceedingly smart heuristics to prioritize instructions in the executor, but for the time being, we stick with a simple mapping based
 // on instruction types alone.
 
@@ -180,14 +420,10 @@ template <> constexpr int instruction_type_priority<epoch_instruction> = 5; // e
 template <> constexpr int instruction_type_priority<horizon_instruction> = 5;
 // clang-format on
 
-} // namespace celerity::detail::instruction_graph_generator_detail
-
-namespace celerity::detail {
-
-class instruction_graph_generator::impl {
+class impl {
   public:
-	impl(const task_manager& tm, size_t num_nods, node_id local_nid, system_info system, instruction_graph& idag, delegate* dlg, instruction_recorder* recorder,
-	    const policy_set& policy);
+	impl(const task_manager& tm, size_t num_nods, node_id local_nid, instruction_graph_generator::system_info system, instruction_graph& idag,
+	    instruction_graph_generator::delegate* dlg, instruction_recorder* recorder, const instruction_graph_generator::policy_set& policy);
 
 	void create_buffer(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid = null_allocation_id);
 
@@ -202,244 +438,12 @@ class instruction_graph_generator::impl {
 	void compile(const abstract_command& cmd);
 
   private:
-	/// We submit the set of instructions and pilots generated for a call to compile() en-bloc to relieve contention on the executor queue lock. To collect all
-	/// instructions that are generated in the call stack without polluting internal state, we pass a `batch&` output parameter to any function that
-	/// transitively generates instructions or pilots.
-	struct batch { // NOLINT(cppcoreguidelines-special-member-functions) (do not complain about the asserting destructor)
-		std::vector<const instruction*> generated_instructions;
-		std::vector<outbound_pilot> generated_pilots;
-		int base_priority = 0;
-
-#ifndef NDEBUG
-		~batch() {
-			if(std::uncaught_exceptions() == 0) { assert(generated_instructions.empty() && generated_pilots.empty() && "unflushed batch detected"); }
-		}
-#endif
-	};
-
-	/// `allocation_id`s are "namespaced" to their memory ID, so we maintain the next `raw_allocation_id` for each memory separately.
-	struct memory_state {
-		raw_allocation_id next_raw_aid = 1; // 0 is reserved for null_allocation_id
-	};
-
-	/// Per-allocation state for a single buffer. This is where we track last-writer instructions and access fronts.
-	struct buffer_allocation_state {
-		struct access_front {
-			gch::small_vector<instruction*> instructions; // ordered by id to allow equality comparison
-			enum { allocate, read, write } mode = allocate;
-
-			friend bool operator==(const access_front& lhs, const access_front& rhs) { return lhs.instructions == rhs.instructions && lhs.mode == rhs.mode; }
-			friend bool operator!=(const access_front& lhs, const access_front& rhs) { return !(lhs == rhs); }
-		};
-
-		allocation_id aid;
-		detail::box<3> box;                                ///< in virtual-buffer coordinates
-		region_map<access_front> last_writers;             ///< in virtual-buffer coordinates
-		region_map<access_front> last_concurrent_accesses; ///< in virtual-buffer coordinates
-
-		explicit buffer_allocation_state(const allocation_id aid, alloc_instruction* const ainstr /* optional: null for user allocations */,
-		    const detail::box<3>& allocated_box, const range<3>& buffer_range)
-		    : aid(aid), box(allocated_box), last_writers(allocated_box), last_concurrent_accesses(allocated_box) {
-			if(ainstr != nullptr) {
-				last_writers.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
-				last_concurrent_accesses.update_box(allocated_box, access_front{{ainstr}, access_front::allocate});
-			}
-		}
-
-		template <typename BoxOrRegion>
-		void commit_read(const BoxOrRegion& box_or_region, instruction* const instr) {
-			if(box_or_region.empty()) return;
-			for(auto& [box, front] : last_concurrent_accesses.get_region_values(box_or_region)) {
-				if(front.mode == access_front::read) {
-					// we call record_read as soon as the writing instructions is generated, so inserting at the end keeps the vector sorted
-					assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
-					front.instructions.push_back(instr);
-				} else {
-					front = {{instr}, access_front::read};
-				}
-				assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
-				last_concurrent_accesses.update_region(box, front);
-			}
-		}
-
-		void commit_write(const detail::box<3>& box, instruction* const instr) {
-			if(box.empty()) return;
-			last_writers.update_box(box, access_front{{instr}, access_front::write});
-			last_concurrent_accesses.update_box(box, access_front{{instr}, access_front::write});
-		}
-
-		void commit_write(const region<3>& region, instruction* const instr) {
-			if(region.empty()) return;
-			last_writers.update_region(region, access_front{{instr}, access_front::write});
-			last_concurrent_accesses.update_region(region, access_front{{instr}, access_front::write});
-		}
-
-		void begin_combined_write(const detail::box<3>& box) {
-			if(box.empty()) return;
-			last_writers.update_box(box, access_front{{}, access_front::write});
-			last_concurrent_accesses.update_box(box, access_front{{}, access_front::write});
-		}
-
-		void begin_combined_write(const region<3>& region) {
-			if(region.empty()) return;
-			last_writers.update_region(region, access_front{{}, access_front::write});
-			last_concurrent_accesses.update_region(region, access_front{{}, access_front::write});
-		}
-
-		// TODO (all commit / read / write fns): naming?
-		template <typename BoxOrRegion>
-		void commit_combined_write(const BoxOrRegion& box_or_region, instruction* const instr) {
-			if(box_or_region.empty()) return;
-			for(auto& [box, front] : last_writers.get_region_values(box_or_region)) {
-				assert(front.mode == access_front::write); // must call begin_overlapping_write first
-				// we call commit() in order of generated instructions, so push_back is a sorted insert
-				assert(front.instructions.empty() || front.instructions.back()->get_id() < instr->get_id());
-				front.instructions.push_back(instr);
-				assert(std::is_sorted(front.instructions.begin(), front.instructions.end(), instruction_id_less()));
-				last_writers.update_region(box, front);
-				last_concurrent_accesses.update_region(box, front);
-			}
-		}
-
-		void apply_epoch(instruction* const epoch) {
-			const auto apply_epoch_to_front = [epoch](const access_front& old_front) {
-				const auto first_retained = std::upper_bound(old_front.instructions.begin(), old_front.instructions.end(), epoch, instruction_id_less());
-				const auto last_retained = old_front.instructions.end();
-
-				// only include the new epoch in the access front if it in fact subsumes another instruction
-				if(first_retained == old_front.instructions.begin()) return old_front;
-
-				access_front new_front;
-				new_front.mode = old_front.mode;
-				new_front.instructions.resize(1 + static_cast<size_t>(std::distance(first_retained, last_retained)));
-				new_front.instructions.front() = epoch;
-				std::copy(first_retained, last_retained, std::next(new_front.instructions.begin()));
-				assert(std::is_sorted(new_front.instructions.begin(), new_front.instructions.end(), instruction_id_less()));
-				return new_front;
-			};
-			last_writers.apply_to_values(apply_epoch_to_front);
-			last_concurrent_accesses.apply_to_values(apply_epoch_to_front);
-		}
-	};
-
-	/// Per-memory state for a single buffer. Dependencies and last writers are tracked on the contained allocations.
-	struct buffer_memory_state {
-		// TODO bound the number of allocations per buffer in order to avoid runaway tracking overhead (similar to horizons)
-		// TODO evaluate if it ever makes sense to use a region_map here, or if we're better off expecting very few allocations and sticking to a vector here
-		std::vector<buffer_allocation_state> allocations; // disjoint
-
-		const buffer_allocation_state& get_allocation(const allocation_id aid) const {
-			const auto it = std::find_if(allocations.begin(), allocations.end(), [=](const buffer_allocation_state& a) { return a.aid == aid; });
-			assert(it != allocations.end());
-			return *it;
-		}
-
-		buffer_allocation_state& get_allocation(const allocation_id aid) {
-			return const_cast<buffer_allocation_state&>(std::as_const(*this).get_allocation(aid));
-		}
-
-		const buffer_allocation_state* find_contiguous_allocation(const box<3>& box) const {
-			const auto it = std::find_if(allocations.begin(), allocations.end(), [&](const buffer_allocation_state& a) { return a.box.covers(box); });
-			return it != allocations.end() ? &*it : nullptr;
-		}
-
-		buffer_allocation_state* find_contiguous_allocation(const box<3>& box) {
-			return const_cast<buffer_allocation_state*>(std::as_const(*this).find_contiguous_allocation(box));
-		}
-
-		bool is_allocated_contiguously(const box<3>& box) const { return find_contiguous_allocation(box) != nullptr; }
-
-		void apply_epoch(instruction* const epoch) {
-			for(auto& alloc : allocations) {
-				alloc.apply_epoch(epoch);
-			}
-		}
-	};
-
-	/// State for a single buffer.
-	struct buffer_state {
-		/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
-		struct region_receive {
-			task_id consumer_tid;
-			region<3> received_region;
-			box_vector<3> required_contiguous_allocations;
-
-			region_receive(const task_id consumer_tid, region<3> received_region, box_vector<3> required_contiguous_allocations)
-			    : consumer_tid(consumer_tid), received_region(std::move(received_region)),
-			      required_contiguous_allocations(std::move(required_contiguous_allocations)) {}
-		};
-
-		struct gather_receive {
-			task_id consumer_tid;
-			reduction_id rid;
-			box<3> gather_box;
-
-			gather_receive(const task_id consumer_tid, const reduction_id rid, const box<3> gather_box)
-			    : consumer_tid(consumer_tid), rid(rid), gather_box(gather_box) {}
-		};
-
-		std::string debug_name;
-		celerity::range<3> range;
-		size_t elem_size;
-		size_t elem_align;
-		dense_map<memory_id, buffer_memory_state> memories;
-		region_map<memory_mask> up_to_date_memories;   // TODO rename for vs original_write_memories?
-		region_map<instruction*> original_writers;     // TODO explain how and why this duplicates per_allocation_data::last_writers
-		region_map<memory_id> original_write_memories; // only meaningful if newest_data_location[box] is non-empty
-
-		// We store pending receives (await push regions) in a vector instead of a region map since we must process their entire regions en-bloc rather than on
-		// a per-element basis.
-		std::vector<region_receive> pending_receives;
-		std::vector<gather_receive> pending_gathers;
-
-		explicit buffer_state(const celerity::range<3>& range, const size_t elem_size, const size_t elem_align, const size_t n_memories)
-		    : range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), up_to_date_memories(range), original_writers(range),
-		      original_write_memories(range) {}
-
-		void commit_original_write(const region<3>& region, instruction* const instr, const memory_id mid) {
-			original_writers.update_region(region, instr);
-			original_write_memories.update_region(region, mid);
-			up_to_date_memories.update_region(region, memory_mask().set(mid));
-		}
-
-		void apply_epoch(instruction* const epoch) {
-			for(auto& memory : memories) {
-				memory.apply_epoch(epoch);
-			}
-			original_writers.apply_to_values(
-			    [epoch](instruction* const instr) -> instruction* { return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr; });
-
-			// This is an opportune point to verify that all await-pushes are fully consumed eventually. On epoch application,
-			// original_writers[*].await_receives potentially points to instructions before the new epoch, but when compiling a horizon or epoch command, all
-			// previous await-pushes should have been consumed by the task command they were generated for.
-			assert(pending_receives.empty());
-			assert(pending_gathers.empty());
-		}
-	};
-
-	struct host_object_state {
-		bool owns_instance;
-		instruction* last_side_effect = nullptr;
-
-		explicit host_object_state(const bool owns_instance, instruction* const last_epoch) : owns_instance(owns_instance), last_side_effect(last_epoch) {}
-
-		void apply_epoch(instruction* const epoch) {
-			if(last_side_effect != nullptr && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
-		}
-	};
-
-	struct collective_group_state {
-		instruction* last_host_task = nullptr;
-
-		void apply_epoch(instruction* const epoch) {
-			if(last_host_task != nullptr && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
-		}
-	};
-
-	struct localized_chunk {
-		detail::memory_id memory_id = host_memory_id;
-		box<3> execution_range;
-	};
+	using batch = instruction_graph_generator_detail::batch;
+	using buffer_allocation_state = instruction_graph_generator_detail::buffer_allocation_state;
+	using access_front = instruction_graph_generator_detail::buffer_allocation_state::access_front;
+	using localized_chunk = instruction_graph_generator_detail::localized_chunk;
+	using gather_receive = instruction_graph_generator_detail::buffer_state::gather_receive;
+	using region_receive = instruction_graph_generator_detail::buffer_state::region_receive;
 
 	inline static const box<3> scalar_reduction_box{zeros, ones};
 
@@ -448,10 +452,10 @@ class instruction_graph_generator::impl {
 	const task_manager* m_tm; // TODO commands should reference tasks by pointer, not id - then we wouldn't need this member.
 	size_t m_num_nodes;
 	node_id m_local_nid;
-	system_info m_system;
-	delegate* m_delegate;
+	instruction_graph_generator::system_info m_system;
+	instruction_graph_generator::delegate* m_delegate;
 	instruction_recorder* m_recorder;
-	policy_set m_policy;
+	instruction_graph_generator::policy_set m_policy;
 
 	instruction_id m_next_instruction_id = 0;
 	message_id m_next_message_id = 0;
@@ -461,10 +465,10 @@ class instruction_graph_generator::impl {
 
 	std::unordered_set<instruction_id> m_execution_front;
 
-	dense_map<memory_id, memory_state> m_memories; // indexed by memory_id
-	std::unordered_map<buffer_id, buffer_state> m_buffers;
-	std::unordered_map<host_object_id, host_object_state> m_host_objects;
-	std::unordered_map<collective_group_id, collective_group_state> m_collective_groups;
+	dense_map<memory_id, instruction_graph_generator_detail::memory_state> m_memories; // indexed by memory_id
+	std::unordered_map<buffer_id, instruction_graph_generator_detail::buffer_state> m_buffers;
+	std::unordered_map<host_object_id, instruction_graph_generator_detail::host_object_state> m_host_objects;
+	std::unordered_map<collective_group_id, instruction_graph_generator_detail::collective_group_state> m_collective_groups;
 
 	std::vector<allocation_id> m_unreferenced_user_allocations; // from completed buffer - collected by the next horizon / epoch instruction
 
@@ -502,8 +506,7 @@ class instruction_graph_generator::impl {
 		for(const auto& [box, front] : allocation.last_writers.get_region_values(region)) {
 			for(const auto writer : front.instructions) {
 				add_dependency(accessing_instruction, writer,
-				    front.mode == buffer_allocation_state::access_front::allocate ? instruction_dependency_origin::allocation_lifetime
-				                                                                  : record_origin_for_initialized_data);
+				    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_initialized_data);
 			}
 		}
 	}
@@ -520,8 +523,7 @@ class instruction_graph_generator::impl {
 		for(const auto& [box, front] : allocation.last_concurrent_accesses.get_region_values(region)) {
 			for(const auto dep_instr : front.instructions) {
 				add_dependency(accessing_instruction, dep_instr,
-				    front.mode == buffer_allocation_state::access_front::allocate ? instruction_dependency_origin::allocation_lifetime
-				                                                                  : record_origin_for_read_write_front);
+				    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_read_write_front);
 			}
 		}
 	}
@@ -562,8 +564,7 @@ class instruction_graph_generator::impl {
 	// in any order of allocation requirements without generating additional dependencies.
 	void allocate_contiguously(batch& batch, buffer_id bid, memory_id mid, box_vector<3>&& required_contiguous_boxes);
 
-	void commit_pending_region_receive(
-	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const dense_map<memory_id, std::vector<region<3>>>& reads);
+	void commit_pending_region_receive(batch& batch, buffer_id bid, const region_receive& receives, const dense_map<memory_id, std::vector<region<3>>>& reads);
 
 	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
@@ -591,15 +592,15 @@ class instruction_graph_generator::impl {
 };
 
 
-instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes, node_id local_nid, system_info system, instruction_graph& idag, delegate* dlg,
-    instruction_recorder* const recorder, const policy_set& policy)
+impl::impl(const task_manager& tm, size_t num_nodes, node_id local_nid, instruction_graph_generator::system_info system, instruction_graph& idag,
+    instruction_graph_generator::delegate* dlg, instruction_recorder* const recorder, const instruction_graph_generator::policy_set& policy)
     : m_idag(&idag), m_tm(&tm), m_num_nodes(num_nodes), m_local_nid(local_nid), m_system(std::move(system)), m_delegate(dlg), m_recorder(recorder),
       m_policy(policy), m_memories(m_system.memories.size()) //
 {
 #ifndef NDEBUG
 	assert(m_system.memories.size() <= max_num_memories);
-	assert(std::all_of(
-	    m_system.devices.begin(), m_system.devices.end(), [&](const device_info& device) { return device.native_memory < m_system.memories.size(); }));
+	assert(std::all_of(m_system.devices.begin(), m_system.devices.end(),
+	    [&](const instruction_graph_generator::device_info& device) { return device.native_memory < m_system.memories.size(); }));
 	for(memory_id mid_a = 0; mid_a < m_system.memories.size(); ++mid_a) {
 		assert(m_system.memories[mid_a].copy_peers[mid_a]);
 		for(memory_id mid_b = mid_a + 1; mid_b < m_system.memories.size(); ++mid_b) {
@@ -614,12 +615,11 @@ instruction_graph_generator::impl::impl(const task_manager& tm, size_t num_nodes
 	const auto initial_epoch = create<epoch_instruction>(epoch_batch, task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
 	if(m_recorder != nullptr) { *m_recorder << epoch_instruction_record(*initial_epoch, command_id(0 /* or so we assume */)); }
 	m_last_epoch = initial_epoch;
-	m_collective_groups.emplace(root_collective_group_id, collective_group_state{initial_epoch});
+	m_collective_groups.emplace(root_collective_group_id, initial_epoch);
 	flush_batch(std::move(epoch_batch));
 }
 
-void instruction_graph_generator::impl::create_buffer(
-    const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, allocation_id user_aid) //
+void impl::create_buffer(const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, allocation_id user_aid) //
 {
 	const auto [iter, inserted] =
 	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(range, elem_size, elem_align, m_system.memories.size()));
@@ -638,9 +638,9 @@ void instruction_graph_generator::impl::create_buffer(
 	}
 }
 
-void instruction_graph_generator::impl::set_buffer_debug_name(const buffer_id bid, const std::string& name) { m_buffers.at(bid).debug_name = name; }
+void impl::set_buffer_debug_name(const buffer_id bid, const std::string& name) { m_buffers.at(bid).debug_name = name; }
 
-void instruction_graph_generator::impl::destroy_buffer(const buffer_id bid) {
+void impl::destroy_buffer(const buffer_id bid) {
 	const auto iter = m_buffers.find(bid);
 	assert(iter != m_buffers.end());
 	auto& buffer = iter->second;
@@ -665,12 +665,12 @@ void instruction_graph_generator::impl::destroy_buffer(const buffer_id bid) {
 	m_buffers.erase(iter);
 }
 
-void instruction_graph_generator::impl::create_host_object(const host_object_id hoid, const bool owns_instance) {
+void impl::create_host_object(const host_object_id hoid, const bool owns_instance) {
 	assert(m_host_objects.count(hoid) == 0);
-	m_host_objects.emplace(hoid, host_object_state(owns_instance, m_last_epoch));
+	m_host_objects.emplace(std::piecewise_construct, std::tuple(hoid), std::tuple(owns_instance, m_last_epoch));
 }
 
-void instruction_graph_generator::impl::destroy_host_object(const host_object_id hoid) {
+void impl::destroy_host_object(const host_object_id hoid) {
 	const auto iter = m_host_objects.find(hoid);
 	assert(iter != m_host_objects.end());
 
@@ -686,7 +686,7 @@ void instruction_graph_generator::impl::destroy_host_object(const host_object_id
 	m_host_objects.erase(iter);
 }
 
-memory_id instruction_graph_generator::impl::next_location(const memory_mask& location, memory_id first) {
+memory_id impl::next_location(const memory_mask& location, memory_id first) {
 	for(size_t i = 0; i < max_num_memories; ++i) {
 		const memory_id mem = (first + i) % max_num_memories;
 		if(location[mem]) { return mem; }
@@ -694,8 +694,7 @@ memory_id instruction_graph_generator::impl::next_location(const memory_mask& lo
 	utils::panic("data is requested to be read, but not located in any memory");
 }
 
-void instruction_graph_generator::impl::allocate_contiguously(
-    batch& current_batch, const buffer_id bid, const memory_id mid, box_vector<3>&& required_contiguous_boxes) //
+void impl::allocate_contiguously(batch& current_batch, const buffer_id bid, const memory_id mid, box_vector<3>&& required_contiguous_boxes) //
 {
 	if(required_contiguous_boxes.empty()) return;
 
@@ -804,8 +803,8 @@ void instruction_graph_generator::impl::allocate_contiguously(
 	memory.allocations.insert(memory.allocations.end(), std::make_move_iterator(new_allocations.begin()), std::make_move_iterator(new_allocations.end()));
 }
 
-void instruction_graph_generator::impl::commit_pending_region_receive(
-    batch& current_batch, const buffer_id bid, const buffer_state::region_receive& receive, const dense_map<memory_id, std::vector<region<3>>>& reads) {
+void impl::commit_pending_region_receive(
+    batch& current_batch, const buffer_id bid, const region_receive& receive, const dense_map<memory_id, std::vector<region<3>>>& reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_receive", MediumOrchid, "commit recv");
 
 	const auto trid = transfer_id(receive.consumer_tid, bid, no_reduction_id);
@@ -873,7 +872,7 @@ void instruction_graph_generator::impl::commit_pending_region_receive(
 	buffer.up_to_date_memories.update_region(receive.received_region, memory_mask().set(mid));
 }
 
-void instruction_graph_generator::impl::locally_satisfy_read_requirements(
+void impl::locally_satisfy_read_requirements(
     batch& current_batch, const buffer_id bid, const memory_id dest_mid, const std::vector<region<3>>& concurrent_reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_coherence", Salmon, "local coherence");
 
@@ -965,7 +964,7 @@ void instruction_graph_generator::impl::locally_satisfy_read_requirements(
 	}
 }
 
-void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
+void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_local_chunks) //
 {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::coherence", SandyBrown, "B{} coherence", bid);
@@ -1019,7 +1018,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 	// Collect all receives that we must apply before executing this command.
 
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
-	    [&](const buffer_state::region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
+	    [&](const region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
 	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
 		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
 		discarded_boxes.append(it->received_region.get_boxes());
@@ -1028,16 +1027,16 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 		    required_contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
 	}
 
-	std::vector<buffer_state::region_receive> applied_receives;
+	std::vector<region_receive> applied_receives;
 	if(first_applied_receive != buffer.pending_receives.end()) {
 		applied_receives.assign(first_applied_receive, buffer.pending_receives.end());
 		buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
 	}
 
 	if(reduction != tsk.get_reductions().end()) {
-		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const buffer_state::region_receive& r) {
+		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const region_receive& r) {
 			return region_intersection(r.received_region, scalar_reduction_box).empty();
-		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const buffer_state::gather_receive& r) {
+		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const gather_receive& r) {
 			return box_intersection(r.gather_box, scalar_reduction_box).empty();
 		}) && "buffer has an unprocessed await-push into a region that is going to be used as a reduction output");
 	}
@@ -1111,7 +1110,7 @@ void instruction_graph_generator::impl::satisfy_buffer_requirements(batch& curre
 }
 
 
-message_id instruction_graph_generator::impl::create_outbound_pilot(batch& current_batch, const node_id target, const transfer_id& trid, const box<3>& box) {
+message_id impl::create_outbound_pilot(batch& current_batch, const node_id target, const transfer_id& trid, const box<3>& box) {
 	const message_id msgid = m_next_message_id++;
 	const outbound_pilot pilot{target, pilot_message{msgid, trid, box}};
 	current_batch.generated_pilots.push_back(pilot);
@@ -1120,7 +1119,7 @@ message_id instruction_graph_generator::impl::create_outbound_pilot(batch& curre
 }
 
 
-void instruction_graph_generator::impl::compile_execution_command(batch& command_batch, const execution_command& ecmd) {
+void impl::compile_execution_command(batch& command_batch, const execution_command& ecmd) {
 	const auto& tsk = *m_tm->get_task(ecmd.get_tid());
 	const auto& bam = tsk.get_buffer_access_map();
 
@@ -1133,7 +1132,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 
 		add_dependency(clone_cg_isntr, root_cg.last_host_task, instruction_dependency_origin::collective_group_order);
 		root_cg.last_host_task = clone_cg_isntr;
-		m_collective_groups.emplace(cgid, collective_group_state{clone_cg_isntr});
+		m_collective_groups.emplace(cgid, clone_cg_isntr);
 	}
 
 	struct reads_writes {
@@ -1532,7 +1531,7 @@ void instruction_graph_generator::impl::compile_execution_command(batch& command
 }
 
 
-void instruction_graph_generator::impl::compile_push_command(batch& command_batch, const push_command& pcmd) {
+void impl::compile_push_command(batch& command_batch, const push_command& pcmd) {
 	// Prioritize all instructions participating in a "push" to hide the latency of establishing local coherence behind the typically much longer latencies of
 	// inter-node communication
 	command_batch.base_priority = 10;
@@ -1588,7 +1587,7 @@ void instruction_graph_generator::impl::compile_push_command(batch& command_batc
 }
 
 
-void instruction_graph_generator::impl::defer_await_push_command(const await_push_command& apcmd) {
+void impl::defer_await_push_command(const await_push_command& apcmd) {
 	// We do not generate instructions for await-push commands immediately upon receiving them; instead, we buffer them and generate
 	// recv-instructions as soon as data is to be read by another instruction. This way, we can split the recv instructions and avoid
 	// unnecessary synchronization points between chunks that can otherwise profit from a transfer-compute overlap.
@@ -1623,7 +1622,7 @@ void instruction_graph_generator::impl::defer_await_push_command(const await_pus
 }
 
 
-void instruction_graph_generator::impl::compile_reduction_command(batch& command_batch, const reduction_command& rcmd) {
+void impl::compile_reduction_command(batch& command_batch, const reduction_command& rcmd) {
 	const auto scalar_reduction_box = box<3>({0, 0, 0}, {1, 1, 1});
 	const auto [rid, bid, init_from_buffer] = rcmd.get_reduction_info();
 
@@ -1704,7 +1703,7 @@ void instruction_graph_generator::impl::compile_reduction_command(batch& command
 }
 
 
-void instruction_graph_generator::impl::compile_fence_command(batch& command_batch, const fence_command& fcmd) {
+void impl::compile_fence_command(batch& command_batch, const fence_command& fcmd) {
 	const auto& tsk = *m_tm->get_task(fcmd.get_tid());
 	assert(tsk.get_reductions().empty());
 
@@ -1771,7 +1770,7 @@ void instruction_graph_generator::impl::compile_fence_command(batch& command_bat
 }
 
 
-void instruction_graph_generator::impl::compile_horizon_command(batch& command_batch, const horizon_command& hcmd) {
+void impl::compile_horizon_command(batch& command_batch, const horizon_command& hcmd) {
 	m_idag->begin_epoch(hcmd.get_tid());
 	instruction_garbage garbage{hcmd.get_completed_reductions(), std::move(m_unreferenced_user_allocations)};
 	const auto horizon = create<horizon_instruction>(command_batch, hcmd.get_tid(), std::move(garbage));
@@ -1783,7 +1782,7 @@ void instruction_graph_generator::impl::compile_horizon_command(batch& command_b
 }
 
 
-void instruction_graph_generator::impl::compile_epoch_command(batch& command_batch, const epoch_command& ecmd) {
+void impl::compile_epoch_command(batch& command_batch, const epoch_command& ecmd) {
 	m_idag->begin_epoch(ecmd.get_tid());
 	instruction_garbage garbage{ecmd.get_completed_reductions(), std::move(m_unreferenced_user_allocations)};
 	const auto epoch = create<epoch_instruction>(command_batch, ecmd.get_tid(), ecmd.get_epoch_action(), std::move(garbage));
@@ -1795,7 +1794,7 @@ void instruction_graph_generator::impl::compile_epoch_command(batch& command_bat
 }
 
 
-void instruction_graph_generator::impl::flush_batch(batch&& batch) {
+void impl::flush_batch(batch&& batch) {
 	// sanity check: every instruction except the initial epoch must be temporally anchored through at least one dependency
 	assert(std::all_of(batch.generated_instructions.begin(), batch.generated_instructions.end(),
 	    [](const auto instr) { return instr->get_id() == 0 || !instr->get_dependencies().empty(); }));
@@ -1810,7 +1809,7 @@ void instruction_graph_generator::impl::flush_batch(batch&& batch) {
 #endif
 }
 
-void instruction_graph_generator::impl::compile(const abstract_command& cmd) {
+void impl::compile(const abstract_command& cmd) {
 	batch command_batch;
 	matchbox::match(
 	    cmd,                                                                                    //
@@ -1825,15 +1824,18 @@ void instruction_graph_generator::impl::compile(const abstract_command& cmd) {
 	flush_batch(std::move(command_batch));
 }
 
-std::string instruction_graph_generator::impl::print_buffer_debug_label(const buffer_id bid) const {
+std::string impl::print_buffer_debug_label(const buffer_id bid) const {
 	const auto& debug_name = m_buffers.at(bid).debug_name;
 	return !debug_name.empty() ? fmt::format("B{} \"{}\"", bid, debug_name) : fmt::format("B{}", bid);
 }
 
+} // namespace celerity::detail::instruction_graph_generator_detail
+
+namespace celerity::detail {
 
 instruction_graph_generator::instruction_graph_generator(const task_manager& tm, const size_t num_nodes, const node_id local_nid, system_info system,
     instruction_graph& idag, delegate* dlg, instruction_recorder* const recorder, const policy_set& policy)
-    : m_impl(new impl(tm, num_nodes, local_nid, std::move(system), idag, dlg, recorder, policy)) {}
+    : m_impl(new instruction_graph_generator_detail::impl(tm, num_nodes, local_nid, std::move(system), idag, dlg, recorder, policy)) {}
 
 instruction_graph_generator::~instruction_graph_generator() = default;
 

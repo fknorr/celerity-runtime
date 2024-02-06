@@ -16,6 +16,16 @@ class instruction_recorder;
 struct outbound_pilot;
 class task_manager;
 
+} // namespace celerity::detail
+
+namespace celerity::detail::instruction_graph_generator_detail {
+
+class impl;
+
+}
+
+namespace celerity::detail {
+
 /// Tracks the node-local state of buffers and host objects, receives commands at node granularity and emits instructions to allocate memory, establish
 /// coherence between devices and distribute work among the devices on the local system.
 class instruction_graph_generator {
@@ -134,8 +144,7 @@ class instruction_graph_generator {
 	/// initializers, within its surrounding class (Clang diagnostic).
 	constexpr static policy_set default_policy_set() { return {}; }
 
-	class impl;
-	std::unique_ptr<impl> m_impl;
+	std::unique_ptr<instruction_graph_generator_detail::impl> m_impl;
 };
 
 } // namespace celerity::detail
