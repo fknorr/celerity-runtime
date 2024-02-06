@@ -57,7 +57,7 @@ class TransferIdPrinter:
 
     def to_string(self) -> str:
         s = '{}.{}'.format(self.consumer_tid, self.bid)
-        if self.rid['m_value'] != 0:
+        if self.rid['value'] != 0:
             s += '.{}'.format(self.rid)
         return s
 
