@@ -20,9 +20,6 @@
 
 namespace celerity::detail::instruction_graph_generator_detail {
 
-constexpr auto max_num_memories = instruction_graph_generator::max_num_memories;
-using memory_mask = instruction_graph_generator::memory_mask;
-
 /// MPI, our only "production" communicator implementation, limits the extent of send/receive operations to INT_MAX elements in each dimension. Since we do not
 /// require this value anywhere else we define it in instruction_graph_generator.cc, even though it does not logically originate here.
 constexpr size_t communicator_max_coordinate = INT_MAX;
@@ -162,6 +159,17 @@ restart:
 			}
 		}
 	}
+}
+
+constexpr auto max_num_memories = instruction_graph_generator::max_num_memories;
+using memory_mask = instruction_graph_generator::memory_mask;
+
+memory_id next_location(const memory_mask& location, memory_id first) {
+	for(size_t i = 0; i < max_num_memories; ++i) {
+		const memory_id mem = (first + i) % max_num_memories;
+		if(location[mem]) { return mem; }
+	}
+	utils::panic("data is requested to be read, but not located in any memory");
 }
 
 /// `allocation_id`s are "namespaced" to their memory ID, so we maintain the next `raw_allocation_id` for each memory separately.
@@ -401,9 +409,8 @@ struct localized_chunk {
 	box<3> execution_range;
 };
 
-// We can probably employ exceedingly smart heuristics to prioritize instructions in the executor, but for the time being, we stick with a simple mapping based
-// on instruction types alone.
-
+// We assign instruction priorities heuristically by deciding on a batch::base_priority at the beginning of a compile_* function and offsetting it by the
+// instruction-type specific values defined here.
 // clang-format off
 template <typename Instruction> constexpr int instruction_type_priority = 0; // higher means more urgent
 template <> constexpr int instruction_type_priority<free_instruction> = -1; // only free when forced to - nothing except an epoch or horizon will depend on this
@@ -426,15 +433,10 @@ class impl {
 	    instruction_graph_generator::delegate* dlg, instruction_recorder* recorder, const instruction_graph_generator::policy_set& policy);
 
 	void create_buffer(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid = null_allocation_id);
-
 	void set_buffer_debug_name(buffer_id bid, const std::string& name);
-
 	void destroy_buffer(buffer_id bid);
-
 	void create_host_object(host_object_id hoid, bool owns_instance);
-
 	void destroy_host_object(host_object_id hoid);
-
 	void compile(const abstract_command& cmd);
 
   private:
@@ -472,93 +474,32 @@ class impl {
 
 	std::vector<allocation_id> m_unreferenced_user_allocations; // from completed buffer - collected by the next horizon / epoch instruction
 
-	static memory_id next_location(const memory_mask& locations, memory_id first);
-
-	allocation_id new_allocation_id(const memory_id mid) {
-		assert(mid < m_memories.size());
-		assert(mid != user_memory_id && "user allocation ids are not managed by the instruction graph generator");
-		return allocation_id(mid, m_memories[mid].next_raw_aid++);
-	}
+	allocation_id new_allocation_id(const memory_id mid);
 
 	template <typename Instruction, typename... CtorParams>
-	Instruction* create(batch& batch, CtorParams&&... ctor_args) {
-		const auto id = m_next_instruction_id++;
-		const auto priority = batch.base_priority + instruction_graph_generator_detail::instruction_type_priority<Instruction>;
-		auto instr = std::make_unique<Instruction>(id, priority, std::forward<CtorParams>(ctor_args)...);
-		const auto ptr = instr.get();
-		m_idag->push_instruction(std::move(instr));
-		m_execution_front.insert(id);
-		batch.generated_instructions.push_back(ptr);
-		return ptr;
-	}
+	Instruction* create(batch& batch, CtorParams&&... ctor_args);
 
 	message_id create_outbound_pilot(batch& batch, node_id target, const transfer_id& trid, const box<3>& box);
 
-	void add_dependency(instruction* const from, instruction* const to, const instruction_dependency_origin record_origin) {
-		from->add_dependency(to->get_id());
-		if(m_recorder != nullptr) { m_recorder->record_dependency(from->get_id(), to->get_id(), record_origin); }
-		m_execution_front.erase(to->get_id());
-	}
+	void add_dependency(instruction* const from, instruction* const to, const instruction_dependency_origin record_origin);
 
 	template <typename BoxOrRegion>
 	void add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
-	    const instruction_dependency_origin record_origin_for_initialized_data) {
-		for(const auto& [box, front] : allocation.last_writers.get_region_values(region)) {
-			for(const auto writer : front.instructions) {
-				add_dependency(accessing_instruction, writer,
-				    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_initialized_data);
-			}
-		}
-	}
+	    const instruction_dependency_origin record_origin_for_initialized_data);
 
 	template <typename BoxOrRegion>
-	void read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
-		add_dependencies_on_last_writers(reading_instruction, allocation, region, instruction_dependency_origin::read_from_allocation);
-		allocation.commit_read(region, reading_instruction);
-	}
+	void read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region);
 
 	template <typename BoxOrRegion>
 	void add_dependencies_on_access_front(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
-	    const instruction_dependency_origin record_origin_for_read_write_front) {
-		for(const auto& [box, front] : allocation.last_concurrent_accesses.get_region_values(region)) {
-			for(const auto dep_instr : front.instructions) {
-				add_dependency(accessing_instruction, dep_instr,
-				    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_read_write_front);
-			}
-		}
-	}
+	    const instruction_dependency_origin record_origin_for_read_write_front);
 
 	template <typename BoxOrRegion>
-	void write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
-		add_dependencies_on_access_front(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocation);
-		allocation.commit_write(region, writing_instruction);
-	}
+	void write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region);
 
-	void apply_epoch(instruction* const epoch) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::apply_epoch", SlateBlue, "apply epoch");
+	void apply_epoch(instruction* const epoch);
 
-		for(auto& [_, buffer] : m_buffers) {
-			buffer.apply_epoch(epoch);
-		}
-		for(auto& [_, host_object] : m_host_objects) {
-			host_object.apply_epoch(epoch);
-		}
-		for(auto& [_, collective_group] : m_collective_groups) {
-			collective_group.apply_epoch(epoch);
-		}
-		m_last_epoch = epoch;
-	}
-
-	void collapse_execution_front_to(instruction* const horizon_or_epoch) {
-		for(const auto iid : m_execution_front) {
-			if(iid == horizon_or_epoch->get_id()) continue;
-			// we can't use instruction_graph_generator::add_depencency since it modifies the m_execution_front which we're iterating over here
-			horizon_or_epoch->add_dependency(iid);
-			if(m_recorder != nullptr) { m_recorder->record_dependency(horizon_or_epoch->get_id(), iid, instruction_dependency_origin::execution_front); }
-		}
-		m_execution_front.clear();
-		m_execution_front.insert(horizon_or_epoch->get_id());
-	}
+	void collapse_execution_front_to(instruction* const horizon_or_epoch);
 
 	// Re-allocation of one buffer on one memory never interacts with other buffers or other memories backing the same buffer, this function can be called
 	// in any order of allocation requirements without generating additional dependencies.
@@ -686,12 +627,96 @@ void impl::destroy_host_object(const host_object_id hoid) {
 	m_host_objects.erase(iter);
 }
 
-memory_id impl::next_location(const memory_mask& location, memory_id first) {
-	for(size_t i = 0; i < max_num_memories; ++i) {
-		const memory_id mem = (first + i) % max_num_memories;
-		if(location[mem]) { return mem; }
+allocation_id impl::new_allocation_id(const memory_id mid) {
+	assert(mid < m_memories.size());
+	assert(mid != user_memory_id && "user allocation ids are not managed by the instruction graph generator");
+	return allocation_id(mid, m_memories[mid].next_raw_aid++);
+}
+
+template <typename Instruction, typename... CtorParams>
+Instruction* impl::create(batch& batch, CtorParams&&... ctor_args) {
+	const auto id = m_next_instruction_id++;
+	const auto priority = batch.base_priority + instruction_graph_generator_detail::instruction_type_priority<Instruction>;
+	auto instr = std::make_unique<Instruction>(id, priority, std::forward<CtorParams>(ctor_args)...);
+	const auto ptr = instr.get();
+	m_idag->push_instruction(std::move(instr));
+	m_execution_front.insert(id);
+	batch.generated_instructions.push_back(ptr);
+	return ptr;
+}
+
+message_id impl::create_outbound_pilot(batch& current_batch, const node_id target, const transfer_id& trid, const box<3>& box) {
+	const message_id msgid = m_next_message_id++;
+	const outbound_pilot pilot{target, pilot_message{msgid, trid, box}};
+	current_batch.generated_pilots.push_back(pilot);
+	if(m_recorder != nullptr) { *m_recorder << pilot; }
+	return msgid;
+}
+
+void impl::add_dependency(instruction* const from, instruction* const to, const instruction_dependency_origin record_origin) {
+	from->add_dependency(to->get_id());
+	if(m_recorder != nullptr) { m_recorder->record_dependency(from->get_id(), to->get_id(), record_origin); }
+	m_execution_front.erase(to->get_id());
+}
+
+template <typename BoxOrRegion>
+void impl::add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
+    const instruction_dependency_origin record_origin_for_initialized_data) {
+	for(const auto& [box, front] : allocation.last_writers.get_region_values(region)) {
+		for(const auto writer : front.instructions) {
+			add_dependency(accessing_instruction, writer,
+			    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_initialized_data);
+		}
 	}
-	utils::panic("data is requested to be read, but not located in any memory");
+}
+
+template <typename BoxOrRegion>
+void impl::read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
+	add_dependencies_on_last_writers(reading_instruction, allocation, region, instruction_dependency_origin::read_from_allocation);
+	allocation.commit_read(region, reading_instruction);
+}
+
+template <typename BoxOrRegion>
+void impl::add_dependencies_on_access_front(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
+    const instruction_dependency_origin record_origin_for_read_write_front) {
+	for(const auto& [box, front] : allocation.last_concurrent_accesses.get_region_values(region)) {
+		for(const auto dep_instr : front.instructions) {
+			add_dependency(accessing_instruction, dep_instr,
+			    front.mode == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_read_write_front);
+		}
+	}
+}
+
+template <typename BoxOrRegion>
+void impl::write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
+	add_dependencies_on_access_front(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocation);
+	allocation.commit_write(region, writing_instruction);
+}
+
+void impl::apply_epoch(instruction* const epoch) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::apply_epoch", SlateBlue, "apply epoch");
+
+	for(auto& [_, buffer] : m_buffers) {
+		buffer.apply_epoch(epoch);
+	}
+	for(auto& [_, host_object] : m_host_objects) {
+		host_object.apply_epoch(epoch);
+	}
+	for(auto& [_, collective_group] : m_collective_groups) {
+		collective_group.apply_epoch(epoch);
+	}
+	m_last_epoch = epoch;
+}
+
+void impl::collapse_execution_front_to(instruction* const horizon_or_epoch) {
+	for(const auto iid : m_execution_front) {
+		if(iid == horizon_or_epoch->get_id()) continue;
+		// we can't use instruction_graph_generator::add_depencency since it modifies the m_execution_front which we're iterating over here
+		horizon_or_epoch->add_dependency(iid);
+		if(m_recorder != nullptr) { m_recorder->record_dependency(horizon_or_epoch->get_id(), iid, instruction_dependency_origin::execution_front); }
+	}
+	m_execution_front.clear();
+	m_execution_front.insert(horizon_or_epoch->get_id());
 }
 
 void impl::allocate_contiguously(batch& current_batch, const buffer_id bid, const memory_id mid, box_vector<3>&& required_contiguous_boxes) //
@@ -1107,15 +1132,6 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 	for(memory_id mid = 0; mid < local_chunk_reads.size(); ++mid) {
 		locally_satisfy_read_requirements(current_batch, bid, mid, local_chunk_reads[mid]);
 	}
-}
-
-
-message_id impl::create_outbound_pilot(batch& current_batch, const node_id target, const transfer_id& trid, const box<3>& box) {
-	const message_id msgid = m_next_message_id++;
-	const outbound_pilot pilot{target, pilot_message{msgid, trid, box}};
-	current_batch.generated_pilots.push_back(pilot);
-	if(m_recorder != nullptr) { *m_recorder << pilot; }
-	return msgid;
 }
 
 
