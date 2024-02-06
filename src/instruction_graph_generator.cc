@@ -178,6 +178,8 @@ struct memory_state {
 	raw_allocation_id next_raw_aid = 1; // 0 is reserved for null_allocation_id
 };
 
+/// Maintains a set of concurrent instructions that are accessing a buffer element.
+/// Instruction pointers are ordered by id to allow equality comparision on the internal vector structure.
 class access_front {
   public:
 	enum mode { none, allocate, read, write };
@@ -231,10 +233,10 @@ struct buffer_allocation_state {
 	      last_writers(allocated_box, ainstr != nullptr ? access_front(ainstr, access_front::allocate) : access_front()),
 	      last_concurrent_accesses(allocated_box, ainstr != nullptr ? access_front(ainstr, access_front::allocate) : access_front()) {}
 
-	template <typename BoxOrRegion>
-	void track_concurrent_read(const BoxOrRegion& box_or_region, instruction* const instr) {
-		if(box_or_region.empty()) return;
-		for(auto& [box, front] : last_concurrent_accesses.get_region_values(box_or_region)) {
+	/// Add `instr` to the active set of concurrent reads, or replace the current access front if the last access was not a read.
+	void track_concurrent_read(const region<3>& region, instruction* const instr) {
+		if(region.empty()) return;
+		for(auto& [box, front] : last_concurrent_accesses.get_region_values(region)) {
 			if(front.get_mode() == access_front::read) {
 				front.add_instruction(instr);
 			} else {
@@ -244,28 +246,36 @@ struct buffer_allocation_state {
 		}
 	}
 
+	/// Replace the current access front with a write. The write is treated as "atomic" in the sense that there is never a second, concurrent write operations
+	/// happening simultaneously. This is true for all implicit writes, but not those from device kernels and host tasks.
 	void track_atomic_write(const region<3>& region, instruction* const instr) {
 		if(region.empty()) return;
 		last_writers.update_region(region, access_front(instr, access_front::write));
 		last_concurrent_accesses.update_region(region, access_front(instr, access_front::write));
 	}
 
-	void begin_overlapping_writes(const region<3>& region) {
+	/// Replace the current access front with an empty write-front. This is done in preparation of writes from device kernels and host tasks.
+	void begin_concurrent_writes(const region<3>& region) {
 		if(region.empty()) return;
 		last_writers.update_region(region, access_front(access_front::write));
 		last_concurrent_accesses.update_region(region, access_front(access_front::write));
 	}
 
-	void track_overlapping_write(const region<3>& region, instruction* const instr) {
+	/// Add an instruction to the current set of concurrent writes. This is used to track writes from device kernels and host tasks and requires
+	/// begin_concurrent_writes to be called beforehand. Multiple concurrent writes will only occur when a task declares overlapping writes and
+	/// overlapping-write detection is disabled via the error policy. In order to still produce an executable (while racy instruction graph) in that case, we
+	/// track multiple last-writers for the same buffer element.
+	void track_concurrent_write(const region<3>& region, instruction* const instr) {
 		if(region.empty()) return;
 		for(auto& [box, front] : last_writers.get_region_values(region)) {
-			assert(front.get_mode() == access_front::write); // must call begin_concurrent_writes first
+			assert(front.get_mode() == access_front::write && "must call begin_concurrent_writes first");
 			front.add_instruction(instr);
 			last_writers.update_region(box, front);
 			last_concurrent_accesses.update_region(box, front);
 		}
 	}
 
+	/// Replace all tracked instructions that older than `epoch` with `epoch`.
 	void apply_epoch(instruction* const epoch) {
 		last_writers.apply_to_values([epoch](const access_front& front) { return front.apply_epoch(epoch); });
 		last_concurrent_accesses.apply_to_values([epoch](const access_front& front) { return front.apply_epoch(epoch); });
@@ -286,17 +296,20 @@ struct buffer_memory_state {
 
 	buffer_allocation_state& get_allocation(const allocation_id aid) { return const_cast<buffer_allocation_state&>(std::as_const(*this).get_allocation(aid)); }
 
+	/// Returns the (unique) allocation covering `box` if such an allocation exists, otherwise nullptr.
 	const buffer_allocation_state* find_contiguous_allocation(const box<3>& box) const {
 		const auto it = std::find_if(allocations.begin(), allocations.end(), [&](const buffer_allocation_state& a) { return a.box.covers(box); });
 		return it != allocations.end() ? &*it : nullptr;
 	}
 
+	/// Returns the (unique) allocation covering `box` if such an allocation exists, otherwise nullptr.
 	buffer_allocation_state* find_contiguous_allocation(const box<3>& box) {
 		return const_cast<buffer_allocation_state*>(std::as_const(*this).find_contiguous_allocation(box));
 	}
 
 	bool is_allocated_contiguously(const box<3>& box) const { return find_contiguous_allocation(box) != nullptr; }
 
+	/// Replace all tracked instructions that older than `epoch` with `epoch`.
 	void apply_epoch(instruction* const epoch) {
 		for(auto& alloc : allocations) {
 			alloc.apply_epoch(epoch);
@@ -304,36 +317,49 @@ struct buffer_memory_state {
 	}
 };
 
-/// Tracking structure for an await-push that already has a begin_receive_instruction, but not yet an end_receive_instruction.
-struct region_receive {
-	task_id consumer_tid;
-	region<3> received_region;
-	box_vector<3> required_contiguous_allocations;
-
-	region_receive(const task_id consumer_tid, region<3> received_region, box_vector<3> required_contiguous_allocations)
-	    : consumer_tid(consumer_tid), received_region(std::move(received_region)), required_contiguous_allocations(std::move(required_contiguous_allocations)) {
-	}
-};
-
-struct gather_receive {
-	task_id consumer_tid;
-	reduction_id rid;
-	box<3> gather_box;
-
-	gather_receive(const task_id consumer_tid, const reduction_id rid, const box<3> gather_box)
-	    : consumer_tid(consumer_tid), rid(rid), gather_box(gather_box) {}
-};
-
 /// State for a single buffer.
 struct buffer_state {
+	/// Tracks a pending non-reduction await-push that will be compiled into a receive_instructions as soon as a command reads from its region.
+	struct region_receive {
+		task_id consumer_tid;
+		region<3> received_region;
+		box_vector<3> required_contiguous_allocations;
+
+		region_receive(const task_id consumer_tid, region<3> received_region, box_vector<3> required_contiguous_allocations)
+		    : consumer_tid(consumer_tid), received_region(std::move(received_region)),
+		      required_contiguous_allocations(std::move(required_contiguous_allocations)) {}
+	};
+
+	/// Tracks a pending reduction await-push, which will be compiled into gather_receive_instructions and reduce_instructions when read from.
+	struct gather_receive {
+		task_id consumer_tid;
+		reduction_id rid;
+		box<3> gather_box;
+
+		gather_receive(const task_id consumer_tid, const reduction_id rid, const box<3> gather_box)
+		    : consumer_tid(consumer_tid), rid(rid), gather_box(gather_box) {}
+	};
+
 	std::string debug_name;
 	celerity::range<3> range;
-	size_t elem_size;
-	size_t elem_align;
+	size_t elem_size;  ///< in bytes
+	size_t elem_align; ///< in bytes
+
+	/// Per-memory and per-allocation state of this buffer.
 	dense_map<memory_id, buffer_memory_state> memories;
-	region_map<instruction_graph_generator::memory_mask> up_to_date_memories; // TODO rename for vs original_write_memories?
-	region_map<instruction*> original_writers;                                // TODO explain how and why this duplicates per_allocation_data::last_writers
-	region_map<memory_id> original_write_memories;                            // only meaningful if newest_data_location[box] is non-empty
+
+	/// Contains a mask for every memory_id that either was written to by the original-producer instruction or that has already been made coherent previously.
+	region_map<instruction_graph_generator::memory_mask> up_to_date_memories;
+
+	/// Tracks the instruction that initially produced each buffer element on the local node. This is different form buffer_allocation_state::last_writers in
+	/// that it never contains copy instructions. Copy- and send source regions are split on their original producer instructions to facilitate compute-transfer
+	/// overlap when different producers finish at different times.
+	region_map<instruction*> original_writers;
+
+	/// Tracks the memory to which the original_writer instruction wrote each buffer element. `original_write_memories[box]` is meaningless when
+	/// `newest_data_location[box]` is empty (i.e. the buffer is not up-to-date on the local node due to being uninitialized or await-pushed without being
+	/// consumed).
+	region_map<memory_id> original_write_memories;
 
 	// We store pending receives (await push regions) in a vector instead of a region map since we must process their entire regions en-bloc rather than on
 	// a per-element basis.
@@ -344,18 +370,18 @@ struct buffer_state {
 	    : range(range), elem_size(elem_size), elem_align(elem_align), memories(n_memories), up_to_date_memories(range), original_writers(range),
 	      original_write_memories(range) {}
 
-	void commit_original_write(const region<3>& region, instruction* const instr, const memory_id mid) {
+	void track_original_write(const region<3>& region, instruction* const instr, const memory_id mid) {
 		original_writers.update_region(region, instr);
 		original_write_memories.update_region(region, mid);
 		up_to_date_memories.update_region(region, memory_mask().set(mid));
 	}
 
+	/// Replace all tracked instructions that older than `epoch` with `epoch`.
 	void apply_epoch(instruction* const epoch) {
 		for(auto& memory : memories) {
 			memory.apply_epoch(epoch);
 		}
-		original_writers.apply_to_values(
-		    [epoch](instruction* const instr) -> instruction* { return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr; });
+		original_writers.apply_to_values([epoch](instruction* const instr) { return instr != nullptr && instr->get_id() < epoch->get_id() ? epoch : instr; });
 
 		// This is an opportune point to verify that all await-pushes are fully consumed eventually. On epoch application,
 		// original_writers[*].await_receives potentially points to instructions before the new epoch, but when compiling a horizon or epoch command, all
@@ -366,19 +392,22 @@ struct buffer_state {
 };
 
 struct host_object_state {
-	bool owns_instance;
-	instruction* last_side_effect = nullptr;
+	bool owns_instance;            ///< If true, a `destroy_host_object_instruction` will be emitted when `destroy_host_object` is called.
+	instruction* last_side_effect; ///< Host tasks with side effects will be serialized wrt/ the host object.
 
 	explicit host_object_state(const bool owns_instance, instruction* const last_epoch) : owns_instance(owns_instance), last_side_effect(last_epoch) {}
 
+	/// Replace all tracked instructions that older than `epoch` with `epoch`.
 	void apply_epoch(instruction* const epoch) {
 		if(last_side_effect != nullptr && last_side_effect->get_id() < epoch->get_id()) { last_side_effect = epoch; }
 	}
 };
 
 struct collective_group_state {
+	/// Collective host tasks will be serialized wrt/ the collective group to ensure that the user can freely submit MPI collectives on their communicator.
 	instruction* last_host_task = nullptr;
 
+	/// Replace all tracked instructions that older than `epoch` with `epoch`.
 	void apply_epoch(instruction* const epoch) {
 		if(last_host_task != nullptr && last_host_task->get_id() < epoch->get_id()) { last_host_task = epoch; }
 	}
@@ -390,6 +419,8 @@ struct collective_group_state {
 struct batch { // NOLINT(cppcoreguidelines-special-member-functions) (do not complain about the asserting destructor)
 	std::vector<const instruction*> generated_instructions;
 	std::vector<outbound_pilot> generated_pilots;
+
+	/// The base priority of a batch adds to the priority per instruction type to transitively prioritize dependencies of important instructions.
 	int base_priority = 0;
 
 #ifndef NDEBUG
@@ -399,6 +430,7 @@ struct batch { // NOLINT(cppcoreguidelines-special-member-functions) (do not com
 #endif
 };
 
+/// A chunk of a task's execution space that will be assigned to a device (or the host) and thus knows which memory its instructions will write to.
 struct localized_chunk {
 	detail::memory_id memory_id = host_memory_id;
 	box<3> execution_range;
@@ -451,24 +483,32 @@ class impl {
 	message_id m_next_message_id = 0;
 
 	instruction* m_last_horizon = nullptr;
-	instruction* m_last_epoch = nullptr;
+	instruction* m_last_epoch = nullptr; // set once the initial epoch instruction is generated in the constructor
 
+	/// The set of all instructions that are not yet depended upon by other instructions. These are collected by collapse_execution_front_to() as part of
+	/// horizon / epoch generation.
 	std::unordered_set<instruction_id> m_execution_front;
 
-	dense_map<memory_id, instruction_graph_generator_detail::memory_state> m_memories; // indexed by memory_id
+	dense_map<memory_id, instruction_graph_generator_detail::memory_state> m_memories;
 	std::unordered_map<buffer_id, instruction_graph_generator_detail::buffer_state> m_buffers;
 	std::unordered_map<host_object_id, instruction_graph_generator_detail::host_object_state> m_host_objects;
 	std::unordered_map<collective_group_id, instruction_graph_generator_detail::collective_group_state> m_collective_groups;
 
-	std::vector<allocation_id> m_unreferenced_user_allocations; // from completed buffer - collected by the next horizon / epoch instruction
+	/// The instruction executor maintains a mapping of allocation_id -> USM pointer. For IDAG-managed memory, these entries are deleted after executing a
+	/// `free_instruction`, but since user allocations are not deallocated by us, we notify the executor on each horizon or epoch  via the `instruction_garbage`
+	/// struct about entries that will no longer be used and can therefore be collected. We include user allocations for buffer fences immediately after
+	/// emitting the fence, and buffer host-initialization user allocations after the buffer has been destroyed.
+	std::vector<allocation_id> m_unreferenced_user_allocations;
 
 	allocation_id new_allocation_id(const memory_id mid);
 
+	/// Invoke as `create<alloc_instruction>(...)` to create an instruction and it to the IDAG and the current execution front.
 	template <typename Instruction, typename... CtorParams>
 	Instruction* create(batch& batch, CtorParams&&... ctor_args);
 
 	message_id create_outbound_pilot(batch& batch, node_id target, const transfer_id& trid, const box<3>& box);
 
+	/// Inserts a graph dependency and removes `to` form the execution front (if present). The `record_origin` is debug information.
 	void add_dependency(instruction* const from, instruction* const to, const instruction_dependency_origin record_origin);
 
 	template <typename BoxOrRegion>
@@ -493,7 +533,8 @@ class impl {
 	// in any order of allocation requirements without generating additional dependencies.
 	void allocate_contiguously(batch& batch, buffer_id bid, memory_id mid, box_vector<3>&& required_contiguous_boxes);
 
-	void commit_pending_region_receive(batch& batch, buffer_id bid, const region_receive& receives, const dense_map<memory_id, std::vector<region<3>>>& reads);
+	void commit_pending_region_receive(
+	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const dense_map<memory_id, std::vector<region<3>>>& reads);
 
 	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
@@ -563,7 +604,7 @@ void impl::create_buffer(const buffer_id bid, const range<3>& range, const size_
 		auto& allocation = memory.allocations.emplace_back(user_aid, nullptr /* alloc_instruction */, entire_buffer, buffer.range);
 
 		allocation.track_atomic_write(entire_buffer, m_last_epoch);
-		buffer.commit_original_write(entire_buffer, m_last_epoch, user_memory_id);
+		buffer.track_original_write(entire_buffer, m_last_epoch, user_memory_id);
 	}
 }
 
@@ -576,17 +617,22 @@ void impl::destroy_buffer(const buffer_id bid) {
 
 	batch free_batch;
 	for(memory_id mid = 0; mid < buffer.memories.size(); ++mid) {
-		if(mid == user_memory_id) continue;
-
 		auto& memory = buffer.memories[mid];
-		for(auto& allocation : memory.allocations) {
-			const auto free_instr = create<free_instruction>(free_batch, allocation.aid);
-			if(m_recorder != nullptr) {
-				*m_recorder << free_instruction_record(
-				    *free_instr, allocation.box.get_area() * buffer.elem_size, buffer_allocation_record{bid, buffer.debug_name, allocation.box});
+		if(mid == user_memory_id) {
+			for(const auto& user_alloc : memory.allocations) {
+				// When the buffer is gone, we can also drop the user allocation from executor tracking.
+				m_unreferenced_user_allocations.push_back(user_alloc.aid);
 			}
-			add_dependencies_on_access_front(free_instr, allocation, allocation.box, instruction_dependency_origin::allocation_lifetime);
-			// no need to modify the access front - we're removing the buffer altogether!
+		} else {
+			for(auto& allocation : memory.allocations) {
+				const auto free_instr = create<free_instruction>(free_batch, allocation.aid);
+				if(m_recorder != nullptr) {
+					*m_recorder << free_instruction_record(
+					    *free_instr, allocation.box.get_area() * buffer.elem_size, buffer_allocation_record{bid, buffer.debug_name, allocation.box});
+				}
+				add_dependencies_on_access_front(free_instr, allocation, allocation.box, instruction_dependency_origin::allocation_lifetime);
+				// no need to modify the access front - we're removing the buffer altogether!
+			}
 		}
 	}
 	flush_batch(std::move(free_batch));
@@ -817,7 +863,7 @@ void impl::allocate_contiguously(batch& current_batch, const buffer_id bid, cons
 }
 
 void impl::commit_pending_region_receive(
-    batch& current_batch, const buffer_id bid, const region_receive& receive, const dense_map<memory_id, std::vector<region<3>>>& reads) {
+    batch& current_batch, const buffer_id bid, const buffer_state::region_receive& receive, const dense_map<memory_id, std::vector<region<3>>>& reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_receive", MediumOrchid, "commit recv");
 
 	const auto trid = transfer_id(receive.consumer_tid, bid, no_reduction_id);
@@ -902,9 +948,6 @@ void impl::locally_satisfy_read_requirements(
 	}
 	if(unsatisfied_concurrent_reads.empty()) return;
 
-	// Transform vectors of potentially-overlapping unsatisfied regions into disjoint regions - e.g. if there are two overlapping regions [first, second], split
-	// them into three disjoint regions [first_only, overlap, second_only]. As soon as the coherence of either [first_only, overlap] or [overlap, second_only]
-	// is is established, the consumer of [first] or [second] can start executing.
 	instruction_graph_generator_detail::symmetrically_split_overlapping_regions(unsatisfied_concurrent_reads);
 
 	// Collect the regions to be copied from each memory. As long as we don't touch `buffer.up_to_date_memories` we could also create copy_instructions directly
@@ -1031,7 +1074,7 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 	// Collect all receives that we must apply before executing this command.
 
 	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
-	    [&](const region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
+	    [&](const buffer_state::region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
 	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
 		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
 		discarded_boxes.append(it->received_region.get_boxes());
@@ -1040,16 +1083,16 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 		    required_contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
 	}
 
-	std::vector<region_receive> applied_receives;
+	std::vector<buffer_state::region_receive> applied_receives;
 	if(first_applied_receive != buffer.pending_receives.end()) {
 		applied_receives.assign(first_applied_receive, buffer.pending_receives.end());
 		buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
 	}
 
 	if(reduction != tsk.get_reductions().end()) {
-		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const region_receive& r) {
+		assert(std::all_of(buffer.pending_receives.begin(), buffer.pending_receives.end(), [&](const buffer_state::region_receive& r) {
 			return region_intersection(r.received_region, scalar_reduction_box).empty();
-		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const gather_receive& r) {
+		}) && std::all_of(buffer.pending_gathers.begin(), buffer.pending_gathers.end(), [&](const buffer_state::gather_receive& r) {
 			return box_intersection(r.gather_box, scalar_reduction_box).empty();
 		}) && "buffer has an unprocessed await-push into a region that is going to be used as a reduction output");
 	}
@@ -1431,7 +1474,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 			assert(instr.instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
-				alloc.begin_overlapping_writes(region_intersection(alloc.box, rw.writes));
+				alloc.begin_concurrent_writes(region_intersection(alloc.box, rw.writes));
 			}
 		}
 	}
@@ -1449,10 +1492,10 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 			// if so, have similar functions for side effects / collective groups
 			for(auto& alloc : buffer.memories[instr.memory_id].allocations) {
 				alloc.track_concurrent_read(region_intersection(alloc.box, rw.reads), instr.instruction);
-				alloc.track_overlapping_write(region_intersection(alloc.box, rw.writes), instr.instruction);
+				alloc.track_concurrent_write(region_intersection(alloc.box, rw.writes), instr.instruction);
 			}
 
-			buffer.commit_original_write(rw.writes, instr.instruction, instr.memory_id);
+			buffer.track_original_write(rw.writes, instr.instruction, instr.memory_id);
 		}
 		for(const auto& [hoid, order] : instr.se_map) {
 			assert(instr.memory_id == host_memory_id);
@@ -1515,7 +1558,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 			add_dependency(reduce_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
 		}
 		write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
-		buffer.commit_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
+		buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
 		// free local gather space
 
@@ -1695,7 +1738,7 @@ void impl::compile_reduction_command(batch& command_batch, const reduction_comma
 	add_dependency(reduce_instr, gather_recv_instr, instruction_dependency_origin::read_from_allocation);
 	if(local_gather_copy_instr != nullptr) { add_dependency(reduce_instr, local_gather_copy_instr, instruction_dependency_origin::read_from_allocation); }
 	write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
-	buffer.commit_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
+	buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
 	// free the gather space
 

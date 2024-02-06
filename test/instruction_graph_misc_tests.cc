@@ -195,8 +195,10 @@ TEST_CASE("instruction_graph_generator gracefully handles empty-range buffer fen
 	CHECK(fence.predecessors() == init_epoch);
 	CHECK(fence.successors() == shutdown_epoch);
 
-	REQUIRE(shutdown_epoch->garbage.user_allocations.size() == 1);
-	CHECK(shutdown_epoch->garbage.user_allocations.front().get_memory_id() == user_memory_id);
+	const auto& garbage = shutdown_epoch->garbage;
+	CHECK(garbage.user_allocations.size() == 1);
+	CHECK(garbage.user_allocations.at(0) != null_allocation_id);
+	CHECK(garbage.user_allocations.at(0).get_memory_id() == user_memory_id);
 
 	CHECK(all_instrs.count<send_instruction_record>() == 0);
 	CHECK(all_instrs.count<receive_instruction_record>() == 0);
@@ -209,6 +211,7 @@ TEST_CASE("horizons and epochs notify the executor of unreferenced user allocati
     "[instruction_graph_generator][instruction-graph][fence]") //
 {
 	const auto trigger = GENERATE(values<std::string>({"horizon", "epoch"}));
+	CAPTURE(trigger);
 
 	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
 	ictx.set_horizon_step(trigger == "horizon" ? 2 : 999);
@@ -232,6 +235,28 @@ TEST_CASE("horizons and epochs notify the executor of unreferenced user allocati
 	CHECK(garbage.user_allocations.size() == 1);
 	CHECK(garbage.user_allocations.at(0) != null_allocation_id);
 	CHECK(garbage.user_allocations.at(0).get_memory_id() == user_memory_id);
+}
+
+TEST_CASE("epochs notify the executor of unreferenced user allocations after a buffer is destroyed", "[instruction_graph_generator][instruction-graph]") {
+	const bool host_initialized = GENERATE(values<int>({false, true}));
+	CAPTURE(host_initialized);
+
+	test_utils::idag_test_context ictx(1 /* nodes */, 0 /* my nid */, 1 /* devices */);
+	(void)ictx.create_buffer<int>(range(256), host_initialized);
+	ictx.finish();
+
+	const auto all_instrs = ictx.query_instructions();
+	const auto shutdown_epoch = all_instrs.select_unique<epoch_instruction_record>(
+	    [](const epoch_instruction_record& einstr) { return einstr.epoch_action == epoch_action::shutdown; });
+
+	const auto garbage = shutdown_epoch->garbage;
+	if(host_initialized) {
+		CHECK(garbage.user_allocations.size() == 1);
+		CHECK(garbage.user_allocations.at(0) != null_allocation_id);
+		CHECK(garbage.user_allocations.at(0).get_memory_id() == user_memory_id);
+	} else {
+		CHECK(garbage.user_allocations.empty());
+	}
 }
 
 TEST_CASE("host-object fences introduce the appropriate dependencies", "[instruction_graph_generator][instruction-graph][fence]") {
