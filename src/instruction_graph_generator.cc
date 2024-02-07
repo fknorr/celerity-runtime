@@ -456,9 +456,10 @@ template <> constexpr int instruction_type_priority<epoch_instruction> = 5; // e
 template <> constexpr int instruction_type_priority<horizon_instruction> = 5;
 // clang-format on
 
-/// A chunk of a task's execution space that will be assigned to a device (or the host) and thus knows which memory its instructions will write to.
+/// A chunk of a task's execution space that will be assigned to a device (or the host) and thus knows which memory its instructions will operate on.
 struct localized_chunk {
 	detail::memory_id memory_id = host_memory_id;
+	std::optional<detail::device_id> device_id;
 	box<3> execution_range;
 };
 
@@ -467,12 +468,6 @@ struct reads_writes {
 	region<3> writes;
 
 	bool empty() const { return reads.empty() && writes.empty(); }
-};
-
-// NOCOMMIT consider breaking this apart further
-struct partial_instruction : localized_chunk {
-	std::optional<device_id> device = -1;
-	detail::instruction* instruction = nullptr;
 };
 
 struct partial_local_reduction {
@@ -582,13 +577,12 @@ class impl {
 	    const std::vector<localized_chunk>& concurrent_chunks_after_split);
 
 	// NOCOMMIT docs
-	std::vector<partial_instruction> split_execution_range(const execution_command& ecmd, const task& tsk);
+	std::vector<localized_chunk> split_execution_range(const execution_command& ecmd, const task& tsk);
 	std::vector<partial_local_reduction> prepare_local_reductions(
-	    batch& command_batch, const execution_command& ecmd, const task& tsk, const std::vector<partial_instruction>& concurrent_chunks);
+	    batch& command_batch, const execution_command& ecmd, const task& tsk, const std::vector<localized_chunk>& concurrent_chunks);
 	void apply_local_reductions(batch& command_batch, const std::vector<partial_local_reduction>& local_reductions, const execution_command& ecmd,
-	    const task& tsk, const std::vector<partial_instruction>& concurrent_chunks);
-	void execute_device_kernel_or_host_task(
-	    batch& command_batch, const execution_command& ecmd, const task& tsk, std::vector<partial_instruction>& concurrent_chunks);
+	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks);
+	instruction* execute_device_kernel_or_host_task(batch& command_batch, const execution_command& ecmd, const task& tsk, localized_chunk& chunk);
 
 	void compile_execution_command(batch& batch, const execution_command& ecmd);
 	void compile_push_command(batch& batch, const push_command& pcmd);
@@ -1239,7 +1233,7 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 	}
 }
 
-std::vector<partial_instruction> impl::split_execution_range(const execution_command& ecmd, const task& tsk) {
+std::vector<localized_chunk> impl::split_execution_range(const execution_command& ecmd, const task& tsk) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::split", Teal, "split");
 
 	const bool is_splittable_locally =
@@ -1274,25 +1268,25 @@ std::vector<partial_instruction> impl::split_execution_range(const execution_com
 		}
 	}
 
-	std::vector<partial_instruction> cmd_instrs;
-	for(size_t i = 0; i < coarse_chunks.size(); ++i) {
-		for(const auto& fine_chunk : split(coarse_chunks[i], tsk.get_granularity(), oversubscribe_factor)) {
-			auto& instr = cmd_instrs.emplace_back();
+	std::vector<localized_chunk> chunks;
+	for(size_t coarse_idx = 0; coarse_idx < coarse_chunks.size(); ++coarse_idx) {
+		for(const auto& fine_chunk : split(coarse_chunks[coarse_idx], tsk.get_granularity(), oversubscribe_factor)) {
+			auto& instr = chunks.emplace_back();
 			instr.execution_range = box(subrange(fine_chunk.offset, fine_chunk.range));
 			if(tsk.get_execution_target() == execution_target::device) {
-				assert(i < m_system.devices.size());
-				instr.device = device_id(i);
-				instr.memory_id = m_system.devices[i].native_memory;
+				assert(coarse_idx < m_system.devices.size());
+				instr.memory_id = m_system.devices[coarse_idx].native_memory;
+				instr.device_id = device_id(coarse_idx);
 			} else {
 				instr.memory_id = host_memory_id;
 			}
 		}
 	}
-	return cmd_instrs;
+	return chunks;
 }
 
 std::vector<partial_local_reduction> impl::prepare_local_reductions(
-    batch& command_batch, const execution_command& ecmd, const task& tsk, const std::vector<partial_instruction>& concurrent_chunks) {
+    batch& command_batch, const execution_command& ecmd, const task& tsk, const std::vector<localized_chunk>& concurrent_chunks) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::prepare_reductions", LightSkyBlue, "prepare reductions");
 
 	std::vector<partial_local_reduction> local_reductions(tsk.get_reductions().size());
@@ -1338,7 +1332,7 @@ std::vector<partial_local_reduction> impl::prepare_local_reductions(
 }
 
 void impl::apply_local_reductions(batch& command_batch, const std::vector<partial_local_reduction>& local_reductions, const execution_command& ecmd,
-    const task& tsk, const std::vector<partial_instruction>& concurrent_chunks) {
+    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks) {
 	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_reduction", DeepSkyBlue, "local reduction");
 		const auto& red = local_reductions[i];
@@ -1397,81 +1391,78 @@ void impl::apply_local_reductions(batch& command_batch, const std::vector<partia
 	}
 }
 
-void impl::execute_device_kernel_or_host_task(
-    batch& command_batch, const execution_command& ecmd, const task& tsk, std::vector<partial_instruction>& concurrent_chunks) {
+instruction* impl::execute_device_kernel_or_host_task(batch& command_batch, const execution_command& ecmd, const task& tsk, localized_chunk& chunk) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::create_instruction", Coral, "create instruction");
+
 	const auto& bam = tsk.get_buffer_access_map();
-	for(auto& instr : concurrent_chunks) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::create_instruction", Coral, "create instruction");
 
-		buffer_access_allocation_map allocation_map(bam.get_num_accesses());
-		buffer_access_allocation_map reduction_map(tsk.get_reductions().size());
+	buffer_access_allocation_map allocation_map(bam.get_num_accesses());
+	buffer_access_allocation_map reduction_map(tsk.get_reductions().size());
 
-		std::vector<buffer_memory_record> buffer_memory_access_map;       // if (m_recorder)
-		std::vector<buffer_reduction_record> buffer_memory_reduction_map; // if (m_recorder)
-		if(m_recorder != nullptr) {
-			buffer_memory_access_map.resize(bam.get_num_accesses());
-			buffer_memory_reduction_map.resize(tsk.get_reductions().size());
-		}
+	std::vector<buffer_memory_record> buffer_memory_access_map;       // if (m_recorder)
+	std::vector<buffer_reduction_record> buffer_memory_reduction_map; // if (m_recorder)
+	if(m_recorder != nullptr) {
+		buffer_memory_access_map.resize(bam.get_num_accesses());
+		buffer_memory_reduction_map.resize(tsk.get_reductions().size());
+	}
 
-		for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
-			const auto [bid, mode] = bam.get_nth_access(i);
-			const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), instr.execution_range.get_subrange(), tsk.get_global_size());
-			const auto& buffer = m_buffers.at(bid);
-			if(!accessed_box.empty()) {
-				const auto& allocations = buffer.memories[instr.memory_id].allocations;
-				// TODO get_contiguous_allocatoin
-				const auto allocation_it =
-				    std::find_if(allocations.begin(), allocations.end(), [&](const buffer_allocation_state& alloc) { return alloc.box.covers(accessed_box); });
-				assert(allocation_it != allocations.end());
-				const auto& alloc = *allocation_it;
-				allocation_map[i] =
-				    buffer_access_allocation{alloc.aid, alloc.box, accessed_box CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, bid, buffer.debug_name)};
-				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_record{bid, buffer.debug_name}; }
-			} else {
-				allocation_map[i] = buffer_access_allocation{null_allocation_id, {}, {} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, bid, buffer.debug_name)};
-				if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_record{bid, buffer.debug_name}; }
-			}
-		}
-
-		for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
-			const auto& rinfo = tsk.get_reductions()[i];
-			// TODO copy-pasted from directly above
-			const auto& buffer = m_buffers.at(rinfo.bid);
+	for(size_t i = 0; i < bam.get_num_accesses(); ++i) {
+		const auto [bid, mode] = bam.get_nth_access(i);
+		const auto accessed_box = bam.get_requirements_for_nth_access(i, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size());
+		const auto& buffer = m_buffers.at(bid);
+		if(!accessed_box.empty()) {
+			const auto& allocations = buffer.memories[chunk.memory_id].allocations;
 			// TODO get_contiguous_allocatoin
-			const auto& allocations = buffer.memories[instr.memory_id].allocations;
-			const auto allocation_it = std::find_if(
-			    allocations.begin(), allocations.end(), [&](const buffer_allocation_state& alloc) { return alloc.box.covers(scalar_reduction_box); });
+			const auto allocation_it =
+			    std::find_if(allocations.begin(), allocations.end(), [&](const buffer_allocation_state& alloc) { return alloc.box.covers(accessed_box); });
 			assert(allocation_it != allocations.end());
 			const auto& alloc = *allocation_it;
-			reduction_map[i] =
-			    buffer_access_allocation{alloc.aid, alloc.box, scalar_reduction_box CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, rinfo.bid, buffer.debug_name)};
-			if(m_recorder != nullptr) { buffer_memory_reduction_map[i] = buffer_reduction_record{rinfo.bid, buffer.debug_name, rinfo.rid}; }
-		}
-
-		if(tsk.get_execution_target() == execution_target::device) {
-			assert(instr.execution_range.get_area() > 0);
-			assert(instr.memory_id != host_memory_id);
-			// TODO how do I know it's a SYCL kernel and not a CUDA kernel?
-			const auto device_kernel_instr =
-			    create<device_kernel_instruction>(command_batch, instr.device.value(), tsk.get_launcher<device_kernel_launcher>(), instr.execution_range,
-			        std::move(allocation_map), std::move(reduction_map) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_id(), tsk.get_debug_name()));
-			if(m_recorder != nullptr) {
-				*m_recorder << device_kernel_instruction_record(
-				    *device_kernel_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map, buffer_memory_reduction_map);
-			}
-			instr.instruction = device_kernel_instr;
+			allocation_map[i] =
+			    buffer_access_allocation{alloc.aid, alloc.box, accessed_box CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, bid, buffer.debug_name)};
+			if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_record{bid, buffer.debug_name}; }
 		} else {
-			assert(tsk.get_execution_target() == execution_target::host);
-			assert(instr.memory_id == host_memory_id);
-			assert(reduction_map.empty());
-			const auto host_task_instr =
-			    create<host_task_instruction>(command_batch, tsk.get_launcher<host_task_launcher>(), instr.execution_range, tsk.get_global_size(),
-			        std::move(allocation_map), tsk.get_collective_group_id() CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_id(), tsk.get_debug_name()));
-			if(m_recorder != nullptr) {
-				*m_recorder << host_task_instruction_record(*host_task_instr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map);
-			}
-			instr.instruction = host_task_instr;
+			allocation_map[i] = buffer_access_allocation{null_allocation_id, {}, {} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, bid, buffer.debug_name)};
+			if(m_recorder != nullptr) { buffer_memory_access_map[i] = buffer_memory_record{bid, buffer.debug_name}; }
 		}
+	}
+
+	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
+		const auto& rinfo = tsk.get_reductions()[i];
+		// TODO copy-pasted from directly above
+		const auto& buffer = m_buffers.at(rinfo.bid);
+		// TODO get_contiguous_allocatoin
+		const auto& allocations = buffer.memories[chunk.memory_id].allocations;
+		const auto allocation_it =
+		    std::find_if(allocations.begin(), allocations.end(), [&](const buffer_allocation_state& alloc) { return alloc.box.covers(scalar_reduction_box); });
+		assert(allocation_it != allocations.end());
+		const auto& alloc = *allocation_it;
+		reduction_map[i] =
+		    buffer_access_allocation{alloc.aid, alloc.box, scalar_reduction_box CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, rinfo.bid, buffer.debug_name)};
+		if(m_recorder != nullptr) { buffer_memory_reduction_map[i] = buffer_reduction_record{rinfo.bid, buffer.debug_name, rinfo.rid}; }
+	}
+
+	if(tsk.get_execution_target() == execution_target::device) {
+		assert(chunk.execution_range.get_area() > 0);
+		assert(chunk.device_id.has_value());
+		assert(chunk.memory_id != host_memory_id);
+		const auto dkinstr =
+		    create<device_kernel_instruction>(command_batch, *chunk.device_id, tsk.get_launcher<device_kernel_launcher>(), chunk.execution_range,
+		        std::move(allocation_map), std::move(reduction_map) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_id(), tsk.get_debug_name()));
+		if(m_recorder != nullptr) {
+			*m_recorder << device_kernel_instruction_record(
+			    *dkinstr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map, buffer_memory_reduction_map);
+		}
+		return dkinstr;
+	} else {
+		assert(tsk.get_execution_target() == execution_target::host);
+		assert(chunk.memory_id == host_memory_id);
+		assert(reduction_map.empty());
+		const auto htinstr = create<host_task_instruction>(command_batch, tsk.get_launcher<host_task_launcher>(), chunk.execution_range, tsk.get_global_size(),
+		    std::move(allocation_map), tsk.get_collective_group_id() CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_id(), tsk.get_debug_name()));
+		if(m_recorder != nullptr) {
+			*m_recorder << host_task_instruction_record(*htinstr, ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map);
+		}
+		return htinstr;
 	}
 }
 
@@ -1500,7 +1491,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 	if(m_policy.overlapping_write_error != error_policy::ignore) {
 		box_vector<3> concurrent_execution_ranges(concurrent_chunks.size(), box<3>());
 		std::transform(concurrent_chunks.begin(), concurrent_chunks.end(), concurrent_execution_ranges.begin(),
-		    [](const partial_instruction& chunk) { return chunk.execution_range; });
+		    [](const localized_chunk& chunk) { return chunk.execution_range; });
 
 		if(const auto overlapping_writes = detect_overlapping_writes(tsk, concurrent_execution_ranges); !overlapping_writes.empty()) {
 			auto error = fmt::format("{} has overlapping writes on N{} in", print_task_debug_label(tsk, true /* title case */), m_local_nid);
@@ -1530,7 +1521,10 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 
 	// 4) create the actual command instructions
 
-	execute_device_kernel_or_host_task(command_batch, ecmd, tsk, concurrent_chunks);
+	std::vector<instruction*> command_instructions(concurrent_chunks.size());
+	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
+		command_instructions[i] = execute_device_kernel_or_host_task(command_batch, ecmd, tsk, concurrent_chunks[i]);
+	}
 
 	// collect updated regions
 
@@ -1579,22 +1573,22 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 			auto& memory = buffer.memories[concurrent_chunks[i].memory_id];
 
 			for(auto& allocation : memory.allocations) {
-				add_dependencies_on_last_writers(concurrent_chunks[i].instruction, allocation, region_intersection(rw.reads, allocation.box),
-				    instruction_dependency_origin::read_from_allocation);
-				add_dependencies_on_last_concurrent_accesses(concurrent_chunks[i].instruction, allocation, region_intersection(rw.writes, allocation.box),
-				    instruction_dependency_origin::write_to_allocation);
+				add_dependencies_on_last_writers(
+				    command_instructions[i], allocation, region_intersection(rw.reads, allocation.box), instruction_dependency_origin::read_from_allocation);
+				add_dependencies_on_last_concurrent_accesses(
+				    command_instructions[i], allocation, region_intersection(rw.writes, allocation.box), instruction_dependency_origin::write_to_allocation);
 			}
 		}
 		for(const auto& [hoid, order] : se_maps[i]) {
 			assert(concurrent_chunks[i].memory_id == host_memory_id);
 			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
-				add_dependency(concurrent_chunks[i].instruction, last_side_effect, instruction_dependency_origin::side_effect);
+				add_dependency(command_instructions[i], last_side_effect, instruction_dependency_origin::side_effect);
 			}
 		}
 		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
 			assert(concurrent_chunks[i].memory_id == host_memory_id);
 			auto& group = m_collective_groups.at(cgid); // created previously with clone_collective_group_instruction
-			add_dependency(concurrent_chunks[i].instruction, group.last_host_task, instruction_dependency_origin::collective_group_order);
+			add_dependency(command_instructions[i], group.last_host_task, instruction_dependency_origin::collective_group_order);
 		}
 	}
 
@@ -1605,7 +1599,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::begin_access", LightSeaGreen, "begin accesses");
 
 		for(const auto& [bid, rw] : rw_maps[i]) {
-			assert(concurrent_chunks[i].instruction != nullptr);
+			assert(command_instructions[i] != nullptr);
 			auto& buffer = m_buffers.at(bid);
 			for(auto& alloc : buffer.memories[concurrent_chunks[i].memory_id].allocations) {
 				alloc.begin_concurrent_writes(region_intersection(alloc.box, rw.writes));
@@ -1619,25 +1613,25 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_access", LightSeaGreen, "commit accesses");
 
 		for(const auto& [bid, rw] : rw_maps[i]) {
-			assert(concurrent_chunks[i].instruction != nullptr);
+			assert(command_instructions[i] != nullptr);
 			auto& buffer = m_buffers.at(bid);
 
 			// TODO can we merge this with loop 5) and use read_from_allocation / write_to_allocation?
 			// if so, have similar functions for side effects / collective groups
 			for(auto& alloc : buffer.memories[concurrent_chunks[i].memory_id].allocations) {
-				alloc.track_concurrent_read(region_intersection(alloc.box, rw.reads), concurrent_chunks[i].instruction);
-				alloc.track_concurrent_write(region_intersection(alloc.box, rw.writes), concurrent_chunks[i].instruction);
+				alloc.track_concurrent_read(region_intersection(alloc.box, rw.reads), command_instructions[i]);
+				alloc.track_concurrent_write(region_intersection(alloc.box, rw.writes), command_instructions[i]);
 			}
 
-			buffer.track_original_write(rw.writes, concurrent_chunks[i].instruction, concurrent_chunks[i].memory_id);
+			buffer.track_original_write(rw.writes, command_instructions[i], concurrent_chunks[i].memory_id);
 		}
 		for(const auto& [hoid, order] : se_maps[i]) {
 			assert(concurrent_chunks[i].memory_id == host_memory_id);
-			m_host_objects.at(hoid).last_side_effect = concurrent_chunks[i].instruction;
+			m_host_objects.at(hoid).last_side_effect = command_instructions[i];
 		}
 		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
 			assert(concurrent_chunks[i].memory_id == host_memory_id);
-			m_collective_groups.at(tsk.get_collective_group_id()).last_host_task = concurrent_chunks[i].instruction;
+			m_collective_groups.at(tsk.get_collective_group_id()).last_host_task = command_instructions[i];
 		}
 	}
 
@@ -1647,10 +1641,10 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 
 	// 7) insert epoch and horizon dependencies, apply epochs, optionally record the instruction
 
-	for(auto& instr : concurrent_chunks) {
+	for(const auto instr : command_instructions) {
 		// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
 		// this is never necessary for horizon and epoch commands, since they always have dependencies to the previous execution front.
-		if(instr.instruction->get_dependencies().empty()) { add_dependency(instr.instruction, m_last_epoch, instruction_dependency_origin::last_epoch); }
+		if(instr->get_dependencies().empty()) { add_dependency(instr, m_last_epoch, instruction_dependency_origin::last_epoch); }
 	}
 }
 
@@ -1847,8 +1841,8 @@ void impl::compile_fence_command(batch& command_batch, const fence_command& fcmd
 		if(!fence_box.empty()) {
 			// We make the host buffer coherent first in order to apply pending await-pushes.
 			// TODO this enforces a contiguous host-buffer allocation which may cause unnecessary resizes.
-			const std::vector chunks{localized_chunk{host_memory_id, {}}};
-			satisfy_task_buffer_requirements(command_batch, bid, tsk, {}, false /* is_reduction_initializer: irrelevant */, chunks);
+			satisfy_task_buffer_requirements(command_batch, bid, tsk, {}, false /* is_reduction_initializer: irrelevant */,
+			    std::vector{localized_chunk{host_memory_id, std::nullopt, box<3>()}} /* local_chunks: irrelevant */);
 
 			auto& host_buffer_allocation = buffer.memories[host_memory_id].get_contiguous_allocation(fence_box);
 			copy_instr = create<copy_instruction>(
