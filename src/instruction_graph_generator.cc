@@ -577,12 +577,20 @@ class impl {
 	    const std::vector<localized_chunk>& concurrent_chunks_after_split);
 
 	// NOCOMMIT docs
-	std::vector<localized_chunk> split_execution_range(const execution_command& ecmd, const task& tsk);
-	std::vector<partial_local_reduction> prepare_local_reductions(
-	    batch& command_batch, const execution_command& ecmd, const task& tsk, const std::vector<localized_chunk>& concurrent_chunks);
-	void apply_local_reductions(batch& command_batch, const std::vector<partial_local_reduction>& local_reductions, const execution_command& ecmd,
+	void create_task_collective_groups(batch& command_batch, const task& tsk);
+	std::vector<localized_chunk> split_task_execution_range(const execution_command& ecmd, const task& tsk);
+	void report_task_overlapping_writes(const task& tsk, const std::vector<localized_chunk>& concurrent_chunks) const;
+	partial_local_reduction prepare_task_local_reduction(
+	    batch& command_batch, const reduction_info& rinfo, const execution_command& ecmd, const task& tsk, const size_t num_concurrent_chunks);
+	void apply_task_local_reduction(batch& command_batch, const partial_local_reduction& red, const reduction_info& rinfo, const execution_command& ecmd,
 	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks);
-	instruction* execute_device_kernel_or_host_task(batch& command_batch, const execution_command& ecmd, const task& tsk, localized_chunk& chunk);
+	instruction* launch_task_kernel(batch& command_batch, const execution_command& ecmd, const task& tsk, const localized_chunk& chunk);
+	void perform_task_buffer_accesses(
+	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions);
+	void perform_task_side_effects(
+	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions);
+	void perform_task_collective_operations(
+	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions);
 
 	void compile_execution_command(batch& batch, const execution_command& ecmd);
 	void compile_push_command(batch& batch, const push_command& pcmd);
@@ -1079,6 +1087,87 @@ void impl::establish_coherence_between_buffer_memories(
 	}
 }
 
+void impl::create_task_collective_groups(batch& command_batch, const task& tsk) {
+	const auto cgid = tsk.get_collective_group_id();
+	if(cgid == non_collective_group_id) return;
+	if(m_collective_groups.count(cgid) != 0) return;
+
+	auto& root_cg = m_collective_groups.at(root_collective_group_id);
+	const auto clone_cg_isntr = create<clone_collective_group_instruction>(command_batch, root_collective_group_id, tsk.get_collective_group_id());
+	if(m_recorder != nullptr) { *m_recorder << clone_collective_group_instruction_record(*clone_cg_isntr); }
+
+	add_dependency(clone_cg_isntr, root_cg.last_host_task, instruction_dependency_origin::collective_group_order);
+	root_cg.last_host_task = clone_cg_isntr;
+	m_collective_groups.emplace(cgid, clone_cg_isntr);
+}
+
+std::vector<localized_chunk> impl::split_task_execution_range(const execution_command& ecmd, const task& tsk) {
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::split", Teal, "split");
+
+	const bool is_splittable_locally =
+	    tsk.has_variable_split() && tsk.get_side_effect_map().empty() && tsk.get_collective_group_id() == non_collective_group_id;
+	const auto split = tsk.get_hint<experimental::hints::split_2d>() != nullptr ? split_2d : split_1d;
+
+	const auto command_sr = ecmd.get_execution_range();
+	const auto command_chunk = chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size());
+
+	std::vector<chunk<3>> coarse_chunks;
+	if(is_splittable_locally && tsk.get_execution_target() == execution_target::device) {
+		coarse_chunks = split(command_chunk, tsk.get_granularity(), m_system.devices.size());
+	} else {
+		coarse_chunks = {command_chunk};
+	}
+
+	size_t oversubscribe_factor = 1;
+	if(const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>(); oversubscribe != nullptr) {
+		// Our local reduction setup uses the normal per-device backing buffer allocation as the reduction output of each device. Since we can't track
+		// overlapping allocations at the moment, we have no way of oversubscribing reduction kernels without introducing a data race between multiple "fine
+		// chunks" on the final write. This could be solved by creating separate reduction-output allocations for each device chunk and not touching the
+		// actual buffer allocation. This is left as *future work* for a general overhaul of reductions.
+		if(is_splittable_locally && tsk.get_reductions().empty()) {
+			oversubscribe_factor = oversubscribe->get_factor();
+		} else if(m_policy.unsafe_oversubscription_error != error_policy::ignore) {
+			utils::report_error(m_policy.unsafe_oversubscription_error, "Refusing to oversubscribe {}{}.", print_task_debug_label(tsk),
+			    !tsk.get_reductions().empty()                              ? " because it performs a reduction"
+			    : !tsk.get_side_effect_map().empty()                       ? " because it has side effects"
+			    : tsk.get_collective_group_id() != non_collective_group_id ? " because it participates in a collective group"
+			    : !tsk.has_variable_split()                                ? " because its iteration space cannot be split"
+			                                                               : "");
+		}
+	}
+
+	std::vector<localized_chunk> chunks;
+	for(size_t coarse_idx = 0; coarse_idx < coarse_chunks.size(); ++coarse_idx) {
+		for(const auto& fine_chunk : split(coarse_chunks[coarse_idx], tsk.get_granularity(), oversubscribe_factor)) {
+			auto& instr = chunks.emplace_back();
+			instr.execution_range = box(subrange(fine_chunk.offset, fine_chunk.range));
+			if(tsk.get_execution_target() == execution_target::device) {
+				assert(coarse_idx < m_system.devices.size());
+				instr.memory_id = m_system.devices[coarse_idx].native_memory;
+				instr.device_id = device_id(coarse_idx);
+			} else {
+				instr.memory_id = host_memory_id;
+			}
+		}
+	}
+	return chunks;
+}
+
+void impl::report_task_overlapping_writes(const task& tsk, const std::vector<localized_chunk>& concurrent_chunks) const {
+	box_vector<3> concurrent_execution_ranges(concurrent_chunks.size(), box<3>());
+	std::transform(concurrent_chunks.begin(), concurrent_chunks.end(), concurrent_execution_ranges.begin(),
+	    [](const localized_chunk& chunk) { return chunk.execution_range; });
+
+	if(const auto overlapping_writes = detect_overlapping_writes(tsk, concurrent_execution_ranges); !overlapping_writes.empty()) {
+		auto error = fmt::format("{} has overlapping writes on N{} in", print_task_debug_label(tsk, true /* title case */), m_local_nid);
+		for(const auto& [bid, overlap] : overlapping_writes) {
+			fmt::format_to(std::back_inserter(error), " {} {}", print_buffer_debug_label(bid), overlap);
+		}
+		error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
+		utils::report_error(m_policy.overlapping_write_error, "{}", error);
+	}
+}
+
 void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_execution_range,
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_chunks_after_split) //
 {
@@ -1233,76 +1322,20 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 	}
 }
 
-std::vector<localized_chunk> impl::split_execution_range(const execution_command& ecmd, const task& tsk) {
-	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::split", Teal, "split");
-
-	const bool is_splittable_locally =
-	    tsk.has_variable_split() && tsk.get_side_effect_map().empty() && tsk.get_collective_group_id() == non_collective_group_id;
-	const auto split = tsk.get_hint<experimental::hints::split_2d>() != nullptr ? split_2d : split_1d;
-
-	const auto command_sr = ecmd.get_execution_range();
-	const auto command_chunk = chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size());
-
-	std::vector<chunk<3>> coarse_chunks;
-	if(is_splittable_locally && tsk.get_execution_target() == execution_target::device) {
-		coarse_chunks = split(command_chunk, tsk.get_granularity(), m_system.devices.size());
-	} else {
-		coarse_chunks = {command_chunk};
-	}
-
-	size_t oversubscribe_factor = 1;
-	if(const auto oversubscribe = tsk.get_hint<experimental::hints::oversubscribe>(); oversubscribe != nullptr) {
-		// Our local reduction setup uses the normal per-device backing buffer allocation as the reduction output of each device. Since we can't track
-		// overlapping allocations at the moment, we have no way of oversubscribing reduction kernels without introducing a data race between multiple "fine
-		// chunks" on the final write. This could be solved by creating separate reduction-output allocations for each device chunk and not touching the
-		// actual buffer allocation. This is left as *future work* for a general overhaul of reductions.
-		if(is_splittable_locally && tsk.get_reductions().empty()) {
-			oversubscribe_factor = oversubscribe->get_factor();
-		} else if(m_policy.unsafe_oversubscription_error != error_policy::ignore) {
-			utils::report_error(m_policy.unsafe_oversubscription_error, "Refusing to oversubscribe {}{}.", print_task_debug_label(tsk),
-			    !tsk.get_reductions().empty()                              ? " because it performs a reduction"
-			    : !tsk.get_side_effect_map().empty()                       ? " because it has side effects"
-			    : tsk.get_collective_group_id() != non_collective_group_id ? " because it participates in a collective group"
-			    : !tsk.has_variable_split()                                ? " because its iteration space cannot be split"
-			                                                               : "");
-		}
-	}
-
-	std::vector<localized_chunk> chunks;
-	for(size_t coarse_idx = 0; coarse_idx < coarse_chunks.size(); ++coarse_idx) {
-		for(const auto& fine_chunk : split(coarse_chunks[coarse_idx], tsk.get_granularity(), oversubscribe_factor)) {
-			auto& instr = chunks.emplace_back();
-			instr.execution_range = box(subrange(fine_chunk.offset, fine_chunk.range));
-			if(tsk.get_execution_target() == execution_target::device) {
-				assert(coarse_idx < m_system.devices.size());
-				instr.memory_id = m_system.devices[coarse_idx].native_memory;
-				instr.device_id = device_id(coarse_idx);
-			} else {
-				instr.memory_id = host_memory_id;
-			}
-		}
-	}
-	return chunks;
-}
-
-std::vector<partial_local_reduction> impl::prepare_local_reductions(
-    batch& command_batch, const execution_command& ecmd, const task& tsk, const std::vector<localized_chunk>& concurrent_chunks) {
+partial_local_reduction impl::prepare_task_local_reduction(
+    batch& command_batch, const reduction_info& rinfo, const execution_command& ecmd, const task& tsk, const size_t num_concurrent_chunks) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::prepare_reductions", LightSkyBlue, "prepare reductions");
 
-	std::vector<partial_local_reduction> local_reductions(tsk.get_reductions().size());
+	const auto [rid, bid, reduction_task_includes_buffer_value] = rinfo;
+	auto& buffer = m_buffers.at(bid);
 
-	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
-		auto& red = local_reductions[i];
-		const auto [rid, bid, reduction_task_includes_buffer_value] = tsk.get_reductions()[i];
-		auto& buffer = m_buffers.at(bid);
+	partial_local_reduction red;
+	red.include_current_value = reduction_task_includes_buffer_value && ecmd.is_reduction_initializer();
+	red.current_value_offset = red.include_current_value ? 1 : 0;
+	red.num_chunks = red.current_value_offset + num_concurrent_chunks;
+	red.chunk_size = scalar_reduction_box.get_area() * buffer.elem_size;
 
-		red.include_current_value = reduction_task_includes_buffer_value && ecmd.is_reduction_initializer();
-		red.current_value_offset = red.include_current_value ? 1 : 0;
-		red.num_chunks = red.current_value_offset + concurrent_chunks.size();
-		red.chunk_size = scalar_reduction_box.get_area() * buffer.elem_size;
-
-		if(red.num_chunks <= 1) continue;
-
+	if(red.num_chunks > 1) {
 		red.gather_aid = new_allocation_id(host_memory_id);
 		red.gather_alloc_instr = create<alloc_instruction>(command_batch, red.gather_aid, red.num_chunks * red.chunk_size, buffer.elem_align);
 		if(m_recorder != nullptr) {
@@ -1328,70 +1361,67 @@ std::vector<partial_local_reduction> impl::prepare_local_reductions(
 		}
 	}
 
-	return local_reductions;
+	return red;
 }
 
-void impl::apply_local_reductions(batch& command_batch, const std::vector<partial_local_reduction>& local_reductions, const execution_command& ecmd,
-    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks) {
-	for(size_t i = 0; i < tsk.get_reductions().size(); ++i) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_reduction", DeepSkyBlue, "local reduction");
-		const auto& red = local_reductions[i];
+void impl::apply_task_local_reduction(batch& command_batch, const partial_local_reduction& red, const reduction_info& rinfo, const execution_command& ecmd,
+    const task& tsk,
+    const std::vector<localized_chunk>& concurrent_chunks) //
+{
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_reduction", DeepSkyBlue, "local reduction");
 
-		// for a single-device configuration that doesn't include the current value, the above update of last writers is sufficient
-		if(red.num_chunks == 1) continue;
+	// for a single-device configuration that doesn't include the current value, the above update of last writers is sufficient
+	if(red.num_chunks == 1) return;
 
-		const auto [rid, bid, reduction_task_includes_buffer_value] = tsk.get_reductions()[i];
-		auto& buffer = m_buffers.at(bid);
-		auto& host_memory = buffer.memories[host_memory_id];
+	const auto [rid, bid, reduction_task_includes_buffer_value] = rinfo;
+	auto& buffer = m_buffers.at(bid);
+	auto& host_memory = buffer.memories[host_memory_id];
 
-		// gather space has been allocated before in order to preserve the current buffer value where necessary
-		std::vector<copy_instruction*> gather_copy_instrs;
-		gather_copy_instrs.reserve(concurrent_chunks.size());
-		for(size_t j = 0; j < concurrent_chunks.size(); ++j) {
-			const auto source_mid = concurrent_chunks[j].memory_id;
-			auto& source_allocation = buffer.memories[source_mid].get_contiguous_allocation(scalar_reduction_box);
+	// gather space has been allocated before in order to preserve the current buffer value where necessary
+	std::vector<copy_instruction*> gather_copy_instrs;
+	gather_copy_instrs.reserve(concurrent_chunks.size());
+	for(size_t j = 0; j < concurrent_chunks.size(); ++j) {
+		const auto source_mid = concurrent_chunks[j].memory_id;
+		auto& source_allocation = buffer.memories[source_mid].get_contiguous_allocation(scalar_reduction_box);
 
-			// copy to local gather space
+		// copy to local gather space
 
-			const auto copy_instr =
-			    create<copy_instruction>(command_batch, source_allocation.aid, red.gather_aid + (red.current_value_offset + j) * buffer.elem_size,
-			        source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
-			if(m_recorder != nullptr) {
-				*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.debug_name);
-			}
+		const auto copy_instr =
+		    create<copy_instruction>(command_batch, source_allocation.aid, red.gather_aid + (red.current_value_offset + j) * buffer.elem_size,
+		        source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
+		if(m_recorder != nullptr) { *m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.debug_name); }
 
-			add_dependency(copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
-			perform_concurrent_read_from_allocation(copy_instr, source_allocation, scalar_reduction_box);
+		add_dependency(copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
+		perform_concurrent_read_from_allocation(copy_instr, source_allocation, scalar_reduction_box);
 
-			gather_copy_instrs.push_back(copy_instr);
-		}
-
-		auto& dest_allocation = host_memory.get_contiguous_allocation(scalar_reduction_box);
-
-		// reduce
-
-		const auto reduce_instr = create<reduce_instruction>(command_batch, rid, red.gather_aid, red.num_chunks, dest_allocation.aid);
-		if(m_recorder != nullptr) {
-			*m_recorder << reduce_instruction_record(
-			    *reduce_instr, std::nullopt, bid, buffer.debug_name, scalar_reduction_box, reduce_instruction_record::reduction_scope::local);
-		}
-
-		for(auto& copy_instr : gather_copy_instrs) {
-			add_dependency(reduce_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
-		}
-		perform_atomic_write_to_allocation(reduce_instr, dest_allocation, scalar_reduction_box);
-		buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
-
-		// free local gather space
-
-		const auto gather_free_instr = create<free_instruction>(command_batch, red.gather_aid);
-		if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, red.num_chunks * red.chunk_size, std::nullopt); }
-
-		add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::allocation_lifetime);
+		gather_copy_instrs.push_back(copy_instr);
 	}
+
+	auto& dest_allocation = host_memory.get_contiguous_allocation(scalar_reduction_box);
+
+	// reduce
+
+	const auto reduce_instr = create<reduce_instruction>(command_batch, rid, red.gather_aid, red.num_chunks, dest_allocation.aid);
+	if(m_recorder != nullptr) {
+		*m_recorder << reduce_instruction_record(
+		    *reduce_instr, std::nullopt, bid, buffer.debug_name, scalar_reduction_box, reduce_instruction_record::reduction_scope::local);
+	}
+
+	for(auto& copy_instr : gather_copy_instrs) {
+		add_dependency(reduce_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
+	}
+	perform_atomic_write_to_allocation(reduce_instr, dest_allocation, scalar_reduction_box);
+	buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
+
+	// free local gather space
+
+	const auto gather_free_instr = create<free_instruction>(command_batch, red.gather_aid);
+	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, red.num_chunks * red.chunk_size, std::nullopt); }
+
+	add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::allocation_lifetime);
 }
 
-instruction* impl::execute_device_kernel_or_host_task(batch& command_batch, const execution_command& ecmd, const task& tsk, localized_chunk& chunk) {
+instruction* impl::launch_task_kernel(batch& command_batch, const execution_command& ecmd, const task& tsk, const localized_chunk& chunk) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::create_instruction", Coral, "create instruction");
 
 	const auto& bam = tsk.get_buffer_access_map();
@@ -1466,73 +1496,15 @@ instruction* impl::execute_device_kernel_or_host_task(batch& command_batch, cons
 	}
 }
 
-void impl::compile_execution_command(batch& command_batch, const execution_command& ecmd) {
-	const auto& tsk = *m_tm->get_task(ecmd.get_tid());
-
-	if(tsk.get_execution_target() == execution_target::device && m_system.devices.empty()) { utils::panic("no device on which to execute device kernel"); }
-
-	// 0) collectively generate any non-existing collective group
-
-	if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id && m_collective_groups.count(cgid) == 0) {
-		auto& root_cg = m_collective_groups.at(root_collective_group_id);
-		const auto clone_cg_isntr = create<clone_collective_group_instruction>(command_batch, root_collective_group_id, tsk.get_collective_group_id());
-		if(m_recorder != nullptr) { *m_recorder << clone_collective_group_instruction_record(*clone_cg_isntr); }
-
-		add_dependency(clone_cg_isntr, root_cg.last_host_task, instruction_dependency_origin::collective_group_order);
-		root_cg.last_host_task = clone_cg_isntr;
-		m_collective_groups.emplace(cgid, clone_cg_isntr);
-	}
-
-	// 1) Split the iteration range into concurrent chunks (e.g. to distribute among devices)
-
-	auto concurrent_chunks = split_execution_range(ecmd, tsk);
-
-	// Detect and report overlapping writes between chunks after the split.
-	if(m_policy.overlapping_write_error != error_policy::ignore) {
-		box_vector<3> concurrent_execution_ranges(concurrent_chunks.size(), box<3>());
-		std::transform(concurrent_chunks.begin(), concurrent_chunks.end(), concurrent_execution_ranges.begin(),
-		    [](const localized_chunk& chunk) { return chunk.execution_range; });
-
-		if(const auto overlapping_writes = detect_overlapping_writes(tsk, concurrent_execution_ranges); !overlapping_writes.empty()) {
-			auto error = fmt::format("{} has overlapping writes on N{} in", print_task_debug_label(tsk, true /* title case */), m_local_nid);
-			for(const auto& [bid, overlap] : overlapping_writes) {
-				fmt::format_to(std::back_inserter(error), " {} {}", print_buffer_debug_label(bid), overlap);
-			}
-			error += ". Choose a non-overlapping range mapper for the write access or constrain the split to make the access non-overlapping.";
-			utils::report_error(m_policy.overlapping_write_error, "{}", error);
-		}
-	}
-
-	// 2) Satisfy allocation- and data requirements for all buffers (applying any pending await-pushes in the process)
+void impl::perform_task_buffer_accesses(
+    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions) //
+{
+	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::dependencies", DarkGray, "dependencies");
 
 	const auto& bam = tsk.get_buffer_access_map();
-	auto accessed_bids = bam.get_accessed_buffers();
-	for(const auto& rinfo : tsk.get_reductions()) {
-		accessed_bids.insert(rinfo.bid);
-	}
-	for(const auto bid : accessed_bids) {
-		satisfy_task_buffer_requirements(command_batch, bid, tsk, ecmd.get_execution_range(), ecmd.is_reduction_initializer(),
-		    std::vector<localized_chunk>(concurrent_chunks.begin(), concurrent_chunks.end()));
-	}
-
-	// 3) Prepare local reductions
-
-	auto local_reductions = prepare_local_reductions(command_batch, ecmd, tsk, concurrent_chunks);
-
-	// 4) create the actual command instructions
-
-	std::vector<instruction*> command_instructions(concurrent_chunks.size());
-	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
-		command_instructions[i] = execute_device_kernel_or_host_task(command_batch, ecmd, tsk, concurrent_chunks[i]);
-	}
-
-	// collect updated regions
 
 	std::vector<std::unordered_map<buffer_id, reads_writes>> rw_maps(concurrent_chunks.size()); // NOCOMMIT
-	std::vector<side_effect_map> se_maps(concurrent_chunks.size());                             // NOCOMMIT
 	for(const auto bid : bam.get_accessed_buffers()) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::collect_accesses", IndianRed, "collect reads/writes");
-
 		for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
 			reads_writes rw;
 			for(const auto mode : bam.get_access_modes(bid)) {
@@ -1552,22 +1524,12 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 		}
 	}
 
-	// collect side effects
-
-	if(!tsk.get_side_effect_map().empty()) {
-		assert(concurrent_chunks.size() == 1); // split instructions for host tasks with side effects would race
-		assert(concurrent_chunks[0].memory_id == host_memory_id);
-		se_maps[0] = tsk.get_side_effect_map();
-	}
-
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
 	// TODO this will not work correctly for oversubscription
 	//	 - read-all + write-1:1 cannot be oversubscribed at all, chunks would need a global read->write barrier (how would the kernel even look like?)
 	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
 	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::dependencies", DarkGray, "dependencies");
-
 		for(const auto& [bid, rw] : rw_maps[i]) {
 			auto& buffer = m_buffers.at(bid);
 			auto& memory = buffer.memories[concurrent_chunks[i].memory_id];
@@ -1579,25 +1541,12 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 				    command_instructions[i], allocation, region_intersection(rw.writes, allocation.box), instruction_dependency_origin::write_to_allocation);
 			}
 		}
-		for(const auto& [hoid, order] : se_maps[i]) {
-			assert(concurrent_chunks[i].memory_id == host_memory_id);
-			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
-				add_dependency(command_instructions[i], last_side_effect, instruction_dependency_origin::side_effect);
-			}
-		}
-		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
-			assert(concurrent_chunks[i].memory_id == host_memory_id);
-			auto& group = m_collective_groups.at(cgid); // created previously with clone_collective_group_instruction
-			add_dependency(command_instructions[i], group.last_host_task, instruction_dependency_origin::collective_group_order);
-		}
 	}
 
 	// 6a) clear region maps in the areas we write to - we gracefully handle overlapping writes by treating the set of all conflicting writers as last writers
 	// of an allocation
 
 	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::begin_access", LightSeaGreen, "begin accesses");
-
 		for(const auto& [bid, rw] : rw_maps[i]) {
 			assert(command_instructions[i] != nullptr);
 			auto& buffer = m_buffers.at(bid);
@@ -1610,8 +1559,6 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 	// 6b) update data locations and last writers resulting from command instructions
 
 	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
-		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_access", LightSeaGreen, "commit accesses");
-
 		for(const auto& [bid, rw] : rw_maps[i]) {
 			assert(command_instructions[i] != nullptr);
 			auto& buffer = m_buffers.at(bid);
@@ -1625,21 +1572,80 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 
 			buffer.track_original_write(rw.writes, command_instructions[i], concurrent_chunks[i].memory_id);
 		}
-		for(const auto& [hoid, order] : se_maps[i]) {
-			assert(concurrent_chunks[i].memory_id == host_memory_id);
-			m_host_objects.at(hoid).last_side_effect = command_instructions[i];
+	}
+}
+
+void impl::perform_task_side_effects(
+    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions) //
+{
+	if(tsk.get_side_effect_map().empty()) return;
+
+	assert(concurrent_chunks.size() == 1); // splitting instructions with side effects would race
+	assert(!concurrent_chunks[0].device_id.has_value());
+	assert(concurrent_chunks[0].memory_id == host_memory_id);
+
+	for(const auto& [hoid, order] : tsk.get_side_effect_map()) {
+		auto& host_object = m_host_objects.at(hoid);
+		if(const auto last_side_effect = host_object.last_side_effect) {
+			add_dependency(command_instructions[0], last_side_effect, instruction_dependency_origin::side_effect);
 		}
-		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
-			assert(concurrent_chunks[i].memory_id == host_memory_id);
-			m_collective_groups.at(tsk.get_collective_group_id()).last_host_task = command_instructions[i];
-		}
+		host_object.last_side_effect = command_instructions[0];
+	}
+}
+
+void impl::perform_task_collective_operations(
+    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions) //
+{
+	if(tsk.get_collective_group_id() == non_collective_group_id) return;
+
+	assert(concurrent_chunks.size() == 1); //
+	assert(!concurrent_chunks[0].device_id.has_value());
+	assert(concurrent_chunks[0].memory_id == host_memory_id);
+
+	auto& group = m_collective_groups.at(tsk.get_collective_group_id()); // created previously with clone_collective_group_instruction
+	add_dependency(command_instructions[0], group.last_host_task, instruction_dependency_origin::collective_group_order);
+	group.last_host_task = command_instructions[0];
+}
+
+void impl::compile_execution_command(batch& command_batch, const execution_command& ecmd) {
+	const auto& tsk = *m_tm->get_task(ecmd.get_tid());
+
+	if(tsk.get_execution_target() == execution_target::device && m_system.devices.empty()) { utils::panic("no device on which to execute device kernel"); }
+
+	create_task_collective_groups(command_batch, tsk);
+
+	auto concurrent_chunks = split_task_execution_range(ecmd, tsk);
+
+	if(m_policy.overlapping_write_error != error_policy::ignore) { //
+		report_task_overlapping_writes(tsk, concurrent_chunks);
 	}
 
-	// 7) insert local reduction instructions and update tracking structures accordingly
+	auto accessed_bids = tsk.get_buffer_access_map().get_accessed_buffers();
+	for(const auto& rinfo : tsk.get_reductions()) {
+		accessed_bids.insert(rinfo.bid);
+	}
+	for(const auto bid : accessed_bids) {
+		satisfy_task_buffer_requirements(command_batch, bid, tsk, ecmd.get_execution_range(), ecmd.is_reduction_initializer(),
+		    std::vector<localized_chunk>(concurrent_chunks.begin(), concurrent_chunks.end()));
+	}
 
-	apply_local_reductions(command_batch, local_reductions, ecmd, tsk, concurrent_chunks);
+	std::vector<partial_local_reduction> local_reductions(tsk.get_reductions().size());
+	for(size_t i = 0; i < local_reductions.size(); ++i) {
+		local_reductions[i] = prepare_task_local_reduction(command_batch, tsk.get_reductions()[i], ecmd, tsk, concurrent_chunks.size());
+	}
 
-	// 7) insert epoch and horizon dependencies, apply epochs, optionally record the instruction
+	std::vector<instruction*> command_instructions(concurrent_chunks.size());
+	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
+		command_instructions[i] = launch_task_kernel(command_batch, ecmd, tsk, concurrent_chunks[i]);
+	}
+
+	perform_task_buffer_accesses(tsk, concurrent_chunks, command_instructions);
+	perform_task_side_effects(tsk, concurrent_chunks, command_instructions);
+	perform_task_collective_operations(tsk, concurrent_chunks, command_instructions);
+
+	for(size_t i = 0; i < local_reductions.size(); ++i) {
+		apply_task_local_reduction(command_batch, local_reductions[i], tsk.get_reductions()[i], ecmd, tsk, concurrent_chunks);
+	}
 
 	for(const auto instr : command_instructions) {
 		// if there is no transitive dependency to the last epoch, insert one explicitly to enforce ordering.
