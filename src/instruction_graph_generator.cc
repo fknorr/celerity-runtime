@@ -20,7 +20,7 @@
 
 namespace celerity::detail::instruction_graph_generator_detail {
 
-/// MPI, our only "production" communicator implementation, limits the extent of send/receive operations to INT_MAX elements in each dimension. Since we do not
+/// MPI (our only "production" communicator implementation) limits the extent of send/receive operations to INT_MAX elements in each dimension. Since we do not
 /// require this value anywhere else we define it in instruction_graph_generator.cc, even though it does not logically originate here.
 constexpr size_t communicator_max_coordinate = INT_MAX;
 
@@ -302,9 +302,15 @@ struct buffer_memory_state {
 		return it != allocations.end() ? &*it : nullptr;
 	}
 
-	/// Returns the (unique) allocation covering `box` if such an allocation exists, otherwise nullptr.
 	buffer_allocation_state* find_contiguous_allocation(const box<3>& box) {
 		return const_cast<buffer_allocation_state*>(std::as_const(*this).find_contiguous_allocation(box));
+	}
+
+	/// Returns the (unique) allocation covering `box`.
+	buffer_allocation_state& get_contiguous_allocation(const box<3>& box) {
+		const auto alloc = find_contiguous_allocation(box);
+		assert(alloc != nullptr);
+		return *alloc;
 	}
 
 	bool is_allocated_contiguously(const box<3>& box) const { return find_contiguous_allocation(box) != nullptr; }
@@ -542,20 +548,19 @@ class impl {
 
 	/// Insert one or more receive instructions in order to fulfil a pending receive, making the received data available in host_memory_id. This may entail
 	/// receiving a region that is larger than the union of all regions read.
-	// NOCOMMIT why is `reads` a dense_map?
-	void commit_pending_region_receive(
-	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const dense_map<memory_id, std::vector<region<3>>>& reads);
+	void commit_pending_region_receive_to_host_memory(
+	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const std::vector<region<3>>& concurrent_reads);
 
 	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
 	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
-	void locally_satisfy_read_requirements(batch& batch, buffer_id bid, memory_id dest_mid, const std::vector<region<3>>& reads);
+	void establish_coherence_between_buffer_memories(batch& batch, buffer_id bid, memory_id dest_mid, const std::vector<region<3>>& reads);
 
 	void satisfy_buffer_requirements_for_regular_access(
 	    batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks);
 
 	void satisfy_buffer_requirements_as_reduction_output(batch& batch, buffer_id bid, reduction_id rid, const std::vector<localized_chunk>& local_chunks);
 
-	void satisfy_buffer_requirements(batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_sr, bool is_reduction_initializer,
+	void satisfy_task_buffer_requirements(batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_sr, bool is_reduction_initializer,
 	    const std::vector<localized_chunk>& local_chunks);
 
 	void compile_execution_command(batch& batch, const execution_command& ecmd);
@@ -884,49 +889,61 @@ void impl::allocate_contiguously(batch& current_batch, const buffer_id bid, cons
 	memory.allocations.insert(memory.allocations.end(), std::make_move_iterator(new_allocations.begin()), std::make_move_iterator(new_allocations.end()));
 }
 
-void impl::commit_pending_region_receive(
-    batch& current_batch, const buffer_id bid, const buffer_state::region_receive& receive, const dense_map<memory_id, std::vector<region<3>>>& reads) {
+void impl::commit_pending_region_receive_to_host_memory(
+    batch& current_batch, const buffer_id bid, const buffer_state::region_receive& receive, const std::vector<region<3>>& concurrent_reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_receive", MediumOrchid, "commit recv");
 
 	const auto trid = transfer_id(receive.consumer_tid, bid, no_reduction_id);
-	const auto mid = host_memory_id;
+
+	// For simplicity of the initial IDAG implementation, we choose to receive directly into host-buffer allocations. This saves us from juggling
+	// staging-buffers, but comes at a price in performance since the communicator needs to linearize and de-linearize transfers from and to regions that have
+	// non-zero strides within their host allocation.
+	//
+	// TODO 1) maintain staging allocations and move (de-)linearization to the device in order to profit from higher memory bandwidths
+	//      2) explicitly support communicators that can send and receive directly to and from device memory (NVIDIA GPUDirect RDMA)
 
 	auto& buffer = m_buffers.at(bid);
-	auto& memory = buffer.memories[mid];
+	auto& host_memory = buffer.memories[host_memory_id];
 
 	std::vector<buffer_allocation_state*> allocations;
 	for(const auto& min_contiguous_box : receive.required_contiguous_allocations) {
-		const auto alloc = memory.find_contiguous_allocation(min_contiguous_box);
-		assert(alloc != nullptr); // allocated explicitly in satisfy_buffer_requirements
-		if(std::find(allocations.begin(), allocations.end(), alloc) == allocations.end()) { allocations.push_back(alloc); }
+		// The caller (aka satisfy_buffer_requirements) must ensure that all received boxes are allocated contiguously
+		auto& alloc = host_memory.get_contiguous_allocation(min_contiguous_box);
+		if(std::find(allocations.begin(), allocations.end(), &alloc) == allocations.end()) { allocations.push_back(&alloc); }
 	}
 
 	for(const auto alloc : allocations) {
-		const auto alloc_recv_region = region_intersection(alloc->box, receive.received_region);
+		const auto region_received_into_alloc = region_intersection(alloc->box, receive.received_region);
 		std::vector<region<3>> independent_await_regions;
-		for(const auto& independent_read_regions : reads) {
-			for(const auto& read_region : independent_read_regions) {
-				const auto await_region = region_intersection(read_region, alloc_recv_region);
-				if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
-			}
+		for(const auto& read_region : concurrent_reads) {
+			const auto await_region = region_intersection(read_region, region_received_into_alloc);
+			if(!await_region.empty()) { independent_await_regions.push_back(await_region); }
 		}
-		instruction_graph_generator_detail::symmetrically_split_overlapping_regions(independent_await_regions);
+
+		// Ensure that receives-instructions inserted for concurrent readers are themselves concurrent.
+		symmetrically_split_overlapping_regions(independent_await_regions);
 
 		if(independent_await_regions.size() > 1) {
-			const auto split_recv_instr = create<split_receive_instruction>(current_batch, trid, alloc_recv_region, alloc->aid, alloc->box, buffer.elem_size);
+			// If there are multiple concurrent readers requiring different parts of the received region, we emit independent await_receive_instructions so as
+			// to not introduce artificial synchronization points (and facilitate compute-transfer overlap). Since the (remote) sender might still choose to
+			// perform the entire transfer en-bloc, we must inform the receive_arbiter of the target allocation and the full transfer region via a
+			// split_receive_instruction.
+			const auto split_recv_instr =
+			    create<split_receive_instruction>(current_batch, trid, region_received_into_alloc, alloc->aid, alloc->box, buffer.elem_size);
 			if(m_recorder != nullptr) { *m_recorder << split_receive_instruction_record(*split_recv_instr, buffer.debug_name); }
 
 			// We add dependencies to the begin_receive_instruction as if it were a writer, but update the last_writers only at the await_receive_instruction.
 			// The actual write happens somewhere in-between these instructions as orchestrated by the receive_arbiter, and any other accesses need to ensure
 			// that there are no pending transfers for the region they are trying to read or to access (TODO).
-			add_dependencies_on_last_concurrent_accesses(split_recv_instr, *alloc, alloc_recv_region, instruction_dependency_origin::write_to_allocation);
+			add_dependencies_on_last_concurrent_accesses(
+			    split_recv_instr, *alloc, region_received_into_alloc, instruction_dependency_origin::write_to_allocation);
 
 #ifndef NDEBUG
 			region<3> full_await_region;
 			for(const auto& await_region : independent_await_regions) {
 				full_await_region = region_union(full_await_region, await_region);
 			}
-			assert(full_await_region == alloc_recv_region);
+			assert(full_await_region == region_received_into_alloc);
 #endif
 
 			for(const auto& await_region : independent_await_regions) {
@@ -939,21 +956,23 @@ void impl::commit_pending_region_receive(
 				buffer.original_writers.update_region(await_region, await_instr);
 			}
 		} else {
-			assert(independent_await_regions.size() == 1 && independent_await_regions[0] == alloc_recv_region);
+			assert(independent_await_regions.size() == 1 && independent_await_regions[0] == region_received_into_alloc);
 
-			const auto recv_instr = create<receive_instruction>(current_batch, trid, alloc_recv_region, alloc->aid, alloc->box, buffer.elem_size);
+			// A receive_instruction is equivalent to a spit_receive_instruction followed by a single await_receive_instruction, but (as the common case) has
+			// less tracking overhead in the instruction graph.
+			const auto recv_instr = create<receive_instruction>(current_batch, trid, region_received_into_alloc, alloc->aid, alloc->box, buffer.elem_size);
 			if(m_recorder != nullptr) { *m_recorder << receive_instruction_record(*recv_instr, buffer.debug_name); }
 
-			perform_atomic_write_to_allocation(recv_instr, *alloc, alloc_recv_region);
-			buffer.original_writers.update_region(alloc_recv_region, recv_instr);
+			perform_atomic_write_to_allocation(recv_instr, *alloc, region_received_into_alloc);
+			buffer.original_writers.update_region(region_received_into_alloc, recv_instr);
 		}
 	}
 
-	buffer.original_write_memories.update_region(receive.received_region, mid);
-	buffer.up_to_date_memories.update_region(receive.received_region, memory_mask().set(mid));
+	buffer.original_write_memories.update_region(receive.received_region, host_memory_id);
+	buffer.up_to_date_memories.update_region(receive.received_region, memory_mask().set(host_memory_id));
 }
 
-void impl::locally_satisfy_read_requirements(
+void impl::establish_coherence_between_buffer_memories(
     batch& current_batch, const buffer_id bid, const memory_id dest_mid, const std::vector<region<3>>& concurrent_reads) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_coherence", Salmon, "local coherence");
 
@@ -970,11 +989,12 @@ void impl::locally_satisfy_read_requirements(
 	}
 	if(unsatisfied_concurrent_reads.empty()) return;
 
-	instruction_graph_generator_detail::symmetrically_split_overlapping_regions(unsatisfied_concurrent_reads);
+	// Ensure that coherence-copies inserted for concurrent readers are themselves concurrent.
+	symmetrically_split_overlapping_regions(unsatisfied_concurrent_reads);
 
 	// Collect the regions to be copied from each memory. As long as we don't touch `buffer.up_to_date_memories` we could also create copy_instructions directly
 	// within this loop, but separating these two steps keeps code more readable at the expense of allocating one more vector.
-	std::vector<std::tuple<memory_id, region<3>>> concurrent_copies_from_source;
+	std::vector<std::pair<memory_id, region<3>>> concurrent_copies_from_source;
 	for(auto& unsatisfied_region : unsatisfied_concurrent_reads) {
 		// Split the region on original writers to enable concurrency between the write of one region and a copy on another, already written region.
 		std::unordered_map<instruction_id, box_vector<3>> unsatisfied_boxes_by_writer;
@@ -986,7 +1006,7 @@ void impl::locally_satisfy_read_requirements(
 		for(auto& [_, unsatisfied_boxes] : unsatisfied_boxes_by_writer) {
 			const region unsatisfied_region(std::move(unsatisfied_boxes));
 			// There can be multiple original-writer memories if the original writer has been subsumed by an epoch or a horizon.
-			std::unordered_map<memory_id, box_vector<3>> copy_from_source;
+			dense_map<memory_id, box_vector<3>> copy_from_source(buffer.memories.size());
 
 			for(const auto& [copy_box, original_write_mid] : buffer.original_write_memories.get_region_values(unsatisfied_region)) {
 				if(m_system.memories[original_write_mid].copy_peers.test(dest_mid)) {
@@ -1004,9 +1024,9 @@ void impl::locally_satisfy_read_requirements(
 					copy_from_source[host_memory_id].push_back(copy_box);
 				}
 			}
-			for(auto& [source_mid, copy_boxes] : copy_from_source) {
-				assert(!copy_boxes.empty());
-				concurrent_copies_from_source.emplace_back(source_mid, region(std::move(copy_boxes)));
+			for(memory_id source_mid = 0; source_mid < buffer.memories.size(); ++source_mid) {
+				auto& copy_boxes = copy_from_source[source_mid];
+				if(!copy_boxes.empty()) { concurrent_copies_from_source.emplace_back(source_mid, region(std::move(copy_boxes))); }
 			}
 		}
 	}
@@ -1014,22 +1034,22 @@ void impl::locally_satisfy_read_requirements(
 	// Create, between pairs of source and dest allocations, the copy instructions according to the previously collected regions.
 	for(auto& [source_mid, copy_from_memory_region] : concurrent_copies_from_source) {
 		assert(dest_mid != source_mid);
-		for(auto& source_allocation : buffer.memories[source_mid].allocations) {
-			const auto read_from_allocation_region = region_intersection(copy_from_memory_region, source_allocation.box);
+		for(auto& source_alloc : buffer.memories[source_mid].allocations) {
+			const auto read_from_allocation_region = region_intersection(copy_from_memory_region, source_alloc.box);
 			if(read_from_allocation_region.empty()) continue;
 
-			for(auto& dest_allocation : buffer.memories[dest_mid].allocations) {
-				const auto copy_between_allocations_region = region_intersection(read_from_allocation_region, dest_allocation.box);
+			for(auto& dest_alloc : buffer.memories[dest_mid].allocations) {
+				const auto copy_between_allocations_region = region_intersection(read_from_allocation_region, dest_alloc.box);
 				if(copy_between_allocations_region.empty()) continue;
 
-				const auto copy_instr = create<copy_instruction>(current_batch, source_allocation.aid, dest_allocation.aid, source_allocation.box,
-				    dest_allocation.box, copy_between_allocations_region, buffer.elem_size);
+				const auto copy_instr = create<copy_instruction>(
+				    current_batch, source_alloc.aid, dest_alloc.aid, source_alloc.box, dest_alloc.box, copy_between_allocations_region, buffer.elem_size);
 				if(m_recorder != nullptr) {
 					*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::coherence, bid, buffer.debug_name);
 				}
 
-				perform_concurrent_read_from_allocation(copy_instr, source_allocation, copy_between_allocations_region);
-				perform_atomic_write_to_allocation(copy_instr, dest_allocation, copy_between_allocations_region);
+				perform_concurrent_read_from_allocation(copy_instr, source_alloc, copy_between_allocations_region);
+				perform_atomic_write_to_allocation(copy_instr, dest_alloc, copy_between_allocations_region);
 			}
 		}
 	}
@@ -1042,7 +1062,7 @@ void impl::locally_satisfy_read_requirements(
 	}
 }
 
-void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
+void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_local_chunks) //
 {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::coherence", SandyBrown, "B{} coherence", bid);
@@ -1094,21 +1114,23 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 	box_vector<3> discarded_boxes = region_difference(accessed_region, consumed_region).into_boxes();
 
 	// Collect all receives that we must apply before executing this command.
-
-	const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
-	    [&](const buffer_state::region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
-	for(auto it = first_applied_receive; it != buffer.pending_receives.end(); ++it) {
-		// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
-		discarded_boxes.append(it->received_region.get_boxes());
-		// begin_receive_instruction needs contiguous allocations for the bounding boxes of potentially received fragments
-		required_contiguous_allocations[host_memory_id].insert(
-		    required_contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
-	}
-
 	std::vector<buffer_state::region_receive> applied_receives;
-	if(first_applied_receive != buffer.pending_receives.end()) {
-		applied_receives.assign(first_applied_receive, buffer.pending_receives.end());
-		buffer.pending_receives.erase(first_applied_receive, buffer.pending_receives.end());
+	{
+		const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
+		    [&](const buffer_state::region_receive& r) { return region_intersection(accessed_region, r.received_region).empty(); });
+		const auto last_applied_receive = buffer.pending_receives.end();
+		for(auto it = first_applied_receive; it != last_applied_receive; ++it) {
+			// we (re) allocate before receiving, but there's no need to preserve previous data at the receive location
+			discarded_boxes.append(it->received_region.get_boxes());
+			// begin_receive_instruction needs contiguous allocations for the bounding boxes of potentially received fragments
+			required_contiguous_allocations[host_memory_id].insert(
+			    required_contiguous_allocations[host_memory_id].end(), it->required_contiguous_allocations.begin(), it->required_contiguous_allocations.end());
+		}
+
+		if(first_applied_receive != last_applied_receive) {
+			applied_receives.assign(first_applied_receive, last_applied_receive);
+			buffer.pending_receives.erase(first_applied_receive, last_applied_receive);
+		}
 	}
 
 	if(reduction != tsk.get_reductions().end()) {
@@ -1140,7 +1162,7 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 	// do not preserve any received or overwritten region across receives or buffer resizes later on
 	buffer.up_to_date_memories.update_region(discarded_region, memory_mask());
 
-	dense_map<memory_id, std::vector<region<3>>> local_chunk_reads(m_memories.size());
+	dense_map<memory_id, std::vector<region<3>>> reads_from_memory(m_memories.size());
 	for(const auto& chunk : concurrent_local_chunks) {
 		required_contiguous_allocations[chunk.memory_id].append(
 		    bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size()));
@@ -1150,15 +1172,15 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 			const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size());
 			chunk_read_boxes.append(req.get_boxes());
 		}
-		if(!chunk_read_boxes.empty()) { local_chunk_reads[chunk.memory_id].push_back(region(std::move(chunk_read_boxes))); }
+		if(!chunk_read_boxes.empty()) { reads_from_memory[chunk.memory_id].push_back(region(std::move(chunk_read_boxes))); }
 	}
 	if(local_node_is_reduction_initializer && reduction != tsk.get_reductions().end() && reduction->init_from_buffer) {
-		local_chunk_reads[host_memory_id].emplace_back(scalar_reduction_box);
+		reads_from_memory[host_memory_id].emplace_back(scalar_reduction_box);
 	}
 
 	// collect all required staging allocations
-	for(memory_id read_mid = 0; read_mid < local_chunk_reads.size(); ++read_mid) {
-		for(auto& read_region : local_chunk_reads[read_mid]) {
+	for(memory_id read_mid = 0; read_mid < reads_from_memory.size(); ++read_mid) {
+		for(auto& read_region : reads_from_memory[read_mid]) {
 			box_vector<3> host_staged_boxes;
 			for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
 				if(location.any() && !location.test(read_mid) && (m_system.memories[read_mid].copy_peers & location).none()) {
@@ -1167,7 +1189,7 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 					host_staged_boxes.push_back(box);
 				}
 			}
-			if(!host_staged_boxes.empty()) { local_chunk_reads[host_memory_id].emplace_back(std::move(host_staged_boxes)); }
+			if(!host_staged_boxes.empty()) { reads_from_memory[host_memory_id].emplace_back(std::move(host_staged_boxes)); }
 		}
 	}
 
@@ -1175,15 +1197,21 @@ void impl::satisfy_buffer_requirements(batch& current_batch, const buffer_id bid
 		allocate_contiguously(current_batch, bid, mid, std::move(required_contiguous_allocations[mid]));
 	}
 
-	for(const auto& receive : applied_receives) {
-		commit_pending_region_receive(current_batch, bid, receive, local_chunk_reads);
+	{
+		std::vector<region<3>> concurrent_reads;
+		for(const auto& reads : reads_from_memory) {
+			concurrent_reads.insert(concurrent_reads.end(), reads.begin(), reads.end());
+		}
+		for(const auto& receive : applied_receives) {
+			commit_pending_region_receive_to_host_memory(current_batch, bid, receive, concurrent_reads);
+		}
 	}
 
 	// Create the necessary coherence copy instructions to satisfy all remaining requirements locally. The iterations of this loop are independent with the
 	// notable exception of host_memory_id in the presence of staging copies: There we rely on the fact that `host_memory_id < device_memory_id` to allow
 	// coherence copies to device memory to create device -> host -> device copy chains.
-	for(memory_id mid = 0; mid < local_chunk_reads.size(); ++mid) {
-		locally_satisfy_read_requirements(current_batch, bid, mid, local_chunk_reads[mid]);
+	for(memory_id mid = 0; mid < reads_from_memory.size(); ++mid) {
+		establish_coherence_between_buffer_memories(current_batch, bid, mid, reads_from_memory[mid]);
 	}
 }
 
@@ -1294,7 +1322,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 		accessed_bids.insert(rinfo.bid);
 	}
 	for(const auto bid : accessed_bids) {
-		satisfy_buffer_requirements(command_batch, bid, tsk, ecmd.get_execution_range(), ecmd.is_reduction_initializer(),
+		satisfy_task_buffer_requirements(command_batch, bid, tsk, ecmd.get_execution_range(), ecmd.is_reduction_initializer(),
 		    std::vector<localized_chunk>(cmd_instrs.begin(), cmd_instrs.end()));
 	}
 
@@ -1332,20 +1360,18 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 		add_dependency(red.gather_alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
 
 		if(red.include_current_value) {
-			auto source_allocation =
-			    buffer.memories[host_memory_id].find_contiguous_allocation(scalar_reduction_box); // provided by satisfy_buffer_requirements
-			assert(source_allocation != nullptr);
+			auto& source_allocation =
+			    buffer.memories[host_memory_id].get_contiguous_allocation(scalar_reduction_box); // provided by satisfy_buffer_requirements
 
 			// copy to local gather space
-
 			const auto current_value_copy_instr = create<copy_instruction>(
-			    command_batch, source_allocation->aid, red.gather_aid, source_allocation->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
+			    command_batch, source_allocation.aid, red.gather_aid, source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
 			if(m_recorder != nullptr) {
 				*m_recorder << copy_instruction_record(*current_value_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.debug_name);
 			}
 
 			add_dependency(current_value_copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
-			perform_concurrent_read_from_allocation(current_value_copy_instr, *source_allocation, scalar_reduction_box);
+			perform_concurrent_read_from_allocation(current_value_copy_instr, source_allocation, scalar_reduction_box);
 		}
 	}
 
@@ -1547,30 +1573,28 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 		gather_copy_instrs.reserve(cmd_instrs.size());
 		for(size_t j = 0; j < cmd_instrs.size(); ++j) {
 			const auto source_mid = cmd_instrs[j].memory_id;
-			auto source_allocation = buffer.memories[source_mid].find_contiguous_allocation(scalar_reduction_box);
-			assert(source_allocation != nullptr);
+			auto& source_allocation = buffer.memories[source_mid].get_contiguous_allocation(scalar_reduction_box);
 
 			// copy to local gather space
 
 			const auto copy_instr =
-			    create<copy_instruction>(command_batch, source_allocation->aid, red.gather_aid + (red.current_value_offset + j) * buffer.elem_size,
-			        source_allocation->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
+			    create<copy_instruction>(command_batch, source_allocation.aid, red.gather_aid + (red.current_value_offset + j) * buffer.elem_size,
+			        source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
 			if(m_recorder != nullptr) {
 				*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.debug_name);
 			}
 
 			add_dependency(copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
-			perform_concurrent_read_from_allocation(copy_instr, *source_allocation, scalar_reduction_box);
+			perform_concurrent_read_from_allocation(copy_instr, source_allocation, scalar_reduction_box);
 
 			gather_copy_instrs.push_back(copy_instr);
 		}
 
-		const auto dest_allocation = host_memory.find_contiguous_allocation(scalar_reduction_box);
-		assert(dest_allocation != nullptr);
+		auto& dest_allocation = host_memory.get_contiguous_allocation(scalar_reduction_box);
 
 		// reduce
 
-		const auto reduce_instr = create<reduce_instruction>(command_batch, rid, red.gather_aid, red.num_chunks, dest_allocation->aid);
+		const auto reduce_instr = create<reduce_instruction>(command_batch, rid, red.gather_aid, red.num_chunks, dest_allocation.aid);
 		if(m_recorder != nullptr) {
 			*m_recorder << reduce_instruction_record(
 			    *reduce_instr, std::nullopt, bid, buffer.debug_name, scalar_reduction_box, reduce_instruction_record::reduction_scope::local);
@@ -1579,7 +1603,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 		for(auto& copy_instr : gather_copy_instrs) {
 			add_dependency(reduce_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
 		}
-		perform_atomic_write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
+		perform_atomic_write_to_allocation(reduce_instr, dest_allocation, scalar_reduction_box);
 		buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
 		// free local gather space
@@ -1625,7 +1649,7 @@ void impl::compile_push_command(batch& command_batch, const push_command& pcmd) 
 	for(auto& [_, boxes] : individual_send_boxes) {
 		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
 		// writer without any effect from the order of operations
-		locally_satisfy_read_requirements(command_batch, trid.bid, host_memory_id, {region(box_vector<3>(boxes))});
+		establish_coherence_between_buffer_memories(command_batch, trid.bid, host_memory_id, {region(box_vector<3>(boxes))});
 	}
 
 	for(auto& [_, boxes] : individual_send_boxes) {
@@ -1633,15 +1657,14 @@ void impl::compile_push_command(batch& command_batch, const push_command& pcmd) 
 			for(const auto& box : instruction_graph_generator_detail::split_into_communicator_compatible_boxes(buffer.range, full_box)) {
 				const message_id msgid = create_outbound_pilot(command_batch, pcmd.get_target(), trid, box);
 
-				const auto allocation = buffer.memories[host_memory_id].find_contiguous_allocation(box);
-				assert(allocation != nullptr); // we allocate_contiguously above
+				auto& allocation = buffer.memories[host_memory_id].get_contiguous_allocation(box); // we allocate_contiguously above
 
-				const auto offset_in_allocation = box.get_offset() - allocation->box.get_offset();
-				const auto send_instr = create<send_instruction>(command_batch, pcmd.get_target(), msgid, allocation->aid, allocation->box.get_range(),
+				const auto offset_in_allocation = box.get_offset() - allocation.box.get_offset();
+				const auto send_instr = create<send_instruction>(command_batch, pcmd.get_target(), msgid, allocation.aid, allocation.box.get_range(),
 				    offset_in_allocation, box.get_range(), buffer.elem_size);
 				if(m_recorder != nullptr) { *m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), trid, buffer.debug_name, box.get_offset()); }
 
-				perform_concurrent_read_from_allocation(send_instr, *allocation, box);
+				perform_concurrent_read_from_allocation(send_instr, allocation, box);
 			}
 		}
 	}
@@ -1725,16 +1748,16 @@ void impl::compile_reduction_command(batch& command_batch, const reduction_comma
 	const auto contribution_location = buffer.up_to_date_memories.get_region_values(scalar_reduction_box).front().second;
 	if(contribution_location.any()) {
 		const auto source_mid = next_location(contribution_location, host_memory_id);
-		const auto source_allocation = buffer.memories[source_mid].find_contiguous_allocation(scalar_reduction_box);
-		assert(source_allocation != nullptr); // if scalar_box is up to date in that memory, it (the single element) must also be contiguous
+		// if scalar_box is up to date in that memory, it (the single element) must also be contiguous
+		auto& source_allocation = buffer.memories[source_mid].get_contiguous_allocation(scalar_reduction_box);
 
-		local_gather_copy_instr = create<copy_instruction>(command_batch, source_allocation->aid, gather_aid + m_local_nid * buffer.elem_size,
-		    source_allocation->box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
+		local_gather_copy_instr = create<copy_instruction>(command_batch, source_allocation.aid, gather_aid + m_local_nid * buffer.elem_size,
+		    source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
 		if(m_recorder != nullptr) {
 			*m_recorder << copy_instruction_record(*local_gather_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.debug_name);
 		}
 		add_dependency(local_gather_copy_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocation);
-		perform_concurrent_read_from_allocation(local_gather_copy_instr, *source_allocation, scalar_reduction_box);
+		perform_concurrent_read_from_allocation(local_gather_copy_instr, source_allocation, scalar_reduction_box);
 	}
 
 	// gather remote contributions
@@ -1749,17 +1772,16 @@ void impl::compile_reduction_command(batch& command_batch, const reduction_comma
 	allocate_contiguously(command_batch, bid, host_memory_id, {scalar_reduction_box});
 
 	auto& host_memory = buffer.memories[host_memory_id];
-	auto dest_allocation = host_memory.find_contiguous_allocation(scalar_reduction_box);
-	assert(dest_allocation != nullptr);
+	auto& dest_allocation = host_memory.get_contiguous_allocation(scalar_reduction_box);
 
-	const auto reduce_instr = create<reduce_instruction>(command_batch, rid, gather_aid, m_num_nodes, dest_allocation->aid);
+	const auto reduce_instr = create<reduce_instruction>(command_batch, rid, gather_aid, m_num_nodes, dest_allocation.aid);
 	if(m_recorder != nullptr) {
 		*m_recorder << reduce_instruction_record(
 		    *reduce_instr, rcmd.get_cid(), bid, buffer.debug_name, scalar_reduction_box, reduce_instruction_record::reduction_scope::global);
 	}
 	add_dependency(reduce_instr, gather_recv_instr, instruction_dependency_origin::read_from_allocation);
 	if(local_gather_copy_instr != nullptr) { add_dependency(reduce_instr, local_gather_copy_instr, instruction_dependency_origin::read_from_allocation); }
-	perform_atomic_write_to_allocation(reduce_instr, *dest_allocation, scalar_reduction_box);
+	perform_atomic_write_to_allocation(reduce_instr, dest_allocation, scalar_reduction_box);
 	buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
 	// free the gather space
@@ -1795,18 +1817,16 @@ void impl::compile_fence_command(batch& command_batch, const fence_command& fcmd
 			// We make the host buffer coherent first in order to apply pending await-pushes.
 			// TODO this enforces a contiguous host-buffer allocation which may cause unnecessary resizes.
 			const std::vector chunks{localized_chunk{host_memory_id, {}}};
-			satisfy_buffer_requirements(command_batch, bid, tsk, {}, false /* is_reduction_initializer: irrelevant */, chunks);
+			satisfy_task_buffer_requirements(command_batch, bid, tsk, {}, false /* is_reduction_initializer: irrelevant */, chunks);
 
-			const auto host_buffer_allocation = buffer.memories[host_memory_id].find_contiguous_allocation(fence_box);
-			assert(host_buffer_allocation != nullptr);
-
+			auto& host_buffer_allocation = buffer.memories[host_memory_id].get_contiguous_allocation(fence_box);
 			copy_instr = create<copy_instruction>(
-			    command_batch, host_buffer_allocation->aid, user_allocation_id, host_buffer_allocation->box, fence_box, fence_box, buffer.elem_size);
+			    command_batch, host_buffer_allocation.aid, user_allocation_id, host_buffer_allocation.box, fence_box, fence_box, buffer.elem_size);
 			if(m_recorder != nullptr) {
 				*m_recorder << copy_instruction_record(*copy_instr, copy_instruction_record::copy_origin::fence, bid, buffer.debug_name);
 			}
 
-			perform_concurrent_read_from_allocation(copy_instr, *host_buffer_allocation, fence_box);
+			perform_concurrent_read_from_allocation(copy_instr, host_buffer_allocation, fence_box);
 		}
 
 		const auto fence_instr = create<fence_instruction>(command_batch, tsk.get_fence_promise());
@@ -1863,11 +1883,18 @@ void impl::compile_epoch_command(batch& command_batch, const epoch_command& ecmd
 }
 
 
-void impl::flush_batch(batch&& batch) {
+void impl::flush_batch(batch&& batch) { // NOLINT(cppcoreguidelines-rvalue-reference-param-not-moved) we do move the members of `batch`
 	// sanity check: every instruction except the initial epoch must be temporally anchored through at least one dependency
 	assert(std::all_of(batch.generated_instructions.begin(), batch.generated_instructions.end(),
 	    [](const auto instr) { return instr->get_id() == 0 || !instr->get_dependencies().empty(); }));
 	assert(is_topologically_sorted(batch.generated_instructions.begin(), batch.generated_instructions.end()));
+
+	// instructions must be recorded manually after each create<instr>() call; verify that we never flush an unrecorded instruction
+	assert(m_recorder == nullptr || std::all_of(batch.generated_instructions.begin(), batch.generated_instructions.end(), [this](const auto instr) {
+		return std::find_if(m_recorder->get_instructions().begin(), m_recorder->get_instructions().end(), [=](const auto& rec) {
+			return rec->id == instr->get_id();
+		}) != m_recorder->get_instructions().end();
+	}));
 
 	if(m_delegate != nullptr && !batch.generated_instructions.empty()) { m_delegate->flush_instructions(std::move(batch.generated_instructions)); }
 	if(m_delegate != nullptr && !batch.generated_pilots.empty()) { m_delegate->flush_outbound_pilots(std::move(batch.generated_pilots)); }
