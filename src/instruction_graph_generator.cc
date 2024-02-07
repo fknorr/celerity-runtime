@@ -472,8 +472,6 @@ struct reads_writes {
 // NOCOMMIT consider breaking this apart further
 struct partial_instruction : localized_chunk {
 	std::optional<device_id> device = -1;
-	std::unordered_map<buffer_id, reads_writes> rw_map;
-	side_effect_map se_map;
 	detail::instruction* instruction = nullptr;
 };
 
@@ -1530,25 +1528,32 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 
 	auto local_reductions = prepare_local_reductions(command_batch, ecmd, tsk, concurrent_chunks);
 
+	// 4) create the actual command instructions
+
+	execute_device_kernel_or_host_task(command_batch, ecmd, tsk, concurrent_chunks);
+
 	// collect updated regions
 
+	std::vector<std::unordered_map<buffer_id, reads_writes>> rw_maps(concurrent_chunks.size()); // NOCOMMIT
+	std::vector<side_effect_map> se_maps(concurrent_chunks.size());                             // NOCOMMIT
 	for(const auto bid : bam.get_accessed_buffers()) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::collect_accesses", IndianRed, "collect reads/writes");
 
-		for(auto& chunk : concurrent_chunks) {
+		for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
 			reads_writes rw;
 			for(const auto mode : bam.get_access_modes(bid)) {
-				const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size());
+				const auto req =
+				    bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), concurrent_chunks[i].execution_range.get_subrange(), tsk.get_global_size());
 				if(access::mode_traits::is_consumer(mode)) { rw.reads = region_union(rw.reads, req); }
 				if(access::mode_traits::is_producer(mode)) { rw.writes = region_union(rw.writes, req); }
 			}
-			chunk.rw_map.emplace(bid, std::move(rw));
+			rw_maps[i].emplace(bid, std::move(rw));
 		}
 	}
 
 	for(const auto& rinfo : tsk.get_reductions()) {
-		for(auto& chunk : concurrent_chunks) {
-			auto& rw_map = chunk.rw_map[rinfo.bid]; // allow default-insert
+		for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
+			auto& rw_map = rw_maps[i][rinfo.bid]; // allow default-insert
 			rw_map.writes = region_union(rw_map.writes, scalar_reduction_box);
 		}
 	}
@@ -1558,55 +1563,51 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 	if(!tsk.get_side_effect_map().empty()) {
 		assert(concurrent_chunks.size() == 1); // split instructions for host tasks with side effects would race
 		assert(concurrent_chunks[0].memory_id == host_memory_id);
-		concurrent_chunks[0].se_map = tsk.get_side_effect_map();
+		se_maps[0] = tsk.get_side_effect_map();
 	}
-
-	// 4) create the actual command instructions
-
-	execute_device_kernel_or_host_task(command_batch, ecmd, tsk, concurrent_chunks);
 
 	// 5) compute dependencies between command instructions and previous copy, allocation, and command (!) instructions
 
 	// TODO this will not work correctly for oversubscription
 	//	 - read-all + write-1:1 cannot be oversubscribed at all, chunks would need a global read->write barrier (how would the kernel even look like?)
 	//	 - oversubscribed host tasks would need dependencies between their chunks based on side effects and collective groups
-	for(const auto& chunk : concurrent_chunks) {
+	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::dependencies", DarkGray, "dependencies");
 
-		for(const auto& [bid, rw] : chunk.rw_map) {
+		for(const auto& [bid, rw] : rw_maps[i]) {
 			auto& buffer = m_buffers.at(bid);
-			auto& memory = buffer.memories[chunk.memory_id];
+			auto& memory = buffer.memories[concurrent_chunks[i].memory_id];
 
 			for(auto& allocation : memory.allocations) {
-				add_dependencies_on_last_writers(
-				    chunk.instruction, allocation, region_intersection(rw.reads, allocation.box), instruction_dependency_origin::read_from_allocation);
-				add_dependencies_on_last_concurrent_accesses(
-				    chunk.instruction, allocation, region_intersection(rw.writes, allocation.box), instruction_dependency_origin::write_to_allocation);
+				add_dependencies_on_last_writers(concurrent_chunks[i].instruction, allocation, region_intersection(rw.reads, allocation.box),
+				    instruction_dependency_origin::read_from_allocation);
+				add_dependencies_on_last_concurrent_accesses(concurrent_chunks[i].instruction, allocation, region_intersection(rw.writes, allocation.box),
+				    instruction_dependency_origin::write_to_allocation);
 			}
 		}
-		for(const auto& [hoid, order] : chunk.se_map) {
-			assert(chunk.memory_id == host_memory_id);
+		for(const auto& [hoid, order] : se_maps[i]) {
+			assert(concurrent_chunks[i].memory_id == host_memory_id);
 			if(const auto last_side_effect = m_host_objects.at(hoid).last_side_effect) {
-				add_dependency(chunk.instruction, last_side_effect, instruction_dependency_origin::side_effect);
+				add_dependency(concurrent_chunks[i].instruction, last_side_effect, instruction_dependency_origin::side_effect);
 			}
 		}
 		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
-			assert(chunk.memory_id == host_memory_id);
+			assert(concurrent_chunks[i].memory_id == host_memory_id);
 			auto& group = m_collective_groups.at(cgid); // created previously with clone_collective_group_instruction
-			add_dependency(chunk.instruction, group.last_host_task, instruction_dependency_origin::collective_group_order);
+			add_dependency(concurrent_chunks[i].instruction, group.last_host_task, instruction_dependency_origin::collective_group_order);
 		}
 	}
 
 	// 6a) clear region maps in the areas we write to - we gracefully handle overlapping writes by treating the set of all conflicting writers as last writers
 	// of an allocation
 
-	for(const auto& chunk : concurrent_chunks) {
+	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::begin_access", LightSeaGreen, "begin accesses");
 
-		for(const auto& [bid, rw] : chunk.rw_map) {
-			assert(chunk.instruction != nullptr);
+		for(const auto& [bid, rw] : rw_maps[i]) {
+			assert(concurrent_chunks[i].instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
-			for(auto& alloc : buffer.memories[chunk.memory_id].allocations) {
+			for(auto& alloc : buffer.memories[concurrent_chunks[i].memory_id].allocations) {
 				alloc.begin_concurrent_writes(region_intersection(alloc.box, rw.writes));
 			}
 		}
@@ -1614,29 +1615,29 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 
 	// 6b) update data locations and last writers resulting from command instructions
 
-	for(const auto& chunk : concurrent_chunks) {
+	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
 		CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::commit_access", LightSeaGreen, "commit accesses");
 
-		for(const auto& [bid, rw] : chunk.rw_map) {
-			assert(chunk.instruction != nullptr);
+		for(const auto& [bid, rw] : rw_maps[i]) {
+			assert(concurrent_chunks[i].instruction != nullptr);
 			auto& buffer = m_buffers.at(bid);
 
 			// TODO can we merge this with loop 5) and use read_from_allocation / write_to_allocation?
 			// if so, have similar functions for side effects / collective groups
-			for(auto& alloc : buffer.memories[chunk.memory_id].allocations) {
-				alloc.track_concurrent_read(region_intersection(alloc.box, rw.reads), chunk.instruction);
-				alloc.track_concurrent_write(region_intersection(alloc.box, rw.writes), chunk.instruction);
+			for(auto& alloc : buffer.memories[concurrent_chunks[i].memory_id].allocations) {
+				alloc.track_concurrent_read(region_intersection(alloc.box, rw.reads), concurrent_chunks[i].instruction);
+				alloc.track_concurrent_write(region_intersection(alloc.box, rw.writes), concurrent_chunks[i].instruction);
 			}
 
-			buffer.track_original_write(rw.writes, chunk.instruction, chunk.memory_id);
+			buffer.track_original_write(rw.writes, concurrent_chunks[i].instruction, concurrent_chunks[i].memory_id);
 		}
-		for(const auto& [hoid, order] : chunk.se_map) {
-			assert(chunk.memory_id == host_memory_id);
-			m_host_objects.at(hoid).last_side_effect = chunk.instruction;
+		for(const auto& [hoid, order] : se_maps[i]) {
+			assert(concurrent_chunks[i].memory_id == host_memory_id);
+			m_host_objects.at(hoid).last_side_effect = concurrent_chunks[i].instruction;
 		}
 		if(const auto cgid = tsk.get_collective_group_id(); cgid != non_collective_group_id) {
-			assert(chunk.memory_id == host_memory_id);
-			m_collective_groups.at(tsk.get_collective_group_id()).last_host_task = chunk.instruction;
+			assert(concurrent_chunks[i].memory_id == host_memory_id);
+			m_collective_groups.at(tsk.get_collective_group_id()).last_host_task = concurrent_chunks[i].instruction;
 		}
 	}
 
