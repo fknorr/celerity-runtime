@@ -561,39 +561,43 @@ class impl {
 	void commit_pending_region_receive_to_host_memory(
 	    batch& batch, buffer_id bid, const buffer_state::region_receive& receives, const std::vector<region<3>>& concurrent_reads);
 
-	// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
-	// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
+	/// To avoid multi-hop copies, all read requirements for one buffer must be satisfied on all memories simultaneously. We deliberately allow multiple,
+	/// potentially-overlapping regions per memory to avoid aggregated copies introducing synchronization points between otherwise independent instructions.
 	void establish_coherence_between_buffer_memories(batch& batch, buffer_id bid, memory_id dest_mid, const std::vector<region<3>>& reads);
 
-	void satisfy_buffer_requirements_for_regular_access(
-	    batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_sr, const std::vector<localized_chunk>& local_chunks);
-
-	void satisfy_buffer_requirements_as_reduction_output(batch& batch, buffer_id bid, reduction_id rid, const std::vector<localized_chunk>& local_chunks);
-
-	// NOCOMMIT docs
+	/// Issue instructions to create any collective group required by a task.
 	void create_task_collective_groups(batch& command_batch, const task& tsk);
 
+	/// Split a tasks local execution range (given by execution_command) into chunks according to device configuration and a possible oversubscription hint.
 	std::vector<localized_chunk> split_task_execution_range(const execution_command& ecmd, const task& tsk);
 
+	/// Detect overlapping writes between local chunks of a task and report it according to m_policy.
 	void report_task_overlapping_writes(const task& tsk, const std::vector<localized_chunk>& concurrent_chunks) const;
 
+	/// Allocate memory, apply any pending receives, and issue resize- and coherence copies to prepare all buffer memories for a task's execution.
 	void satisfy_task_buffer_requirements(batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_execution_range, bool is_reduction_initializer,
 	    const std::vector<localized_chunk>& concurrent_chunks_after_split);
 
+	/// Create a gather allocation and optionally save the current buffer value before creating partial reduction results in any kernel.
 	local_reduction prepare_task_local_reduction(
 	    batch& command_batch, const reduction_info& rinfo, const execution_command& ecmd, const task& tsk, const size_t num_concurrent_chunks);
 
+	/// Combine any partial reduction results computed by local chunks and write it to buffer host memory.
 	void finish_task_local_reduction(batch& command_batch, const local_reduction& red, const reduction_info& rinfo, const execution_command& ecmd,
 	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks);
 
+	/// Launch a device kernel for each local chunk of a task, passing the relevant buffer allocations in place of accessors and reduction descriptors.
 	instruction* launch_task_kernel(batch& command_batch, const execution_command& ecmd, const task& tsk, const localized_chunk& chunk);
 
+	/// Add dependencies for all buffer accesses and reductions of a task, then update tracking structures accordingly.
 	void perform_task_buffer_accesses(
 	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions);
 
+	/// If a task has side effects, serialize it with respect to the last task that shares a host object.
 	void perform_task_side_effects(
 	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions);
 
+	/// If a task is part of a collective group, serialize it with respect to the last host task in that group.
 	void perform_task_collective_operations(
 	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions);
 
