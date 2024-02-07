@@ -1680,56 +1680,60 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 
 
 void impl::compile_push_command(batch& command_batch, const push_command& pcmd) {
+	const auto trid = pcmd.get_transfer_id();
+	const auto push_box = box(pcmd.get_range());
+
+	// If not all nodes contribute partial results to a global reductions, the remaining ones need to notify their peers that they should not expect any data.
+	// This is done by announcing an empty box through the pilot message, but not actually performing a send.
+	if(push_box.empty()) {
+		assert(trid.rid != no_reduction_id);
+		create_outbound_pilot(command_batch, pcmd.get_target(), trid, box<3>());
+		return;
+	}
+
 	// Prioritize all instructions participating in a "push" to hide the latency of establishing local coherence behind the typically much longer latencies of
 	// inter-node communication
 	command_batch.base_priority = 10;
 
-	const auto trid = pcmd.get_transfer_id();
-
 	auto& buffer = m_buffers.at(trid.bid);
-	const auto push_box = box(pcmd.get_range());
+	auto& host_memory = buffer.memories[host_memory_id];
 
 	// We want to generate the fewest number of send instructions possible without introducing new synchronization points between chunks of the same
 	// command that generated the pushed data. This will allow compute-transfer overlap, especially in the case of oversubscribed splits.
-	std::unordered_map<instruction_id, box_vector<3>> individual_send_boxes;
+	std::vector<region<3>> concurrent_send_regions;
 	// Since we now send boxes individually, we do not need to allocate the entire push_box contiguously.
 	box_vector<3> required_host_allocation;
-	for(auto& [box, writer] : buffer.original_writers.get_region_values(push_box)) {
-		individual_send_boxes[writer->get_id()].push_back(box);
-		required_host_allocation.push_back(box);
-	}
-
-	allocate_contiguously(command_batch, trid.bid, host_memory_id, std::move(required_host_allocation));
-
-	for(auto& [_, boxes] : individual_send_boxes) {
-		// Since the original writer is unique for each buffer item, all writer_regions will be disjoint and we can pull data from device memories for each
-		// writer without any effect from the order of operations
-		establish_coherence_between_buffer_memories(command_batch, trid.bid, host_memory_id, {region(box_vector<3>(boxes))});
-	}
-
-	for(auto& [_, boxes] : individual_send_boxes) {
-		for(const auto& full_box : boxes) {
-			for(const auto& box : instruction_graph_generator_detail::split_into_communicator_compatible_boxes(buffer.range, full_box)) {
-				const message_id msgid = create_outbound_pilot(command_batch, pcmd.get_target(), trid, box);
-
-				auto& allocation = buffer.memories[host_memory_id].get_contiguous_allocation(box); // we allocate_contiguously above
-
-				const auto offset_in_allocation = box.get_offset() - allocation.box.get_offset();
-				const auto send_instr = create<send_instruction>(command_batch, pcmd.get_target(), msgid, allocation.aid, allocation.box.get_range(),
-				    offset_in_allocation, box.get_range(), buffer.elem_size);
-				if(m_recorder != nullptr) { *m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), trid, buffer.debug_name, box.get_offset()); }
-
-				perform_concurrent_read_from_allocation(send_instr, allocation, box);
-			}
+	{
+		std::unordered_map<instruction_id, box_vector<3>> individual_send_boxes;
+		for(auto& [box, original_writer] : buffer.original_writers.get_region_values(push_box)) {
+			individual_send_boxes[original_writer->get_id()].push_back(box);
+			required_host_allocation.push_back(box);
+		}
+		for(auto& [original_writer, boxes] : individual_send_boxes) {
+			concurrent_send_regions.push_back(region(std::move(boxes)));
 		}
 	}
 
-	// If not all nodes contribute partial results to a global reductions, the remaining ones need to notify their peers that they should not expect any data.
-	// This is done by announcing an empty box through the pilot message.
-	assert(push_box.empty() == individual_send_boxes.empty());
-	if(individual_send_boxes.empty()) {
-		assert(trid.rid != no_reduction_id);
-		create_outbound_pilot(command_batch, pcmd.get_target(), trid, box<3>());
+	allocate_contiguously(command_batch, trid.bid, host_memory_id, std::move(required_host_allocation));
+	establish_coherence_between_buffer_memories(command_batch, trid.bid, host_memory_id, concurrent_send_regions);
+
+	for(const auto& send_region : concurrent_send_regions) {
+		for(const auto& full_send_box : send_region.get_boxes()) {
+			for(const auto& compatible_send_box : instruction_graph_generator_detail::split_into_communicator_compatible_boxes(buffer.range, full_send_box)) {
+				const message_id msgid = create_outbound_pilot(command_batch, pcmd.get_target(), trid, compatible_send_box);
+
+				auto& allocation = host_memory.get_contiguous_allocation(compatible_send_box); // we allocate_contiguously above
+
+				const auto offset_in_allocation = compatible_send_box.get_offset() - allocation.box.get_offset();
+				const auto send_instr = create<send_instruction>(command_batch, pcmd.get_target(), msgid, allocation.aid, allocation.box.get_range(),
+				    offset_in_allocation, compatible_send_box.get_range(), buffer.elem_size);
+				if(m_recorder != nullptr) {
+					*m_recorder << send_instruction_record(*send_instr, pcmd.get_cid(), trid, buffer.debug_name, compatible_send_box.get_offset());
+				}
+
+				perform_concurrent_read_from_allocation(send_instr, allocation, compatible_send_box);
+			}
+		}
 	}
 }
 
@@ -1770,7 +1774,9 @@ void impl::defer_await_push_command(const await_push_command& apcmd) {
 
 
 void impl::compile_reduction_command(batch& command_batch, const reduction_command& rcmd) {
-	const auto scalar_reduction_box = box<3>({0, 0, 0}, {1, 1, 1});
+	// In a single-node setting, global reductions are no-ops, so no reduction commands should ever be issued
+	assert(m_num_nodes > 1 && "received a reduction command in a single-node configuration");
+
 	const auto [rid, bid, init_from_buffer] = rcmd.get_reduction_info();
 
 	auto& buffer = m_buffers.at(bid);
@@ -1779,7 +1785,7 @@ void impl::compile_reduction_command(batch& command_batch, const reduction_comma
 	const auto& gather = buffer.pending_gathers.front();
 	assert(gather.gather_box == scalar_reduction_box);
 
-	// allocate the gather space
+	// 1. Create a host-memory allocation to gather the array of partial results
 
 	const auto gather_aid = new_allocation_id(host_memory_id);
 	const auto node_chunk_size = gather.gather_box.get_area() * buffer.elem_size;
@@ -1790,14 +1796,14 @@ void impl::compile_reduction_command(batch& command_batch, const reduction_comma
 	}
 	add_dependency(gather_alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
 
-	// fill the gather space with the reduction identity, so that the gather_receive_command can simply ignore empty boxes sent by peers that do not contribute
-	// to the reduction, and we can skip the gather-copy instruction if we ourselves do not contribute a partial result.
+	// 2. Fill the gather space with the reduction identity, so that the gather_receive_command can simply ignore empty boxes sent by peers that do not
+	// contribute to the reduction, and we can skip the gather-copy instruction if we ourselves do not contribute a partial result.
 
 	const auto fill_identity_instr = create<fill_identity_instruction>(command_batch, rid, gather_aid, m_num_nodes);
 	if(m_recorder != nullptr) { *m_recorder << fill_identity_instruction_record(*fill_identity_instr); }
 	add_dependency(fill_identity_instr, gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
 
-	// if the local node contributes to the reduction, copy the contribution to the appropriate position in the gather space
+	// 3. If the local node contributes to the reduction, copy the contribution to the appropriate position in the gather space
 
 	copy_instruction* local_gather_copy_instr = nullptr;
 	const auto contribution_location = buffer.up_to_date_memories.get_region_values(scalar_reduction_box).front().second;
@@ -1815,14 +1821,15 @@ void impl::compile_reduction_command(batch& command_batch, const reduction_comma
 		perform_concurrent_read_from_allocation(local_gather_copy_instr, source_allocation, scalar_reduction_box);
 	}
 
-	// gather remote contributions
+	// 4. Gather remote contributions to the partial result array
 
 	const transfer_id trid(gather.consumer_tid, bid, gather.rid);
 	const auto gather_recv_instr = create<gather_receive_instruction>(command_batch, trid, gather_aid, node_chunk_size);
 	if(m_recorder != nullptr) { *m_recorder << gather_receive_instruction_record(*gather_recv_instr, buffer.debug_name, gather.gather_box, m_num_nodes); }
 	add_dependency(gather_recv_instr, fill_identity_instr, instruction_dependency_origin::write_to_allocation);
 
-	// perform the global reduction
+	// 5. Perform the global reduction on the host by reading the array of inputs from the gather space and writing to the buffer's host allocation that covers
+	// `scalar_reduction_box`.
 
 	allocate_contiguously(command_batch, bid, host_memory_id, {scalar_reduction_box});
 
@@ -1839,33 +1846,39 @@ void impl::compile_reduction_command(batch& command_batch, const reduction_comma
 	perform_atomic_write_to_allocation(reduce_instr, dest_allocation, scalar_reduction_box);
 	buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
-	// free the gather space
+	// 6. Free the gather space
 
 	const auto gather_free_instr = create<free_instruction>(command_batch, gather_aid);
 	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, m_num_nodes * node_chunk_size, std::nullopt); }
 	add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::allocation_lifetime);
 
 	buffer.pending_gathers.clear();
+
+	// The associated `runtime_reduction` info will be garbage-collected form the executor as we pass the reduction id on via the instruction_garbage member of
+	// the next horizon or epoch instruction.
 }
 
 
 void impl::compile_fence_command(batch& command_batch, const fence_command& fcmd) {
 	const auto& tsk = *m_tm->get_task(fcmd.get_tid());
+
 	assert(tsk.get_reductions().empty());
+	assert(tsk.get_collective_group_id() == non_collective_group_id);
 
 	const auto& bam = tsk.get_buffer_access_map();
 	const auto& sem = tsk.get_side_effect_map();
 	assert(bam.get_num_accesses() + sem.size() == 1);
 
+	// buffer fences encode their buffer id and subrange through buffer_access_map with a fixed range mapper (which is rather ugly)
 	if(bam.get_num_accesses() != 0) {
-		// fences encode their buffer requirements through buffer_access_map with a fixed range mapper (this is rather ugly)
 		const auto bid = *bam.get_accessed_buffers().begin();
 		const auto fence_region = bam.get_mode_requirements(bid, access_mode::read, 0, {}, zeros);
 		const auto fence_box = !fence_region.empty() ? fence_region.get_boxes().front() : box<3>();
 
 		const auto user_allocation_id = tsk.get_fence_promise()->get_user_allocation_id();
-		auto& buffer = m_buffers.at(bid);
+		assert(user_allocation_id != null_allocation_id && user_allocation_id.get_memory_id() == user_memory_id);
 
+		auto& buffer = m_buffers.at(bid);
 		copy_instruction* copy_instr = nullptr;
 		// gracefully handle empty-range buffer fences
 		if(!fence_box.empty()) {
@@ -1889,19 +1902,19 @@ void impl::compile_fence_command(batch& command_batch, const fence_command& fcmd
 			*m_recorder << fence_instruction_record(*fence_instr, tsk.get_id(), fcmd.get_cid(), bid, buffer.debug_name, fence_box.get_subrange());
 		}
 
-		if(!fence_box.empty()) {
+		if(copy_instr != nullptr) {
 			add_dependency(fence_instr, copy_instr, instruction_dependency_origin::read_from_allocation);
 		} else {
 			// an empty-range buffer fence has no data dependencies but must still be executed to fulfill its promise - attach it to the current epoch.
 			add_dependency(fence_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
 		}
 
-		// we will just assume that the runtime does not intend to re-use this allocation
+		// we will just assume that the runtime does not intend to re-use the allocation it has passed
 		m_unreferenced_user_allocations.push_back(user_allocation_id);
 	}
 
+	// host-object fences encode their host-object id in the task side effect map (which is also very ugly)
 	if(!sem.empty()) {
-		// host-object fences encode their host-object id in the task side effect map (which is also very ugly)
 		const auto [hoid, _] = *sem.begin();
 
 		auto& obj = m_host_objects.at(hoid);
@@ -1951,8 +1964,10 @@ void impl::flush_batch(batch&& batch) { // NOLINT(cppcoreguidelines-rvalue-refer
 		}) != m_recorder->get_instructions().end();
 	}));
 
-	if(m_delegate != nullptr && !batch.generated_instructions.empty()) { m_delegate->flush_instructions(std::move(batch.generated_instructions)); }
-	if(m_delegate != nullptr && !batch.generated_pilots.empty()) { m_delegate->flush_outbound_pilots(std::move(batch.generated_pilots)); }
+	if(m_delegate != nullptr) {
+		if(!batch.generated_instructions.empty()) { m_delegate->flush_instructions(std::move(batch.generated_instructions)); }
+		if(!batch.generated_pilots.empty()) { m_delegate->flush_outbound_pilots(std::move(batch.generated_pilots)); }
+	}
 
 #ifndef NDEBUG // ~batch() checks if it has been flushed, which we want to acknowledge even if m_delegate == nullptr
 	batch.generated_instructions = {};
