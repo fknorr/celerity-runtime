@@ -519,21 +519,17 @@ class impl {
 	/// Inserts a graph dependency and removes `to` form the execution front (if present). The `record_origin` is debug information.
 	void add_dependency(instruction* const from, instruction* const to, const instruction_dependency_origin record_origin);
 
-	template <typename BoxOrRegion>
-	void add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
+	void add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const region<3>& region,
 	    const instruction_dependency_origin record_origin_for_initialized_data);
 
 	/// Add dependencies to the last writer of a region, and track the instruction as the new last (concurrent) reader.
-	template <typename BoxOrRegion>
-	void perform_concurrent_read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region);
+	void perform_concurrent_read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const region<3>& region);
 
-	template <typename BoxOrRegion>
-	void add_dependencies_on_last_concurrent_accesses(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
+	void add_dependencies_on_last_concurrent_accesses(instruction* const accessing_instruction, buffer_allocation_state& allocation, const region<3>& region,
 	    const instruction_dependency_origin record_origin_for_read_write_front);
 
 	/// Add dependencies to the last concurrent accesses of a region, and track the instruction as the new last (unique) writer.
-	template <typename BoxOrRegion>
-	void perform_atomic_write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region);
+	void perform_atomic_write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const region<3>& region);
 
 	/// Replace all tracked instructions that older than `epoch` with `epoch`.
 	void apply_epoch(instruction* const epoch);
@@ -560,8 +556,8 @@ class impl {
 
 	void satisfy_buffer_requirements_as_reduction_output(batch& batch, buffer_id bid, reduction_id rid, const std::vector<localized_chunk>& local_chunks);
 
-	void satisfy_task_buffer_requirements(batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_sr, bool is_reduction_initializer,
-	    const std::vector<localized_chunk>& local_chunks);
+	void satisfy_task_buffer_requirements(batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_execution_range, bool is_reduction_initializer,
+	    const std::vector<localized_chunk>& concurrent_chunks_after_split);
 
 	void compile_execution_command(batch& batch, const execution_command& ecmd);
 	void compile_push_command(batch& batch, const push_command& pcmd);
@@ -715,8 +711,7 @@ void impl::add_dependency(instruction* const from, instruction* const to, const 
 	m_execution_front.erase(to->get_id());
 }
 
-template <typename BoxOrRegion>
-void impl::add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region,
+void impl::add_dependencies_on_last_writers(instruction* const accessing_instruction, buffer_allocation_state& allocation, const region<3>& region,
     const instruction_dependency_origin record_origin_for_initialized_data) {
 	for(const auto& [box, front] : allocation.last_writers.get_region_values(region)) {
 		for(const auto writer : front.get_instructions()) {
@@ -726,15 +721,13 @@ void impl::add_dependencies_on_last_writers(instruction* const accessing_instruc
 	}
 }
 
-template <typename BoxOrRegion>
-void impl::perform_concurrent_read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
+void impl::perform_concurrent_read_from_allocation(instruction* const reading_instruction, buffer_allocation_state& allocation, const region<3>& region) {
 	add_dependencies_on_last_writers(reading_instruction, allocation, region, instruction_dependency_origin::read_from_allocation);
 	allocation.track_concurrent_read(region, reading_instruction);
 }
 
-template <typename BoxOrRegion>
-void impl::add_dependencies_on_last_concurrent_accesses(instruction* const accessing_instruction, buffer_allocation_state& allocation,
-    const BoxOrRegion& region, const instruction_dependency_origin record_origin_for_read_write_front) {
+void impl::add_dependencies_on_last_concurrent_accesses(instruction* const accessing_instruction, buffer_allocation_state& allocation, const region<3>& region,
+    const instruction_dependency_origin record_origin_for_read_write_front) {
 	for(const auto& [box, front] : allocation.last_concurrent_accesses.get_region_values(region)) {
 		const auto record_origin =
 		    front.get_mode() == access_front::allocate ? instruction_dependency_origin::allocation_lifetime : record_origin_for_read_write_front;
@@ -744,8 +737,7 @@ void impl::add_dependencies_on_last_concurrent_accesses(instruction* const acces
 	}
 }
 
-template <typename BoxOrRegion>
-void impl::perform_atomic_write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const BoxOrRegion& region) {
+void impl::perform_atomic_write_to_allocation(instruction* const writing_instruction, buffer_allocation_state& allocation, const region<3>& region) {
 	add_dependencies_on_last_concurrent_accesses(writing_instruction, allocation, region, instruction_dependency_origin::write_to_allocation);
 	allocation.track_atomic_write(region, writing_instruction);
 }
@@ -1062,16 +1054,11 @@ void impl::establish_coherence_between_buffer_memories(
 	}
 }
 
-void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_sr,
-    const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_local_chunks) //
+void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_execution_range,
+    const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_chunks_after_split) //
 {
+	assert(!concurrent_chunks_after_split.empty());
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::coherence", SandyBrown, "B{} coherence", bid);
-
-	assert(!concurrent_local_chunks.empty());
-	const auto& bam = tsk.get_buffer_access_map();
-
-	// Invalidate any buffer region that will immediately be overwritten (and not also read) to avoid preserving it across buffer resizes (and to catch
-	// read-write access conflicts, TODO)
 
 	auto& buffer = m_buffers.at(bid);
 
@@ -1079,21 +1066,24 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 
 	box_vector<3> accessed_boxes; // which elements have are accessed (to figure out applying receives)
 	box_vector<3> consumed_boxes; // which elements are accessed with a consuming access (these need to be preserved across resizes)
-	for(const auto mode : access::all_modes) {
-		const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), local_sr, tsk.get_global_size());
+
+	const auto& bam = tsk.get_buffer_access_map();
+	for(const auto mode : bam.get_access_modes(bid)) {
+		const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), local_execution_range, tsk.get_global_size());
 		accessed_boxes.append(req.get_boxes());
 		if(access::mode_traits::is_consumer(mode)) { consumed_boxes.append(req.get_boxes()); }
 	}
 
+	// reductions can introduce buffer reads if they do not initialize_to_identity (but they cannot be split), so we evaluate them first
 	assert(std::count_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; }) <= 1
 	       && "task defines multiple reductions on the same buffer");
 	const auto reduction = std::find_if(tsk.get_reductions().begin(), tsk.get_reductions().end(), [=](const reduction_info& r) { return r.bid == bid; });
 	if(reduction != tsk.get_reductions().end()) {
-		for(const auto& chunk : concurrent_local_chunks) {
+		for(const auto& chunk : concurrent_chunks_after_split) {
 			required_contiguous_allocations[chunk.memory_id].push_back(scalar_reduction_box);
 		}
 		const auto include_current_value = local_node_is_reduction_initializer && reduction->init_from_buffer;
-		if(concurrent_local_chunks.size() > 1 || include_current_value) {
+		if(concurrent_chunks_after_split.size() > 1 || include_current_value) {
 			// we insert a host-side reduce-instruction in the multi-chunk scenario; its result will end up in the host buffer allocation
 			required_contiguous_allocations[host_memory_id].push_back(scalar_reduction_box);
 		}
@@ -1113,7 +1103,7 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 	// We maintain a box_vector here because we also add all received boxes, as these are overwritten by a recv_instruction before being read from the kernel.
 	box_vector<3> discarded_boxes = region_difference(accessed_region, consumed_region).into_boxes();
 
-	// Collect all receives that we must apply before executing this command.
+	// Collect all pending receives (await-push commands) that we must apply before executing this task.
 	std::vector<buffer_state::region_receive> applied_receives;
 	{
 		const auto first_applied_receive = std::partition(buffer.pending_receives.begin(), buffer.pending_receives.end(),
@@ -1144,7 +1134,6 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 	const region discarded_region = region(std::move(discarded_boxes));
 
 	// Detect and report uninitialized reads
-
 	if(m_policy.uninitialized_read_error != error_policy::ignore) {
 		box_vector<3> uninitialized_reads;
 		const auto locally_required_region = region_difference(consumed_region, discarded_region);
@@ -1159,11 +1148,13 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 		}
 	}
 
-	// do not preserve any received or overwritten region across receives or buffer resizes later on
+	// Do not preserve any received or overwritten region across receives or buffer resizes later on: allocate_contiguously will insert resize-copy instructions
+	// for all up_to_date regions of allocations that it replaces with larger ones.
 	buffer.up_to_date_memories.update_region(discarded_region, memory_mask());
 
-	dense_map<memory_id, std::vector<region<3>>> reads_from_memory(m_memories.size());
-	for(const auto& chunk : concurrent_local_chunks) {
+	// Collect chunk-reads by memory to establish local coherence later
+	dense_map<memory_id, std::vector<region<3>>> concurrent_reads_from_memory(m_memories.size());
+	for(const auto& chunk : concurrent_chunks_after_split) {
 		required_contiguous_allocations[chunk.memory_id].append(
 		    bam.get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size()));
 
@@ -1172,15 +1163,17 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 			const auto req = bam.get_mode_requirements(bid, mode, tsk.get_dimensions(), chunk.execution_range.get_subrange(), tsk.get_global_size());
 			chunk_read_boxes.append(req.get_boxes());
 		}
-		if(!chunk_read_boxes.empty()) { reads_from_memory[chunk.memory_id].push_back(region(std::move(chunk_read_boxes))); }
+		if(!chunk_read_boxes.empty()) { concurrent_reads_from_memory[chunk.memory_id].push_back(region(std::move(chunk_read_boxes))); }
 	}
 	if(local_node_is_reduction_initializer && reduction != tsk.get_reductions().end() && reduction->init_from_buffer) {
-		reads_from_memory[host_memory_id].emplace_back(scalar_reduction_box);
+		concurrent_reads_from_memory[host_memory_id].emplace_back(scalar_reduction_box);
 	}
 
-	// collect all required staging allocations
-	for(memory_id read_mid = 0; read_mid < reads_from_memory.size(); ++read_mid) {
-		for(auto& read_region : reads_from_memory[read_mid]) {
+	// If the system_info indicates a pair of (device-native) memory_ids between which no direct peer-to-peer copy is possible but data still must be
+	// transferred between them, we stage the copy by making the host memory coherent first. To generate the desired copy-chain, it is sufficient to treat each
+	// such buffer subregion as also being read from host memory (see the call to `establish_coherence_between_buffer_memories` below).
+	for(memory_id read_mid = 0; read_mid < concurrent_reads_from_memory.size(); ++read_mid) {
+		for(auto& read_region : concurrent_reads_from_memory[read_mid]) {
 			box_vector<3> host_staged_boxes;
 			for(const auto& [box, location] : buffer.up_to_date_memories.get_region_values(read_region)) {
 				if(location.any() && !location.test(read_mid) && (m_system.memories[read_mid].copy_peers & location).none()) {
@@ -1189,32 +1182,31 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 					host_staged_boxes.push_back(box);
 				}
 			}
-			if(!host_staged_boxes.empty()) { reads_from_memory[host_memory_id].emplace_back(std::move(host_staged_boxes)); }
+			if(!host_staged_boxes.empty()) { concurrent_reads_from_memory[host_memory_id].emplace_back(std::move(host_staged_boxes)); }
 		}
 	}
 
+	// Now that we know all required contiguous allocations, issue any required alloc- and resize-copy instructions
 	for(memory_id mid = 0; mid < required_contiguous_allocations.size(); ++mid) {
 		allocate_contiguously(current_batch, bid, mid, std::move(required_contiguous_allocations[mid]));
 	}
 
-	{
-		std::vector<region<3>> concurrent_reads;
-		for(const auto& reads : reads_from_memory) {
-			concurrent_reads.insert(concurrent_reads.end(), reads.begin(), reads.end());
-		}
-		for(const auto& receive : applied_receives) {
-			commit_pending_region_receive_to_host_memory(current_batch, bid, receive, concurrent_reads);
-		}
+	// Receive all remote data (which overlaps with the accessed region) into host memory
+	std::vector<region<3>> all_concurrent_reads;
+	for(const auto& reads : concurrent_reads_from_memory) {
+		all_concurrent_reads.insert(all_concurrent_reads.end(), reads.begin(), reads.end());
+	}
+	for(const auto& receive : applied_receives) {
+		commit_pending_region_receive_to_host_memory(current_batch, bid, receive, all_concurrent_reads);
 	}
 
 	// Create the necessary coherence copy instructions to satisfy all remaining requirements locally. The iterations of this loop are independent with the
 	// notable exception of host_memory_id in the presence of staging copies: There we rely on the fact that `host_memory_id < device_memory_id` to allow
 	// coherence copies to device memory to create device -> host -> device copy chains.
-	for(memory_id mid = 0; mid < reads_from_memory.size(); ++mid) {
-		establish_coherence_between_buffer_memories(current_batch, bid, mid, reads_from_memory[mid]);
+	for(memory_id mid = 0; mid < concurrent_reads_from_memory.size(); ++mid) {
+		establish_coherence_between_buffer_memories(current_batch, bid, mid, concurrent_reads_from_memory[mid]);
 	}
 }
-
 
 void impl::compile_execution_command(batch& command_batch, const execution_command& ecmd) {
 	const auto& tsk = *m_tm->get_task(ecmd.get_tid());
