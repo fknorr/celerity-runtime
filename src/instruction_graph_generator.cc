@@ -467,7 +467,7 @@ struct localized_chunk {
 	box<3> execution_range;
 };
 
-struct partial_local_reduction {
+struct local_reduction {
 	bool include_local_buffer_value = false;
 	size_t current_value_offset = 0;
 	size_t num_input_chunks = 1;
@@ -580,10 +580,10 @@ class impl {
 	void satisfy_task_buffer_requirements(batch& batch, buffer_id bid, const task& tsk, const subrange<3>& local_execution_range, bool is_reduction_initializer,
 	    const std::vector<localized_chunk>& concurrent_chunks_after_split);
 
-	partial_local_reduction prepare_task_local_reduction(
+	local_reduction prepare_task_local_reduction(
 	    batch& command_batch, const reduction_info& rinfo, const execution_command& ecmd, const task& tsk, const size_t num_concurrent_chunks);
 
-	void finish_task_local_reduction(batch& command_batch, const partial_local_reduction& red, const reduction_info& rinfo, const execution_command& ecmd,
+	void finish_task_local_reduction(batch& command_batch, const local_reduction& red, const reduction_info& rinfo, const execution_command& ecmd,
 	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks);
 
 	instruction* launch_task_kernel(batch& command_batch, const execution_command& ecmd, const task& tsk, const localized_chunk& chunk);
@@ -1104,13 +1104,16 @@ void impl::create_task_collective_groups(batch& command_batch, const task& tsk) 
 	if(cgid == non_collective_group_id) return;
 	if(m_collective_groups.count(cgid) != 0) return;
 
+	// New collective groups are create by cloning the root collective group (aka MPI_COMM_WORLD).
 	auto& root_cg = m_collective_groups.at(root_collective_group_id);
 	const auto clone_cg_isntr = create<clone_collective_group_instruction>(command_batch, root_collective_group_id, tsk.get_collective_group_id());
 	if(m_recorder != nullptr) { *m_recorder << clone_collective_group_instruction_record(*clone_cg_isntr); }
 
+	m_collective_groups.emplace(cgid, clone_cg_isntr);
+
+	// Cloning itself is a collective operation and must be serialized as such.
 	add_dependency(clone_cg_isntr, root_cg.last_host_task, instruction_dependency_origin::collective_group_order);
 	root_cg.last_host_task = clone_cg_isntr;
-	m_collective_groups.emplace(cgid, clone_cg_isntr);
 }
 
 
@@ -1126,6 +1129,8 @@ std::vector<localized_chunk> impl::split_task_execution_range(const execution_co
 	const auto command_sr = ecmd.get_execution_range();
 	const auto command_chunk = chunk<3>(command_sr.offset, command_sr.range, tsk.get_global_size());
 
+	// As a heuristic to keep inter-device communication to a minimum, we split the execution range twice when oversubscription is active: Once to obtain
+	// contiguous chunks per device, and one more (below) to subdivide the ranges on each device (which can help with compute-transfer overlap).
 	std::vector<chunk<3>> coarse_chunks;
 	if(is_splittable_locally && tsk.get_execution_target() == execution_target::device) {
 		coarse_chunks = split(command_chunk, tsk.get_granularity(), m_system.devices.size());
@@ -1151,21 +1156,22 @@ std::vector<localized_chunk> impl::split_task_execution_range(const execution_co
 		}
 	}
 
-	std::vector<localized_chunk> chunks;
+	// Split a second time (if oversubscribed) and assign native memory and devices (if the task is a device kernel).
+	std::vector<localized_chunk> concurrent_chunks;
 	for(size_t coarse_idx = 0; coarse_idx < coarse_chunks.size(); ++coarse_idx) {
 		for(const auto& fine_chunk : split(coarse_chunks[coarse_idx], tsk.get_granularity(), oversubscribe_factor)) {
-			auto& instr = chunks.emplace_back();
-			instr.execution_range = box(subrange(fine_chunk.offset, fine_chunk.range));
+			auto& localized_chunk = concurrent_chunks.emplace_back();
+			localized_chunk.execution_range = box(subrange(fine_chunk.offset, fine_chunk.range));
 			if(tsk.get_execution_target() == execution_target::device) {
 				assert(coarse_idx < m_system.devices.size());
-				instr.memory_id = m_system.devices[coarse_idx].native_memory;
-				instr.device_id = device_id(coarse_idx);
+				localized_chunk.memory_id = m_system.devices[coarse_idx].native_memory;
+				localized_chunk.device_id = device_id(coarse_idx);
 			} else {
-				instr.memory_id = host_memory_id;
+				localized_chunk.memory_id = host_memory_id;
 			}
 		}
 	}
-	return chunks;
+	return concurrent_chunks;
 }
 
 
@@ -1189,6 +1195,7 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_chunks_after_split) //
 {
 	assert(!concurrent_chunks_after_split.empty());
+
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::coherence", SandyBrown, "B{} coherence", bid);
 
 	auto& buffer = m_buffers.at(bid);
@@ -1340,71 +1347,72 @@ void impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_i
 }
 
 
-partial_local_reduction impl::prepare_task_local_reduction(
+local_reduction impl::prepare_task_local_reduction(
     batch& command_batch, const reduction_info& rinfo, const execution_command& ecmd, const task& tsk, const size_t num_concurrent_chunks) {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::prepare_reductions", LightSkyBlue, "prepare reductions");
 
 	const auto [rid, bid, reduction_task_includes_buffer_value] = rinfo;
 	auto& buffer = m_buffers.at(bid);
 
-	partial_local_reduction red;
+	local_reduction red;
 	red.include_local_buffer_value = reduction_task_includes_buffer_value && ecmd.is_reduction_initializer();
 	red.current_value_offset = red.include_local_buffer_value ? 1 : 0;
 	red.num_input_chunks = red.current_value_offset + num_concurrent_chunks;
 	red.chunk_size_bytes = scalar_reduction_box.get_area() * buffer.elem_size;
 
-	if(red.num_input_chunks > 1) {
-		red.gather_aid = new_allocation_id(host_memory_id);
-		red.gather_alloc_instr = create<alloc_instruction>(command_batch, red.gather_aid, red.num_input_chunks * red.chunk_size_bytes, buffer.elem_align);
-		if(m_recorder != nullptr) {
-			*m_recorder << alloc_instruction_record(*red.gather_alloc_instr, alloc_instruction_record::alloc_origin::gather,
-			    buffer_allocation_record{bid, buffer.debug_name, scalar_reduction_box}, red.num_input_chunks);
-		}
+	// If the reduction only has a single local contribution, we simply accept it as the fully-reduced final value without issuing additional instructions.
+	// A local_reduction with num_input_chunks == 1 is treated as a no-op by `finish_task_local_reduction`.
+	assert(red.num_input_chunks > 0);
+	if(red.num_input_chunks == 1) return red;
 
-		add_dependency(red.gather_alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
-
-		if(red.include_local_buffer_value) {
-			auto& source_allocation =
-			    buffer.memories[host_memory_id].get_contiguous_allocation(scalar_reduction_box); // provided by satisfy_buffer_requirements
-
-			// copy to local gather space
-			const auto current_value_copy_instr = create<copy_instruction>(
-			    command_batch, source_allocation.aid, red.gather_aid, source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
-			if(m_recorder != nullptr) {
-				*m_recorder << copy_instruction_record(*current_value_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.debug_name);
-			}
-
-			add_dependency(current_value_copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
-			perform_concurrent_read_from_allocation(current_value_copy_instr, source_allocation, scalar_reduction_box);
-		}
+	// Create a gather-allocation into which `finish_task_local_reduction` will copy each new partial result, and if the reduction is not
+	// initialize_to_identity, we copy the current buffer value before it is being overwritten by the kernel.
+	red.gather_aid = new_allocation_id(host_memory_id);
+	red.gather_alloc_instr = create<alloc_instruction>(command_batch, red.gather_aid, red.num_input_chunks * red.chunk_size_bytes, buffer.elem_align);
+	if(m_recorder != nullptr) {
+		*m_recorder << alloc_instruction_record(*red.gather_alloc_instr, alloc_instruction_record::alloc_origin::gather,
+		    buffer_allocation_record{bid, buffer.debug_name, scalar_reduction_box}, red.num_input_chunks);
 	}
+	add_dependency(red.gather_alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
 
+	if(red.include_local_buffer_value) {
+		auto& source_allocation = buffer.memories[host_memory_id].get_contiguous_allocation(scalar_reduction_box); // provided by satisfy_buffer_requirements
+
+		// copy to local gather space
+		const auto current_value_copy_instr = create<copy_instruction>(
+		    command_batch, source_allocation.aid, red.gather_aid, source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
+		if(m_recorder != nullptr) {
+			*m_recorder << copy_instruction_record(*current_value_copy_instr, copy_instruction_record::copy_origin::gather, bid, buffer.debug_name);
+		}
+
+		add_dependency(current_value_copy_instr, red.gather_alloc_instr, instruction_dependency_origin::allocation_lifetime);
+		perform_concurrent_read_from_allocation(current_value_copy_instr, source_allocation, scalar_reduction_box);
+	}
 	return red;
 }
 
 
-void impl::finish_task_local_reduction(batch& command_batch, const partial_local_reduction& red, const reduction_info& rinfo, const execution_command& ecmd,
+void impl::finish_task_local_reduction(batch& command_batch, const local_reduction& red, const reduction_info& rinfo, const execution_command& ecmd,
     const task& tsk,
     const std::vector<localized_chunk>& concurrent_chunks) //
 {
 	CELERITY_DETAIL_TRACY_SCOPED_ZONE("idag::local_reduction", DeepSkyBlue, "local reduction");
 
-	// for a single-device configuration that doesn't include the current value, the above update of last writers is sufficient
+	// If the reduction only has a single contribution, its write is already the final result and does not need to be reduced.
 	if(red.num_input_chunks == 1) return;
 
 	const auto [rid, bid, reduction_task_includes_buffer_value] = rinfo;
 	auto& buffer = m_buffers.at(bid);
 	auto& host_memory = buffer.memories[host_memory_id];
 
-	// gather space has been allocated before in order to preserve the current buffer value where necessary
+	// prepare_task_local_reduction has allocated gather space which preserves the current buffer value when the reduction does not initialize_to_identity
 	std::vector<copy_instruction*> gather_copy_instrs;
 	gather_copy_instrs.reserve(concurrent_chunks.size());
 	for(size_t j = 0; j < concurrent_chunks.size(); ++j) {
 		const auto source_mid = concurrent_chunks[j].memory_id;
 		auto& source_allocation = buffer.memories[source_mid].get_contiguous_allocation(scalar_reduction_box);
 
-		// copy to local gather space
-
+		// Copy local partial result to gather space
 		const auto copy_instr =
 		    create<copy_instruction>(command_batch, source_allocation.aid, red.gather_aid + (red.current_value_offset + j) * buffer.elem_size,
 		        source_allocation.box, scalar_reduction_box, scalar_reduction_box, buffer.elem_size);
@@ -1416,10 +1424,8 @@ void impl::finish_task_local_reduction(batch& command_batch, const partial_local
 		gather_copy_instrs.push_back(copy_instr);
 	}
 
+	// Insert a local reduce_instruction which reads from the gather buffer and writes to the host-buffer allocation for `scalar_reduction_box`.
 	auto& dest_allocation = host_memory.get_contiguous_allocation(scalar_reduction_box);
-
-	// reduce
-
 	const auto reduce_instr = create<reduce_instruction>(command_batch, rid, red.gather_aid, red.num_input_chunks, dest_allocation.aid);
 	if(m_recorder != nullptr) {
 		*m_recorder << reduce_instruction_record(
@@ -1432,11 +1438,9 @@ void impl::finish_task_local_reduction(batch& command_batch, const partial_local
 	perform_atomic_write_to_allocation(reduce_instr, dest_allocation, scalar_reduction_box);
 	buffer.track_original_write(scalar_reduction_box, reduce_instr, host_memory_id);
 
-	// free local gather space
-
+	// Free the gather allocation created in `prepare_task_local_reduction`.
 	const auto gather_free_instr = create<free_instruction>(command_batch, red.gather_aid);
 	if(m_recorder != nullptr) { *m_recorder << free_instruction_record(*gather_free_instr, red.num_input_chunks * red.chunk_size_bytes, std::nullopt); }
-
 	add_dependency(gather_free_instr, reduce_instr, instruction_dependency_origin::allocation_lifetime);
 }
 
@@ -1560,7 +1564,7 @@ void impl::perform_task_buffer_accesses(
 		}
 	}
 
-	// 3. Clear tracking structures for all regions that are being written to. we gracefully handle overlapping writes by treating the set of all conflicting
+	// 3. Clear tracking structures for all regions that are being written to. We gracefully handle overlapping writes by treating the set of all conflicting
 	// writers as last writers of an allocation.
 
 	for(size_t i = 0; i < concurrent_chunks.size(); ++i) {
@@ -1653,7 +1657,7 @@ void impl::compile_execution_command(batch& command_batch, const execution_comma
 
 	// 5. If the task contains reductions with more than one local input, create the appropriate gather allocations and (if the local node is the designated
 	// reduction initializer) copies the current buffer value into the new gather space.
-	std::vector<partial_local_reduction> local_reductions(tsk.get_reductions().size());
+	std::vector<local_reduction> local_reductions(tsk.get_reductions().size());
 	for(size_t i = 0; i < local_reductions.size(); ++i) {
 		local_reductions[i] = prepare_task_local_reduction(command_batch, tsk.get_reductions()[i], ecmd, tsk, concurrent_chunks.size());
 	}
