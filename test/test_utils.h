@@ -14,6 +14,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <celerity.h>
 
+#include "accessor.h"
 #include "command.h"
 #include "command_graph.h"
 #include "distributed_graph_generator.h"
@@ -111,7 +112,6 @@ namespace detail {
 
 		static void create_task_slot(task_manager& tm) { task_ring_buffer_testspy::create_task_slot(tm.m_task_buffer); }
 	};
-
 
 	struct config_testspy {
 		static void set_mock_host_cfg(config& cfg, const host_config& h_cfg) { cfg.m_host_cfg = h_cfg; }
@@ -376,6 +376,9 @@ namespace test_utils {
 		runtime_fixture& operator=(runtime_fixture&&) = delete;
 		~runtime_fixture();
 	};
+
+	template <int>
+	struct runtime_fixture_dims : test_utils::runtime_fixture {};
 
 	class sycl_queue_fixture {
 	  public:

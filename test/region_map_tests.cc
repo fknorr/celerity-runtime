@@ -802,6 +802,12 @@ TEST_CASE("inserting consecutive boxes results in zero overlap", "[region_map][p
 	draw(rm);
 }
 
+TEST_CASE("query regions are clamped from both sides in region maps with non-zero offset", "[region_map]") {
+	const auto region_box = box<3>({1, 2, 3}, {7, 9, 11});
+	region_map<int> rm(region_box, 42);
+	CHECK(rm.get_region_values(box<3>::full_range({20, 19, 18})) == std::vector{std::pair{region_box, 42}});
+}
+
 TEMPLATE_TEST_CASE_SIG("get_region_values(<empty-region>) returns no boxes", "[region_map]", ((int Dims), Dims), 0, 1, 2, 3) {
 	region_map<int> rm(range_cast<3>(test_utils::truncate_range<Dims>({2, 3, 4})), -1);
 	CHECK(rm.get_region_values(box<3>()).empty());
@@ -814,10 +820,4 @@ TEMPLATE_TEST_CASE_SIG("update(<empty-box>) has no effect", "[region_map]", ((in
 	rm.update_region(box<3>(), 2);
 	const auto unit_box = box_cast<3>(box<0>());
 	CHECK(rm.get_region_values(unit_box) == std::vector{std::pair{unit_box, 0}});
-}
-
-TEST_CASE("query regions are clamped from both sides in region maps with non-zero offset", "[region_map]") {
-	const auto region_box = box<3>({1, 2, 3}, {7, 9, 11});
-	region_map<int> rm(region_box, 42);
-	CHECK(rm.get_region_values(box<3>::full_range({20, 19, 18})) == std::vector{std::pair{region_box, 42}});
 }

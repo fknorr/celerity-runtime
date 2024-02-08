@@ -166,9 +166,6 @@ namespace detail {
 	}
 
 	template <int>
-	struct runtime_fixture_dims : test_utils::runtime_fixture {};
-
-	template <int>
 	class kernel_multi_dim_accessor_write_;
 
 	template <int>
@@ -177,7 +174,8 @@ namespace detail {
 	template <int>
 	class check_multi_dim_accessor;
 
-	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "accessor supports multi-dimensional subscript operator", "[accessor]", ((int Dims), Dims), 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(
+	    test_utils::runtime_fixture_dims, "accessor supports multi-dimensional subscript operator", "[accessor]", ((int Dims), Dims), 2, 3) {
 		distr_queue q;
 
 		const auto range = test_utils::truncate_range<Dims>({2, 3, 4});
@@ -666,7 +664,7 @@ namespace detail {
 		sycl::free(result, get_sycl_queue());
 	}
 
-	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "device accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(test_utils::runtime_fixture_dims, "device accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif
@@ -712,7 +710,8 @@ namespace detail {
 		CHECK(test_utils::log_contains_substring(log_level::err, named_error_message));
 	}
 
-	TEMPLATE_TEST_CASE_METHOD_SIG(runtime_fixture_dims, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
+	TEMPLATE_TEST_CASE_METHOD_SIG(
+	    test_utils::runtime_fixture_dims, "host accessor reports out-of-bounds accesses", "[accessor][oob]", ((int Dims), Dims), 1, 2, 3) {
 #if !CELERITY_ACCESSOR_BOUNDARY_CHECK
 		SKIP("CELERITY_ACCESSOR_BOUNDARY_CHECK=0");
 #endif

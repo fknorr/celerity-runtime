@@ -184,7 +184,6 @@ def build_pretty_printer():
     add_strong_type_alias_printer(pp, 'message_id', 'MSG')
     pp.add_printer('allocation_id', '^celerity::detail::allocation_id$', AllocationIdPrinter)
     pp.add_printer('allocation_with_offset', '^celerity::detail::allocation_with_offset$', AllocationWithOffsetPrinter)
-    pp.add_printer('transfer_id', '^celerity::detail::transfer_id$', TransferIdPrinter)
     pp.add_printer('id', '^celerity::id<.*>$', CoordinatePrinter)
     pp.add_printer('range', '^celerity::range<.*>$', CoordinatePrinter)
     pp.add_printer('subrange', '^celerity::subrange<.*>$', SubrangePrinter)
@@ -194,6 +193,7 @@ def build_pretty_printer():
     pp.add_printer('region', '^celerity::detail::region<.*>$', RegionPrinter)
     pp.add_printer('region_map', '^celerity::detail::region_map<.*>$', RegionMapPrinter)
     pp.add_printer('write_command_state', '^celerity::detail::write_command_state$', WriteCommandStatePrinter)
+    pp.add_printer('transfer_id', '^celerity::detail::transfer_id$', TransferIdPrinter)
 
     return pp
 

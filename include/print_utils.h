@@ -95,6 +95,8 @@ CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(raw_allocation_id)
 CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(instruction_id)
 CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS(message_id)
 
+#undef CELERITY_DETAIL_IMPLEMENT_FMT_FORMATTER_FOR_STRONG_TYPE_ALIAS
+
 
 template <>
 struct fmt::formatter<celerity::detail::dependency_kind> : fmt::formatter<std::string_view> {

@@ -1027,8 +1027,8 @@ namespace region_map_detail {
 		template <typename RegionMap>
 		friend void sanity_check_region_map(const RegionMap& rm);
 
-		// The extent specifies the boundaries for the region map to which all entries are clamped,
-		// and which initially contains the default value. Currently always starts at [0,0,0].
+		// The extent specifies the boundaries for the region map to which all entries are clamped, and which initially contains the default value.
+		// Starts at [0,0,0] if the region_map was constructed from a `range`, and can be non-zero when constructed from a `box`.
 		box<Dims> m_extent;
 
 		std::unique_ptr<typename types::inner_node_type> m_root;
