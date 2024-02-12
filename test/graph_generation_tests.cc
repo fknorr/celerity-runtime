@@ -8,6 +8,7 @@
 
 #include "distributed_graph_generator.h"
 
+
 using namespace celerity;
 using namespace celerity::detail;
 using namespace celerity::test_utils;
@@ -31,9 +32,9 @@ TEST_CASE("command_graph keeps track of created commands", "[command_graph][comm
 
 TEST_CASE("command_graph allows to iterate over all raw command pointers", "[command_graph][command-graph]") {
 	command_graph cdag;
-	std::unordered_set<abstract_command*> cmds;
+	std::unordered_set<abstract_command*, command_hash_by_id> cmds;
 	cmds.insert(cdag.create<execution_command>(0, subrange<3>{}));
-	cmds.insert(cdag.create<epoch_command>(task_manager::initial_epoch_task, epoch_action::none));
+	cmds.insert(cdag.create<epoch_command>(task_manager::initial_epoch_task, epoch_action::none, std::vector<reduction_id>{}));
 	cmds.insert(cdag.create<push_command>(0, transfer_id(0, 0, 0), subrange<3>{}));
 	for(auto* cmd : cdag.all_commands()) {
 		REQUIRE(cmds.find(cmd) != cmds.end());
@@ -45,7 +46,7 @@ TEST_CASE("command_graph allows to iterate over all raw command pointers", "[com
 TEST_CASE("command_graph keeps track of execution front", "[command_graph][command-graph]") {
 	command_graph cdag;
 
-	std::unordered_set<abstract_command*> expected_front;
+	std::unordered_set<abstract_command*, command_hash_by_id> expected_front;
 
 	auto* const t0 = cdag.create<execution_command>(0, subrange<3>{});
 	expected_front.insert(t0);
@@ -63,7 +64,7 @@ TEST_CASE("command_graph keeps track of execution front", "[command_graph][comma
 
 TEST_CASE("isa<> RTTI helper correctly handles command hierarchies", "[rtti][command-graph]") {
 	command_graph cdag;
-	auto* const np = cdag.create<epoch_command>(task_manager::initial_epoch_task, epoch_action::none);
+	auto* const np = cdag.create<epoch_command>(task_manager::initial_epoch_task, epoch_action::none, std::vector<reduction_id>{});
 	REQUIRE(utils::isa<abstract_command>(np));
 	auto* const hec = cdag.create<execution_command>(0, subrange<3>{});
 	REQUIRE(utils::isa<execution_command>(hec));

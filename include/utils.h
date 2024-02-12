@@ -98,6 +98,11 @@ constexpr void tuple_for_each_pair(const Tuple& tuple, const Callback& cb) {
 	utils_detail::tuple_for_each_pair_impl(tuple, cb, std::make_index_sequence<std::tuple_size_v<Tuple>>{});
 }
 
+template <typename Variant, typename Alternative>
+Alternative& replace(Variant& variant, Alternative&& alternative) {
+	return std::get<Alternative>(variant = std::forward<Alternative>(alternative));
+}
+
 /// Fiddles out the base name of a (possibly templated) struct or class from a full (possibly mangled) type name.
 /// The input parameter should be `typeid(Struct*)`, i.e. a _pointer_ to the desired struct type.
 std::string get_simplified_type_name_from_pointer(const std::type_info& pointer_type_info);
