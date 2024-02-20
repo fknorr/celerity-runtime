@@ -525,12 +525,12 @@ class idag_test_context {
 			matchbox::match(
 			    *iter,
 			    [&](const buffer_id bid) {
-				    m_iggen.destroy_buffer(bid);
+				    m_iggen.notify_buffer_destroyed(bid);
 				    m_dggen.notify_buffer_destroyed(bid);
 				    m_tm.notify_buffer_destroyed(bid);
 			    },
 			    [&](const host_object_id hoid) {
-				    m_iggen.destroy_host_object(hoid);
+				    m_iggen.notify_host_object_destroyed(hoid);
 				    m_dggen.notify_host_object_destroyed(hoid);
 				    m_tm.notify_host_object_destroyed(hoid);
 			    });
@@ -548,7 +548,7 @@ class idag_test_context {
 		const auto buf = test_utils::mock_buffer<Dims>(bid, size);
 		m_tm.notify_buffer_created(bid, range_cast<3>(size), mark_as_host_initialized);
 		m_dggen.notify_buffer_created(bid, range_cast<3>(size), mark_as_host_initialized);
-		m_iggen.create_buffer(bid, range_cast<3>(size), sizeof(DataT), alignof(DataT),
+		m_iggen.notify_buffer_created(bid, range_cast<3>(size), sizeof(DataT), alignof(DataT),
 		    mark_as_host_initialized ? detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++) : detail::null_allocation_id);
 		m_managed_objects.emplace_back(bid);
 		return buf;
@@ -565,7 +565,7 @@ class idag_test_context {
 		const host_object_id hoid = m_next_host_object_id++;
 		m_tm.notify_host_object_created(hoid);
 		m_dggen.notify_host_object_created(hoid);
-		m_iggen.create_host_object(hoid, owns_instance);
+		m_iggen.notify_host_object_created(hoid, owns_instance);
 		m_managed_objects.emplace_back(hoid);
 		return test_utils::mock_host_object(hoid);
 	}

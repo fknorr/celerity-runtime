@@ -1997,18 +1997,18 @@ instruction_graph_generator::instruction_graph_generator(const task_manager& tm,
 
 instruction_graph_generator::~instruction_graph_generator() = default;
 
-void instruction_graph_generator::create_buffer(
+void instruction_graph_generator::notify_buffer_created(
     const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
 	m_impl->create_buffer(bid, range, elem_size, elem_align, user_allocation_id);
 }
 
-void instruction_graph_generator::set_buffer_debug_name(const buffer_id bid, const std::string& name) { m_impl->set_buffer_debug_name(bid, name); }
+void instruction_graph_generator::notify_buffer_debug_name_changed(const buffer_id bid, const std::string& name) { m_impl->set_buffer_debug_name(bid, name); }
 
-void instruction_graph_generator::destroy_buffer(const buffer_id bid) { m_impl->destroy_buffer(bid); }
+void instruction_graph_generator::notify_buffer_destroyed(const buffer_id bid) { m_impl->destroy_buffer(bid); }
 
-void instruction_graph_generator::create_host_object(const host_object_id hoid, const bool owns_instance) { m_impl->create_host_object(hoid, owns_instance); }
+void instruction_graph_generator::notify_host_object_created(const host_object_id hoid, const bool owns_instance) { m_impl->create_host_object(hoid, owns_instance); }
 
-void instruction_graph_generator::destroy_host_object(const host_object_id hoid) { m_impl->destroy_host_object(hoid); }
+void instruction_graph_generator::notify_host_object_destroyed(const host_object_id hoid) { m_impl->destroy_host_object(hoid); }
 
 // Resulting instructions are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
 void instruction_graph_generator::compile(const abstract_command& cmd) { m_impl->compile(cmd); }

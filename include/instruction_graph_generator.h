@@ -121,20 +121,20 @@ class instruction_graph_generator {
 	///
 	/// Passing `user_allocation_id != null_allocation_id` means that the buffer is considered coherent in user memory and data will be lazily copied from that
 	/// allocation when read from host tasks or device kernels.
-	void create_buffer(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_allocation_id);
+	void notify_buffer_created(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_allocation_id);
 
 	/// Changing an existing buffer's debug name causes all future instructions to refer to that buffer by the new name (if a recorder is present).
-	void set_buffer_debug_name(buffer_id bid, const std::string& name);
+	void notify_buffer_debug_name_changed(buffer_id bid, const std::string& name);
 
 	/// End tracking buffer with the id `bid`. Emits `free_instructions` for all current allocations of that buffer.
-	void destroy_buffer(buffer_id bid);
+	void notify_buffer_destroyed(buffer_id bid);
 
 	/// Begin tracking dependencies on the host object with id `hoid`. If `owns_instance` is true, a `destroy_host_object_instruction` will be emitted when
 	/// `destroy_host_object` is subsequently called.
-	void create_host_object(host_object_id hoid, bool owns_instance);
+	void notify_host_object_created(host_object_id hoid, bool owns_instance);
 
 	/// End tracking the host object with id `hoid`. Emits `destroy_host_object_instruction` if `create_host_object` was called with `owns_instance == true`.
-	void destroy_host_object(host_object_id hoid);
+	void notify_host_object_destroyed(host_object_id hoid);
 
 	/// Compiles a command-graph node into a set of instructions, which are inserted into the shared instruction graph, and updates tracking structures.
 	void compile(const abstract_command& cmd);

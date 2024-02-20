@@ -231,7 +231,7 @@ namespace test_utils {
 			if(m_task_mngr != nullptr) { m_task_mngr->notify_buffer_created(bid, detail::range_cast<3>(size), mark_as_host_initialized); }
 			if(m_schdlr != nullptr) { m_schdlr->notify_buffer_created(bid, detail::range_cast<3>(size), mark_as_host_initialized); }
 			if(m_dggen != nullptr) { m_dggen->notify_buffer_created(bid, detail::range_cast<3>(size), mark_as_host_initialized); }
-			if(m_iggen != nullptr) { m_iggen->create_buffer(bid, detail::range_cast<3>(size), sizeof(int), alignof(int), user_allocation_id); }
+			if(m_iggen != nullptr) { m_iggen->notify_buffer_created(bid, detail::range_cast<3>(size), sizeof(int), alignof(int), user_allocation_id); }
 			return buf;
 		}
 
