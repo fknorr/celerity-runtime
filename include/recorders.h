@@ -418,25 +418,16 @@ struct epoch_instruction_record : matchbox::implement_acceptor<instruction_recor
 /// Records instructions and outbound pilots on instruction-graph generation.
 class instruction_recorder {
   public:
-	using outbound_pilots = std::vector<outbound_pilot>;
-
 	void record_await_push_command_id(const transfer_id& trid, const command_id cid);
 
-	template <typename InstructionRecord>
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, InstructionRecord record) {
-		recorder.m_recorded_instructions.push_back(std::make_unique<InstructionRecord>(std::move(record)));
-		return recorder;
+	template <typename InstructionRecord, std::enable_if_t<std::is_base_of_v<instruction_record, std::remove_reference_t<InstructionRecord>>, int> = 0>
+	void record(InstructionRecord&& record) {
+		m_recorded_instructions.push_back(std::make_unique<InstructionRecord>(std::forward<InstructionRecord>(record)));
 	}
 
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, const outbound_pilot& pilot) {
-		recorder.m_recorded_pilots.push_back(pilot);
-		return recorder;
-	}
+	void record(const outbound_pilot& pilot) { m_recorded_pilots.push_back(pilot); }
 
-	friend instruction_recorder& operator<<(instruction_recorder& recorder, const instruction_dependency_record& dependency) {
-		recorder.m_recorded_dependencies.push_back(dependency);
-		return recorder;
-	}
+	void record(const instruction_dependency_record& dependency) { m_recorded_dependencies.push_back(dependency); }
 
 	const std::vector<std::unique_ptr<instruction_record>>& get_instructions() const { return m_recorded_instructions; }
 
@@ -449,7 +440,7 @@ class instruction_recorder {
 		return **it;
 	}
 
-	const outbound_pilots& get_outbound_pilots() const { return m_recorded_pilots; }
+	const std::vector<outbound_pilot>& get_outbound_pilots() const { return m_recorded_pilots; }
 
 	command_id get_await_push_command_id(const transfer_id& trid) const;
 
