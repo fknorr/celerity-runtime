@@ -481,11 +481,11 @@ class impl {
 	impl(const task_manager& tm, size_t num_nodes, node_id local_nid, instruction_graph_generator::system_info system, instruction_graph& idag,
 	    instruction_graph_generator::delegate* dlg, instruction_recorder* recorder, const instruction_graph_generator::policy_set& policy);
 
-	void create_buffer(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid = null_allocation_id);
-	void set_buffer_debug_name(buffer_id bid, const std::string& name);
-	void destroy_buffer(buffer_id bid);
-	void create_host_object(host_object_id hoid, bool owns_instance);
-	void destroy_host_object(host_object_id hoid);
+	void notify_buffer_created(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid = null_allocation_id);
+	void notify_buffer_debug_name_changed(buffer_id bid, const std::string& name);
+	void notify_buffer_destroyed(buffer_id bid);
+	void notify_host_object_created(host_object_id hoid, bool owns_instance);
+	void notify_host_object_destroyed(host_object_id hoid);
 	void compile(const abstract_command& cmd);
 
   private:
@@ -646,7 +646,7 @@ impl::impl(const task_manager& tm, size_t num_nodes, node_id local_nid, instruct
 	m_collective_groups.emplace(root_collective_group_id, init_epoch);
 }
 
-void impl::create_buffer(const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, allocation_id user_aid) //
+void impl::notify_buffer_created(const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, allocation_id user_aid) //
 {
 	const auto [iter, inserted] =
 	    m_buffers.emplace(std::piecewise_construct, std::tuple(bid), std::tuple(range, elem_size, elem_align, m_system.memories.size()));
@@ -666,9 +666,9 @@ void impl::create_buffer(const buffer_id bid, const range<3>& range, const size_
 	}
 }
 
-void impl::set_buffer_debug_name(const buffer_id bid, const std::string& name) { m_buffers.at(bid).debug_name = name; }
+void impl::notify_buffer_debug_name_changed(const buffer_id bid, const std::string& name) { m_buffers.at(bid).debug_name = name; }
 
-void impl::destroy_buffer(const buffer_id bid) {
+void impl::notify_buffer_destroyed(const buffer_id bid) {
 	const auto iter = m_buffers.find(bid);
 	assert(iter != m_buffers.end());
 	auto& buffer = iter->second;
@@ -698,13 +698,13 @@ void impl::destroy_buffer(const buffer_id bid) {
 	m_buffers.erase(iter);
 }
 
-void impl::create_host_object(const host_object_id hoid, const bool owns_instance) {
+void impl::notify_host_object_created(const host_object_id hoid, const bool owns_instance) {
 	assert(m_host_objects.count(hoid) == 0);
 	m_host_objects.emplace(std::piecewise_construct, std::tuple(hoid), std::tuple(owns_instance, m_last_epoch));
 	// The host object is created in "user-space" and no instructions need to be emitted.
 }
 
-void impl::destroy_host_object(const host_object_id hoid) {
+void impl::notify_host_object_destroyed(const host_object_id hoid) {
 	const auto iter = m_host_objects.find(hoid);
 	assert(iter != m_host_objects.end());
 	auto& obj = iter->second;
@@ -2001,18 +2001,20 @@ instruction_graph_generator::~instruction_graph_generator() = default;
 
 void instruction_graph_generator::notify_buffer_created(
     const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
-	m_impl->create_buffer(bid, range, elem_size, elem_align, user_allocation_id);
+	m_impl->notify_buffer_created(bid, range, elem_size, elem_align, user_allocation_id);
 }
 
-void instruction_graph_generator::notify_buffer_debug_name_changed(const buffer_id bid, const std::string& name) { m_impl->set_buffer_debug_name(bid, name); }
+void instruction_graph_generator::notify_buffer_debug_name_changed(const buffer_id bid, const std::string& name) {
+	m_impl->notify_buffer_debug_name_changed(bid, name);
+}
 
-void instruction_graph_generator::notify_buffer_destroyed(const buffer_id bid) { m_impl->destroy_buffer(bid); }
+void instruction_graph_generator::notify_buffer_destroyed(const buffer_id bid) { m_impl->notify_buffer_destroyed(bid); }
 
 void instruction_graph_generator::notify_host_object_created(const host_object_id hoid, const bool owns_instance) {
-	m_impl->create_host_object(hoid, owns_instance);
+	m_impl->notify_host_object_created(hoid, owns_instance);
 }
 
-void instruction_graph_generator::notify_host_object_destroyed(const host_object_id hoid) { m_impl->destroy_host_object(hoid); }
+void instruction_graph_generator::notify_host_object_destroyed(const host_object_id hoid) { m_impl->notify_host_object_destroyed(hoid); }
 
 // Resulting instructions are in topological order of dependencies (i.e. sequential execution would fulfill all internal dependencies)
 void instruction_graph_generator::compile(const abstract_command& cmd) { m_impl->compile(cmd); }
