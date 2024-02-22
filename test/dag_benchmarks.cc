@@ -227,7 +227,7 @@ struct instruction_graph_generator_benchmark_context {
 
 	explicit instruction_graph_generator_benchmark_context(const size_t num_nodes, const size_t num_devices) : num_nodes(num_nodes), num_devices(num_devices) {
 		tm.register_task_callback([this](const task* tsk) {
-			for(const auto cmd : topsort(dggen.build_task(*tsk))) {
+			for(const auto cmd : sort_topologically(dggen.build_task(*tsk))) {
 				iggen.compile(*cmd);
 			}
 		});

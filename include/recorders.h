@@ -136,14 +136,14 @@ struct buffer_allocation_record {
 };
 
 enum class instruction_dependency_origin {
-	allocation_lifetime,
-	write_to_allocation,
-	read_from_allocation,
-	side_effect,
-	collective_group_order,
-	last_epoch,
-	execution_front,
-	split_receive,
+	allocation_lifetime,  ///< Dependency between an alloc / free instruction and the first / last access front on that allocation
+	write_to_allocation,  ///< An anti- or output dependency on data present in an allocation
+	read_from_allocation, ///< True dataflow dependency on data present in an allocation
+	side_effect, ///< Dependency between two host tasks that affect the same host object, or between such a host task and `destroy_host_object_instruction`
+	collective_group_order, ///< Serializing dependency between two host tasks that participate in the same `collective_group`
+	last_epoch,             ///< Fall-back dependency to the effective epoch for instructions that have no other dependency
+	execution_front,        ///< Dependency from a new epoch- or horizon instruction to the previous execution front
+	split_receive,          ///< Ordering dependency between a `split_receive_instruction` and its `await_receive_instruction`s
 };
 
 struct instruction_dependency_record {

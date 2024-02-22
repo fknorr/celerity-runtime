@@ -22,6 +22,7 @@ namespace detail {
 
 	// TODO: Consider adding a mechanism (during debug builds?) to assert that dependencies can only exist between commands on the same node
 	class abstract_command : public intrusive_graph_node<abstract_command>,
+	                         // Accept visitors to enable matchbox::match() on the command inheritance hierarchy
 	                         public matchbox::acceptor<class epoch_command, class horizon_command, class execution_command, class push_command,
 	                             class await_push_command, class reduction_command, class fence_command> {
 		friend class command_graph;

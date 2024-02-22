@@ -23,6 +23,7 @@ class fence_promise;
 /// higher-level task and command graphs which track data dependencies in terms of buffers, it operates on the lower level of allocations, which (among ohter
 /// uses) can back sub-regions of the (virtual) global buffer.
 class instruction
+    // Accept visitors to enable matchbox::match() on the instruction inheritance hierarchy
     : public matchbox::acceptor<class clone_collective_group_instruction, class alloc_instruction, class free_instruction, class copy_instruction,
           class device_kernel_instruction, class host_task_instruction, class send_instruction, class receive_instruction, class split_receive_instruction,
           class await_receive_instruction, class gather_receive_instruction, class fill_identity_instruction, class reduce_instruction, class fence_instruction,

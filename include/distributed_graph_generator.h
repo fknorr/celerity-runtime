@@ -180,7 +180,7 @@ class distributed_graph_generator {
 
 /// Topologically sort a command-set as returned from distributed_graph_generator::build_task() such that sequential excution satisfies all dependencies.
 /// TODO refactor distributed_graph_generator to intrinsically generate commands in dependency-order.
-std::vector<abstract_command*> topsort(std::unordered_set<abstract_command*, command_hash_by_id> unmarked);
+std::vector<abstract_command*> sort_topologically(std::unordered_set<abstract_command*, command_hash_by_id> unmarked);
 
 } // namespace celerity::detail
 
