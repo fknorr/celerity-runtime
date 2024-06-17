@@ -10,7 +10,8 @@ namespace celerity::detail::sycl_backend_detail {
 
 void flush_queue(sycl::queue& queue);
 
-async_event launch_kernel(sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs);
+async_event launch_kernel(
+    sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs, bool enable_profiling);
 
 void handle_errors(const sycl::exception_list& errors);
 
@@ -21,17 +22,20 @@ namespace celerity::detail {
 class sycl_event final : public async_event_impl {
   public:
 	sycl_event() = default;
-	sycl_event(sycl::event event) : m_event(std::move(event)) {}
+	sycl_event(sycl::event event, bool profiling_enabled) : m_event(std::move(event)), m_profiling_enabled(profiling_enabled) {}
 
-	bool is_complete() const override;
+	bool is_complete() override;
+
+	std::optional<std::chrono::nanoseconds> get_native_execution_time() override;
 
   private:
 	sycl::event m_event;
+	bool m_profiling_enabled;
 };
 
 class sycl_backend : public backend {
   public:
-	explicit sycl_backend(const std::vector<sycl::device>& devices);
+	explicit sycl_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
 	sycl_backend(const sycl_backend&) = delete;
 	sycl_backend(sycl_backend&&) = delete;
 	sycl_backend& operator=(const sycl_backend&) = delete;
@@ -81,7 +85,7 @@ class sycl_generic_backend final : public sycl_backend {
 #if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
 class sycl_cuda_backend final : public sycl_backend {
   public:
-	sycl_cuda_backend(const std::vector<sycl::device>& devices);
+	sycl_cuda_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
 
 	async_event enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
 	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override;
@@ -103,6 +107,6 @@ struct sycl_backend_enumerator {
 	int get_priority(backend_type type) const;
 };
 
-std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices);
+std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices, bool enable_profiling);
 
 } // namespace celerity::detail

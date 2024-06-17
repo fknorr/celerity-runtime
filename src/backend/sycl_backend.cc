@@ -30,7 +30,9 @@ void flush_queue(sycl::queue& queue) {
 #endif
 }
 
-async_event launch_kernel(sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+// TODO make this a member function of some device_queue class
+async_event launch_kernel(sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs,
+    bool enable_profiling) //
 {
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2, "SYCL submit")
 	auto event = queue.submit([&](sycl::handler& sycl_cgh) {
@@ -38,7 +40,7 @@ async_event launch_kernel(sycl::queue& queue, const device_kernel_launcher& laun
 		launch_hydrated(sycl_cgh, execution_range, reduction_ptrs);
 	});
 	flush_queue(queue);
-	return make_async_event<sycl_event>(std::move(event));
+	return make_async_event<sycl_event>(std::move(event), enable_profiling);
 }
 
 void handle_errors(const sycl::exception_list& errors) {
@@ -68,7 +70,7 @@ async_event copy_region_generic(sycl::queue& queue, const void* const source_bas
 		    });
 	}
 	sycl_backend_detail::flush_queue(queue);
-	return make_async_event<sycl_event>(std::move(event)); // TODO no vector, fix sycl_event
+	return make_async_event<sycl_event>(std::move(event), false /* enable_profiling - these are multiple operations instead of one */);
 }
 
 #if CELERITY_DETAIL_ENABLE_DEBUG
@@ -79,9 +81,15 @@ inline constexpr std::byte uninitialized_memory_pattern = std::byte(0xff); // fl
 
 namespace celerity::detail {
 
-bool sycl_event::is_complete() const {
+bool sycl_event::is_complete() {
 	// CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::query_event", Orange2, "query SYCL event")
 	return m_event.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete;
+}
+
+std::optional<std::chrono::nanoseconds> sycl_event::get_native_execution_time() {
+	if(!m_profiling_enabled) return std::nullopt; // avoid the cost of throwing + catching a sycl exception by when profiling is disabled
+	return std::chrono::nanoseconds(m_event.get_profiling_info<sycl::info::event_profiling::command_end>() //
+	                                - m_event.get_profiling_info<sycl::info::event_profiling::command_start>());
 }
 
 struct sycl_backend::impl {
@@ -111,8 +119,11 @@ struct sycl_backend::impl {
 	system_info system;
 	dense_map<device_id, device_state> devices; // thread-safe for read access (not resized after construction)
 	host_state host;
+	bool enable_profiling;
 
-	impl(const std::vector<sycl::device>& devices) : devices(devices.begin(), devices.end()), host(devices) {
+	impl(const std::vector<sycl::device>& devices, const bool enable_profiling)
+	    : devices(devices.begin(), devices.end()), host(devices), enable_profiling(enable_profiling) //
+	{
 		// For now, we assume distinct memories per device. TODO some targets, (OpenMP emulated devices), might deviate from that.
 		system.devices.resize(devices.size());
 		system.memories.resize(2 + devices.size()); //  user + host + device memories
@@ -132,19 +143,23 @@ struct sycl_backend::impl {
 
 	thread_queue& get_host_queue(const size_t lane) {
 		assert(lane <= host.queues.size());
-		if(lane == host.queues.size()) { host.queues.emplace_back(fmt::format("cy-host-{}", lane)); }
+		if(lane == host.queues.size()) { host.queues.emplace_back(fmt::format("cy-host-{}", lane), enable_profiling); }
 		return host.queues[lane];
 	}
 
 	sycl::queue& get_device_queue(const device_id did, const size_t lane) {
 		auto& device = devices[did];
 		assert(lane <= device.queues.size());
-		if(lane == device.queues.size()) { device.queues.emplace_back(/* TODO async_handler, */ device.sycl_device, sycl::property::queue::in_order{}); }
+		if(lane == device.queues.size()) {
+			const auto properties = enable_profiling ? sycl::property_list{sycl::property::queue::enable_profiling{}, sycl::property::queue::in_order{}}
+			                                         : sycl::property_list{sycl::property::queue::in_order{}};
+			device.queues.emplace_back(/* TODO async_handler, */ device.sycl_device, properties);
+		}
 		return device.queues[lane];
 	}
 };
 
-sycl_backend::sycl_backend(const std::vector<sycl::device>& devices) : m_impl(new impl(devices)) {}
+sycl_backend::sycl_backend(const std::vector<sycl::device>& devices, const bool enable_profiling) : m_impl(new impl(devices, enable_profiling)) {}
 
 sycl_backend::~sycl_backend() = default;
 
@@ -192,7 +207,7 @@ async_event sycl_backend::enqueue_device_free(const device_id device, void* cons
 async_event sycl_backend::enqueue_device_kernel(const device_id device, const size_t lane, const device_kernel_launcher& launcher,
     const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
 	auto& queue = m_impl->get_device_queue(device, lane);
-	return sycl_backend_detail::launch_kernel(queue, launcher, execution_range, reduction_ptrs);
+	return sycl_backend_detail::launch_kernel(queue, launcher, execution_range, reduction_ptrs, m_impl->enable_profiling);
 }
 
 async_event sycl_backend::enqueue_host_function(const size_t host_lane, std::function<void()> fn) {
@@ -263,7 +278,7 @@ int sycl_backend_enumerator::get_priority(backend_type type) const {
 
 namespace celerity::detail {
 
-std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices) {
+std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices, const bool enable_profiling) {
 	assert(std::all_of(devices.begin(), devices.end(), [=](const sycl::device& d) {
 		const auto available = sycl_backend_enumerator{}.compatible_backends(d);
 		return std::find(available.begin(), available.end(), type) != available.end();
@@ -271,11 +286,11 @@ std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const s
 
 	switch(type) {
 	case sycl_backend_type::generic: //
-		return std::make_unique<sycl_generic_backend>(devices);
+		return std::make_unique<sycl_generic_backend>(devices, enable_profiling);
 
 	case sycl_backend_type::cuda:
 #if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
-		return std::make_unique<sycl_cuda_backend>(devices);
+		return std::make_unique<sycl_cuda_backend>(devices, enable_profiling);
 #else
 		utils::panic("CUDA backend has not been compiled");
 #endif

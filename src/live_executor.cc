@@ -406,7 +406,18 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	}
 #endif
 
-	CELERITY_DEBUG("[executor] retired I{}", async.instr->get_id());
+	if(spdlog::should_log(spdlog::level::debug)) {
+		if(const auto native_time = async.event.get_native_execution_time(); native_time.has_value()) {
+			auto unit_time = static_cast<double>(native_time->count());
+			auto unit = "ns";
+			if(unit_time >= 1000) { unit_time /= 1000.0, unit = "µs"; }
+			if(unit_time >= 1000) { unit_time /= 1000.0, unit = "ms"; }
+			if(unit_time >= 1000) { unit_time /= 1000.0, unit = "s"; }
+			CELERITY_DEBUG("[executor] retired I{} after {:.2f} {} native execution time", async.instr->get_id(), unit_time, unit);
+		} else {
+			CELERITY_DEBUG("[executor] retired I{}", async.instr->get_id());
+		}
+	}
 
 #if CELERITY_ENABLE_TRACY
 	if(async.tracy_cursor.has_value()) {
@@ -430,7 +441,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 
 	if(utils::isa<alloc_instruction>(async.instr)) {
 		const auto ainstr = utils::as<alloc_instruction>(async.instr);
-		const auto ptr = async.event.take_result();
+		const auto ptr = async.event.get_result();
 		assert(ptr != nullptr && "backend allocation returned nullptr");
 		const auto aid = ainstr->get_allocation_id();
 		CELERITY_DEBUG("[executor] {} allocated as {}", aid, ptr);

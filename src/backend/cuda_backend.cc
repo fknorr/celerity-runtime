@@ -91,7 +91,7 @@ class event_impl final : public async_event_impl {
   public:
 	event_impl(unique_cuda_event evt) : m_evt(std::move(evt)) {}
 
-	bool is_complete() const override {
+	bool is_complete() override {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::query_event", ForestGreen, "cudaEventQuery")
 		switch(const auto result = cudaEventQuery(m_evt.get())) {
 		case cudaSuccess: return true;
@@ -119,7 +119,7 @@ async_event copy_region(sycl::queue& queue, const void* const source_base, void*
 		cuda_backend_detail::copy_region_async(stream, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
 	});
 	sycl_backend_detail::flush_queue(queue);
-	return make_async_event<sycl_event>(std::move(event));
+	return make_async_event<sycl_event>(std::move(event), false /* enable_profiling */);
 #elif CELERITY_WORKAROUND(DPCPP)
 	const auto stream = sycl::get_native<sycl::backend::ext_oneapi_cuda>(queue);
 	cuda_backend_detail::copy_region_async(stream, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
@@ -155,7 +155,7 @@ void enable_peer_access(const int id_device, const int id_peer) {
 
 namespace celerity::detail {
 
-sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices) : sycl_backend(devices) {
+sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, const bool enable_profiling) : sycl_backend(devices, enable_profiling) {
 #if !CELERITY_DISABLE_CUDA_PEER_ACCESS
 	for(size_t i = 0; i < devices.size(); ++i) {
 		for(size_t j = i + 1; j < devices.size(); ++j) {

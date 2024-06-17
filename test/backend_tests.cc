@@ -13,7 +13,7 @@ using namespace celerity::detail;
 
 void* await(async_event&& evt) {
 	while(!evt.is_complete()) {}
-	return evt.take_result();
+	return evt.get_result();
 }
 
 void* backend_alloc(backend& backend, const std::optional<device_id>& device, const size_t size, const size_t alignment) {
@@ -64,7 +64,7 @@ TEMPLATE_TEST_CASE_METHOD_SIG(test_utils::backend_fixture_dims, "backend::enqueu
 
 	if(sycl_devices.empty()) { SKIP("No devices available for backend"); }
 
-	auto backend = make_sycl_backend(backend_type, sycl_devices);
+	auto backend = make_sycl_backend(backend_type, sycl_devices, false /* enable_profiling */);
 
 	// device_to_itself is used for buffer resizes, and device_to_peer for coherence (if the backend supports it)
 	const auto direction = GENERATE(values<std::string_view>({"host to device", "device to host", "device to peer", "device to itself"}));

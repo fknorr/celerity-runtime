@@ -179,7 +179,8 @@ namespace detail {
 			assert(!devices.empty());
 		}
 
-		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices);
+		const bool enable_profiling = m_cfg->get_enable_device_profiling().value_or(false);
+		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices, enable_profiling);
 		const auto system = backend->get_system_info();
 
 		m_num_local_devices = devices.size();
