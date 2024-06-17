@@ -26,7 +26,6 @@ file(GLOB_RECURSE TEST_INCLUDES *.h)
 set(TEST_TARGETS
   accessor_tests
   backend_tests
-  buffer_manager_tests
   debug_naming_tests
   graph_generation_tests
   graph_gen_granularity_tests
@@ -41,6 +40,7 @@ set(TEST_TARGETS
   instruction_graph_misc_tests
   instruction_graph_p2p_tests
   instruction_graph_reduction_tests
+  nd_memory_tests
   out_of_order_engine_tests
   print_graph_tests
   region_map_tests
@@ -82,7 +82,7 @@ endforeach()
 
 # Add instruction_graph_tests executable
 add_executable(instruction_graph_tests
-  $<TARGET_OBJECTS:instruction_graph_grid_tests_OBJ>
+$<TARGET_OBJECTS:instruction_graph_grid_tests_OBJ>
   $<TARGET_OBJECTS:instruction_graph_memory_tests_OBJ>
   $<TARGET_OBJECTS:instruction_graph_misc_tests_OBJ>
   $<TARGET_OBJECTS:instruction_graph_p2p_tests_OBJ>

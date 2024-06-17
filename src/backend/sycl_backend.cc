@@ -1,0 +1,286 @@
+#include "backend/sycl_backend.h"
+
+#include "../thread_queue.h"
+#include "closure_hydrator.h"
+#include "dense_map.h"
+#include "log.h"
+#include "nd_memory.h"
+#include "ranges.h"
+#include "system_info.h"
+#include "types.h"
+
+// TODO consider moving this to cuda_backend.cc
+#if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
+#include <cuda_runtime.h>
+#endif
+
+namespace celerity::detail::sycl_backend_detail {
+
+void flush_queue(sycl::queue& queue) {
+#if CELERITY_WORKAROUND(HIPSYCL)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	// hipSYCL does not guarantee that command groups are actually scheduled until an explicit await operation, which we cannot insert without
+	// blocking the executor loop (see https://github.com/illuhad/hipSYCL/issues/599). Instead, we explicitly flush the queue to be able to continue
+	// using our polling-based approach.
+	queue.get_context().hipSYCL_runtime()->dag().flush_async();
+#pragma GCC diagnostic pop
+#else
+	(void)queue;
+#endif
+}
+
+async_event launch_kernel(sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+{
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2, "SYCL submit")
+	auto event = queue.submit([&](sycl::handler& sycl_cgh) {
+		const auto launch_hydrated = detail::closure_hydrator::get_instance().hydrate<target::device>(sycl_cgh, launch);
+		launch_hydrated(sycl_cgh, execution_range, reduction_ptrs);
+	});
+	flush_queue(queue);
+	return make_async_event<sycl_event>(std::move(event));
+}
+
+void handle_errors(const sycl::exception_list& errors) {
+	for(const auto& e : errors) {
+		try {
+			std::rethrow_exception(e);
+		} catch(const sycl::exception& e) { //
+			CELERITY_CRITICAL("SYCL error: {}", e.what());
+		}
+	}
+	if(errors.size() != 0) { abort(); } // NOLINT(readability-container-size-empty)
+}
+
+async_event copy_region_generic(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
+    const region<3>& copy_region, const size_t elem_size) //
+{
+	sycl::event event;
+	for(const auto& copy_box : copy_region.get_boxes()) {
+		assert(source_box.covers(copy_box));
+		assert(dest_box.covers(copy_box));
+		for_each_linear_slice_in_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(),
+		    [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
+			    // `queue` is in-order, capturing the last event is sufficient
+			    event = queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
+			        static_cast<const std::byte*>(source_base) + linear_offset_in_source * elem_size, linear_size * elem_size);
+		    });
+	}
+	sycl_backend_detail::flush_queue(queue);
+	return make_async_event<sycl_event>(std::move(event)); // TODO no vector, fix sycl_event
+}
+
+#if CELERITY_DETAIL_ENABLE_DEBUG
+inline constexpr std::byte uninitialized_memory_pattern = std::byte(0xff); // floats and doubles filled with this pattern show up as "-nan"
+#endif
+
+} // namespace celerity::detail::sycl_backend_detail
+
+namespace celerity::detail {
+
+bool sycl_event::is_complete() const {
+	// CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::query_event", Orange2, "query SYCL event")
+	return m_event.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete;
+}
+
+struct sycl_backend::impl {
+	struct device_state {
+		sycl::device sycl_device;
+		sycl::context sycl_context;
+		std::vector<sycl::queue> queues;
+
+		device_state() = default;
+		explicit device_state(const sycl::device& dev) : sycl_device(dev), sycl_context(sycl_device) {}
+	};
+
+	struct host_state {
+		sycl::context sycl_context;
+		thread_queue alloc_queue;
+		std::vector<thread_queue> queues; // TODO naming vs alloc_queue?
+
+		// pass devices to ensure the sycl_context receives the correct platform
+		explicit host_state(const std::vector<sycl::device>& all_devices)
+		    // DPC++ requires exactly one CUDA device here, but for allocation the sycl_context mostly means "platform".
+		    // - TODO assert that all devices belong to the same platform + backend here
+		    // - TODO test Celerity on a (SimSYCL) system without GPUs
+		    : sycl_context(all_devices.at(0)), //
+		      alloc_queue("cy-alloc") {}
+	};
+
+	system_info system;
+	dense_map<device_id, device_state> devices; // thread-safe for read access (not resized after construction)
+	host_state host;
+
+	impl(const std::vector<sycl::device>& devices) : devices(devices.begin(), devices.end()), host(devices) {
+		// For now, we assume distinct memories per device. TODO some targets, (OpenMP emulated devices), might deviate from that.
+		system.devices.resize(devices.size());
+		system.memories.resize(2 + devices.size()); //  user + host + device memories
+		system.memories[user_memory_id].copy_peers.set(user_memory_id);
+		system.memories[host_memory_id].copy_peers.set(host_memory_id);
+		system.memories[host_memory_id].copy_peers.set(user_memory_id);
+		system.memories[user_memory_id].copy_peers.set(host_memory_id);
+		for(device_id did = 0; did < devices.size(); ++did) {
+			const memory_id mid = first_device_memory_id + did;
+			system.devices[did].native_memory = mid;
+			system.memories[mid].copy_peers.set(mid);
+			system.memories[mid].copy_peers.set(host_memory_id);
+			system.memories[host_memory_id].copy_peers.set(mid);
+			// device-to-device copy capabilities are added in cuda_backend constructor
+		}
+	}
+
+	thread_queue& get_host_queue(const size_t lane) {
+		assert(lane <= host.queues.size());
+		if(lane == host.queues.size()) { host.queues.emplace_back(fmt::format("cy-host-{}", lane)); }
+		return host.queues[lane];
+	}
+
+	sycl::queue& get_device_queue(const device_id did, const size_t lane) {
+		auto& device = devices[did];
+		assert(lane <= device.queues.size());
+		if(lane == device.queues.size()) { device.queues.emplace_back(/* TODO async_handler, */ device.sycl_device, sycl::property::queue::in_order{}); }
+		return device.queues[lane];
+	}
+};
+
+sycl_backend::sycl_backend(const std::vector<sycl::device>& devices) : m_impl(new impl(devices)) {}
+
+sycl_backend::~sycl_backend() = default;
+
+const system_info& sycl_backend::get_system_info() const { return m_impl->system; }
+
+void* sycl_backend::debug_alloc(const size_t size) {
+	const auto ptr = sycl::malloc_host(size, m_impl->host.sycl_context);
+#if CELERITY_DETAIL_ENABLE_DEBUG
+	memset(ptr, static_cast<int>(sycl_backend_detail::uninitialized_memory_pattern), size);
+#endif
+	return ptr;
+}
+
+void sycl_backend::debug_free(void* const ptr) { sycl::free(ptr, m_impl->host.sycl_context); }
+
+async_event sycl_backend::enqueue_host_alloc(const size_t size, const size_t alignment) {
+	return m_impl->host.alloc_queue.submit([this, size, alignment] {
+		const auto ptr = sycl::aligned_alloc_host(alignment, size, m_impl->host.sycl_context);
+#if CELERITY_DETAIL_ENABLE_DEBUG
+		memset(ptr, static_cast<int>(sycl_backend_detail::uninitialized_memory_pattern), size);
+#endif
+		return ptr;
+	});
+}
+
+async_event sycl_backend::enqueue_device_alloc(const device_id device, const size_t size, const size_t alignment) {
+	return m_impl->host.alloc_queue.submit([this, device, size, alignment] {
+		auto& d = m_impl->devices[device];
+		const auto ptr = sycl::aligned_alloc_device(alignment, size, d.sycl_device, d.sycl_context);
+#if CELERITY_DETAIL_ENABLE_DEBUG
+		sycl::queue(d.sycl_context, d.sycl_device, sycl::property::queue::in_order{}).fill(ptr, sycl_backend_detail::uninitialized_memory_pattern, size).wait();
+#endif
+		return ptr;
+	});
+}
+
+async_event sycl_backend::enqueue_host_free(void* const ptr) {
+	return m_impl->host.alloc_queue.submit([this, ptr] { sycl::free(ptr, m_impl->host.sycl_context); });
+}
+
+async_event sycl_backend::enqueue_device_free(const device_id device, void* const ptr) {
+	return m_impl->host.alloc_queue.submit([this, device, ptr] { sycl::free(ptr, m_impl->devices[device].sycl_context); });
+}
+
+async_event sycl_backend::enqueue_device_kernel(const device_id device, const size_t lane, const device_kernel_launcher& launcher,
+    const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
+	auto& queue = m_impl->get_device_queue(device, lane);
+	return sycl_backend_detail::launch_kernel(queue, launcher, execution_range, reduction_ptrs);
+}
+
+async_event sycl_backend::enqueue_host_function(const size_t host_lane, std::function<void()> fn) {
+	return m_impl->get_host_queue(host_lane).submit(std::move(fn));
+}
+
+async_event sycl_backend::enqueue_host_copy(size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
+    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
+{
+	return m_impl->get_host_queue(host_lane).submit([source_base, dest_base, source_box, dest_box, copy_region, elem_size] {
+		for(const auto& copy_box : copy_region.get_boxes()) {
+			assert(source_box.covers(copy_box) && dest_box.covers(copy_box));
+			nd_copy_host(source_base, dest_base, source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+			    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(), elem_size);
+		}
+	});
+}
+
+sycl::queue& sycl_backend::get_device_queue(device_id device, size_t lane) { return m_impl->get_device_queue(device, lane); }
+
+system_info& sycl_backend::get_system_info() { return m_impl->system; }
+
+async_event sycl_generic_backend::enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
+    const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
+{
+	auto& queue = get_device_queue(device, device_lane);
+	return sycl_backend_detail::copy_region_generic(queue, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
+}
+
+
+std::vector<sycl_backend_type> sycl_backend_enumerator::compatible_backends(const sycl::device& device) const {
+	std::vector<backend_type> backends{backend_type::generic};
+#if CELERITY_WORKAROUND(HIPSYCL) && defined(SYCL_EXT_HIPSYCL_BACKEND_CUDA)
+	if(device.get_backend() == sycl::backend::cuda) { backends.push_back(sycl_backend_type::cuda); }
+#elif CELERITY_WORKAROUND(DPCPP)
+	if(device.get_backend() == sycl::backend::ext_oneapi_cuda) { backends.push_back(sycl_backend_type::cuda); }
+#endif
+	assert(std::is_sorted(backends.begin(), backends.end()));
+	return backends;
+}
+
+std::vector<sycl_backend_type> sycl_backend_enumerator::available_backends() const {
+	std::vector<backend_type> backends{backend_type::generic};
+#if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
+	backends.push_back(sycl_backend_type::cuda);
+#endif
+	assert(std::is_sorted(backends.begin(), backends.end()));
+	return backends;
+}
+
+bool sycl_backend_enumerator::is_specialized(backend_type type) const {
+	switch(type) {
+	case backend_type::generic: return false;
+	case backend_type::cuda: return true;
+	default: utils::unreachable();
+	}
+}
+
+int sycl_backend_enumerator::get_priority(backend_type type) const {
+	switch(type) {
+	case backend_type::generic: return 0;
+	case backend_type::cuda: return 1;
+	default: utils::unreachable();
+	}
+}
+
+} // namespace celerity::detail
+
+namespace celerity::detail {
+
+std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices) {
+	assert(std::all_of(devices.begin(), devices.end(), [=](const sycl::device& d) {
+		const auto available = sycl_backend_enumerator{}.compatible_backends(d);
+		return std::find(available.begin(), available.end(), type) != available.end();
+	}));
+
+	switch(type) {
+	case sycl_backend_type::generic: //
+		return std::make_unique<sycl_generic_backend>(devices);
+
+	case sycl_backend_type::cuda:
+#if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
+		return std::make_unique<sycl_cuda_backend>(devices);
+#else
+		utils::panic("CUDA backend has not been compiled");
+#endif
+	}
+	utils::unreachable();
+}
+
+} // namespace celerity::detail

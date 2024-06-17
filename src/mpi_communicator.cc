@@ -1,6 +1,5 @@
 #include "mpi_communicator.h"
 #include "log.h"
-#include "mpi_support.h"
 #include "ranges.h"
 
 #include <climits>
@@ -36,8 +35,8 @@ class mpi_event final : public async_event_impl {
 	mutable MPI_Request m_req;
 };
 
-constexpr int pilot_exchange_tag = mpi_support::TAG_COMMUNICATOR;
-constexpr int first_message_tag = pilot_exchange_tag + 1;
+constexpr int pilot_exchange_tag = 0;
+constexpr int first_message_tag = 1;
 
 constexpr int message_id_to_mpi_tag(message_id msgid) {
 	// If the resulting tag would overflow INT_MAX in a long-running program with many nodes, we wrap around to `first_message_tag` instead, assuming that

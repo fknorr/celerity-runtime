@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <tuple>
 #include <type_traits>
 #include <typeinfo>
+#include <variant>
 
 #include <fmt/format.h>
 
@@ -86,6 +88,15 @@ constexpr void tuple_for_each_pair_impl(const Tuple& tuple, const Callback& cb, 
 	tuple_for_each_pair_impl(tuple, cb, std::index_sequence<Is...>{});
 }
 
+template <typename Container, typename Key, typename Enable = void>
+struct has_member_find : std::false_type {};
+
+template <typename Container, typename Key>
+struct has_member_find<Container, Key, std::void_t<decltype(std::declval<const Container&>().find(std::declval<const Key&>()))>> : std::true_type {};
+
+template <typename Container, typename Key>
+inline constexpr bool has_member_find_v = has_member_find<Container, Key>::value;
+
 } // namespace celerity::detail::utils_detail
 
 namespace celerity::detail::utils {
@@ -140,6 +151,8 @@ std::string escape_for_dot_label(std::string str);
 /// Print the buffer id as either 'B1' or 'B1 "name"' (if `name` is non-empty)
 std::string make_buffer_debug_label(const buffer_id bid, const std::string& name = "");
 
+std::string make_task_debug_label(const task_type tt, const task_id tid, const std::string& debug_name, bool title_case = false);
+
 [[noreturn]] void unreachable();
 
 enum class panic_solution {
@@ -168,6 +181,58 @@ template <typename... FmtParams, std::enable_if_t<sizeof...(FmtParams) >= 1, int
 void report_error(const error_policy policy, const fmt::format_string<FmtParams...> fmt_string, FmtParams&&... fmt_args) {
 	// TODO also receive a std::source_location with C++20.
 	if(policy != error_policy::ignore) { report_error(policy, fmt::format(fmt_string, std::forward<FmtParams>(fmt_args)...)); }
+}
+
+template <typename T>
+struct alternative {
+	alternative() = default;
+	alternative(const T& value) : value(value) {}
+	alternative(T&& value) : value(std::move(value)) {}
+
+	T value;
+};
+
+template <typename... Alts, typename T>
+bool operator==(const std::variant<Alts...>& lhs, const alternative<T>& rhs) {
+	if(const auto* lhs_alt = std::get_if<T>(&lhs)) { return *lhs_alt == rhs.value; }
+	return false;
+}
+
+template <typename... Alts, typename T>
+bool operator!=(const std::variant<Alts...>& lhs, const alternative<T>& rhs) {
+	return !(lhs == rhs);
+}
+
+template <typename Container>
+Container set_intersection(const Container& lhs, const Container& rhs) {
+	using std::begin, std::end;
+	assert(std::is_sorted(begin(lhs), end(lhs)));
+	assert(std::is_sorted(begin(rhs), end(rhs)));
+	Container intersection;
+	std::set_intersection(begin(lhs), end(lhs), begin(rhs), end(rhs), std::back_inserter(intersection));
+	return intersection;
+}
+
+template <typename Container, typename Key>
+bool contains(const Container& container, const Key& key) {
+	using std::begin, std::end;
+	if constexpr(utils_detail::has_member_find_v<Container, Key>) {
+		return container.find(key) != end(container);
+	} else {
+		return std::find(begin(container), end(container), key) != end(container);
+	}
+}
+
+template <typename Container, typename Predicate>
+bool contains_if(const Container& container, const Predicate& predicate) {
+	using std::begin, std::end;
+	return std::find_if(begin(container), end(container), predicate) != end(container);
+}
+
+template <typename Container, typename Predicate>
+void erase_if(Container& container, const Predicate& predicate) {
+	using std::begin, std::end;
+	container.erase(std::remove_if(begin(container), end(container), predicate), end(container));
 }
 
 } // namespace celerity::detail::utils

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backend/sycl_backend.h"
 #include "grid.h"
 #include "intrusive_graph.h"
 #include "ranges.h"
@@ -164,5 +165,19 @@ struct fmt::formatter<celerity::detail::transfer_id> {
 			out = fmt::format_to(out, "T{}.B{}", tid, bid);
 		}
 		return ctx.out();
+	}
+};
+
+template <>
+struct fmt::formatter<celerity::detail::sycl_backend_type> : fmt::formatter<std::string_view> {
+	format_context::iterator format(const celerity::detail::sycl_backend_type type, format_context& ctx) const {
+		const auto repr = [=]() -> std::string_view {
+			switch(type) {
+			case celerity::detail::sycl_backend_type::generic: return "generic";
+			case celerity::detail::sycl_backend_type::cuda: return "CUDA";
+			default: abort();
+			}
+		}();
+		return std::copy(repr.begin(), repr.end(), ctx.out());
 	}
 };

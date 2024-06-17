@@ -65,12 +65,6 @@ enum class side_effect_order { sequential };
 
 namespace celerity::detail {
 
-struct reduction_info {
-	reduction_id rid = 0;
-	buffer_id bid = 0;
-	bool init_from_buffer = false;
-};
-
 inline constexpr node_id master_node_id = 0;
 
 /// Uniquely identifies an allocation across all memories on the local node. This is the instruction-graph equivalent of a USM pointer.
@@ -181,6 +175,22 @@ enum class error_policy {
 	log_warning,
 	log_error,
 	panic,
+};
+
+enum class task_type {
+	epoch,          ///< task epoch (graph-level serialization point)
+	host_compute,   ///< host task with explicit global size and celerity-defined split
+	device_compute, ///< device compute task
+	collective,     ///< host task with implicit 1d global size = #ranks and fixed split
+	master_node,    ///< zero-dimensional host task
+	horizon,        ///< task horizon
+	fence,          ///< promise-side of an async experimental::fence
+};
+
+enum class execution_target {
+	none,
+	host,
+	device,
 };
 
 enum class epoch_action {
