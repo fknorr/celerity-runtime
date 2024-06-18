@@ -145,6 +145,15 @@ constexpr sycl::backend sycl_cuda_backend = sycl::backend::cuda;
 #endif
 
 bool can_enable_peer_access(const int id_device, const int id_peer) {
+	// RTX 30xx and 40xx GPUs do not support peer access, but Nvidia Driver < 550 incorrectly reports that it does, causing kernel panics when enabling it
+	cudaDeviceProp props{};
+	CELERITY_CUDA_CHECK(cudaGetDeviceProperties, &props, id_device);
+	std::string_view device_name(props.name);
+	if(device_name.find("RTX 30") != std::string::npos || device_name.find("RTX 40") != std::string::npos) {
+		CELERITY_DEBUG("Overriding CUDA reporting of peer access capabilities for \"{}\"", device_name);
+		return false;
+	}
+
 	int can_access = -1;
 	CELERITY_CUDA_CHECK(cudaDeviceCanAccessPeer, &can_access, id_device, id_peer);
 	assert(can_access == 0 || can_access == 1);
