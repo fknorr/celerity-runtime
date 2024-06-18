@@ -35,7 +35,7 @@ if(@CELERITY_ENABLE_CUDA_BACKEND@)
   endif()
 endif()
 if(@CELERITY_ENABLE_TRACY@)
-  find_dependency(tracy REQUIRED)
+  find_dependency(Tracy REQUIRED)
 endif()
 
 if(CELERITY_SYCL_IMPL STREQUAL "hipSYCL")

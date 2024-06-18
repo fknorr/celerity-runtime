@@ -187,7 +187,7 @@ if(CELERITY_ENABLE_TRACY)
   # set(TRACY_MANUAL_LIFETIME ON CACHE BOOL "" FORCE)
   set(TRACY_NO_SAMPLING ON CACHE BOOL "" FORCE)
   set(TRACY_NO_SYSTEM_TRACING ON CACHE BOOL "" FORCE)
-  fetch_content_from_submodule(tracy vendor/tracy)
+  fetch_content_from_submodule(Tracy vendor/tracy)
 endif()
 
 configure_file(include/version.h.in include/version.h @ONLY)
