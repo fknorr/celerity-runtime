@@ -22,15 +22,16 @@ namespace celerity::detail {
 class sycl_event final : public async_event_impl {
   public:
 	sycl_event() = default;
-	sycl_event(sycl::event event, bool profiling_enabled) : m_event(std::move(event)), m_profiling_enabled(profiling_enabled) {}
+	sycl_event(sycl::event last, bool enable_profiling) : m_first(enable_profiling ? std::optional(last) : std::nullopt), m_last(std::move(last)) {}
+	sycl_event(std::optional<sycl::event> first, sycl::event last) : m_first(std::move(first)), m_last(std::move(last)) {}
 
 	bool is_complete() override;
 
 	std::optional<std::chrono::nanoseconds> get_native_execution_time() override;
 
   private:
-	sycl::event m_event;
-	bool m_profiling_enabled;
+	std::optional<sycl::event> m_first; // set iff profiling is enabled - can be a copy of m_last.
+	sycl::event m_last;
 };
 
 class sycl_backend : public backend {
@@ -68,6 +69,8 @@ class sycl_backend : public backend {
 	sycl::queue& get_device_queue(device_id device, size_t lane);
 
 	system_info& get_system_info();
+
+	bool is_profiling_enabled() const;
 
   private:
 	struct impl;

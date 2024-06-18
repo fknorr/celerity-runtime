@@ -75,55 +75,63 @@ void copy_region_async(cudaStream_t stream, const void* const source_base, void*
 }
 
 
-struct cuda_event_deleter {
+struct cuda_native_event_deleter {
 	void operator()(const cudaEvent_t evt) const { CELERITY_CUDA_CHECK(cudaEventDestroy, evt); }
 };
 
-using unique_cuda_event = std::unique_ptr<std::remove_pointer_t<cudaEvent_t>, cuda_event_deleter>;
+using unique_cuda_native_event = std::unique_ptr<std::remove_pointer_t<cudaEvent_t>, cuda_native_event_deleter>;
 
-unique_cuda_event make_cuda_event() {
-	cudaEvent_t event;
-	CELERITY_CUDA_CHECK(cudaEventCreateWithFlags, &event, cudaEventDisableTiming);
-	return unique_cuda_event(event);
-}
-
-class event_impl final : public async_event_impl {
+class cuda_event final : public async_event_impl {
   public:
-	event_impl(unique_cuda_event evt) : m_evt(std::move(evt)) {}
+	cuda_event(unique_cuda_native_event after) : m_after(std::move(after)) {}
+	cuda_event(unique_cuda_native_event before, unique_cuda_native_event after) : m_before(std::move(before)), m_after(std::move(after)) {}
 
 	bool is_complete() override {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::query_event", ForestGreen, "cudaEventQuery")
-		switch(const auto result = cudaEventQuery(m_evt.get())) {
+		switch(const auto result = cudaEventQuery(m_after.get())) {
 		case cudaSuccess: return true;
 		case cudaErrorNotReady: return false;
 		default: utils::panic("cudaEventQuery: {}", cudaGetErrorString(result));
 		}
 	}
 
+	std::optional<std::chrono::nanoseconds> get_native_execution_time() override {
+		assert(is_complete());
+		if(m_before == nullptr) return std::nullopt;
+		float ms = NAN;
+		CELERITY_CUDA_CHECK(cudaEventElapsedTime, &ms, m_before.get(), m_after.get());
+		return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<float, std::milli>(ms));
+	}
+
   private:
-	unique_cuda_event m_evt;
+	unique_cuda_native_event m_before; // not null iff profiling is enabled
+	unique_cuda_native_event m_after;
 };
 
-static async_event record_event(const cudaStream_t stream) {
+static unique_cuda_native_event record_native_event(const cudaStream_t stream, bool enable_profiling) {
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::record_event", ForestGreen, "cudaEventRecord")
-	auto event = make_cuda_event();
-	CELERITY_CUDA_CHECK(cudaEventRecord, event.get(), stream);
-	return make_async_event<event_impl>(std::move(event));
+	cudaEvent_t event;
+	CELERITY_CUDA_CHECK(cudaEventCreateWithFlags, &event, enable_profiling ? cudaEventDefault : cudaEventDisableTiming);
+	CELERITY_CUDA_CHECK(cudaEventRecord, event, stream);
+	return unique_cuda_native_event(event);
 }
 
 async_event copy_region(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
-    const region<3>& copy_region, const size_t elem_size) {
+    const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //
+{
 #if CELERITY_WORKAROUND(HIPSYCL)
 	auto event = queue.hipSYCL_enqueue_custom_operation([=](sycl::interop_handle handle) {
 		const auto stream = handle.get_native_queue<sycl::backend::cuda>();
 		cuda_backend_detail::copy_region_async(stream, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
 	});
 	sycl_backend_detail::flush_queue(queue);
-	return make_async_event<sycl_event>(std::move(event), false /* enable_profiling */);
+	return make_async_event<sycl_event>(std::move(event), enable_profiling);
 #elif CELERITY_WORKAROUND(DPCPP)
 	const auto stream = sycl::get_native<sycl::backend::ext_oneapi_cuda>(queue);
+	auto before = enable_profiling ? record_native_event(stream, enable_profiling) : nullptr;
 	cuda_backend_detail::copy_region_async(stream, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
-	return record_event(stream);
+	auto after = record_native_event(stream, enable_profiling);
+	return make_async_event<cuda_event>(std::move(before), std::move(after));
 #else
 #error Unavailable for this SYCL implementation
 #endif
@@ -180,7 +188,8 @@ sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, c
 async_event sycl_cuda_backend::enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base,
     const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
 {
-	return cuda_backend_detail::copy_region(get_device_queue(device, device_lane), source_base, dest_base, source_box, dest_box, copy_region, elem_size);
+	return cuda_backend_detail::copy_region(
+	    get_device_queue(device, device_lane), source_base, dest_base, source_box, dest_box, copy_region, elem_size, is_profiling_enabled());
 }
 
 } // namespace celerity::detail

@@ -55,22 +55,23 @@ void handle_errors(const sycl::exception_list& errors) {
 }
 
 async_event copy_region_generic(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
-    const region<3>& copy_region, const size_t elem_size) //
+    const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //
 {
-	sycl::event event;
+	std::optional<sycl::event> first;
+	sycl::event last;
 	for(const auto& copy_box : copy_region.get_boxes()) {
 		assert(source_box.covers(copy_box));
 		assert(dest_box.covers(copy_box));
 		for_each_linear_slice_in_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
 		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(),
 		    [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
-			    // `queue` is in-order, capturing the last event is sufficient
-			    event = queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
+			    last = queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
 			        static_cast<const std::byte*>(source_base) + linear_offset_in_source * elem_size, linear_size * elem_size);
+			    if(enable_profiling && !first.has_value()) { first = last; }
 		    });
 	}
 	sycl_backend_detail::flush_queue(queue);
-	return make_async_event<sycl_event>(std::move(event), false /* enable_profiling - these are multiple operations instead of one */);
+	return make_async_event<sycl_event>(std::move(first), std::move(last));
 }
 
 #if CELERITY_DETAIL_ENABLE_DEBUG
@@ -83,13 +84,13 @@ namespace celerity::detail {
 
 bool sycl_event::is_complete() {
 	// CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::query_event", Orange2, "query SYCL event")
-	return m_event.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete;
+	return m_last.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete;
 }
 
 std::optional<std::chrono::nanoseconds> sycl_event::get_native_execution_time() {
-	if(!m_profiling_enabled) return std::nullopt; // avoid the cost of throwing + catching a sycl exception by when profiling is disabled
-	return std::chrono::nanoseconds(m_event.get_profiling_info<sycl::info::event_profiling::command_end>() //
-	                                - m_event.get_profiling_info<sycl::info::event_profiling::command_start>());
+	if(!m_first.has_value()) return std::nullopt; // avoid the cost of throwing + catching a sycl exception by when profiling is disabled
+	return std::chrono::nanoseconds(m_last.get_profiling_info<sycl::info::event_profiling::command_end>() //
+	                                - m_first->get_profiling_info<sycl::info::event_profiling::command_start>());
 }
 
 struct sycl_backend::impl {
@@ -108,12 +109,12 @@ struct sycl_backend::impl {
 		std::vector<thread_queue> queues; // TODO naming vs alloc_queue?
 
 		// pass devices to ensure the sycl_context receives the correct platform
-		explicit host_state(const std::vector<sycl::device>& all_devices)
+		explicit host_state(const std::vector<sycl::device>& all_devices, bool enable_profiling)
 		    // DPC++ requires exactly one CUDA device here, but for allocation the sycl_context mostly means "platform".
 		    // - TODO assert that all devices belong to the same platform + backend here
 		    // - TODO test Celerity on a (SimSYCL) system without GPUs
 		    : sycl_context(all_devices.at(0)), //
-		      alloc_queue("cy-alloc") {}
+		      alloc_queue("cy-alloc", enable_profiling) {}
 	};
 
 	system_info system;
@@ -122,7 +123,7 @@ struct sycl_backend::impl {
 	bool enable_profiling;
 
 	impl(const std::vector<sycl::device>& devices, const bool enable_profiling)
-	    : devices(devices.begin(), devices.end()), host(devices), enable_profiling(enable_profiling) //
+	    : devices(devices.begin(), devices.end()), host(devices, enable_profiling), enable_profiling(enable_profiling) //
 	{
 		// For now, we assume distinct memories per device. TODO some targets, (OpenMP emulated devices), might deviate from that.
 		system.devices.resize(devices.size());
@@ -230,11 +231,13 @@ sycl::queue& sycl_backend::get_device_queue(device_id device, size_t lane) { ret
 
 system_info& sycl_backend::get_system_info() { return m_impl->system; }
 
+bool sycl_backend::is_profiling_enabled() const { return m_impl->enable_profiling; }
+
 async_event sycl_generic_backend::enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
     const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
 {
 	auto& queue = get_device_queue(device, device_lane);
-	return sycl_backend_detail::copy_region_generic(queue, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
+	return sycl_backend_detail::copy_region_generic(queue, source_base, dest_base, source_box, dest_box, copy_region, elem_size, is_profiling_enabled());
 }
 
 

@@ -408,12 +408,12 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 
 	if(spdlog::should_log(spdlog::level::debug)) {
 		if(const auto native_time = async.event.get_native_execution_time(); native_time.has_value()) {
-			auto unit_time = static_cast<double>(native_time->count());
-			auto unit = "ns";
-			if(unit_time >= 1000) { unit_time /= 1000.0, unit = "µs"; }
-			if(unit_time >= 1000) { unit_time /= 1000.0, unit = "ms"; }
-			if(unit_time >= 1000) { unit_time /= 1000.0, unit = "s"; }
-			CELERITY_DEBUG("[executor] retired I{} after {:.2f} {} native execution time", async.instr->get_id(), unit_time, unit);
+			auto unit_time = std::chrono::duration_cast<std::chrono::duration<double>>(*native_time).count();
+			auto unit = "s";
+			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "ms"; }
+			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "µs"; }
+			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "ns"; }
+			CELERITY_DEBUG("[executor] retired I{} after {:.2f} {}", async.instr->get_id(), unit_time, unit);
 		} else {
 			CELERITY_DEBUG("[executor] retired I{}", async.instr->get_id());
 		}
