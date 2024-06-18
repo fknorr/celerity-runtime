@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include "../tracy.h"
+#include "log.h"
 #include "ranges.h"
 #include "system_info.h"
 #include "utils.h"
@@ -165,8 +166,8 @@ namespace celerity::detail {
 
 sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, const bool enable_profiling) : sycl_backend(devices, enable_profiling) {
 #if !CELERITY_DISABLE_CUDA_PEER_ACCESS
-	for(size_t i = 0; i < devices.size(); ++i) {
-		for(size_t j = i + 1; j < devices.size(); ++j) {
+	for(device_id i = 0; i < devices.size(); ++i) {
+		for(device_id j = i + 1; j < devices.size(); ++j) {
 			const int id_i = sycl::get_native<cuda_backend_detail::sycl_cuda_backend>(devices[i]);
 			const int id_j = sycl::get_native<cuda_backend_detail::sycl_cuda_backend>(devices[j]);
 
@@ -179,9 +180,13 @@ sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, c
 				const memory_id mid_j = first_device_memory_id + j;
 				get_system_info().memories[mid_i].copy_peers.set(mid_j);
 				get_system_info().memories[mid_j].copy_peers.set(mid_i);
+			} else {
+				CELERITY_DEBUG("CUDA does not provide peer access between D{} and D{}, device-to-device copies will be staged in host memory", i, j);
 			}
 		}
 	}
+#else
+	if(devices.size() > 1) { CELERITY_DEBUG("CUDA peer access is disabled in build configuration, device-to-device copies will be staged in host memory"); }
 #endif
 }
 

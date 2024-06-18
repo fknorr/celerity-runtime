@@ -79,7 +79,7 @@ class sycl_backend : public backend {
 
 class sycl_generic_backend final : public sycl_backend {
   public:
-	using sycl_backend::sycl_backend;
+	sycl_generic_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
 
 	async_event enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
 	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override;

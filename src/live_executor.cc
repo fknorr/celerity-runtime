@@ -406,16 +406,16 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	}
 #endif
 
-	if(spdlog::should_log(spdlog::level::debug)) {
+	if(spdlog::should_log(spdlog::level::trace)) {
 		if(const auto native_time = async.event.get_native_execution_time(); native_time.has_value()) {
 			auto unit_time = std::chrono::duration_cast<std::chrono::duration<double>>(*native_time).count();
 			auto unit = "s";
 			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "ms"; }
 			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "µs"; }
 			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "ns"; }
-			CELERITY_DEBUG("[executor] retired I{} after {:.2f} {}", async.instr->get_id(), unit_time, unit);
+			CELERITY_TRACE("[executor] retired I{} after {:.2f} {}", async.instr->get_id(), unit_time, unit);
 		} else {
-			CELERITY_DEBUG("[executor] retired I{}", async.instr->get_id());
+			CELERITY_TRACE("[executor] retired I{}", async.instr->get_id());
 		}
 	}
 
@@ -444,7 +444,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 		const auto ptr = async.event.get_result();
 		assert(ptr != nullptr && "backend allocation returned nullptr");
 		const auto aid = ainstr->get_allocation_id();
-		CELERITY_DEBUG("[executor] {} allocated as {}", aid, ptr);
+		CELERITY_TRACE("[executor] {} allocated as {}", aid, ptr);
 		assert(allocations.count(aid) == 0);
 		allocations.emplace(aid, ptr);
 	}
@@ -537,7 +537,7 @@ void executor_impl::issue(const clone_collective_group_instruction& ccginstr) {
 	assert(new_cgid != non_collective_group_id && new_cgid != root_collective_group_id);
 	assert(cloned_communicators.count(new_cgid) == 0);
 
-	CELERITY_DEBUG("[executor] I{}: clone collective group CG{} -> CG{}", ccginstr.get_id(), original_cgid, new_cgid);
+	CELERITY_TRACE("[executor] I{}: clone collective group CG{} -> CG{}", ccginstr.get_id(), original_cgid, new_cgid);
 
 	const auto original_communicator = original_cgid == root_collective_group_id ? root_communicator : cloned_communicators.at(original_cgid).get();
 	cloned_communicators.emplace(new_cgid, original_communicator->collective_clone());
@@ -545,7 +545,7 @@ void executor_impl::issue(const clone_collective_group_instruction& ccginstr) {
 
 
 void executor_impl::issue(const split_receive_instruction& srinstr) {
-	CELERITY_DEBUG("[executor] I{}: split receive {} {} into {} ({}), x{} bytes\n{} bytes total", srinstr.get_id(), srinstr.get_transfer_id(),
+	CELERITY_TRACE("[executor] I{}: split receive {} {} into {} ({}), x{} bytes\n{} bytes total", srinstr.get_id(), srinstr.get_transfer_id(),
 	    srinstr.get_requested_region(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(), srinstr.get_element_size(),
 	    srinstr.get_requested_region().get_area() * srinstr.get_element_size());
 
@@ -555,7 +555,7 @@ void executor_impl::issue(const split_receive_instruction& srinstr) {
 }
 
 void executor_impl::issue(const fill_identity_instruction& fiinstr) {
-	CELERITY_DEBUG(
+	CELERITY_TRACE(
 	    "[executor] I{}: fill identity {} x{} for R{}", fiinstr.get_id(), fiinstr.get_allocation_id(), fiinstr.get_num_values(), fiinstr.get_reduction_id());
 
 	const auto allocation = allocations.at(fiinstr.get_allocation_id());
@@ -564,7 +564,7 @@ void executor_impl::issue(const fill_identity_instruction& fiinstr) {
 }
 
 void executor_impl::issue(const reduce_instruction& rinstr) {
-	CELERITY_DEBUG("[executor] I{}: reduce {} x{} into {} as R{}", rinstr.get_id(), rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
+	CELERITY_TRACE("[executor] I{}: reduce {} x{} into {} as R{}", rinstr.get_id(), rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
 	    rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
 
 	const auto gather_allocation = allocations.at(rinstr.get_source_allocation_id());
@@ -574,20 +574,20 @@ void executor_impl::issue(const reduce_instruction& rinstr) {
 }
 
 void executor_impl::issue(const fence_instruction& finstr) { // NOLINT(readability-convert-member-functions-to-static)
-	CELERITY_DEBUG("[executor] I{}: fence", finstr.get_id());
+	CELERITY_TRACE("[executor] I{}: fence", finstr.get_id());
 
 	finstr.get_promise()->fulfill();
 }
 
 void executor_impl::issue(const destroy_host_object_instruction& dhoinstr) {
 	assert(host_object_instances.count(dhoinstr.get_host_object_id()) != 0);
-	CELERITY_DEBUG("[executor] I{}: destroy H{}", dhoinstr.get_id(), dhoinstr.get_host_object_id());
+	CELERITY_TRACE("[executor] I{}: destroy H{}", dhoinstr.get_id(), dhoinstr.get_host_object_id());
 
 	host_object_instances.erase(dhoinstr.get_host_object_id());
 }
 
 void executor_impl::issue(const horizon_instruction& hinstr) {
-	CELERITY_DEBUG("[executor] I{}: horizon", hinstr.get_id());
+	CELERITY_TRACE("[executor] I{}: horizon", hinstr.get_id());
 
 	if(delegate != nullptr) { delegate->horizon_reached(hinstr.get_horizon_task_id()); }
 	collect(hinstr.get_garbage());
@@ -596,14 +596,14 @@ void executor_impl::issue(const horizon_instruction& hinstr) {
 void executor_impl::issue(const epoch_instruction& einstr) {
 	switch(einstr.get_epoch_action()) {
 	case epoch_action::none: //
-		CELERITY_DEBUG("[executor] I{}: epoch", einstr.get_id());
+		CELERITY_TRACE("[executor] I{}: epoch", einstr.get_id());
 		break;
 	case epoch_action::barrier: //
-		CELERITY_DEBUG("[executor] I{}: epoch (barrier)", einstr.get_id());
+		CELERITY_TRACE("[executor] I{}: epoch (barrier)", einstr.get_id());
 		root_communicator->collective_barrier();
 		break;
 	case epoch_action::shutdown: //
-		CELERITY_DEBUG("[executor] I{}: epoch (shutdown)", einstr.get_id());
+		CELERITY_TRACE("[executor] I{}: epoch (shutdown)", einstr.get_id());
 		expecting_more_submissions = false;
 		break;
 	}
@@ -619,7 +619,7 @@ void executor_impl::issue_async(const alloc_instruction& ainstr, const out_of_or
 	assert(!assignment.lane.has_value());
 	assert(assignment.device.has_value() == (ainstr.get_allocation_id().get_memory_id() > host_memory_id));
 
-	CELERITY_DEBUG(
+	CELERITY_TRACE(
 	    "[executor] I{}: alloc {}, {} % {} bytes", ainstr.get_id(), ainstr.get_allocation_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 
 	if(assignment.device.has_value()) {
@@ -635,7 +635,7 @@ void executor_impl::issue_async(const free_instruction& finstr, const out_of_ord
 	const auto ptr = it->second;
 	allocations.erase(it);
 
-	CELERITY_DEBUG("[executor] I{}: free {}", finstr.get_id(), finstr.get_allocation_id());
+	CELERITY_TRACE("[executor] I{}: free {}", finstr.get_id(), finstr.get_allocation_id());
 
 	if(assignment.device.has_value()) {
 		async.event = backend->enqueue_device_free(*assignment.device, ptr);
@@ -649,7 +649,7 @@ void executor_impl::issue_async(const copy_instruction& cinstr, const out_of_ord
 	assert((assignment.target == out_of_order_engine::target::device_queue) == assignment.device.has_value());
 	assert(assignment.lane.has_value());
 
-	CELERITY_DEBUG("[executor] I{}: copy {} ({}) -> {} ({}), {} x{} bytes", cinstr.get_id(), cinstr.get_source_allocation(), cinstr.get_source_box(),
+	CELERITY_TRACE("[executor] I{}: copy {} ({}) -> {} ({}), {} x{} bytes", cinstr.get_id(), cinstr.get_source_allocation(), cinstr.get_source_box(),
 	    cinstr.get_dest_allocation(), cinstr.get_dest_box(), cinstr.get_copy_region(), cinstr.get_element_size());
 
 	const auto source_base = static_cast<const std::byte*>(allocations.at(cinstr.get_source_allocation().id)) + cinstr.get_source_allocation().offset_bytes;
@@ -680,7 +680,7 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	assert(assignment.device == dkinstr.get_device_id());
 	assert(assignment.lane.has_value());
 
-	CELERITY_DEBUG("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
+	CELERITY_TRACE("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
 	    print_accesses(dkinstr.get_access_allocations()));
 
 	prepare_accessor_hydration(dkinstr.get_id(), target::device,
@@ -702,7 +702,7 @@ void executor_impl::issue_async(const host_task_instruction& htinstr, const out_
 	assert(!assignment.device.has_value());
 	assert(assignment.lane.has_value());
 
-	CELERITY_DEBUG("[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), print_accesses(htinstr.get_access_allocations()));
+	CELERITY_TRACE("[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), print_accesses(htinstr.get_access_allocations()));
 
 	const auto collective_comm =
 	    htinstr.get_collective_group_id() != non_collective_group_id ? cloned_communicators.at(htinstr.get_collective_group_id()).get() : nullptr;
@@ -721,7 +721,7 @@ void executor_impl::issue_async(
     const send_instruction& sinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
-	CELERITY_DEBUG("[executor] I{}: send {}+{}, {}x{} bytes to N{} (MSG{})", sinstr.get_id(), sinstr.get_source_allocation_id(),
+	CELERITY_TRACE("[executor] I{}: send {}+{}, {}x{} bytes to N{} (MSG{})", sinstr.get_id(), sinstr.get_source_allocation_id(),
 	    sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(), sinstr.get_message_id());
 
 	const auto allocation_base = allocations.at(sinstr.get_source_allocation_id());
@@ -737,7 +737,7 @@ void executor_impl::issue_async(
     const receive_instruction& rinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
-	CELERITY_DEBUG("[executor] I{}: receive {} {} into {} ({}), x{} bytes\n{} bytes total", rinstr.get_id(), rinstr.get_transfer_id(),
+	CELERITY_TRACE("[executor] I{}: receive {} {} into {} ({}), x{} bytes\n{} bytes total", rinstr.get_id(), rinstr.get_transfer_id(),
 	    rinstr.get_requested_region(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(), rinstr.get_element_size(),
 	    rinstr.get_requested_region().get_area() * rinstr.get_element_size());
 
@@ -750,7 +750,7 @@ void executor_impl::issue_async(
     const await_receive_instruction& arinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
-	CELERITY_DEBUG("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
+	CELERITY_TRACE("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
 
 	async.event = recv_arbiter.await_split_receive_subregion(arinstr.get_transfer_id(), arinstr.get_received_region());
 }
@@ -759,7 +759,7 @@ void executor_impl::issue_async(
     const gather_receive_instruction& grinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
-	CELERITY_DEBUG("[executor] I{}: gather receive {} into {}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
+	CELERITY_TRACE("[executor] I{}: gather receive {} into {}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
 	    grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
 
 	const auto allocation = allocations.at(grinstr.get_dest_allocation_id());
