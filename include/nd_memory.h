@@ -8,7 +8,7 @@
 namespace celerity::detail {
 
 template <typename F>
-void for_each_linear_slice_in_nd_copy(
+void for_each_contiguous_chunk_in_nd_copy(
     const range<3>& source_range, const range<3>& dest_range, const id<3>& offset_in_source, const id<3>& offset_in_dest, const range<3>& copy_range, F&& f) //
 {
 	assert(all_true(offset_in_source + copy_range <= source_range));
@@ -60,16 +60,18 @@ void for_each_linear_slice_in_nd_copy(
 	}
 }
 
+// TODO consider using only boxes as parameters (like copy_region_host below)
 inline void nd_copy_host(const void* const source_base, void* const dest_base, const range<3>& source_range, const range<3>& dest_range,
     const id<3>& offset_in_source, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size) //
 {
-	for_each_linear_slice_in_nd_copy(source_range, dest_range, offset_in_source, offset_in_dest, copy_range,
-	    [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
-		    memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
-		        static_cast<const std::byte*>(source_base) + linear_offset_in_source * elem_size, linear_size * elem_size);
+	for_each_contiguous_chunk_in_nd_copy(source_range, dest_range, offset_in_source, offset_in_dest, copy_range,
+	    [&](const size_t chunk_offset_in_source, const size_t chunk_offset_in_dest, const size_t chunk_size) {
+		    memcpy(static_cast<std::byte*>(dest_base) + chunk_offset_in_dest * elem_size,
+		        static_cast<const std::byte*>(source_base) + chunk_offset_in_source * elem_size, chunk_size * elem_size);
 	    });
 }
 
+// TODO only used in tests - remove?
 inline void copy_region_host(const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
     const region<3>& copy_region, const size_t elem_size) //
 {

@@ -55,6 +55,7 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-f
 #endif
 }
 
+// TODO this is very slow. See if we can improve perf, e.g. by re-using backend instance.
 TEMPLATE_TEST_CASE_METHOD_SIG(test_utils::backend_fixture_dims, "backend::enqueue_copy works correctly on all source- and destination layouts ", "[backend]",
     ((int Dims), Dims), 0, 1, 2, 3) //
 {
