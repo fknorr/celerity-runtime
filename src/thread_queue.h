@@ -90,7 +90,7 @@ class thread_queue {
 		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)] { return std::invoke(fn); }) {}
 	};
 
-	// TODO why pimpl?
+	// pimpl'd to keep thread_queue movable
 	struct impl {
 		const bool enable_profiling;
 		double_buffered_queue<job> queue;
@@ -140,7 +140,5 @@ class thread_queue {
 
 	std::unique_ptr<impl> m_impl;
 };
-
-static_assert(std::is_constructible_v<thread_queue, std::string>);
 
 } // namespace celerity::detail
