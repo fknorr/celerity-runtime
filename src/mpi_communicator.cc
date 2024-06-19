@@ -199,7 +199,7 @@ std::vector<inbound_pilot> mpi_communicator::poll_inbound_pilots() {
 }
 
 async_event mpi_communicator::send_payload(const node_id to, const message_id msgid, const void* const base, const stride& stride) {
-	CELERITY_TRACE("[mpi] payload -> N{} (MSG{}) from {} ({}) {}x{}", to, msgid, base, stride.allocation_range, stride.transfer, stride.element_size);
+	CELERITY_TRACE("[mpi] payload -> N{} (MSG{}) from {} ({}) {}x{} bytes", to, msgid, base, stride.allocation_range, stride.transfer, stride.element_size);
 
 	assert(to < get_num_nodes());
 	assert(to != get_local_node_id());
@@ -212,7 +212,7 @@ async_event mpi_communicator::send_payload(const node_id to, const message_id ms
 }
 
 async_event mpi_communicator::receive_payload(const node_id from, const message_id msgid, void* const base, const stride& stride) {
-	CELERITY_TRACE("[mpi] payload <- N{} (MSG{}) into {} ({}) {}x{}", from, msgid, base, stride.allocation_range, stride.transfer, stride.element_size);
+	CELERITY_TRACE("[mpi] payload <- N{} (MSG{}) into {} ({}) {}x{} bytes", from, msgid, base, stride.allocation_range, stride.transfer, stride.element_size);
 
 	assert(from < get_num_nodes());
 	assert(from != get_local_node_id());

@@ -546,9 +546,8 @@ void executor_impl::issue(const clone_collective_group_instruction& ccginstr) {
 
 
 void executor_impl::issue(const split_receive_instruction& srinstr) {
-	CELERITY_TRACE("[executor] I{}: split receive {} {} into {} ({}), x{} bytes\n{} bytes total", srinstr.get_id(), srinstr.get_transfer_id(),
-	    srinstr.get_requested_region(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(), srinstr.get_element_size(),
-	    srinstr.get_requested_region().get_area() * srinstr.get_element_size());
+	CELERITY_TRACE("[executor] I{}: split receive {} {}x{} bytes into {} ({}),", srinstr.get_id(), srinstr.get_transfer_id(), srinstr.get_requested_region(),
+	    srinstr.get_element_size(), srinstr.get_dest_allocation_id(), srinstr.get_allocated_box());
 
 	const auto allocation = allocations.at(srinstr.get_dest_allocation_id());
 	recv_arbiter.begin_split_receive(
@@ -556,8 +555,8 @@ void executor_impl::issue(const split_receive_instruction& srinstr) {
 }
 
 void executor_impl::issue(const fill_identity_instruction& fiinstr) {
-	CELERITY_TRACE(
-	    "[executor] I{}: fill identity {} x{} for R{}", fiinstr.get_id(), fiinstr.get_allocation_id(), fiinstr.get_num_values(), fiinstr.get_reduction_id());
+	CELERITY_TRACE("[executor] I{}: fill identity {} x{} values for R{}", fiinstr.get_id(), fiinstr.get_allocation_id(), fiinstr.get_num_values(),
+	    fiinstr.get_reduction_id());
 
 	const auto allocation = allocations.at(fiinstr.get_allocation_id());
 	const auto& reduction = *reducers.at(fiinstr.get_reduction_id());
@@ -565,7 +564,7 @@ void executor_impl::issue(const fill_identity_instruction& fiinstr) {
 }
 
 void executor_impl::issue(const reduce_instruction& rinstr) {
-	CELERITY_TRACE("[executor] I{}: reduce {} x{} into {} as R{}", rinstr.get_id(), rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
+	CELERITY_TRACE("[executor] I{}: reduce {} x{} values into {} for R{}", rinstr.get_id(), rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
 	    rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
 
 	const auto gather_allocation = allocations.at(rinstr.get_source_allocation_id());
@@ -650,7 +649,7 @@ void executor_impl::issue_async(const copy_instruction& cinstr, const out_of_ord
 	assert((assignment.target == out_of_order_engine::target::device_queue) == assignment.device.has_value());
 	assert(assignment.lane.has_value());
 
-	CELERITY_TRACE("[executor] I{}: copy {} ({}) -> {} ({}), {} x{} bytes", cinstr.get_id(), cinstr.get_source_allocation(), cinstr.get_source_box(),
+	CELERITY_TRACE("[executor] I{}: copy {} ({}) -> {} ({}), {}x{} bytes", cinstr.get_id(), cinstr.get_source_allocation(), cinstr.get_source_box(),
 	    cinstr.get_dest_allocation(), cinstr.get_dest_box(), cinstr.get_copy_region(), cinstr.get_element_size());
 
 	const auto source_base = static_cast<const std::byte*>(allocations.at(cinstr.get_source_allocation().id)) + cinstr.get_source_allocation().offset_bytes;
@@ -738,9 +737,8 @@ void executor_impl::issue_async(
     const receive_instruction& rinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
-	CELERITY_TRACE("[executor] I{}: receive {} {} into {} ({}), x{} bytes\n{} bytes total", rinstr.get_id(), rinstr.get_transfer_id(),
-	    rinstr.get_requested_region(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(), rinstr.get_element_size(),
-	    rinstr.get_requested_region().get_area() * rinstr.get_element_size());
+	CELERITY_TRACE("[executor] I{}: receive {} {}x{} bytes into {} ({})", rinstr.get_id(), rinstr.get_transfer_id(), rinstr.get_requested_region(),
+	    rinstr.get_element_size(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box());
 
 	const auto allocation = allocations.at(rinstr.get_dest_allocation_id());
 	async.event =
@@ -760,8 +758,8 @@ void executor_impl::issue_async(
     const gather_receive_instruction& grinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
-	CELERITY_TRACE("[executor] I{}: gather receive {} into {}, {} bytes per node", grinstr.get_id(), grinstr.get_transfer_id(),
-	    grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
+	CELERITY_TRACE("[executor] I{}: gather receive {} into {}, {} bytes / node", grinstr.get_id(), grinstr.get_transfer_id(), grinstr.get_dest_allocation_id(),
+	    grinstr.get_node_chunk_size());
 
 	const auto allocation = allocations.at(grinstr.get_dest_allocation_id());
 	async.event = recv_arbiter.gather_receive(grinstr.get_transfer_id(), allocation, grinstr.get_node_chunk_size());
