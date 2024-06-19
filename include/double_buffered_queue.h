@@ -43,7 +43,7 @@ class double_buffered_queue {
 		return m_read.queue;
 	}
 
-	/// After this function returns, the result of `pop_all` is non-empty as long as there is only exists single reader thread.
+	/// After this function returns, the result of `pop_all` is non-empty as long as there is only exists a single reader thread.
 	void wait_while_empty() {
 		if(!m_write.queue_nonempty.load(std::memory_order_relaxed) /* opportunistic */) {
 			std::unique_lock lock(m_write.mutex);

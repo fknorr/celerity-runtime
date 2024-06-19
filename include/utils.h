@@ -8,7 +8,6 @@
 #include <tuple>
 #include <type_traits>
 #include <typeinfo>
-#include <variant>
 
 #include <fmt/format.h>
 
@@ -181,26 +180,6 @@ template <typename... FmtParams, std::enable_if_t<sizeof...(FmtParams) >= 1, int
 void report_error(const error_policy policy, const fmt::format_string<FmtParams...> fmt_string, FmtParams&&... fmt_args) {
 	// TODO also receive a std::source_location with C++20.
 	if(policy != error_policy::ignore) { report_error(policy, fmt::format(fmt_string, std::forward<FmtParams>(fmt_args)...)); }
-}
-
-template <typename T>
-struct alternative {
-	alternative() = default;
-	alternative(const T& value) : value(value) {}
-	alternative(T&& value) : value(std::move(value)) {}
-
-	T value;
-};
-
-template <typename... Alts, typename T>
-bool operator==(const std::variant<Alts...>& lhs, const alternative<T>& rhs) {
-	if(const auto* lhs_alt = std::get_if<T>(&lhs)) { return *lhs_alt == rhs.value; }
-	return false;
-}
-
-template <typename... Alts, typename T>
-bool operator!=(const std::variant<Alts...>& lhs, const alternative<T>& rhs) {
-	return !(lhs == rhs);
 }
 
 template <typename Container>

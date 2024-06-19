@@ -195,8 +195,7 @@ void engine_impl::try_mark_for_assignment(incomplete_instruction_state& node) {
 		if(dep.target != node.target) return; // incompatible targets
 
 		assert(dep_assigned.device.has_value() != dep.eligible_devices.empty());
-		if(dep_assigned.device.has_value()
-		    && std::find(node.eligible_devices.begin(), node.eligible_devices.end(), *dep_assigned.device) == node.eligible_devices.end()) {
+		if(dep_assigned.device.has_value() && !utils::contains(node.eligible_devices, *dep_assigned.device)) {
 			return; // dependency's device is not eligible for this instruction
 		}
 

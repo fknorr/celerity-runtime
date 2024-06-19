@@ -281,10 +281,8 @@ int sycl_backend_enumerator::get_priority(backend_type type) const {
 namespace celerity::detail {
 
 std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices, const bool enable_profiling) {
-	assert(std::all_of(devices.begin(), devices.end(), [=](const sycl::device& d) {
-		const auto available = sycl_backend_enumerator{}.compatible_backends(d);
-		return std::find(available.begin(), available.end(), type) != available.end();
-	}));
+	assert(std::all_of(
+	    devices.begin(), devices.end(), [=](const sycl::device& d) { return utils::contains(sycl_backend_enumerator{}.compatible_backends(d), type); }));
 
 	switch(type) {
 	case sycl_backend_type::generic: //

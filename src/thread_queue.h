@@ -92,8 +92,8 @@ class thread_queue {
 
 	// pimpl'd to keep thread_queue movable
 	struct impl {
-		const bool enable_profiling;
 		double_buffered_queue<job> queue;
+		const bool enable_profiling;
 		std::thread thread;
 
 		explicit impl(std::string name, const bool enable_profiling) : enable_profiling(enable_profiling), thread(&impl::thread_main, this, std::move(name)) {}
