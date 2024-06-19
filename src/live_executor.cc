@@ -511,6 +511,7 @@ void executor_impl::check_progress() {
 	if(made_progress) {
 		last_progress_timestamp = std::chrono::steady_clock::now();
 		progress_warning_emitted = false;
+		made_progress = false;
 	} else if(last_progress_timestamp.has_value()) {
 		const auto assume_stuck_after = std::chrono::seconds(3);
 		const auto elapsed_since_last_progress = std::chrono::steady_clock::now() - *last_progress_timestamp;
