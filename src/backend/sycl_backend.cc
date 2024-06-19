@@ -70,7 +70,7 @@ async_event copy_region_generic(sycl::queue& queue, const void* const source_bas
 }
 
 #if CELERITY_DETAIL_ENABLE_DEBUG
-inline constexpr std::byte uninitialized_memory_pattern = std::byte(0xff); // floats and doubles filled with this pattern show up as "-nan"
+inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doubles filled with this pattern show up as "-nan"
 #endif
 
 } // namespace celerity::detail::sycl_backend_detail
