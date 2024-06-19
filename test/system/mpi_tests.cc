@@ -103,8 +103,7 @@ TEST_CASE_METHOD(test_utils::mpi_fixture, "mpi_communicator sends and receives p
 
 	// busy-wait for all send / receive events to complete
 	while(!events.empty()) {
-		const auto end_incomplete = std::remove_if(events.begin(), events.end(), std::mem_fn(&async_event::is_complete));
-		events.erase(end_incomplete, events.end());
+		utils::erase_if(events, std::mem_fn(&async_event::is_complete));
 	}
 
 	auto received = receive_buffers.begin();

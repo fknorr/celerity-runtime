@@ -1,4 +1,5 @@
 #include "grid.h"
+#include "utils.h"
 
 namespace celerity::detail::grid_detail {
 
@@ -274,7 +275,7 @@ decltype(auto) dispatch_effective_dims(int effective_dims, F&& f) {
 // to an equality comparision of the covered point sets.
 template <int Dims>
 void normalize(box_vector<Dims>& boxes) {
-	boxes.erase(std::remove_if(boxes.begin(), boxes.end(), std::mem_fn(&box<Dims>::empty)), boxes.end());
+	utils::erase_if(boxes, std::mem_fn(&box<Dims>::empty));
 	if(boxes.size() <= 1) return;
 
 	const auto effective_dims = get_effective_dims(boxes.begin(), boxes.end());

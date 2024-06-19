@@ -154,12 +154,11 @@ void mpi_communicator::send_outbound_pilot(const outbound_pilot& pilot) {
 	    mpi_detail::pilot_exchange_tag, m_mpi_comm, &newly_in_flight.request);
 
 	// Collect finished sends (TODO consider rate-limiting this to avoid quadratic behavior)
-	constexpr auto pilot_send_finished = [](in_flight_pilot& already_in_flight) {
+	utils::erase_if(m_outbound_pilots, [](in_flight_pilot& already_in_flight) {
 		int flag = -1;
 		MPI_Test(&already_in_flight.request, &flag, MPI_STATUS_IGNORE);
 		return already_in_flight.request == MPI_REQUEST_NULL;
-	};
-	m_outbound_pilots.erase(std::remove_if(m_outbound_pilots.begin(), m_outbound_pilots.end(), pilot_send_finished), m_outbound_pilots.end());
+	});
 
 	// Keep allocation until Isend has completed
 	m_outbound_pilots.push_back(std::move(newly_in_flight));

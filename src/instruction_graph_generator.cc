@@ -181,7 +181,7 @@ void symmetrically_split_overlapping_regions(std::vector<region<Dims>>& regions)
 		}
 	}
 	// if any of the intersections above are actually subsets, we will end up with empty regions
-	regions.erase(std::remove_if(regions.begin(), regions.end(), std::mem_fn(&region<Dims>::empty)), regions.end());
+	utils::erase_if(regions, std::mem_fn(&region<Dims>::empty));
 }
 
 // explicit instantiations for tests
@@ -931,9 +931,9 @@ void generator_impl::allocate_contiguously(batch& current_batch, const buffer_id
 
 	// Derive the set of new boxes to allocate by removing all existing boxes from the set of contiguous boxes.
 	auto&& new_alloc_boxes = std::move(contiguous_boxes_after_realloc);
-	const auto last_new_allocation = std::remove_if(new_alloc_boxes.begin(), new_alloc_boxes.end(),
-	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
-	new_alloc_boxes.erase(last_new_allocation, new_alloc_boxes.end());
+	utils::erase_if(new_alloc_boxes, [&](auto& box) {
+		return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](const buffer_allocation_state& alloc) { return alloc.box == box; });
+	});
 	assert(!new_alloc_boxes.empty()); // otherwise we would have returned early
 
 	// Opportunistically merge connected boxes to keep the number of allocations and the tracking overhead low. This will not introduce artificial

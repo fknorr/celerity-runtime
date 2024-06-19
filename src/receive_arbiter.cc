@@ -51,30 +51,27 @@ class gather_receive_event final : public async_event_impl {
 };
 
 bool region_request::do_complete() {
-	const auto complete_fragment = [&](const incoming_region_fragment& fragment) {
+	utils::erase_if(incoming_fragments, [&](const incoming_region_fragment& fragment) {
 		if(!fragment.communication.is_complete()) return false;
 		incomplete_region = region_difference(incomplete_region, fragment.box);
 		return true;
-	};
-	incoming_fragments.erase(std::remove_if(incoming_fragments.begin(), incoming_fragments.end(), complete_fragment), incoming_fragments.end());
+	});
 	assert(!incomplete_region.empty() || incoming_fragments.empty());
 	return incomplete_region.empty();
 }
 
 bool multi_region_transfer::do_complete() {
-	const auto complete_request = [](stable_region_request& rr) { return rr->do_complete(); };
-	active_requests.erase(std::remove_if(active_requests.begin(), active_requests.end(), complete_request), active_requests.end());
+	utils::erase_if(active_requests, [](stable_region_request& rr) { return rr->do_complete(); });
 	return active_requests.empty() && unassigned_pilots.empty();
 }
 
 bool gather_request::do_complete() {
-	const auto complete_chunk = [&](const incoming_gather_chunk& chunk) {
+	utils::erase_if(incoming_chunks, [&](const incoming_gather_chunk& chunk) {
 		if(!chunk.communication.is_complete()) return false;
 		assert(num_incomplete_chunks > 0);
 		num_incomplete_chunks -= 1;
 		return true;
-	};
-	incoming_chunks.erase(std::remove_if(incoming_chunks.begin(), incoming_chunks.end(), complete_chunk), incoming_chunks.end());
+	});
 	return num_incomplete_chunks == 0;
 }
 
@@ -118,7 +115,7 @@ receive_arbiter_detail::stable_region_request& receive_arbiter::initiate_region_
 	auto& rr = mrt->active_requests.emplace_back(std::make_shared<region_request>(request, allocation, allocated_box));
 
 	// If the new region_request matches any of the still-unassigned pilots associated with `mrt`, immediately initiate the appropriate payload-receives
-	const auto assign_pilot = [&](const inbound_pilot& pilot) {
+	utils::erase_if(mrt->unassigned_pilots, [&](const inbound_pilot& pilot) {
 		assert((region_intersection(rr->incomplete_region, pilot.message.box) != pilot.message.box)
 		       == region_intersection(rr->incomplete_region, pilot.message.box).empty());
 		if(region_intersection(rr->incomplete_region, pilot.message.box) == pilot.message.box) {
@@ -126,8 +123,7 @@ receive_arbiter_detail::stable_region_request& receive_arbiter::initiate_region_
 			return true;
 		}
 		return false;
-	};
-	mrt->unassigned_pilots.erase(std::remove_if(mrt->unassigned_pilots.begin(), mrt->unassigned_pilots.end(), assign_pilot), mrt->unassigned_pilots.end());
+	});
 
 	return rr;
 }
