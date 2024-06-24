@@ -19,6 +19,8 @@ The most recent version of Celerity aims to support the following environments:
 
 ComputeCpp is no longer supported since its discontinuation.
 
+**TODO** Document which MPI versions we test, and that OpenMPI < 4.0.2 is broken due to [a deadlock with `mpi_assert_allow_overtaking`](https://docs.open-mpi.org/en/main/release-notes/changelog/v4.0.x.html#open-mpi-version-4-0-2).
+
 ## Continuously Tested Configurations
 
 We automatically verify Celerity's build process and test suites against a select number of system configurations.
