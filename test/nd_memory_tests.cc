@@ -9,7 +9,7 @@ using namespace celerity;
 using namespace celerity::detail;
 
 
-TEMPLATE_TEST_CASE_SIG("nd_copy_host works correctly in all source- and destination layouts ", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
+TEMPLATE_TEST_CASE_SIG("nd_copy_host works correctly in all source- and destination layouts", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
 	const auto copy_range = test_utils::truncate_range<Dims>({5, 6, 7});
 
 	int source_shift[Dims];
@@ -46,4 +46,36 @@ TEMPLATE_TEST_CASE_SIG("nd_copy_host works correctly in all source- and destinat
 	    range_cast<3>(copy_range), sizeof(int));
 
 	CHECK(dest == expected_dest);
+}
+
+TEST_CASE("layout_strided_nd_copy selects the minimum number of strides", "[memory]") {
+	// all contiguous
+	CHECK(layout_strided_nd_copy({1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}, {1, 1, 1}) == strided_nd_copy_layout{0, 0, 1, {}});
+	CHECK(layout_strided_nd_copy({1, 3, 1}, {1, 1, 1}, {0, 2, 0}, {0, 0, 0}, {1, 1, 1}) == strided_nd_copy_layout{2, 0, 1, {}});
+	CHECK(layout_strided_nd_copy({1, 1, 1}, {1, 3, 1}, {0, 0, 0}, {0, 2, 0}, {1, 1, 1}) == strided_nd_copy_layout{0, 2, 1, {}});
+	CHECK(layout_strided_nd_copy({5, 3, 2}, {1, 1, 2}, {0, 0, 0}, {0, 0, 0}, {1, 1, 2}) == strided_nd_copy_layout{0, 0, 2, {}});
+	CHECK(layout_strided_nd_copy({5, 3, 2}, {1, 1, 2}, {2, 1, 0}, {0, 0, 0}, {1, 1, 2}) == strided_nd_copy_layout{14, 0, 2, {}});
+	CHECK(layout_strided_nd_copy({1, 1, 2}, {5, 3, 2}, {0, 0, 0}, {2, 1, 0}, {1, 1, 2}) == strided_nd_copy_layout{0, 14, 2, {}});
+	CHECK(layout_strided_nd_copy({5, 1, 3}, {2, 1, 3}, {0, 0, 0}, {0, 0, 0}, {2, 1, 3}) == strided_nd_copy_layout{0, 0, 6, {}});
+	CHECK(layout_strided_nd_copy({5, 2, 3}, {7, 2, 3}, {2, 0, 0}, {1, 0, 0}, {2, 2, 3}) == strided_nd_copy_layout{12, 6, 12, {}});
+	CHECK(layout_strided_nd_copy({5, 2, 3}, {4, 2, 3}, {0, 0, 0}, {0, 0, 0}, {2, 2, 3}) == strided_nd_copy_layout{0, 0, 12, {}});
+
+	// one stride
+	CHECK(layout_strided_nd_copy({1, 2, 3}, {1, 2, 1}, {0, 0, 0}, {0, 0, 0}, {1, 2, 1}) == strided_nd_copy_layout{0, 0, 1, {{3, 1, 2}}});
+	CHECK(layout_strided_nd_copy({1, 2, 3}, {1, 2, 1}, {0, 0, 1}, {0, 0, 0}, {1, 2, 1}) == strided_nd_copy_layout{1, 0, 1, {{3, 1, 2}}});
+	CHECK(layout_strided_nd_copy({5, 2, 3}, {4, 2, 1}, {0, 0, 0}, {0, 0, 0}, {2, 1, 1}) == strided_nd_copy_layout{0, 0, 1, {{6, 2, 2}}});
+	CHECK(layout_strided_nd_copy({4, 3, 2}, {4, 3, 2}, {0, 0, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 0, 4, {{6, 6, 2}}});
+	CHECK(layout_strided_nd_copy({4, 5, 2}, {4, 5, 2}, {0, 0, 0}, {0, 0, 0}, {2, 4, 2}) == strided_nd_copy_layout{0, 0, 8, {{10, 10, 2}}});
+	CHECK(layout_strided_nd_copy({4, 5, 6}, {4, 5, 6}, {0, 0, 0}, {0, 0, 0}, {2, 4, 6}) == strided_nd_copy_layout{0, 0, 24, {{30, 30, 2}}});
+	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {1, 3, 1}) == strided_nd_copy_layout{0, 0, 1, {{3, 3, 3}}});
+	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {1, 2, 2}) == strided_nd_copy_layout{0, 0, 2, {{3, 3, 2}}});
+	CHECK(layout_strided_nd_copy({4, 1, 4}, {4, 1, 4}, {0, 0, 0}, {0, 0, 0}, {2, 1, 2}) == strided_nd_copy_layout{0, 0, 2, {{4, 4, 2}}});
+
+	// two strides
+	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 0, 2, {{3, 3, 2}, {9, 9, 2}}});
+	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {1, 0, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{9, 0, 2, {{3, 3, 2}, {9, 9, 2}}});
+	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {1, 1, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{12, 0, 2, {{3, 3, 2}, {9, 9, 2}}});
+	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {1, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 9, 2, {{3, 3, 2}, {9, 9, 2}}});
+	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {1, 1, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 12, 2, {{3, 3, 2}, {9, 9, 2}}});
+	CHECK(layout_strided_nd_copy({2, 3, 4}, {3, 6, 5}, {0, 0, 0}, {0, 0, 0}, {2, 3, 4}) == strided_nd_copy_layout{0, 0, 4, {{4, 5, 3}, {12, 30, 2}}});
 }

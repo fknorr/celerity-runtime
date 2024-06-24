@@ -60,6 +60,60 @@ void for_each_contiguous_chunk_in_nd_copy(
 	}
 }
 
+struct strided_nd_copy_layout {
+	struct stride {
+		size_t source_range = 0;
+		size_t dest_range = 0;
+		size_t copy_range = 0;
+
+		friend bool operator==(const stride& lhs, const stride& rhs) {
+			return lhs.source_range == rhs.source_range && lhs.dest_range == rhs.dest_range && lhs.copy_range == rhs.copy_range;
+		}
+		friend bool operator!=(const stride& lhs, const stride& rhs) { return !(lhs == rhs); }
+	};
+
+	size_t linear_offset_in_source = 0;
+	size_t linear_offset_in_dest = 0;
+	size_t contiguous_range = 0;
+	gch::small_vector<stride, 2> strides;
+
+	friend bool operator==(const strided_nd_copy_layout& lhs, const strided_nd_copy_layout& rhs) {
+		return lhs.linear_offset_in_source == rhs.linear_offset_in_source && lhs.linear_offset_in_dest == rhs.linear_offset_in_dest
+		       && lhs.contiguous_range == rhs.contiguous_range && lhs.strides == rhs.strides;
+	}
+	friend bool operator!=(const strided_nd_copy_layout& lhs, const strided_nd_copy_layout& rhs) { return !(lhs == rhs); }
+};
+
+inline strided_nd_copy_layout layout_strided_nd_copy(
+    const range<3>& source_range, const range<3>& dest_range, const id<3>& offset_in_source, const id<3>& offset_in_dest, const range<3>& copy_range) {
+	assert(all_true(offset_in_source + copy_range <= source_range));
+	assert(all_true(offset_in_dest + copy_range <= dest_range));
+
+	if(copy_range.size() == 0) return {};
+
+	strided_nd_copy_layout layout;
+	layout.linear_offset_in_source = get_linear_index(source_range, offset_in_source);
+	layout.linear_offset_in_dest = get_linear_index(dest_range, offset_in_dest);
+	layout.contiguous_range = 1;
+	size_t* current_range = &layout.contiguous_range;
+	size_t next_source_step = 1;
+	size_t next_dest_step = 1;
+	bool contiguous = true;
+	for(int d = 2; d >= 0; --d) {
+		if(!contiguous && copy_range[d] != 1) {
+			layout.strides.push_back({next_source_step, next_dest_step, 1});
+			current_range = &layout.strides.back().copy_range;
+			contiguous = true;
+		}
+		next_source_step *= source_range[d];
+		next_dest_step *= dest_range[d];
+		*current_range *= copy_range[d];
+		if(source_range[d] != copy_range[d] || dest_range[d] != copy_range[d]) { contiguous = false; }
+	}
+
+	return layout;
+}
+
 // TODO consider using only boxes as parameters (like copy_region_host below)
 inline void nd_copy_host(const void* const source_base, void* const dest_base, const range<3>& source_range, const range<3>& dest_range,
     const id<3>& offset_in_source, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size) //
