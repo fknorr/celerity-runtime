@@ -73,7 +73,7 @@ size_t parse_validate_dry_run_nodes(const std::string_view str) {
 
 std::vector<size_t> parse_validate_devices(const std::string_view str, const celerity::detail::host_config host_cfg) {
 	throw env::validation_error{
-	    "Support for CELERITY_DEVICES has been removed with Celerity 0.5.0. Please use SYCL or vendor specific means to limit device visibility."};
+	    "Support for CELERITY_DEVICES has been removed with Celerity 0.6.0. Please use SYCL or vendor specific means to limit device visibility."};
 	return {};
 }
 

@@ -40,7 +40,7 @@ namespace property {
 }
 
 namespace property::reduction {
-	using cl::sycl::property::reduction::initialize_to_identity;
+	using sycl::property::reduction::initialize_to_identity;
 }
 
 inline const property::no_init no_init;
