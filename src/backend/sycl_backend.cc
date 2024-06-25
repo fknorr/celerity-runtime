@@ -213,13 +213,7 @@ async_event sycl_backend::enqueue_host_function(const size_t host_lane, std::fun
 async_event sycl_backend::enqueue_host_copy(size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
     const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
 {
-	return m_impl->get_host_queue(host_lane).submit([source_base, dest_base, source_box, dest_box, copy_region, elem_size] {
-		for(const auto& copy_box : copy_region.get_boxes()) {
-			assert(source_box.covers(copy_box) && dest_box.covers(copy_box));
-			nd_copy_host(source_base, dest_base, source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
-			    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(), elem_size);
-		}
-	});
+	return m_impl->get_host_queue(host_lane).submit([=] { nd_copy_host(source_base, dest_base, source_box, dest_box, copy_region, elem_size); });
 }
 
 sycl::queue& sycl_backend::get_device_queue(device_id device, size_t lane) { return m_impl->get_device_queue(device, lane); }

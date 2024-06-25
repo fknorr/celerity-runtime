@@ -131,7 +131,7 @@ TEMPLATE_TEST_CASE_METHOD_SIG(test_utils::backend_fixture_dims, "backend::enqueu
 
 	// reference is nd_copy_host (tested in nd_memory_tests)
 	std::vector<int> expected_dest(dest_box.get_area());
-	copy_region_host(source_template.data(), expected_dest.data(), box_cast<3>(source_box), box_cast<3>(dest_box), box_cast<3>(copy_box), sizeof(int));
+	nd_copy_host(source_template.data(), expected_dest.data(), box_cast<3>(source_box), box_cast<3>(dest_box), box_cast<3>(copy_box), sizeof(int));
 
 	// use a helper SYCL queues to init allocations and copy between user and source/dest memories
 	sycl::queue source_sycl_queue(sycl_devices[0], sycl::property::queue::in_order{});
