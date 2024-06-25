@@ -23,19 +23,18 @@ namespace celerity::detail::cuda_backend_detail {
 void nd_copy_device(const void* const source_base, void* const dest_base, const range<3>& source_range, const range<3>& dest_range,
     const id<3>& offset_in_source, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size, const cudaStream_t stream) //
 {
-	const auto layout = layout_nd_copy(source_range, dest_range, offset_in_source, offset_in_dest, copy_range);
-	if(layout.contiguous_range == 0) return;
+	const auto layout = layout_nd_copy(source_range, dest_range, offset_in_source, offset_in_dest, copy_range, elem_size);
+	if(layout.contiguous_size == 0) return;
 
 	if(layout.num_complex_strides == 0) {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_1d", ForestGreen, "cudaMemcpyAsync")
-		CELERITY_CUDA_CHECK(cudaMemcpyAsync, static_cast<std::byte*>(dest_base) + layout.linear_offset_in_dest * elem_size,
-		    static_cast<const std::byte*>(source_base) + layout.linear_offset_in_source * elem_size, layout.contiguous_range * elem_size, cudaMemcpyDefault,
-		    stream);
+		CELERITY_CUDA_CHECK(cudaMemcpyAsync, static_cast<std::byte*>(dest_base) + layout.offset_in_dest,
+		    static_cast<const std::byte*>(source_base) + layout.offset_in_source, layout.contiguous_size, cudaMemcpyDefault, stream);
 	} else if(layout.num_complex_strides == 1) {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_2d", ForestGreen, "cudaMemcpy2DAsync")
-		CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, static_cast<std::byte*>(dest_base) + layout.linear_offset_in_dest * elem_size,
-		    layout.strides[0].dest_stride * elem_size, static_cast<const std::byte*>(source_base) + layout.linear_offset_in_source * elem_size,
-		    layout.strides[0].source_stride * elem_size, layout.contiguous_range * elem_size, layout.strides[0].count, cudaMemcpyDefault, stream);
+		CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, static_cast<std::byte*>(dest_base) + layout.offset_in_dest, layout.strides[0].dest_stride,
+		    static_cast<const std::byte*>(source_base) + layout.offset_in_source, layout.strides[0].source_stride, layout.contiguous_size,
+		    layout.strides[0].count, cudaMemcpyDefault, stream);
 	} else {
 		assert(layout.num_complex_strides == 2);
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_3d", ForestGreen, "cudaMemcpy3DAsync")
