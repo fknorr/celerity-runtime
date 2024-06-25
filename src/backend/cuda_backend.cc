@@ -2,7 +2,7 @@
 
 #include <cuda_runtime.h>
 
-#include "../tracy.h"
+#include "tracy.h"
 #include "log.h"
 #include "nd_memory.h"
 #include "ranges.h"

@@ -1,12 +1,12 @@
 #include "backend/sycl_backend.h"
 
-#include "../thread_queue.h"
 #include "closure_hydrator.h"
 #include "dense_map.h"
 #include "log.h"
 #include "nd_memory.h"
 #include "ranges.h"
 #include "system_info.h"
+#include "thread_queue.h"
 #include "types.h"
 
 namespace celerity::detail::sycl_backend_detail {
