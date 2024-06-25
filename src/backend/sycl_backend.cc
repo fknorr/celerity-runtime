@@ -57,7 +57,7 @@ async_event copy_region_generic(sycl::queue& queue, const void* const source_bas
 	for(const auto& copy_box : copy_region.get_boxes()) {
 		assert(source_box.covers(copy_box));
 		assert(dest_box.covers(copy_box));
-		const auto layout = layout_strided_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+		const auto layout = layout_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
 		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range());
 		for_each_contiguous_chunk(layout, [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
 			last = queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,

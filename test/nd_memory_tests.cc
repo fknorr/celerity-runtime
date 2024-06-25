@@ -8,74 +8,91 @@
 using namespace celerity;
 using namespace celerity::detail;
 
+TEST_CASE("layout_nd_copy selects the minimum number of strides", "[memory]") {
+	// all contiguous
+	CHECK(layout_nd_copy({1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}, {1, 1, 1}) == nd_copy_layout{0, 0, 0, {}, 1});
+	CHECK(layout_nd_copy({1, 3, 1}, {1, 1, 1}, {0, 2, 0}, {0, 0, 0}, {1, 1, 1}) == nd_copy_layout{2, 0, 0, {}, 1});
+	CHECK(layout_nd_copy({1, 1, 1}, {1, 3, 1}, {0, 0, 0}, {0, 2, 0}, {1, 1, 1}) == nd_copy_layout{0, 2, 0, {}, 1});
+	CHECK(layout_nd_copy({5, 3, 2}, {1, 1, 2}, {0, 0, 0}, {0, 0, 0}, {1, 1, 2}) == nd_copy_layout{0, 0, 0, {}, 2});
+	CHECK(layout_nd_copy({5, 3, 2}, {1, 1, 2}, {2, 1, 0}, {0, 0, 0}, {1, 1, 2}) == nd_copy_layout{14, 0, 0, {}, 2});
+	CHECK(layout_nd_copy({1, 1, 2}, {5, 3, 2}, {0, 0, 0}, {2, 1, 0}, {1, 1, 2}) == nd_copy_layout{0, 14, 0, {}, 2});
+	CHECK(layout_nd_copy({5, 1, 3}, {2, 1, 3}, {0, 0, 0}, {0, 0, 0}, {2, 1, 3}) == nd_copy_layout{0, 0, 0, {}, 6});
+	CHECK(layout_nd_copy({5, 2, 3}, {7, 2, 3}, {2, 0, 0}, {1, 0, 0}, {2, 2, 3}) == nd_copy_layout{12, 6, 0, {}, 12});
+	CHECK(layout_nd_copy({5, 2, 3}, {4, 2, 3}, {0, 0, 0}, {0, 0, 0}, {2, 2, 3}) == nd_copy_layout{0, 0, 0, {}, 12});
+
+	// one stride
+	CHECK(layout_nd_copy({1, 2, 3}, {1, 2, 1}, {0, 0, 0}, {0, 0, 0}, {1, 2, 1}) == nd_copy_layout{0, 0, 1, {{3, 1, 2}}, 1});
+	CHECK(layout_nd_copy({1, 2, 3}, {1, 2, 1}, {0, 0, 1}, {0, 0, 0}, {1, 2, 1}) == nd_copy_layout{1, 0, 1, {{3, 1, 2}}, 1});
+	CHECK(layout_nd_copy({5, 2, 3}, {4, 2, 1}, {0, 0, 0}, {0, 0, 0}, {2, 1, 1}) == nd_copy_layout{0, 0, 1, {{6, 2, 2}}, 1});
+	CHECK(layout_nd_copy({4, 3, 2}, {4, 3, 2}, {0, 0, 0}, {0, 0, 0}, {2, 2, 2}) == nd_copy_layout{0, 0, 1, {{6, 6, 2}}, 4});
+	CHECK(layout_nd_copy({4, 5, 2}, {4, 5, 2}, {0, 0, 0}, {0, 0, 0}, {2, 4, 2}) == nd_copy_layout{0, 0, 1, {{10, 10, 2}}, 8});
+	CHECK(layout_nd_copy({4, 5, 6}, {4, 5, 6}, {0, 0, 0}, {0, 0, 0}, {2, 4, 6}) == nd_copy_layout{0, 0, 1, {{30, 30, 2}}, 24});
+	CHECK(layout_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {1, 3, 1}) == nd_copy_layout{0, 0, 1, {{3, 3, 3}}, 1});
+	CHECK(layout_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {1, 2, 2}) == nd_copy_layout{0, 0, 1, {{3, 3, 2}}, 2});
+	CHECK(layout_nd_copy({4, 1, 4}, {4, 1, 4}, {0, 0, 0}, {0, 0, 0}, {2, 1, 2}) == nd_copy_layout{0, 0, 1, {{4, 4, 2}}, 2});
+
+	// two strides
+	CHECK(layout_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {2, 2, 2}) == nd_copy_layout{0, 0, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
+	CHECK(layout_nd_copy({3, 3, 3}, {3, 3, 3}, {1, 0, 0}, {0, 0, 0}, {2, 2, 2}) == nd_copy_layout{9, 0, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
+	CHECK(layout_nd_copy({3, 3, 3}, {3, 3, 3}, {1, 1, 0}, {0, 0, 0}, {2, 2, 2}) == nd_copy_layout{12, 0, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
+	CHECK(layout_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {1, 0, 0}, {2, 2, 2}) == nd_copy_layout{0, 9, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
+	CHECK(layout_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {1, 1, 0}, {2, 2, 2}) == nd_copy_layout{0, 12, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
+	CHECK(layout_nd_copy({2, 3, 4}, {3, 6, 5}, {0, 0, 0}, {0, 0, 0}, {2, 3, 4}) == nd_copy_layout{0, 0, 2, {{12, 30, 2}, {4, 5, 3}}, 4});
+}
+
+void dumb_nd_copy_host(
+    const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box, const box<3>& copy_box, const size_t elem_size) //
+{
+	REQUIRE(source_box.covers(copy_box));
+	REQUIRE(dest_box.covers(copy_box));
+
+	id<3> i;
+	for(i[0] = copy_box.get_min()[0]; i[0] < copy_box.get_max()[0]; ++i[0]) {
+		for(i[1] = copy_box.get_min()[1]; i[1] < copy_box.get_max()[1]; ++i[1]) {
+			for(i[2] = copy_box.get_min()[2]; i[2] < copy_box.get_max()[2]; ++i[2]) {
+				const auto offset_in_source = get_linear_index(source_box.get_range(), i - source_box.get_offset()) * elem_size;
+				const auto offset_in_dest = get_linear_index(dest_box.get_range(), i - dest_box.get_offset()) * elem_size;
+				memcpy(static_cast<std::byte*>(dest_base) + offset_in_dest, static_cast<const std::byte*>(source_base) + offset_in_source, elem_size);
+			}
+		}
+	}
+}
 
 TEMPLATE_TEST_CASE_SIG("nd_copy_host works correctly in all source- and destination layouts", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
-	const auto copy_range = test_utils::truncate_range<Dims>({5, 6, 7});
-
-	int source_shift[Dims];
-	int dest_shift[Dims];
+	int source_shift[3] = {};
+	int dest_shift[3] = {};
 	if constexpr(Dims > 0) { source_shift[0] = GENERATE(values({-2, 0, 2})), dest_shift[0] = GENERATE(values({-2, 0, 2})); }
 	if constexpr(Dims > 1) { source_shift[1] = GENERATE(values({-2, 0, 2})), dest_shift[1] = GENERATE(values({-2, 0, 2})); }
 	if constexpr(Dims > 2) { source_shift[2] = GENERATE(values({-2, 0, 2})), dest_shift[2] = GENERATE(values({-2, 0, 2})); }
+	CAPTURE(source_shift, dest_shift);
 
-	range<Dims> source_range = ones;
-	range<Dims> dest_range = ones;
-	id<Dims> offset_in_source = zeros;
-	id<Dims> offset_in_dest = zeros;
-	for(int i = 0; i < Dims; ++i) {
-		source_range[i] = copy_range[i] + std::abs(source_shift[i]);
-		offset_in_source[i] = std::max(0, source_shift[i]);
-		dest_range[i] = copy_range[i] + std::abs(dest_shift[i]);
-		offset_in_dest[i] = std::max(0, dest_shift[i]);
+	const auto copy_min = id_cast<3>(test_utils::truncate_id<Dims>({3, 5, 4}));
+	const auto copy_max = id_cast<3>(test_utils::truncate_id<Dims>({7, 8, 9}));
+
+	id<3> source_min = copy_min;
+	id<3> source_max = copy_max;
+	id<3> dest_min = copy_min;
+	id<3> dest_max = copy_max;
+	for(int d = 0; d < Dims; ++d) {
+		if (source_shift[d] > 0) { source_min[d] -= static_cast<size_t>(source_shift[d]); }
+		source_max[d] += static_cast<size_t>(std::abs(source_shift[d]));
+		if (dest_shift[d] > 0) { dest_min[d] -= static_cast<size_t>(dest_shift[d]); }
+		dest_max[d] += static_cast<size_t>(std::abs(dest_shift[d]));
 	}
 
-	CAPTURE(source_range, dest_range, offset_in_source, offset_in_dest, copy_range);
+	const auto source_box = box<3>{source_min, source_max};
+	const auto dest_box = box<3>{dest_min, dest_max};
+	const auto copy_box = box<3>{copy_min, copy_max};
+	CAPTURE(source_box, dest_box, copy_box);
 
-	std::vector<int> source(source_range.size());
+	std::vector<int> source(source_box.get_area());
 	std::iota(source.begin(), source.end(), 1);
 
-	std::vector<int> expected_dest(dest_range.size());
-	test_utils::for_each_in_range(copy_range, [&](const id<Dims> id) {
-		const auto linear_index_in_source = get_linear_index(source_range, offset_in_source + id);
-		const auto linear_index_in_dest = get_linear_index(dest_range, offset_in_dest + id);
-		expected_dest[linear_index_in_dest] = source[linear_index_in_source];
-	});
+	std::vector<int> expected_dest(dest_box.get_area());
+	dumb_nd_copy_host(source.data(), expected_dest.data(), source_box, dest_box, copy_box, sizeof(int));
 
-	std::vector<int> dest(dest_range.size());
-	nd_copy_host(source.data(), dest.data(), range_cast<3>(source_range), range_cast<3>(dest_range), id_cast<3>(offset_in_source), id_cast<3>(offset_in_dest),
-	    range_cast<3>(copy_range), sizeof(int));
+	std::vector<int> dest(dest_box.get_area());
+	nd_copy_host(source.data(), dest.data(), source_box, dest_box, copy_box, sizeof(int));
 
 	CHECK(dest == expected_dest);
-}
-
-TEST_CASE("layout_strided_nd_copy selects the minimum number of strides", "[memory]") {
-	// all contiguous
-	CHECK(layout_strided_nd_copy({1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}, {1, 1, 1}) == strided_nd_copy_layout{0, 0, 0, {}, 1});
-	CHECK(layout_strided_nd_copy({1, 3, 1}, {1, 1, 1}, {0, 2, 0}, {0, 0, 0}, {1, 1, 1}) == strided_nd_copy_layout{2, 0, 0, {}, 1});
-	CHECK(layout_strided_nd_copy({1, 1, 1}, {1, 3, 1}, {0, 0, 0}, {0, 2, 0}, {1, 1, 1}) == strided_nd_copy_layout{0, 2, 0, {}, 1});
-	CHECK(layout_strided_nd_copy({5, 3, 2}, {1, 1, 2}, {0, 0, 0}, {0, 0, 0}, {1, 1, 2}) == strided_nd_copy_layout{0, 0, 0, {}, 2});
-	CHECK(layout_strided_nd_copy({5, 3, 2}, {1, 1, 2}, {2, 1, 0}, {0, 0, 0}, {1, 1, 2}) == strided_nd_copy_layout{14, 0, 0, {}, 2});
-	CHECK(layout_strided_nd_copy({1, 1, 2}, {5, 3, 2}, {0, 0, 0}, {2, 1, 0}, {1, 1, 2}) == strided_nd_copy_layout{0, 14, 0, {}, 2});
-	CHECK(layout_strided_nd_copy({5, 1, 3}, {2, 1, 3}, {0, 0, 0}, {0, 0, 0}, {2, 1, 3}) == strided_nd_copy_layout{0, 0, 0, {}, 6});
-	CHECK(layout_strided_nd_copy({5, 2, 3}, {7, 2, 3}, {2, 0, 0}, {1, 0, 0}, {2, 2, 3}) == strided_nd_copy_layout{12, 6, 0, {}, 12});
-	CHECK(layout_strided_nd_copy({5, 2, 3}, {4, 2, 3}, {0, 0, 0}, {0, 0, 0}, {2, 2, 3}) == strided_nd_copy_layout{0, 0, 0, {}, 12});
-
-	// one stride
-	CHECK(layout_strided_nd_copy({1, 2, 3}, {1, 2, 1}, {0, 0, 0}, {0, 0, 0}, {1, 2, 1}) == strided_nd_copy_layout{0, 0, 1, {{3, 1, 2}}, 1});
-	CHECK(layout_strided_nd_copy({1, 2, 3}, {1, 2, 1}, {0, 0, 1}, {0, 0, 0}, {1, 2, 1}) == strided_nd_copy_layout{1, 0, 1, {{3, 1, 2}}, 1});
-	CHECK(layout_strided_nd_copy({5, 2, 3}, {4, 2, 1}, {0, 0, 0}, {0, 0, 0}, {2, 1, 1}) == strided_nd_copy_layout{0, 0, 1, {{6, 2, 2}}, 1});
-	CHECK(layout_strided_nd_copy({4, 3, 2}, {4, 3, 2}, {0, 0, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 0, 1, {{6, 6, 2}}, 4});
-	CHECK(layout_strided_nd_copy({4, 5, 2}, {4, 5, 2}, {0, 0, 0}, {0, 0, 0}, {2, 4, 2}) == strided_nd_copy_layout{0, 0, 1, {{10, 10, 2}}, 8});
-	CHECK(layout_strided_nd_copy({4, 5, 6}, {4, 5, 6}, {0, 0, 0}, {0, 0, 0}, {2, 4, 6}) == strided_nd_copy_layout{0, 0, 1, {{30, 30, 2}}, 24});
-	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {1, 3, 1}) == strided_nd_copy_layout{0, 0, 1, {{3, 3, 3}}, 1});
-	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {1, 2, 2}) == strided_nd_copy_layout{0, 0, 1, {{3, 3, 2}}, 2});
-	CHECK(layout_strided_nd_copy({4, 1, 4}, {4, 1, 4}, {0, 0, 0}, {0, 0, 0}, {2, 1, 2}) == strided_nd_copy_layout{0, 0, 1, {{4, 4, 2}}, 2});
-
-	// two strides
-	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 0, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
-	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {1, 0, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{9, 0, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
-	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {1, 1, 0}, {0, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{12, 0, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
-	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {1, 0, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 9, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
-	CHECK(layout_strided_nd_copy({3, 3, 3}, {3, 3, 3}, {0, 0, 0}, {1, 1, 0}, {2, 2, 2}) == strided_nd_copy_layout{0, 12, 2, {{9, 9, 2}, {3, 3, 2}}, 2});
-	CHECK(layout_strided_nd_copy({2, 3, 4}, {3, 6, 5}, {0, 0, 0}, {0, 0, 0}, {2, 3, 4}) == strided_nd_copy_layout{0, 0, 2, {{12, 30, 2}, {4, 5, 3}}, 4});
 }
