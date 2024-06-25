@@ -6,47 +6,13 @@
 #include "tracy.h"
 #include "utils.h"
 
+#include <chrono>
 #include <future>
 #include <thread>
 #include <type_traits>
 #include <variant>
 
 namespace celerity::detail {
-
-class thread_queue_event : public async_event_impl {
-  public:
-	struct completion {
-		void* result = nullptr;
-		std::optional<std::chrono::nanoseconds> execution_time;
-	};
-
-	explicit thread_queue_event(std::future<completion> future) : m_state(std::move(future)) {}
-
-	bool is_complete() override { return get_completed() != nullptr; }
-
-	void* get_result() override {
-		const auto completed = get_completed();
-		assert(completed);
-		return completed->result;
-	}
-
-	std::optional<std::chrono::nanoseconds> get_native_execution_time() override {
-		const auto completed = get_completed();
-		assert(completed);
-		return completed->execution_time;
-	}
-
-  private:
-	std::variant<std::future<completion>, completion> m_state;
-
-	completion* get_completed() {
-		if(const auto completed = std::get_if<completion>(&m_state)) return completed;
-		if(auto& future = std::get<std::future<completion>>(m_state); future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-			return &m_state.emplace<completion>(future.get());
-		}
-		return nullptr;
-	}
-};
 
 class thread_queue {
   public:
@@ -60,7 +26,7 @@ class thread_queue {
 
 	~thread_queue() {
 		if(m_impl != nullptr) {
-			m_impl->queue.push(job{});
+			m_impl->queue.push(job{} /* termination */);
 			m_impl->thread.join();
 		}
 	}
@@ -69,15 +35,18 @@ class thread_queue {
 	async_event submit(Fn&& fn) {
 		assert(m_impl != nullptr);
 		job job(std::forward<Fn>(fn));
-		auto evt = make_async_event<thread_queue_event>(job.promise.get_future());
+		auto evt = make_async_event<thread_queue::event>(job.promise.get_future());
 		m_impl->queue.push(std::move(job));
 		return evt;
 	}
 
   private:
-	struct job {
-		using completion = thread_queue_event::completion;
+	struct completion {
+		void* result = nullptr;
+		std::optional<std::chrono::nanoseconds> execution_time;
+	};
 
+	struct job {
 		std::function<void*()> fn;
 		std::promise<completion> promise;
 
@@ -88,6 +57,36 @@ class thread_queue {
 
 		template <typename Fn, std::enable_if_t<std::is_invocable_r_v<void*, Fn>, int> = 0>
 		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)] { return std::invoke(fn); }) {}
+	};
+
+	class event : public async_event_impl {
+	  public:
+		explicit event(std::future<completion> future) : m_state(std::move(future)) {}
+
+		bool is_complete() override { return get_completed() != nullptr; }
+
+		void* get_result() override {
+			const auto completed = get_completed();
+			assert(completed);
+			return completed->result;
+		}
+
+		std::optional<std::chrono::nanoseconds> get_native_execution_time() override {
+			const auto completed = get_completed();
+			assert(completed);
+			return completed->execution_time;
+		}
+
+	  private:
+		std::variant<std::future<completion>, completion> m_state;
+
+		completion* get_completed() {
+			if(const auto completed = std::get_if<completion>(&m_state)) return completed;
+			if(auto& future = std::get<std::future<completion>>(m_state); future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+				return &m_state.emplace<completion>(future.get());
+			}
+			return nullptr;
+		}
 	};
 
 	// pimpl'd to keep thread_queue movable
@@ -102,15 +101,13 @@ class thread_queue {
 			std::chrono::steady_clock::time_point start;
 			if(enable_profiling) { start = std::chrono::steady_clock::now(); }
 
-			thread_queue_event::completion completion;
+			completion completion;
 			completion.result = job.fn();
 
-			std::chrono::steady_clock::time_point end;
 			if(enable_profiling) {
 				const auto end = std::chrono::steady_clock::now();
 				completion.execution_time = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
 			}
-
 			job.promise.set_value(completion);
 		}
 
@@ -131,9 +128,9 @@ class thread_queue {
 			try {
 				loop();
 			} catch(std::exception& e) { //
-				utils::panic("exception in thread queue: {}", e.what());
+				utils::panic("exception in {}: {}", name, e.what());
 			} catch(...) { //
-				utils::panic("exception in thread queue");
+				utils::panic("exception in {}", name);
 			}
 		}
 	};
