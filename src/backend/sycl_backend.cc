@@ -57,13 +57,13 @@ async_event copy_region_generic(sycl::queue& queue, const void* const source_bas
 	for(const auto& copy_box : copy_region.get_boxes()) {
 		assert(source_box.covers(copy_box));
 		assert(dest_box.covers(copy_box));
-		for_each_contiguous_chunk_in_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
-		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(),
-		    [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
-			    last = queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
-			        static_cast<const std::byte*>(source_base) + linear_offset_in_source * elem_size, linear_size * elem_size);
-			    if(enable_profiling && !first.has_value()) { first = last; }
-		    });
+		const auto layout = layout_strided_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range());
+		for_each_contiguous_chunk(layout, [&](const size_t linear_offset_in_source, const size_t linear_offset_in_dest, const size_t linear_size) {
+			last = queue.memcpy(static_cast<std::byte*>(dest_base) + linear_offset_in_dest * elem_size,
+			    static_cast<const std::byte*>(source_base) + linear_offset_in_source * elem_size, linear_size * elem_size);
+			if(enable_profiling && !first.has_value()) { first = last; }
+		});
 	}
 	sycl_backend_detail::flush_queue(queue);
 	return make_async_event<sycl_event>(std::move(first), std::move(last));
