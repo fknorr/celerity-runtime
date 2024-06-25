@@ -21,12 +21,14 @@ struct strided_nd_copy_layout {
 
 	size_t linear_offset_in_source = 0;
 	size_t linear_offset_in_dest = 0;
+	int num_strides = 0;
 	stride strides[2];
 	size_t contiguous_range = 0;
 
 	friend bool operator==(const strided_nd_copy_layout& lhs, const strided_nd_copy_layout& rhs) {
 		return lhs.linear_offset_in_source == rhs.linear_offset_in_source && lhs.linear_offset_in_dest == rhs.linear_offset_in_dest
-		       && lhs.contiguous_range == rhs.contiguous_range && lhs.strides[0] == rhs.strides[0] && lhs.strides[1] == rhs.strides[1];
+		       && lhs.contiguous_range == rhs.contiguous_range && lhs.num_strides == rhs.num_strides && lhs.strides[0] == rhs.strides[0]
+		       && lhs.strides[1] == rhs.strides[1];
 	}
 	friend bool operator!=(const strided_nd_copy_layout& lhs, const strided_nd_copy_layout& rhs) { return !(lhs == rhs); }
 };
@@ -48,6 +50,7 @@ inline strided_nd_copy_layout layout_strided_nd_copy(
 	bool contiguous = true;
 	for(int d = 2; d >= 0; --d) {
 		if(!contiguous && copy_range[d] != 1) {
+			++layout.num_strides;
 			layout.strides[1] = layout.strides[0];
 			layout.strides[0] = {next_source_step, next_dest_step, 1};
 			current_range = &layout.strides[0].copy_range;

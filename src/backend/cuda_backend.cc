@@ -4,6 +4,7 @@
 
 #include "../tracy.h"
 #include "log.h"
+#include "nd_memory.h"
 #include "ranges.h"
 #include "system_info.h"
 #include "utils.h"
@@ -19,36 +20,27 @@
 
 namespace celerity::detail::cuda_backend_detail {
 
-void nd_copy_async(const void* const source_base, void* const dest_base, const range<3>& source_range, const range<3>& dest_range,
-    const id<3>& offset_in_source, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size, const cudaStream_t stream) {
-	assert(all_true(offset_in_source + copy_range <= source_range));
-	assert(all_true(offset_in_dest + copy_range <= dest_range));
+void nd_copy_device(const void* const source_base, void* const dest_base, const range<3>& source_range, const range<3>& dest_range,
+    const id<3>& offset_in_source, const id<3>& offset_in_dest, const range<3>& copy_range, const size_t elem_size, const cudaStream_t stream) //
+{
+	const auto layout = layout_strided_nd_copy(source_range, dest_range, offset_in_source, offset_in_dest, copy_range);
+	if(layout.contiguous_range == 0) return;
 
-	if(copy_range.size() == 0) return;
-
-	// TODO copied from nd_copy_host - this works but is not optimal, it will still do a 2D copy on a [1,1,1] range if there is a dim1 offset
-	int linear_dim = 0;
-	for(int d = 1; d < 3; ++d) {
-		if(source_range[d] != copy_range[d] || dest_range[d] != copy_range[d]) { linear_dim = d; }
-	}
-
-	const auto first_source_elem = static_cast<const std::byte*>(source_base) + get_linear_index(source_range, offset_in_source) * elem_size;
-	const auto first_dest_elem = static_cast<std::byte*>(dest_base) + get_linear_index(dest_range, offset_in_dest) * elem_size;
-
-	switch(linear_dim) {
-	case 0: {
-		const auto copy_bytes = (copy_range[0] * copy_range[1] * copy_range[2]) * elem_size;
+	if(layout.num_strides == 0) {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_1d", ForestGreen, "cudaMemcpyAsync")
-		CELERITY_CUDA_CHECK(cudaMemcpyAsync, first_dest_elem, first_source_elem, copy_bytes, cudaMemcpyDefault, stream);
-		break;
-	}
-	case 1: {
+		CELERITY_CUDA_CHECK(cudaMemcpyAsync, static_cast<std::byte*>(dest_base) + layout.linear_offset_in_dest * elem_size,
+		    static_cast<const std::byte*>(source_base) + layout.linear_offset_in_source * elem_size, layout.contiguous_range * elem_size, cudaMemcpyDefault,
+		    stream);
+	} else if(layout.num_strides == 1) {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_2d", ForestGreen, "cudaMemcpy2DAsync")
-		CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, first_dest_elem, dest_range[1] * dest_range[2] * elem_size, first_source_elem,
-		    source_range[1] * source_range[2] * elem_size, copy_range[1] * copy_range[2] * elem_size, copy_range[0], cudaMemcpyDefault, stream);
-		break;
-	}
-	case 2: {
+		CELERITY_CUDA_CHECK(cudaMemcpy2DAsync, static_cast<std::byte*>(dest_base) + layout.linear_offset_in_dest * elem_size,
+		    layout.strides[0].dest_range * elem_size, static_cast<const std::byte*>(source_base) + layout.linear_offset_in_source * elem_size,
+		    layout.strides[0].source_range * elem_size, layout.contiguous_range * elem_size, layout.strides[0].copy_range, cudaMemcpyDefault, stream);
+	} else {
+		assert(layout.num_strides == 2);
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_3d", ForestGreen, "cudaMemcpy3DAsync")
+		// Arriving in the 3D case means no dimensionality reduction was possible, and cudaMemcpy3D is more closely aligned to the parameters to nd_copy_device
+		// than to nd_copy_layout, so we don't compute cudaMemcpy3DParms from `layout`.
 		cudaMemcpy3DParms parms = {};
 		parms.srcPos = make_cudaPos(offset_in_source[2] * elem_size, offset_in_source[1], offset_in_source[0]);
 		parms.srcPtr = make_cudaPitchedPtr(
@@ -57,21 +49,24 @@ void nd_copy_async(const void* const source_base, void* const dest_base, const r
 		parms.dstPtr = make_cudaPitchedPtr(dest_base, dest_range[2] * elem_size, dest_range[2], dest_range[1]);
 		parms.extent = {copy_range[2] * elem_size, copy_range[1], copy_range[0]};
 		parms.kind = cudaMemcpyDefault;
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_3d", ForestGreen, "cudaMemcpy3DAsync")
 		CELERITY_CUDA_CHECK(cudaMemcpy3DAsync, &parms, stream);
-		break;
-	}
-	default: assert(!"unreachable");
 	}
 }
 
-void copy_region_async(cudaStream_t stream, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
-    const region<3>& copy_region, const size_t elem_size) {
+void nd_copy_device(cudaStream_t stream, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
+    const box<3>& copy_box, const size_t elem_size) //
+{
+	assert(source_box.covers(copy_box));
+	assert(dest_box.covers(copy_box));
+	nd_copy_device(source_base, dest_base, source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+	    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(), elem_size, stream);
+}
+
+void nd_copy_device(cudaStream_t stream, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
+    const region<3>& copy_region, const size_t elem_size) //
+{
 	for(const auto& copy_box : copy_region.get_boxes()) {
-		assert(source_box.covers(copy_box));
-		assert(dest_box.covers(copy_box));
-		nd_copy_async(source_base, dest_base, source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
-		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(), elem_size, stream);
+		nd_copy_device(stream, source_base, dest_base, source_box, dest_box, copy_box, elem_size);
 	}
 }
 
@@ -123,7 +118,7 @@ async_event copy_region(sycl::queue& queue, const void* const source_base, void*
 #if CELERITY_WORKAROUND(HIPSYCL)
 	auto event = queue.hipSYCL_enqueue_custom_operation([=](sycl::interop_handle handle) {
 		const auto stream = handle.get_native_queue<sycl::backend::cuda>();
-		cuda_backend_detail::copy_region_async(stream, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
+		cuda_backend_detail::nd_copy_device(stream, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
 	});
 	sycl_backend_detail::flush_queue(queue);
 	return make_async_event<sycl_event>(std::move(event), enable_profiling);
