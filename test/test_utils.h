@@ -16,6 +16,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <celerity.h>
 
+#include "async_event.h"
 #include "backend/sycl_backend.h"
 #include "command.h"
 #include "command_graph.h"
@@ -501,6 +502,11 @@ namespace test_utils {
 	template <typename T>
 	Catch::Generators::GeneratorWrapper<T> from_vector(std::vector<T> values) {
 		return Catch::Generators::GeneratorWrapper<T>(Catch::Detail::make_unique<vector_generator<T>>(std::move(values)));
+	}
+
+	inline void* await(const celerity::detail::async_event& evt) {
+		while(!evt.is_complete()) {}
+		return evt.get_result();
 	}
 
 } // namespace test_utils

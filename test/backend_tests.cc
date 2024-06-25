@@ -11,26 +11,21 @@ using namespace celerity;
 using namespace celerity::detail;
 
 
-void* await(async_event&& evt) {
-	while(!evt.is_complete()) {}
-	return evt.get_result();
-}
-
 void* backend_alloc(backend& backend, const std::optional<device_id>& device, const size_t size, const size_t alignment) {
-	return await(device.has_value() ? backend.enqueue_device_alloc(*device, size, alignment) : backend.enqueue_host_alloc(size, alignment));
+	return test_utils::await(device.has_value() ? backend.enqueue_device_alloc(*device, size, alignment) : backend.enqueue_host_alloc(size, alignment));
 }
 
 void backend_free(backend& backend, const std::optional<device_id>& device, void* const ptr) {
-	await(device.has_value() ? backend.enqueue_device_free(*device, ptr) : backend.enqueue_host_free(ptr));
+	test_utils::await(device.has_value() ? backend.enqueue_device_free(*device, ptr) : backend.enqueue_host_free(ptr));
 }
 
 void backend_copy(backend& backend, const std::optional<device_id>& source_device, const std::optional<device_id>& dest_device, const void* const source_base,
     void* const dest_base, const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) {
 	if(source_device.has_value() || dest_device.has_value()) {
 		auto device = source_device.has_value() ? *source_device : *dest_device;
-		await(backend.enqueue_device_copy(device, 0, source_base, dest_base, source_box, dest_box, copy_region, elem_size));
+		test_utils::await(backend.enqueue_device_copy(device, 0, source_base, dest_base, source_box, dest_box, copy_region, elem_size));
 	} else {
-		await(backend.enqueue_host_copy(0, source_base, dest_base, source_box, dest_box, copy_region, elem_size));
+		test_utils::await(backend.enqueue_host_copy(0, source_base, dest_base, source_box, dest_box, copy_region, elem_size));
 	}
 }
 

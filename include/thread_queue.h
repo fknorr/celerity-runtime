@@ -14,16 +14,23 @@
 
 namespace celerity::detail {
 
+/// A single-thread job queue accepting functors and returning events that conditionally forward job results.
 class thread_queue {
   public:
-	thread_queue() : thread_queue("cy-thread") {}
-	explicit thread_queue(std::string name, const bool enable_profiling = false) : m_impl(new impl(std::move(name), enable_profiling)) {}
+	/// Constructs a null thread queue that cannot receive jobs.
+	thread_queue() = default;
 
+	/// Spawns a new thread queue with the given thread name. If `enable_profiling` is set to `true`, completed events from this thread queue will report a
+	/// non-nullopt duration.
+	explicit thread_queue(std::string thread_name, const bool enable_profiling = false) : m_impl(new impl(std::move(thread_name), enable_profiling)) {}
+
+	// thread_queue is movable, but not copyable.
 	thread_queue(const thread_queue&) = delete;
 	thread_queue(thread_queue&&) = default;
 	thread_queue& operator=(const thread_queue&) = delete;
 	thread_queue& operator=(thread_queue&&) = default;
 
+	/// Destruction will await all submitted and pending jobs.
 	~thread_queue() {
 		if(m_impl != nullptr) {
 			m_impl->queue.push(job{} /* termination */);
@@ -31,6 +38,8 @@ class thread_queue {
 		}
 	}
 
+	/// Submit a job to the thread queue.
+	/// `fn` must take no arguments and return either `void` or a type convertible to `void *`, which will be forwarded as the result into the event.
 	template <typename Fn>
 	async_event submit(Fn&& fn) {
 		assert(m_impl != nullptr);
@@ -41,6 +50,9 @@ class thread_queue {
 	}
 
   private:
+	friend struct thread_queue_testspy;
+
+	/// The object passed through std::future from queue thread to owner thread
 	struct completion {
 		void* result = nullptr;
 		std::optional<std::chrono::nanoseconds> execution_time;
@@ -52,9 +64,11 @@ class thread_queue {
 
 		job() = default; // empty (default-constructed) fn signals termination
 
+		/// Constructor overload for `fn` returning `void`.
 		template <typename Fn, std::enable_if_t<std::is_same_v<std::invoke_result_t<Fn>, void>, int> = 0>
 		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)] { return std::invoke(fn), nullptr; }) {}
 
+		/// Constructor overload for `fn` returning `void*`.
 		template <typename Fn, std::enable_if_t<std::is_invocable_r_v<void*, Fn>, int> = 0>
 		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)] { return std::invoke(fn); }) {}
 	};
@@ -78,6 +92,8 @@ class thread_queue {
 		}
 
 	  private:
+		// As the result from std::future can only be retrieved once and std::shared_future is not functionally necessary here, we replace the future by its
+		// completion as soon as the first query succeeds.
 		std::variant<std::future<completion>, completion> m_state;
 
 		completion* get_completed() {
