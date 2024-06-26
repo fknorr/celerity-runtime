@@ -130,7 +130,7 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend::enqueue_copy works corre
 	auto backend = make_sycl_backend(backend_type, sycl_devices, false /* enable_profiling */);
 
 	// device_to_itself is used for buffer resizes, and device_to_peer for coherence (if the backend supports it)
-	const auto direction = GENERATE(values<std::string_view>({"host to device", "device to host", "device to peer", "device to itself"}));
+	const auto direction = GENERATE(values<std::string>({"host to device", "device to host", "device to peer", "device to itself"}));
 	CAPTURE(direction);
 
 	std::optional<device_id> source_did; // host memory if nullopt
