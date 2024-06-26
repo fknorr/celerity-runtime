@@ -61,10 +61,6 @@ async_event nd_copy_device(sycl::queue& queue, const void* const source_base, vo
 	return make_async_event<sycl_event>(std::move(first), std::move(last));
 }
 
-#if CELERITY_DETAIL_ENABLE_DEBUG
-inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doubles filled with this pattern show up as "-nan"
-#endif
-
 } // namespace celerity::detail::sycl_backend_detail
 
 namespace celerity::detail {

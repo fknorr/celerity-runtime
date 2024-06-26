@@ -10,6 +10,10 @@ namespace celerity::detail::sycl_backend_detail {
 
 void flush(sycl::queue& queue);
 
+#if CELERITY_DETAIL_ENABLE_DEBUG
+inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doubles filled with this pattern show up as "-nan"
+#endif
+
 } // namespace celerity::detail::sycl_backend_detail
 
 namespace celerity::detail {

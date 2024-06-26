@@ -44,7 +44,22 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-f
 	const auto backend_type = GENERATE(test_utils::from_vector(sycl_backend_enumerator{}.available_backends()));
 	const auto sycl_devices = select_devices_for_backend(backend_type);
 	CAPTURE(backend_type, sycl_devices);
-// TODO
+
+	if(sycl_devices.empty()) { SKIP("No devices available for backend"); }
+	auto backend = make_sycl_backend(backend_type, sycl_devices, false /* enable_profiling */);
+	sycl::queue sycl_queue(sycl_devices[0], sycl::property::queue::in_order{});
+
+	constexpr size_t size = 1024;
+	const std::vector<uint8_t> expected(size, sycl_backend_detail::uninitialized_memory_pattern);
+
+	for(const auto did : std::initializer_list<std::optional<device_id>>{std::nullopt, device_id(0)}) {
+		CAPTURE(did);
+		const auto ptr = backend_alloc(*backend, did, 1024, 1);
+		std::vector<uint8_t> contents(size);
+		sycl_queue.memcpy(contents.data(), ptr, size).wait();
+		CHECK(contents == expected);
+		backend_free(*backend, did, ptr);
+	}
 #else
 	SKIP("Not in a debug build");
 #endif
@@ -106,13 +121,12 @@ std::vector<copy_test_layout> generate_copy_test_layouts() {
 	return layouts;
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "backend::enqueue_copy works correctly on all source- and destination layouts ", "[backend]") {
+TEST_CASE_METHOD(test_utils::backend_fixture, "backend::enqueue_copy works correctly on all source- and destination layouts", "[backend]") {
 	const auto backend_type = GENERATE(test_utils::from_vector(sycl_backend_enumerator{}.available_backends()));
 	auto sycl_devices = select_devices_for_backend(backend_type);
 	CAPTURE(backend_type, sycl_devices);
 
 	if(sycl_devices.empty()) { SKIP("No devices available for backend"); }
-
 	auto backend = make_sycl_backend(backend_type, sycl_devices, false /* enable_profiling */);
 
 	// device_to_itself is used for buffer resizes, and device_to_peer for coherence (if the backend supports it)
