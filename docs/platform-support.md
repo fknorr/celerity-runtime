@@ -10,10 +10,10 @@ The most recent version of Celerity aims to support the following environments.
 
 * hipSYCL ≥ revision [`2636e1ff`](https://github.com/illuhad/hipSYCL/commit/2636e1ff), with
   * CUDA ≥ 11.0
-  * Clang ≥ 10.0 for CUDA &lt; 12.0, Clang ≥ 16.0 for CUDA ≥ 12.0
+  * Clang ≥ 14.0 for CUDA &lt; 12.0, Clang ≥ 16.0 for CUDA ≥ 12.0
   * on NVIDIA hardware with compute capability ≥ 7.0
   * or on CPUs via OpenMP
-* DPC++ ≥ revision [`6bce7f64`](https://github.com/intel/llvm/commit/6bce7f64)
+* DPC++ ≥ revision [`89327e0a`](https://github.com/intel/llvm/commit/89327e0a)
   * [Intel Compute Runtime](https://github.com/intel/compute-runtime) ≥ 24.13.29138.7
   * [oneAPI Level Zero](https://github.com/oneapi-src/level-zero) ≥ 1.17.0
   * on integrated and dedicated Intel GPUs
@@ -37,9 +37,8 @@ Those are (CRT = Intel Compute Runtime, L0 = oneAPI Level Zero):
 
 | SYCL       | SYCL version                                                                               | OS           | GPU             | Build type     |
 |------------|--------------------------------------------------------------------------------------------|--------------|-----------------|----------------|
-| DPC++      | [`6bce7f64`](https://github.com/intel/llvm/commit/6bce7f64) (CRT 24.13.29138.7, L0 1.17.0) | Ubuntu 22.04 | Intel Arc A770  | Debug          |
+| DPC++      | [`89327e0a`](https://github.com/intel/llvm/commit/89327e0a) (CRT 24.13.29138.7, L0 1.17.0) | Ubuntu 22.04 | Intel Arc A770  | Debug          |
 | DPC++      | [`HEAD`](https://github.com/intel/llvm/) (CRT 24.13.29138.7, L0 1.17.0)                    | Ubuntu 22.04 | Intel Arc A770  | Debug, Release |
-| hipSYCL    | [`2636e1ff`](https://github.com/illuhad/hipSYCL/commit/d2bd9fc7) (Clang 10, CUDA 11.0.3)   | Ubuntu 20.04 | NVIDIA RTX 2070 | Debug          |
 | hipSYCL    | [`2636e1ff`](https://github.com/illuhad/hipSYCL/commit/d2bd9fc7) (Clang 14, CUDA 11.8.0)   | Ubuntu 22.04 | NVIDIA RTX 2070 | Debug, Release |
 | hipSYCL    | [`HEAD`](https://github.com/illuhad/hipSYCL) (Clang 16, CUDA 12.2.0)\*                     | Ubuntu 23.04 | NVIDIA RTX 2070 | Debug, Release |
 | SimSYCL    | [`HEAD`](https://github.com/celerity/SimSYCL) (GCC 11.4)                                   | Ubuntu 22.04 | (None)          | Debug, Release |
