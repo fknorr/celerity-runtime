@@ -8,16 +8,6 @@
 
 namespace celerity::detail::sycl_backend_detail {
 
-void flush(sycl::queue& queue);
-
-#if CELERITY_DETAIL_ENABLE_DEBUG
-inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doubles filled with this pattern show up as "-nan"
-#endif
-
-} // namespace celerity::detail::sycl_backend_detail
-
-namespace celerity::detail {
-
 class sycl_event final : public async_event_impl {
   public:
 	sycl_event() = default;
@@ -32,6 +22,17 @@ class sycl_event final : public async_event_impl {
 	std::optional<sycl::event> m_first; // set iff profiling is enabled - can be a copy of m_last.
 	sycl::event m_last;
 };
+
+/// Ensure that all operations previously submitted to the SYCL queue begin executing even when not explicitly awaited.
+void flush(sycl::queue& queue);
+
+#if CELERITY_DETAIL_ENABLE_DEBUG
+inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doubles filled with this pattern show up as "-nan"
+#endif
+
+} // namespace celerity::detail::sycl_backend_detail
+
+namespace celerity::detail {
 
 class sycl_backend : public backend {
   public:
@@ -56,7 +57,8 @@ class sycl_backend : public backend {
 
 	async_event enqueue_device_free(device_id device, void* ptr) override;
 
-	async_event enqueue_host_function(size_t host_lane, std::function<void()> fn) override;
+	async_event enqueue_host_task(
+	    size_t host_lane, const host_task_launcher& launcher, const box<3>& execution_range, const communicator* collective_comm) override;
 
 	async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher, const box<3>& execution_range,
 	    const std::vector<void*>& reduction_ptrs) override;
@@ -67,7 +69,7 @@ class sycl_backend : public backend {
   protected:
 	sycl::queue& get_device_queue(device_id device, size_t lane);
 
-	system_info& get_system_info();
+	system_info& get_system_info(); // mutable system_info is filled by sycl_cuda_backend constructor
 
 	bool is_profiling_enabled() const;
 
@@ -94,21 +96,30 @@ class sycl_cuda_backend final : public sycl_backend {
 };
 #endif
 
+/// We differentiate between non-specialized and specialized Celerity SYCL backends.
 enum class sycl_backend_type { generic, cuda };
 
+/// Enumerates the SYCL backends devices are compatible with and that Celerity has been compiled with.
+/// This type implements the (nameless) concept accepted by `pick_devices`.
 struct sycl_backend_enumerator {
 	using backend_type = sycl_backend_type;
 	using device_type = sycl::device;
 
+	/// Lists the backend types a device is compatible with, even if Celerity has not been compiled with that backend.
 	std::vector<backend_type> compatible_backends(const sycl::device& device) const;
 
+	/// Lists the backend types Celerity has been compiled with.
 	std::vector<backend_type> available_backends() const;
 
+	/// Queries whether a given backend type is specialized (for diagnostics only).
 	bool is_specialized(backend_type type) const;
 
+	/// Returns a priority value for each backend type, where the highest-priority compatible backend type should offer the best performance.
 	int get_priority(backend_type type) const;
 };
 
+/// Creates a SYCL backend instance of the specified type with the devices listed. Requires that Celerity has been compiled with the given backend and all
+/// devices are compatible with it. If `enable_profiling` is true, events for asynchronous operations will report native execution times.
 std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices, bool enable_profiling);
 
 } // namespace celerity::detail

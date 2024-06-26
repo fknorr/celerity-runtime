@@ -11,6 +11,14 @@
 
 namespace celerity::detail::sycl_backend_detail {
 
+bool sycl_event::is_complete() { return m_last.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete; }
+
+std::optional<std::chrono::nanoseconds> sycl_event::get_native_execution_time() {
+	if(!m_first.has_value()) return std::nullopt; // avoid the cost of throwing + catching a sycl exception by when profiling is disabled
+	return std::chrono::nanoseconds(m_last.get_profiling_info<sycl::info::event_profiling::command_end>() //
+	                                - m_first->get_profiling_info<sycl::info::event_profiling::command_start>());
+}
+
 void flush(sycl::queue& queue) {
 #if CELERITY_WORKAROUND(HIPSYCL)
 	// hipSYCL does not guarantee that command groups are actually scheduled until an explicit await operation, which we cannot insert without
@@ -64,16 +72,6 @@ async_event nd_copy_device(sycl::queue& queue, const void* const source_base, vo
 } // namespace celerity::detail::sycl_backend_detail
 
 namespace celerity::detail {
-
-bool sycl_event::is_complete() {
-	return m_last.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete;
-}
-
-std::optional<std::chrono::nanoseconds> sycl_event::get_native_execution_time() {
-	if(!m_first.has_value()) return std::nullopt; // avoid the cost of throwing + catching a sycl exception by when profiling is disabled
-	return std::chrono::nanoseconds(m_last.get_profiling_info<sycl::info::event_profiling::command_end>() //
-	                                - m_first->get_profiling_info<sycl::info::event_profiling::command_start>());
-}
 
 struct sycl_backend::impl {
 	struct device_state {
@@ -189,6 +187,11 @@ async_event sycl_backend::enqueue_device_free(const device_id device, void* cons
 	return m_impl->host.alloc_queue.submit([this, device, ptr] { sycl::free(ptr, m_impl->devices[device].sycl_context); });
 }
 
+async_event sycl_backend::enqueue_host_task(
+    size_t host_lane, const host_task_launcher& launcher, const box<3>& execution_range, const communicator* collective_comm) {
+	return m_impl->get_host_queue(host_lane).submit([=] { launcher(execution_range, collective_comm); });
+}
+
 async_event sycl_backend::enqueue_device_kernel(
     const device_id device, const size_t lane, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
 {
@@ -199,11 +202,7 @@ async_event sycl_backend::enqueue_device_kernel(
 		launch_hydrated(sycl_cgh, execution_range, reduction_ptrs);
 	});
 	sycl_backend_detail::flush(queue);
-	return make_async_event<sycl_event>(std::move(event), m_impl->enable_profiling);
-}
-
-async_event sycl_backend::enqueue_host_function(const size_t host_lane, std::function<void()> fn) {
-	return m_impl->get_host_queue(host_lane).submit(std::move(fn));
+	return make_async_event<sycl_backend_detail::sycl_event>(std::move(event), m_impl->enable_profiling);
 }
 
 async_event sycl_backend::enqueue_host_copy(size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,

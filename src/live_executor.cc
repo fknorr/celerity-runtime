@@ -704,17 +704,16 @@ void executor_impl::issue_async(const host_task_instruction& htinstr, const out_
 
 	CELERITY_TRACE("[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), print_accesses(htinstr.get_access_allocations()));
 
-	const auto collective_comm =
-	    htinstr.get_collective_group_id() != non_collective_group_id ? cloned_communicators.at(htinstr.get_collective_group_id()).get() : nullptr;
-
 	prepare_accessor_hydration(htinstr.get_id(), target::host_task,
 	    htinstr.get_access_allocations() //
 	    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, htinstr.get_oob_task_type(), htinstr.get_oob_task_id(), htinstr.get_oob_task_name(), async.oob_info));
-	auto launch_hydrated = closure_hydrator::get_instance().hydrate<target::host_task>(htinstr.get_launcher());
+	const auto launch_hydrated = closure_hydrator::get_instance().hydrate<target::host_task>(htinstr.get_launcher());
 
 	const auto& execution_range = htinstr.get_execution_range();
-	async.event = backend->enqueue_host_function(
-	    *assignment.lane, [=, launch_hydrated = std::move(launch_hydrated)] { launch_hydrated(execution_range, collective_comm); });
+	const auto collective_comm =
+	    htinstr.get_collective_group_id() != non_collective_group_id ? cloned_communicators.at(htinstr.get_collective_group_id()).get() : nullptr;
+
+	async.event = backend->enqueue_host_task(*assignment.lane, launch_hydrated, execution_range, collective_comm);
 }
 
 void executor_impl::issue_async(
