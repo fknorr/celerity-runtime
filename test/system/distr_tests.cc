@@ -349,68 +349,22 @@ namespace detail {
 		CHECK(host_rank == global_rank);
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "command graph can be collected across distributed nodes", "[print_graph]") {
-		env::scoped_test_environment tenv(print_graphs_env_setting);
+	TEST_CASE_METHOD(test_utils::mpi_fixture, "command graph can be collected across distributed nodes", "[print_graph]") {
+		int num_nodes = -1;
+		int local_nid = -1;
+		MPI_Comm_size(MPI_COMM_WORLD, &num_nodes);
+		MPI_Comm_rank(MPI_COMM_WORLD, &local_nid);
+		if(num_nodes != 2) { SKIP("can only perform this test when invoked for exactly 2 participating nodes"); }
 
-		int global_size = 0;
-		MPI_Comm_size(MPI_COMM_WORLD, &global_size);
-		if(global_size != 2) { SKIP("can only perform this test when invoked for exactly 2 participating nodes"); }
+		const std::string my_cdag = local_nid == 0 //
+		                                ? "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_0_0{label=<l>;id_0_0[label=<C0 on N0>;shape=box];}}"
+		                                : "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_1_0{label=<l>;id_1_0[label=<C0 on N1>;shape=box];}}";
+		const auto combined_cdag = gather_command_graph(my_cdag, static_cast<size_t>(num_nodes), static_cast<node_id>(local_nid));
 
-		distr_queue q;
-		celerity::range<2> range(16, 16);
-		celerity::buffer<float, 2> buff_a(range);
-
-		// set small horizon step size so that we do not need to generate a very large graph to test this functionality
-		auto& tm = celerity::detail::runtime::get_instance().get_task_manager();
-		tm.set_horizon_step(1);
-
-		q.submit([&](handler& cgh) {
-			celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
-			cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
-		});
-
-		q.submit([&](handler& cgh) {
-			celerity::accessor acc_a{buff_a, cgh, celerity::access::one_to_one{}, celerity::read_write};
-			cgh.parallel_for(range, [=](item<2> item) { (void)acc_a; });
-		});
-
-		q.slow_full_sync();
-
-		const auto dot = celerity::detail::runtime::get_instance().gather_command_graph();
-
-		// only check on master node, since that is where the graph is gathered
-		int global_rank = 0;
-		MPI_Comm_rank(MPI_COMM_WORLD, &global_rank);
-		if(global_rank == 0) {
-			// Smoke test: It is valid for the dot output to change with updates to graph generation. If this test fails, verify that the printed graphs are
-			// sane and complete, and if so, replace the `expected` values with the new dot graph.
-			const std::string expected =
-			    "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_0_0{label=<<font color=\"#606060\">T0 "
-			    "(epoch)</font>>;color=darkgray;id_0_0[label=<C0 on N0<br/><b>epoch</b>> fontcolor=black shape=box];}subgraph cluster_id_0_1{label=<<font "
-			    "color=\"#606060\">T1 (device-compute)</font>>;color=darkgray;id_0_1[label=<C1 on N0<br/><b>execution</b> [0,0,0] + "
-			    "[8,16,1]<br/><i>discard_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_2{label=<<font "
-			    "color=\"#606060\">T2 (horizon)</font>>;color=darkgray;id_0_2[label=<C2 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph "
-			    "cluster_id_0_3{label=<<font color=\"#606060\">T3 (device-compute)</font>>;color=darkgray;id_0_3[label=<C3 on N0<br/><b>execution</b> [0,0,0] "
-			    "+ [8,16,1]<br/><i>read_write</i> B0 {[0,0,0] - [8,16,1]}> fontcolor=black shape=box];}subgraph cluster_id_0_4{label=<<font "
-			    "color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_0_4[label=<C4 on N0<br/><b>horizon</b>> fontcolor=black shape=box];}subgraph "
-			    "cluster_id_0_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_0_5[label=<C5 on N0<br/><b>epoch</b> (barrier)> "
-			    "fontcolor=black "
-			    "shape=box];}id_0_0->id_0_1[color=orchid];id_0_1->id_0_2[color=orange];id_0_1->id_0_3[];id_0_3->id_0_4[color=orange];id_0_2->id_0_4[color="
-			    "orange];id_0_4->id_0_5[color=orange];subgraph cluster_id_1_0{label=<<font color=\"#606060\">T0 "
-			    "(epoch)</font>>;color=darkgray;id_1_0[label=<C0 on N1<br/><b>epoch</b>> fontcolor=crimson shape=box];}subgraph cluster_id_1_1{label=<<font "
-			    "color=\"#606060\">T1 (device-compute)</font>>;color=darkgray;id_1_1[label=<C1 on N1<br/><b>execution</b> [8,0,0] + "
-			    "[8,16,1]<br/><i>discard_write</i> B0 {[8,0,0] - [16,16,1]}> fontcolor=crimson shape=box];}subgraph cluster_id_1_2{label=<<font "
-			    "color=\"#606060\">T2 (horizon)</font>>;color=darkgray;id_1_2[label=<C2 on N1<br/><b>horizon</b>> fontcolor=crimson shape=box];}subgraph "
-			    "cluster_id_1_3{label=<<font color=\"#606060\">T3 (device-compute)</font>>;color=darkgray;id_1_3[label=<C3 on N1<br/><b>execution</b> [8,0,0] "
-			    "+ [8,16,1]<br/><i>read_write</i> B0 {[8,0,0] - [16,16,1]}> fontcolor=crimson shape=box];}subgraph cluster_id_1_4{label=<<font "
-			    "color=\"#606060\">T4 (horizon)</font>>;color=darkgray;id_1_4[label=<C4 on N1<br/><b>horizon</b>> fontcolor=crimson shape=box];}subgraph "
-			    "cluster_id_1_5{label=<<font color=\"#606060\">T5 (epoch)</font>>;color=darkgray;id_1_5[label=<C5 on N1<br/><b>epoch</b> (barrier)> "
-			    "fontcolor=crimson "
-			    "shape=box];}id_1_0->id_1_1[color=orchid];id_1_1->id_1_2[color=orange];id_1_1->id_1_3[];id_1_3->id_1_4[color=orange];id_1_2->id_1_4[color="
-			    "orange];id_1_4->id_1_5[color=orange];}";
-
-			CHECK(dot == expected);
-			if(dot != expected) { fmt::print("\n{}:\n\ngot:\n\n{}\n\nexpected:\n\n{}\n\n", Catch::getResultCapture().getCurrentTestName(), dot, expected); }
+		if(local_nid == 0) {
+			const auto expected = "digraph G{label=<Command Graph>;pad=0.2;subgraph cluster_id_0_0{label=<l>;id_0_0[label=<C0 on N0>;shape=box];}subgraph "
+			                      "cluster_id_1_0{label=<l>;id_1_0[label=<C0 on N1>;shape=box];}}";
+			CHECK(combined_cdag == expected);
 		}
 	}
 

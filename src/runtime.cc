@@ -247,19 +247,25 @@ namespace detail {
 		if(spdlog::should_log(log_level::info) && m_cfg->should_print_graphs()) {
 			if(m_local_nid == 0) { // It's the same across all nodes
 				assert(m_task_recorder.get() != nullptr);
-				const auto graph_str = detail::print_task_graph(*m_task_recorder);
-				CELERITY_INFO("Task graph:\n\n{}\n", graph_str);
+				const auto tdag_str = detail::print_task_graph(*m_task_recorder);
+				CELERITY_INFO("Task graph:\n\n{}\n", tdag_str);
 			}
-			// must be called on all nodes
-			auto cmd_graph = gather_command_graph();
-			if(m_local_nid == 0) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Avoid racing on stdout with other nodes (funneled through mpirun)
-				CELERITY_INFO("Command graph:\n\n{}\n", cmd_graph);
 
-				// IDAGs become unreadable when all nodes print them at the same time - TODO attempt gathering them as well?
+			assert(m_command_recorder.get() != nullptr);
+			auto cdag_str = print_command_graph(m_local_nid, *m_command_recorder);
+			if(!is_dry_run()) { cdag_str = gather_command_graph(cdag_str, m_num_nodes, m_local_nid); } // must be called on all nodes
+
+			if(m_local_nid == 0) {
+				// Avoid racing on stdout with other nodes (funneled through mpirun)
+				if(!is_dry_run()) { std::this_thread::sleep_for(std::chrono::milliseconds(500)); }
+				CELERITY_INFO("Command graph:\n\n{}\n", cdag_str);
+			}
+
+			// IDAGs become unreadable when all nodes print them at the same time - TODO attempt gathering them as well?
+			if(m_local_nid == 0) {
 				// we are allowed to deref m_instruction_recorder / m_command_recorder because the scheduler thread has exited at this point
-				CELERITY_INFO(
-				    "Instruction graph on node 0:\n\n{}\n", detail::print_instruction_graph(*m_instruction_recorder, *m_command_recorder, *m_task_recorder));
+				const auto idag_str = detail::print_instruction_graph(*m_instruction_recorder, *m_command_recorder, *m_task_recorder);
+				CELERITY_INFO("Instruction graph on node 0:\n\n{}\n", idag_str);
 			}
 		}
 
@@ -291,20 +297,12 @@ namespace detail {
 		return *m_task_mngr;
 	}
 
-	std::string runtime::gather_command_graph() const {
-		assert(m_schdlr == nullptr); // otherwise scheduler thread is still accessing CDAG / IDAG recorders
-		require_call_from_application_thread();
-
-		assert(m_command_recorder.get() != nullptr);
-		auto graph_str = print_command_graph(m_local_nid, *m_command_recorder);
-
-		if(m_cfg->is_dry_run()) return graph_str;
-
+	std::string gather_command_graph(const std::string& graph_str, const size_t num_nodes, const node_id local_nid) {
 		const auto comm = MPI_COMM_WORLD;
-		const int tag = 0; // Celerity does not perform any other peer-to-peer communication over MPI_COMM_WORLD
+		const int tag = 'CDAG'; // Celerity does not perform any other peer-to-peer communication over MPI_COMM_WORLD
 
 		// Send local graph to rank 0 on all other nodes
-		if(m_local_nid != 0) {
+		if(local_nid != 0) {
 			const uint64_t usize = graph_str.size();
 			assert(usize < std::numeric_limits<int32_t>::max());
 			const int32_t size = static_cast<int32_t>(usize);
@@ -315,13 +313,13 @@ namespace detail {
 		// On node 0, receive and combine
 		std::vector<std::string> graphs;
 		graphs.push_back(graph_str);
-		for(size_t i = 1; i < m_num_nodes; ++i) {
+		for(node_id peer = 1; peer < num_nodes; ++peer) {
 			int32_t size = 0;
-			MPI_Recv(&size, 1, MPI_INT32_T, static_cast<int>(i), tag, comm, MPI_STATUS_IGNORE);
+			MPI_Recv(&size, 1, MPI_INT32_T, static_cast<int>(peer), tag, comm, MPI_STATUS_IGNORE);
 			if(size > 0) {
 				std::string graph;
 				graph.resize(size);
-				MPI_Recv(graph.data(), size, MPI_BYTE, static_cast<int>(i), tag, comm, MPI_STATUS_IGNORE);
+				MPI_Recv(graph.data(), size, MPI_BYTE, static_cast<int>(peer), tag, comm, MPI_STATUS_IGNORE);
 				graphs.push_back(std::move(graph));
 			}
 		}

@@ -73,10 +73,6 @@ namespace detail {
 
 		reduction_id create_reduction(std::unique_ptr<reducer> reducer);
 
-		// Returns the combined command graph of all nodes on node 0, an empty string on other nodes
-		// Call *must* be preceded by a scheduler shutdown or a call to slow_full_sync() / scheduler_testspy::wait_idle()
-		std::string gather_command_graph() const;
-
 		bool is_dry_run() const { return m_cfg->is_dry_run(); }
 
 	  private:
@@ -191,6 +187,9 @@ namespace detail {
 		inline static bool s_test_active = false;
 		inline static bool s_test_runtime_was_instantiated = false;
 	};
+
+	// Returns the combined command graph of all nodes on node 0, an empty string on other nodes
+	std::string gather_command_graph(const std::string& graph_str, const size_t num_nodes, const node_id local_nid);
 
 } // namespace detail
 } // namespace celerity
