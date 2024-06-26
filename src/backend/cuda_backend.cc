@@ -2,11 +2,11 @@
 
 #include <cuda_runtime.h>
 
-#include "tracy.h"
 #include "log.h"
 #include "nd_memory.h"
 #include "ranges.h"
 #include "system_info.h"
+#include "tracy.h"
 #include "utils.h"
 #include "workaround.h"
 
@@ -115,11 +115,11 @@ async_event copy_region(sycl::queue& queue, const void* const source_base, void*
     const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //
 {
 #if CELERITY_WORKAROUND(HIPSYCL)
-	auto event = queue.hipSYCL_enqueue_custom_operation([=](sycl::interop_handle handle) {
+	auto event = queue.AdaptiveCpp_enqueue_custom_operation([=](sycl::interop_handle handle) {
 		const auto stream = handle.get_native_queue<sycl::backend::cuda>();
 		cuda_backend_detail::nd_copy_device(stream, source_base, dest_base, source_box, dest_box, copy_region, elem_size);
 	});
-	sycl_backend_detail::flush_queue(queue);
+	sycl_backend_detail::flush(queue);
 	return make_async_event<sycl_event>(std::move(event), enable_profiling);
 #elif CELERITY_WORKAROUND(DPCPP)
 	const auto stream = sycl::get_native<sycl::backend::ext_oneapi_cuda>(queue);

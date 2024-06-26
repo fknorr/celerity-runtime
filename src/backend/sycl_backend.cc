@@ -11,45 +11,37 @@
 
 namespace celerity::detail::sycl_backend_detail {
 
-void flush_queue(sycl::queue& queue) {
+void flush(sycl::queue& queue) {
 #if CELERITY_WORKAROUND(HIPSYCL)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	// hipSYCL does not guarantee that command groups are actually scheduled until an explicit await operation, which we cannot insert without
 	// blocking the executor loop (see https://github.com/illuhad/hipSYCL/issues/599). Instead, we explicitly flush the queue to be able to continue
 	// using our polling-based approach.
-	queue.get_context().hipSYCL_runtime()->dag().flush_async();
-#pragma GCC diagnostic pop
+	queue.get_context().AdaptiveCpp_runtime()->dag().flush_async();
 #else
 	(void)queue;
 #endif
 }
 
-// TODO make this a member function of some device_queue class
-async_event launch_kernel(sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs,
-    bool enable_profiling) //
-{
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2, "SYCL submit")
-	auto event = queue.submit([&](sycl::handler& sycl_cgh) {
-		const auto launch_hydrated = detail::closure_hydrator::get_instance().hydrate<target::device>(sycl_cgh, launch);
-		launch_hydrated(sycl_cgh, execution_range, reduction_ptrs);
-	});
-	flush_queue(queue);
-	return make_async_event<sycl_event>(std::move(event), enable_profiling);
-}
+void report_errors(const sycl::exception_list& errors) {
+	if(errors.size() == 0) return;
 
-void handle_errors(const sycl::exception_list& errors) {
+	std::vector<std::string> what;
 	for(const auto& e : errors) {
 		try {
 			std::rethrow_exception(e);
-		} catch(const sycl::exception& e) { //
-			CELERITY_CRITICAL("SYCL error: {}", e.what());
+		} catch(sycl::exception& e) { //
+			what.push_back(e.what());
+		} catch(std::exception& e) { //
+			what.push_back(e.what());
+		} catch(...) { //
+			what.push_back("unknown exception");
 		}
 	}
-	if(errors.size() != 0) { abort(); } // NOLINT(readability-container-size-empty)
+
+	utils::panic("asynchronous SYCL error: {}", fmt::join(what, "; "));
 }
 
-async_event copy_region_generic(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
+async_event nd_copy_device(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
     const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //
 {
 	std::optional<sycl::event> first;
@@ -65,7 +57,7 @@ async_event copy_region_generic(sycl::queue& queue, const void* const source_bas
 			if(enable_profiling && !first.has_value()) { first = last; }
 		});
 	}
-	sycl_backend_detail::flush_queue(queue);
+	flush(queue);
 	return make_async_event<sycl_event>(std::move(first), std::move(last));
 }
 
@@ -78,7 +70,6 @@ inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doub
 namespace celerity::detail {
 
 bool sycl_event::is_complete() {
-	// CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::query_event", Orange2, "query SYCL event")
 	return m_last.get_info<sycl::info::event::command_execution_status>() == sycl::info::event_command_status::complete;
 }
 
@@ -149,7 +140,7 @@ struct sycl_backend::impl {
 		if(lane == device.queues.size()) {
 			const auto properties = enable_profiling ? sycl::property_list{sycl::property::queue::enable_profiling{}, sycl::property::queue::in_order{}}
 			                                         : sycl::property_list{sycl::property::queue::in_order{}};
-			device.queues.emplace_back(/* TODO async_handler, */ device.sycl_device, properties);
+			device.queues.emplace_back(device.sycl_device, sycl::async_handler(sycl_backend_detail::report_errors), properties);
 		}
 		return device.queues[lane];
 	}
@@ -186,7 +177,9 @@ async_event sycl_backend::enqueue_device_alloc(const device_id device, const siz
 		auto& d = m_impl->devices[device];
 		const auto ptr = sycl::aligned_alloc_device(alignment, size, d.sycl_device, d.sycl_context);
 #if CELERITY_DETAIL_ENABLE_DEBUG
-		sycl::queue(d.sycl_context, d.sycl_device, sycl::property::queue::in_order{}).fill(ptr, sycl_backend_detail::uninitialized_memory_pattern, size).wait();
+		sycl::queue(d.sycl_context, d.sycl_device, sycl::async_handler(sycl_backend_detail::report_errors), sycl::property::queue::in_order{})
+		    .fill(ptr, sycl_backend_detail::uninitialized_memory_pattern, size)
+		    .wait();
 #endif
 		return ptr;
 	});
@@ -200,10 +193,17 @@ async_event sycl_backend::enqueue_device_free(const device_id device, void* cons
 	return m_impl->host.alloc_queue.submit([this, device, ptr] { sycl::free(ptr, m_impl->devices[device].sycl_context); });
 }
 
-async_event sycl_backend::enqueue_device_kernel(const device_id device, const size_t lane, const device_kernel_launcher& launcher,
-    const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) {
+async_event sycl_backend::enqueue_device_kernel(
+    const device_id device, const size_t lane, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+{
 	auto& queue = m_impl->get_device_queue(device, lane);
-	return sycl_backend_detail::launch_kernel(queue, launcher, execution_range, reduction_ptrs, m_impl->enable_profiling);
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2, "SYCL submit")
+	auto event = queue.submit([&](sycl::handler& sycl_cgh) {
+		const auto launch_hydrated = detail::closure_hydrator::get_instance().hydrate<target::device>(sycl_cgh, launch);
+		launch_hydrated(sycl_cgh, execution_range, reduction_ptrs);
+	});
+	sycl_backend_detail::flush(queue);
+	return make_async_event<sycl_event>(std::move(event), m_impl->enable_profiling);
 }
 
 async_event sycl_backend::enqueue_host_function(const size_t host_lane, std::function<void()> fn) {
@@ -230,7 +230,7 @@ async_event sycl_generic_backend::enqueue_device_copy(const device_id device, co
     const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) //
 {
 	auto& queue = get_device_queue(device, device_lane);
-	return sycl_backend_detail::copy_region_generic(queue, source_base, dest_base, source_box, dest_box, copy_region, elem_size, is_profiling_enabled());
+	return sycl_backend_detail::nd_copy_device(queue, source_base, dest_base, source_box, dest_box, copy_region, elem_size, is_profiling_enabled());
 }
 
 

@@ -8,12 +8,7 @@
 
 namespace celerity::detail::sycl_backend_detail {
 
-void flush_queue(sycl::queue& queue);
-
-async_event launch_kernel(
-    sycl::queue& queue, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs, bool enable_profiling);
-
-void handle_errors(const sycl::exception_list& errors);
+void flush(sycl::queue& queue);
 
 } // namespace celerity::detail::sycl_backend_detail
 
