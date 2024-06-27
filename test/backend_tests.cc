@@ -12,7 +12,6 @@
 using namespace celerity;
 using namespace celerity::detail;
 
-
 void* backend_alloc(backend& backend, const std::optional<device_id>& device, const size_t size, const size_t alignment) {
 	return test_utils::await(device.has_value() ? backend.enqueue_device_alloc(*device, size, alignment) : backend.enqueue_host_alloc(size, alignment));
 }
@@ -37,18 +36,54 @@ std::vector<sycl::device> select_devices_for_backend(sycl_backend_type type) {
 	std::vector<sycl::device> backend_devices;
 	std::copy_if(all_devices.begin(), all_devices.end(), std::back_inserter(backend_devices),
 	    [=](const sycl::device& device) { return utils::contains(sycl_backend_enumerator{}.compatible_backends(device), type); });
-	if(backend_devices.empty()) { SKIP(fmt::format("No devices available for {} backend", type)); }
 	return backend_devices;
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-filled in debug builds", "[backend]") {
-#if defined(CELERITY_DETAIL_ENABLE_DEBUG)
+std::tuple<sycl_backend_type, std::unique_ptr<backend>, std::vector<sycl::device>> generate_backends_with_devices() {
 	const auto backend_type = GENERATE(test_utils::from_vector(sycl_backend_enumerator{}.available_backends()));
 	const auto sycl_devices = select_devices_for_backend(backend_type);
 	CAPTURE(backend_type, sycl_devices);
 
 	if(sycl_devices.empty()) { SKIP("No devices available for backend"); }
 	auto backend = make_sycl_backend(backend_type, sycl_devices, false /* enable_profiling */);
+	return {backend_type, std::move(backend), std::move(sycl_devices)};
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "debug allocations are host- and device-accessible", "[backend]") {
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
+	CAPTURE(backend_type, sycl_devices);
+
+	const auto debug_ptr = static_cast<int*>(backend->debug_alloc(sizeof(int)));
+	*debug_ptr = 1;
+	sycl::queue(sycl_devices[0], sycl::property::queue::in_order{}).single_task([=]() { *debug_ptr += 1; }).wait();
+	CHECK(*debug_ptr == 2);
+	backend->debug_free(debug_ptr);
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are properly aligned", "[backend]") {
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
+	CAPTURE(backend_type, sycl_devices);
+
+	constexpr size_t size = 1024;
+	constexpr size_t sycl_max_alignment = 64; // See SYCL spec 4.14.2.6
+
+	const auto host_ptr = backend_alloc(*backend, std::nullopt, size, sycl_max_alignment);
+	CHECK(reinterpret_cast<uintptr_t>(host_ptr) % sycl_max_alignment == 0);
+	backend_free(*backend, std::nullopt, host_ptr);
+
+	for(device_id did = 0; did < sycl_devices.size(); ++did) {
+		CAPTURE(did);
+		const auto device_ptr = backend_alloc(*backend, did, size, sycl_max_alignment);
+		CHECK(reinterpret_cast<uintptr_t>(device_ptr) % sycl_max_alignment == 0);
+		backend_free(*backend, did, device_ptr);
+	}
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-filled in debug builds", "[backend]") {
+#if defined(CELERITY_DETAIL_ENABLE_DEBUG)
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
+	CAPTURE(backend_type, sycl_devices);
+
 	sycl::queue sycl_queue(sycl_devices[0], sycl::property::queue::in_order{});
 
 	constexpr size_t size = 1024;
@@ -67,13 +102,71 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-f
 #endif
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "backend::enqueue_copy works correctly on all source- and destination layouts", "[backend]") {
-	const auto backend_type = GENERATE(test_utils::from_vector(sycl_backend_enumerator{}.available_backends()));
-	auto sycl_devices = select_devices_for_backend(backend_type);
+TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks are executed with the correct parameters", "[backend]") {
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
-	if(sycl_devices.empty()) { SKIP("No devices available for backend"); }
-	auto backend = make_sycl_backend(backend_type, sycl_devices, false /* enable_profiling */);
+	constexpr size_t lane = 0;
+	const box<3> execution_range({1, 2, 3}, {4, 5, 6});
+	const auto collective_comm = reinterpret_cast<const communicator*>(0x42000);
+
+	int value = 1;
+	test_utils::await(backend->enqueue_host_task(
+	    lane,
+	    [&](const box<3>& b, const communicator* c) {
+		    value += 1;
+		    CHECK(b == execution_range);
+		    CHECK(c == collective_comm);
+	    },
+	    execution_range, collective_comm));
+	CHECK(value == 2);
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execute in-order", "[backend]") {
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
+	CAPTURE(backend_type, sycl_devices);
+
+	constexpr size_t lane = 0;
+	const auto first = backend->enqueue_host_task(
+	    lane, [](const box<3>&, const communicator*) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }, box_cast<3>(box<0>()), nullptr);
+	const auto second = backend->enqueue_host_task(
+	    lane, [](const box<3>&, const communicator* /* collective_comm */) {}, box_cast<3>(box<0>()), nullptr);
+
+	for(;;) {
+		if(second.is_complete()) {
+			CHECK(first.is_complete());
+			break;
+		}
+	}
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "device kernels command group are executed with the correct parameters", "[backend]") {
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
+	CAPTURE(backend_type, sycl_devices);
+
+	constexpr size_t lane = 0;
+	const box<3> execution_range({1, 2, 3}, {4, 5, 6});
+	const std::vector<void*> reduction_ptrs{nullptr, reinterpret_cast<void*>(1337)};
+
+	const auto value_ptr = static_cast<int*>(backend->debug_alloc(sizeof(int)));
+	for(device_id did = 0; did < sycl_devices.size(); ++did) {
+		*value_ptr = 1;
+		test_utils::await(backend->enqueue_device_kernel(
+		    did, 0,
+		    [&](sycl::handler& cgh, const box<3>& b, const std::vector<void*>& r) {
+			    CHECK(b == execution_range);
+			    CHECK(r == reduction_ptrs);
+			    cgh.single_task([=] { *value_ptr += 1; });
+		    },
+		    execution_range, reduction_ptrs));
+		CHECK(*value_ptr == 2);
+	}
+	backend->debug_free(value_ptr);
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "backend copies work correctly on all source- and destination layouts", "[backend]") {
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
+	CAPTURE(backend_type, sycl_devices);
 
 	// device_to_itself is used for buffer resizes, and device_to_peer for coherence (if the backend supports it)
 	const auto direction = GENERATE(values<std::string>({"host to device", "device to host", "device to peer", "device to itself"}));
