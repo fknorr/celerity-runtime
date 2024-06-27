@@ -12,9 +12,9 @@ struct copy_test_layout {
 	detail::box<3> copy_box;
 };
 
-constexpr range<3> copy_test_max_range{8, 8, 8};  // default range 4 in each dimension, plus potentially 2x2 padding
+inline constexpr range<3> copy_test_max_range{8, 8, 8};  // default range 4 in each dimension, plus potentially 2x2 padding
 
-std::vector<copy_test_layout> generate_copy_test_layouts() {
+inline std::vector<copy_test_layout> generate_copy_test_layouts() {
 	enum padding { none = 0b00, left = 0b01, right = 0b10, both = 0b11 };
     constexpr size_t padding_width = 2;
 	const std::vector<padding> no_padding = {none};

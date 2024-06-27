@@ -1,4 +1,6 @@
 #include "nd_memory.h"
+
+#include "copy_test_utils.h"
 #include "test_utils.h"
 
 #include <catch2/catch_template_test_macros.hpp>
@@ -70,42 +72,19 @@ void dumb_nd_copy_host(
 	}
 }
 
-TEMPLATE_TEST_CASE_SIG("nd_copy_host works correctly in all source- and destination layouts", "[memory]", ((int Dims), Dims), 0, 1, 2, 3) {
-	// A negative shift means the source/dest box exceeds the copy box on the left side, a positive shift means it exceeds it on the right side.
-	int source_shift[3] = {};
-	int dest_shift[3] = {};
-	if constexpr(Dims > 0) { source_shift[0] = GENERATE(values({-2, 0, 2})), dest_shift[0] = GENERATE(values({-2, 0, 2})); }
-	if constexpr(Dims > 1) { source_shift[1] = GENERATE(values({-2, 0, 2})), dest_shift[1] = GENERATE(values({-2, 0, 2})); }
-	if constexpr(Dims > 2) { source_shift[2] = GENERATE(values({-2, 0, 2})), dest_shift[2] = GENERATE(values({-2, 0, 2})); }
-	CAPTURE(source_shift, dest_shift);
+TEST_CASE("nd_copy_host works correctly in all source- and destination layouts", "[memory]") {
+	for(const auto& [source_box, dest_box, copy_box] : test_utils::generate_copy_test_layouts()) {
+		CAPTURE(source_box, dest_box, copy_box);
 
-	const auto copy_min = id_cast<3>(test_utils::truncate_id<Dims>({3, 5, 4}));
-	const auto copy_max = id_cast<3>(test_utils::truncate_id<Dims>({7, 8, 9}));
+		std::vector<int> source(source_box.get_area());
+		std::iota(source.begin(), source.end(), 1);
 
-	id<3> source_min = copy_min;
-	id<3> source_max = copy_max;
-	id<3> dest_min = copy_min;
-	id<3> dest_max = copy_max;
-	for(int d = 0; d < Dims; ++d) {
-		if(source_shift[d] > 0) { source_min[d] -= static_cast<size_t>(source_shift[d]); }
-		source_max[d] += static_cast<size_t>(std::abs(source_shift[d]));
-		if(dest_shift[d] > 0) { dest_min[d] -= static_cast<size_t>(dest_shift[d]); }
-		dest_max[d] += static_cast<size_t>(std::abs(dest_shift[d]));
+		std::vector<int> expected_dest(dest_box.get_area());
+		dumb_nd_copy_host(source.data(), expected_dest.data(), source_box, dest_box, copy_box, sizeof(int));
+
+		std::vector<int> dest(dest_box.get_area());
+		nd_copy_host(source.data(), dest.data(), source_box, dest_box, copy_box, sizeof(int));
+
+		CHECK(dest == expected_dest);
 	}
-
-	const auto source_box = box<3>{source_min, source_max};
-	const auto dest_box = box<3>{dest_min, dest_max};
-	const auto copy_box = box<3>{copy_min, copy_max};
-	CAPTURE(source_box, dest_box, copy_box);
-
-	std::vector<int> source(source_box.get_area());
-	std::iota(source.begin(), source.end(), 1);
-
-	std::vector<int> expected_dest(dest_box.get_area());
-	dumb_nd_copy_host(source.data(), expected_dest.data(), source_box, dest_box, copy_box, sizeof(int));
-
-	std::vector<int> dest(dest_box.get_area());
-	nd_copy_host(source.data(), dest.data(), source_box, dest_box, copy_box, sizeof(int));
-
-	CHECK(dest == expected_dest);
 }
