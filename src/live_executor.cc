@@ -97,8 +97,8 @@ struct executor_impl {
 	    out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id);
 #endif
 
-	executor_impl(const system_info& system, std::unique_ptr<detail::backend> backend, communicator* root_comm,
-	    double_buffered_queue<submission>& submission_queue, live_executor::delegate* dlg);
+	executor_impl(
+	    std::unique_ptr<detail::backend> backend, communicator* root_comm, double_buffered_queue<submission>& submission_queue, live_executor::delegate* dlg);
 
 	void run();
 	void poll_in_flight_async_instructions();
@@ -311,10 +311,10 @@ void tracy_end_async_zone(tracy_async_lane& lane, const tracy_async_zone& zone) 
 }
 #endif
 
-executor_impl::executor_impl(const system_info& system, std::unique_ptr<detail::backend> backend, communicator* const root_comm,
-    double_buffered_queue<submission>& submission_queue, live_executor::delegate* const dlg)
+executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communicator* const root_comm, double_buffered_queue<submission>& submission_queue,
+    live_executor::delegate* const dlg)
     : delegate(dlg), submission_queue(&submission_queue), root_communicator(root_comm), backend(std::move(backend)), recv_arbiter(*root_communicator),
-      engine(system) {}
+      engine(this->backend->get_system_info()) {}
 
 void executor_impl::run() {
 	closure_hydrator::make_available();
@@ -821,8 +821,8 @@ std::unique_ptr<boundary_check_info> executor_impl::attach_boundary_check_info(s
 
 namespace celerity::detail {
 
-live_executor::live_executor(const system_info& system, std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* const dlg)
-    : m_root_comm(std::move(root_comm)), m_thread(&live_executor::thread_main, this, system, std::move(backend), dlg) //
+live_executor::live_executor(std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* const dlg)
+    : m_root_comm(std::move(root_comm)), m_thread(&live_executor::thread_main, this, std::move(backend), dlg) //
 {
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
@@ -851,10 +851,10 @@ void live_executor::wait() {
 	if(m_thread.joinable()) { m_thread.join(); }
 }
 
-void live_executor::thread_main(const system_info& system, std::unique_ptr<backend> backend, delegate* const dlg) {
+void live_executor::thread_main(std::unique_ptr<backend> backend, delegate* const dlg) {
 	CELERITY_DETAIL_TRACY_SET_THREAD_NAME("cy-executor");
 	try {
-		live_executor_detail::executor_impl(system, std::move(backend), m_root_comm.get(), m_submission_queue, dlg).run();
+		live_executor_detail::executor_impl(std::move(backend), m_root_comm.get(), m_submission_queue, dlg).run();
 	} catch(const std::exception& e) {
 		CELERITY_CRITICAL("[executor] {}", e.what());
 		std::abort();

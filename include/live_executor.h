@@ -37,7 +37,7 @@ class backend;
 
 class live_executor final : public executor {
   public:
-	explicit live_executor(const system_info& system, std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* dlg);
+	explicit live_executor(std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* dlg);
 	live_executor(const live_executor&) = delete;
 	live_executor(live_executor&&) = delete;
 	live_executor& operator=(const live_executor&) = delete;
@@ -46,7 +46,7 @@ class live_executor final : public executor {
 
 	void announce_user_allocation(allocation_id aid, void* ptr) override;
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
-	void announce_reducer(reduction_id rid, std::unique_ptr<reducer> reduction) override;
+	void announce_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) override;
 
 	void submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) override;
 
@@ -59,7 +59,7 @@ class live_executor final : public executor {
 	double_buffered_queue<live_executor_detail::submission> m_submission_queue;
 	std::thread m_thread;
 
-	void thread_main(const system_info& system, std::unique_ptr<backend> backend, delegate* dlg);
+	void thread_main(std::unique_ptr<backend> backend, delegate* dlg);
 };
 
 } // namespace celerity::detail

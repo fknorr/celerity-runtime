@@ -28,6 +28,7 @@ set(TEST_TARGETS
   backend_tests
   debug_naming_tests
   double_buffered_queue_tests
+  executor_tests
   graph_generation_tests
   graph_gen_granularity_tests
   graph_gen_reduction_tests

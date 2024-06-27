@@ -181,7 +181,7 @@ namespace detail {
 
 		const bool enable_profiling = m_cfg->get_enable_device_profiling().value_or(false);
 		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices, enable_profiling);
-		const auto system = backend->get_system_info();
+		const auto system = backend->get_system_info(); // backend is about to be moved
 
 		m_num_local_devices = devices.size();
 
@@ -189,7 +189,7 @@ namespace detail {
 			m_exec = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
 		} else {
 			auto comm = std::make_unique<mpi_communicator>(collective_clone_from, MPI_COMM_WORLD);
-			m_exec = std::make_unique<live_executor>(system, std::move(backend), std::move(comm), static_cast<executor::delegate*>(this));
+			m_exec = std::make_unique<live_executor>(std::move(backend), std::move(comm), static_cast<executor::delegate*>(this));
 		}
 
 		scheduler::policy_set schdlr_policy;
