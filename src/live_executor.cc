@@ -28,12 +28,14 @@ struct boundary_check_info {
 		box<3> accessible_box;
 	};
 
+	detail::task_type task_type;
+	detail::task_id task_id;
+	std::string task_name;
+
 	oob_bounding_box* illegal_access_bounding_boxes = nullptr;
 	std::vector<accessor_info> accessors;
 
-	detail::task_type task_type = detail::task_type::epoch;
-	detail::task_id task_id = 0;
-	std::string task_name;
+	boundary_check_info(detail::task_type tt, detail::task_id tid, const std::string& task_name) : task_type(tt), task_id(tid), task_name(task_name) {}
 };
 #endif
 
@@ -132,10 +134,14 @@ struct executor_impl {
 	auto dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment)
 	    -> decltype(issue_async(instr, assignment, std::declval<async_instruction_state&>()));
 
+	std::vector<closure_hydrator::accessor_info> make_accessor_infos(const buffer_access_allocation_map& amap) const;
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	std::unique_ptr<boundary_check_info> attach_boundary_check_info(std::vector<closure_hydrator::accessor_info>& accessor_infos,
+	    const buffer_access_allocation_map& amap, task_type tt, task_id tid, const std::string& task_name) const;
+#endif
+
 	void collect(const instruction_garbage& garbage);
-	std::vector<closure_hydrator::accessor_info> make_accessor_infos(instruction_id iid, target target,
-	    const buffer_access_allocation_map& amap CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(
-	        , task_type tt, task_id tid, const std::string& task_name, std::unique_ptr<boundary_check_info>& out_oob_info));
 };
 
 #if CELERITY_ENABLE_TRACY
@@ -683,9 +689,11 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	CELERITY_TRACE("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
 	    print_accesses(dkinstr.get_access_allocations()));
 
-	auto accessor_infos = make_accessor_infos(dkinstr.get_id(), target::device,
-	    dkinstr.get_access_allocations() //
-	    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, dkinstr.get_oob_task_type(), dkinstr.get_oob_task_id(), dkinstr.get_oob_task_name(), async.oob_info));
+	auto accessor_infos = make_accessor_infos(dkinstr.get_access_allocations());
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	async.oob_info = attach_boundary_check_info(
+	    accessor_infos, dkinstr.get_access_allocations(), dkinstr.get_oob_task_type(), dkinstr.get_oob_task_id(), dkinstr.get_oob_task_name());
+#endif
 
 	std::vector<void*> reduction_ptrs;
 	reduction_ptrs.reserve(dkinstr.get_reduction_allocations().size());
@@ -704,9 +712,11 @@ void executor_impl::issue_async(const host_task_instruction& htinstr, const out_
 
 	CELERITY_TRACE("[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), print_accesses(htinstr.get_access_allocations()));
 
-	auto accessor_infos = make_accessor_infos(htinstr.get_id(), target::host_task,
-	    htinstr.get_access_allocations() //
-	    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, htinstr.get_oob_task_type(), htinstr.get_oob_task_id(), htinstr.get_oob_task_name(), async.oob_info));
+	auto accessor_infos = make_accessor_infos(htinstr.get_access_allocations());
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+	async.oob_info = attach_boundary_check_info(
+	    accessor_infos, htinstr.get_access_allocations(), htinstr.get_oob_task_type(), htinstr.get_oob_task_id(), htinstr.get_oob_task_name());
+#endif
 
 	const auto& execution_range = htinstr.get_execution_range();
 	const auto collective_comm =
@@ -775,37 +785,35 @@ void executor_impl::collect(const instruction_garbage& garbage) {
 	}
 }
 
-std::vector<closure_hydrator::accessor_info> executor_impl::make_accessor_infos([[maybe_unused]] const instruction_id iid, target target,
-    const buffer_access_allocation_map& amap CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(
-        , const task_type tt, const task_id tid, const std::string& task_name, std::unique_ptr<boundary_check_info>& oob_info)) //
-{
-#if CELERITY_ACCESSOR_BOUNDARY_CHECK
-	if(!amap.empty()) {
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_init", Red, "I{} bounds check init", iid);
-		oob_info = std::make_unique<boundary_check_info>();
-
-		// SYCL host memory is writeable by devices
-		oob_info->illegal_access_bounding_boxes =
-		    static_cast<oob_bounding_box*>(backend->debug_alloc(amap.size() * sizeof(oob_bounding_box))); // uh oh this needs to be sync?
-		std::uninitialized_default_construct_n(oob_info->illegal_access_bounding_boxes, amap.size());
-
-		for(size_t i = 0; i < amap.size(); ++i) {
-			oob_info->accessors.push_back({amap[i].oob_buffer_id, amap[i].oob_buffer_name, amap[i].accessed_box_in_buffer});
-		}
-		oob_info->task_type = tt;
-		oob_info->task_id = tid;
-		oob_info->task_name = task_name;
-	}
-#endif
-
+std::vector<closure_hydrator::accessor_info> executor_impl::make_accessor_infos(const buffer_access_allocation_map& amap) const {
 	std::vector<closure_hydrator::accessor_info> accessor_infos(amap.size());
 	for(size_t i = 0; i < amap.size(); ++i) {
 		const auto ptr = allocations.at(amap[i].allocation_id);
-		accessor_infos[i] = closure_hydrator::accessor_info{ptr, amap[i].allocated_box_in_buffer,
-		    amap[i].accessed_box_in_buffer CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, &oob_info->illegal_access_bounding_boxes[i])};
+		accessor_infos[i] = closure_hydrator::accessor_info{ptr, amap[i].allocated_box_in_buffer, amap[i].accessed_box_in_buffer};
 	}
 	return accessor_infos;
 }
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+std::unique_ptr<boundary_check_info> executor_impl::attach_boundary_check_info(std::vector<closure_hydrator::accessor_info>& accessor_infos,
+    const buffer_access_allocation_map& amap, task_type tt, task_id tid, const std::string& task_name) const //
+{
+	if(amap.empty()) return nullptr;
+
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_init", Red, "bounds check init", iid);
+	auto oob_info = std::make_unique<boundary_check_info>(tt, tid, task_name);
+
+	oob_info->illegal_access_bounding_boxes = static_cast<oob_bounding_box*>(backend->debug_alloc(amap.size() * sizeof(oob_bounding_box)));
+	std::uninitialized_default_construct_n(oob_info->illegal_access_bounding_boxes, amap.size());
+
+	oob_info->accessors.resize(amap.size());
+	for(size_t i = 0; i < amap.size(); ++i) {
+		oob_info->accessors[i] = boundary_check_info::accessor_info{amap[i].oob_buffer_id, amap[i].oob_buffer_name, amap[i].accessed_box_in_buffer};
+		accessor_infos[i].out_of_bounds_indices = oob_info->illegal_access_bounding_boxes + i;
+	}
+	return oob_info;
+}
+#endif // CELERITY_ACCESSOR_BOUNDARY_CHECK
 
 } // namespace celerity::detail::live_executor_detail
 
