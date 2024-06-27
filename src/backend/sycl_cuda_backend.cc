@@ -184,6 +184,10 @@ namespace celerity::detail {
 
 sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, const bool enable_profiling) : sycl_backend(devices, enable_profiling) {
 #if !CELERITY_DISABLE_CUDA_PEER_ACCESS
+	// CUDA permits cudaMemcpy between devices that are not peer-enabled, but will implicitly stage the copy through host memory, which wreaks havoc on stream
+	// parallelism (see https://forums.developer.nvidia.com/t/queueing-device-to-device-peer-memcpy-stalls-concurrent-copy-operations/295894). We therefore
+	// choose not to consider such GPUs to be copy-peers. There is potential to improve performance by partially overlapping the corresponding D2H and H2D
+	// copies, but this must be expressible in the IDAG (TODO).
 	for(device_id i = 0; i < devices.size(); ++i) {
 		for(device_id j = i + 1; j < devices.size(); ++j) {
 			const int id_i = sycl::get_native<sycl_backend_detail::sycl_cuda_backend>(devices[i]);
