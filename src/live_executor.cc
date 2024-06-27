@@ -343,6 +343,8 @@ void executor_impl::run() {
 	assert(std::all_of(allocations.begin(), allocations.end(),
 	    [](const std::pair<allocation_id, void*>& p) { return p.first == null_allocation_id || p.first.get_memory_id() == user_memory_id; }));
 	assert(host_object_instances.empty());
+
+	closure_hydrator::teardown();
 }
 
 void executor_impl::poll_in_flight_async_instructions() {

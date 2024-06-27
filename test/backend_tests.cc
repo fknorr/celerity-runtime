@@ -12,6 +12,8 @@
 using namespace celerity;
 using namespace celerity::detail;
 
+// backend_*() functions here dispatch _host / _device member functions based on whether a device id is provided or not
+
 void* backend_alloc(backend& backend, const std::optional<device_id>& device, const size_t size, const size_t alignment) {
 	return test_utils::await(device.has_value() ? backend.enqueue_device_alloc(*device, size, alignment) : backend.enqueue_host_alloc(size, alignment));
 }
@@ -30,6 +32,26 @@ void backend_copy(backend& backend, const std::optional<device_id>& source_devic
 	}
 }
 
+/// For extracting hydration results
+template <target Target>
+struct mock_accessor {
+	hydration_id hid;
+	std::optional<closure_hydrator::accessor_info> info;
+
+	explicit mock_accessor(hydration_id hid) : hid(hid) {}
+	mock_accessor(const mock_accessor& other) : hid(other.hid) { copy_and_hydrate(other); }
+	mock_accessor(mock_accessor&&) = delete;
+	mock_accessor& operator=(const mock_accessor& other) { hid = other.hid, copy_and_hydrate(other); }
+	mock_accessor& operator=(mock_accessor&&) = delete;
+	~mock_accessor() = default;
+
+	void copy_and_hydrate(const mock_accessor& other) {
+		if(!info.has_value() && detail::closure_hydrator::is_available() && detail::closure_hydrator::get_instance().is_hydrating()) {
+			info = detail::closure_hydrator::get_instance().get_accessor_info<Target>(hid);
+		}
+	}
+};
+
 std::vector<sycl::device> select_devices_for_backend(sycl_backend_type type) {
 	// device discovery - we need at least one to run anything and two to run device-to-peer tests
 	const auto all_devices = sycl::device::get_devices(sycl::info::device_type::gpu);
@@ -41,7 +63,7 @@ std::vector<sycl::device> select_devices_for_backend(sycl_backend_type type) {
 
 std::tuple<sycl_backend_type, std::unique_ptr<backend>, std::vector<sycl::device>> generate_backends_with_devices() {
 	const auto backend_type = GENERATE(test_utils::from_vector(sycl_backend_enumerator{}.available_backends()));
-	const auto sycl_devices = select_devices_for_backend(backend_type);
+	auto sycl_devices = select_devices_for_backend(backend_type);
 	CAPTURE(backend_type, sycl_devices);
 
 	if(sycl_devices.empty()) { SKIP("No devices available for backend"); }
@@ -102,24 +124,57 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-f
 #endif
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks are executed with the correct parameters", "[backend]") {
+TEST_CASE_METHOD(test_utils::backend_fixture, "host task lambdas are hydrated and invoked with the correct parameters", "[backend]") {
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
+
+	const mock_accessor<target::host_task> acc1(hydration_id(1));
+	const mock_accessor<target::host_task> acc2(hydration_id(2));
+	const std::vector<closure_hydrator::accessor_info> accessor_infos{
+	    {reinterpret_cast<void*>(0x1337), box<3>{{1, 2, 3}, {4, 5, 6}},
+	        box<3>{{0, 1, 2}, {7, 8, 9}} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, reinterpret_cast<oob_bounding_box*>(0x69420))},
+	    {reinterpret_cast<void*>(0x7331), box<3>{{3, 2, 1}, {6, 5, 4}},
+	        box<3>{{2, 1, 0}, {9, 8, 7}} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, reinterpret_cast<oob_bounding_box*>(0x1230))}};
 
 	constexpr size_t lane = 0;
 	const box<3> execution_range({1, 2, 3}, {4, 5, 6});
 	const auto collective_comm = reinterpret_cast<const communicator*>(0x42000);
 
 	int value = 1;
+
+	// no accessors
 	test_utils::await(backend->enqueue_host_task(
 	    lane,
 	    [&](const box<3>& b, const communicator* c) {
-		    value += 1;
 		    CHECK(b == execution_range);
 		    CHECK(c == collective_comm);
+
+		    value += 1;
 	    },
-	    {} /* accessor_infos */, execution_range, collective_comm));
-	CHECK(value == 2);
+	    {}, execution_range, collective_comm));
+
+	// yes accessors
+	test_utils::await(backend->enqueue_host_task(
+	    lane,
+	    [&, acc1, acc2](const box<3>& b, const communicator* c) {
+		    CHECK(acc1.info->ptr == accessor_infos[0].ptr);
+		    CHECK(acc1.info->allocated_box_in_buffer == accessor_infos[0].allocated_box_in_buffer);
+		    CHECK(acc1.info->accessed_box_in_buffer == accessor_infos[0].accessed_box_in_buffer);
+		    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc1.info->out_of_bounds_indices == accessor_infos[0].out_of_bounds_indices);)
+
+		    CHECK(acc2.info->ptr == accessor_infos[1].ptr);
+		    CHECK(acc2.info->allocated_box_in_buffer == accessor_infos[1].allocated_box_in_buffer);
+		    CHECK(acc2.info->accessed_box_in_buffer == accessor_infos[1].accessed_box_in_buffer);
+		    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc2.info->out_of_bounds_indices == accessor_infos[1].out_of_bounds_indices);)
+
+		    CHECK(b == execution_range);
+		    CHECK(c == collective_comm);
+
+		    value += 1;
+	    },
+	    accessor_infos, execution_range, collective_comm));
+
+	CHECK(value == 3);
 }
 
 TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execute in-order", "[backend]") {
@@ -140,28 +195,93 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execu
 	}
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "device kernels command group are executed with the correct parameters", "[backend]") {
+TEST_CASE_METHOD(test_utils::backend_fixture, "device kernel command groups are hydrated and invoked with the correct parameters", "[backend]") {
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
+
+	const mock_accessor<target::device> acc1(hydration_id(1));
+	const mock_accessor<target::device> acc2(hydration_id(2));
+	const std::vector<closure_hydrator::accessor_info> accessor_infos{
+	    {reinterpret_cast<void*>(0x1337), box<3>{{1, 2, 3}, {4, 5, 6}},
+	        box<3>{{0, 1, 2}, {7, 8, 9}} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, reinterpret_cast<oob_bounding_box*>(0x69420))},
+	    {reinterpret_cast<void*>(0x7331), box<3>{{3, 2, 1}, {6, 5, 4}},
+	        box<3>{{2, 1, 0}, {9, 8, 7}} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, reinterpret_cast<oob_bounding_box*>(0x1230))}};
 
 	constexpr size_t lane = 0;
 	const box<3> execution_range({1, 2, 3}, {4, 5, 6});
 	const std::vector<void*> reduction_ptrs{nullptr, reinterpret_cast<void*>(1337)};
 
 	const auto value_ptr = static_cast<int*>(backend->debug_alloc(sizeof(int)));
+
 	for(device_id did = 0; did < sycl_devices.size(); ++did) {
 		*value_ptr = 1;
+
+		// no accessors
 		test_utils::await(backend->enqueue_device_kernel(
-		    did, 0,
+		    did, lane,
 		    [&](sycl::handler& cgh, const box<3>& b, const std::vector<void*>& r) {
 			    CHECK(b == execution_range);
 			    CHECK(r == reduction_ptrs);
+
 			    cgh.single_task([=] { *value_ptr += 1; });
 		    },
-		    {} /* accessor_infos*/, execution_range, reduction_ptrs));
-		CHECK(*value_ptr == 2);
+		    {}, execution_range, reduction_ptrs));
+
+		// yes accessors
+		test_utils::await(backend->enqueue_device_kernel(
+		    did, lane,
+		    [&, acc1, acc2](sycl::handler& cgh, const box<3>& b, const std::vector<void*>& r) {
+			    CHECK(acc1.info->ptr == accessor_infos[0].ptr);
+			    CHECK(acc1.info->allocated_box_in_buffer == accessor_infos[0].allocated_box_in_buffer);
+			    CHECK(acc1.info->accessed_box_in_buffer == accessor_infos[0].accessed_box_in_buffer);
+			    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc1.info->out_of_bounds_indices == accessor_infos[0].out_of_bounds_indices);)
+
+			    CHECK(acc2.info->ptr == accessor_infos[1].ptr);
+			    CHECK(acc2.info->allocated_box_in_buffer == accessor_infos[1].allocated_box_in_buffer);
+			    CHECK(acc2.info->accessed_box_in_buffer == accessor_infos[1].accessed_box_in_buffer);
+			    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc2.info->out_of_bounds_indices == accessor_infos[1].out_of_bounds_indices);)
+
+			    CHECK(b == execution_range);
+			    CHECK(r == reduction_ptrs);
+
+			    cgh.single_task([=] { *value_ptr += 1; });
+		    },
+		    accessor_infos, execution_range, reduction_ptrs));
+
+		CHECK(*value_ptr == 3);
 	}
+
 	backend->debug_free(value_ptr);
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "device kernels in a single lane execute in-order", "[backend]") {
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
+	CAPTURE(backend_type, sycl_devices);
+
+	const auto dummy = static_cast<volatile int*>(backend->debug_alloc(sizeof(int)));
+	*dummy = 0;
+
+	constexpr size_t lane = 0;
+
+	const auto first = backend->enqueue_device_kernel(device_id(0), lane,
+	    [=](sycl::handler& cgh, const box<3>&, const std::vector<void*>&) {
+		    cgh.single_task([=] {
+			    while(++*dummy < 100'000) {} // busy "wait" - takes ~10ms on hipSYCL debug build with RTX 3090
+		    });
+	    },
+	    {}, box_cast<3>(box<0>()), {});
+
+	const auto second = backend->enqueue_device_kernel(
+	    device_id(0), lane, [=](sycl::handler& cgh, const box<3>&, const std::vector<void*>&) { cgh.single_task([=] {}); }, {}, box_cast<3>(box<0>()), {});
+
+	for(;;) {
+		if(second.is_complete()) {
+			CHECK(first.is_complete());
+			break;
+		}
+	}
+
+	backend->debug_free(const_cast<int*>(dummy));
 }
 
 TEST_CASE_METHOD(test_utils::backend_fixture, "backend copies work correctly on all source- and destination layouts", "[backend]") {
