@@ -42,4 +42,4 @@ async_event sycl_generic_backend::enqueue_device_copy(const device_id device, co
 	return sycl_backend_detail::nd_copy_device_generic(queue, source_base, dest_base, source_box, dest_box, copy_region, elem_size, is_profiling_enabled());
 }
 
-}
+} // namespace celerity::detail
