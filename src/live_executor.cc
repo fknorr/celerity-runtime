@@ -133,7 +133,7 @@ struct executor_impl {
 	    -> decltype(issue_async(instr, assignment, std::declval<async_instruction_state&>()));
 
 	void collect(const instruction_garbage& garbage);
-	void prepare_accessor_hydration(instruction_id iid, target target,
+	std::vector<closure_hydrator::accessor_info> make_accessor_infos(instruction_id iid, target target,
 	    const buffer_access_allocation_map& amap CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(
 	        , task_type tt, task_id tid, const std::string& task_name, std::unique_ptr<boundary_check_info>& out_oob_info));
 };
@@ -683,7 +683,7 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	CELERITY_TRACE("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
 	    print_accesses(dkinstr.get_access_allocations()));
 
-	prepare_accessor_hydration(dkinstr.get_id(), target::device,
+	auto accessor_infos = make_accessor_infos(dkinstr.get_id(), target::device,
 	    dkinstr.get_access_allocations() //
 	    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, dkinstr.get_oob_task_type(), dkinstr.get_oob_task_id(), dkinstr.get_oob_task_name(), async.oob_info));
 
@@ -693,8 +693,8 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 		reduction_ptrs.push_back(allocations.at(ra.allocation_id));
 	}
 
-	async.event =
-	    backend->enqueue_device_kernel(dkinstr.get_device_id(), *assignment.lane, dkinstr.get_launcher(), dkinstr.get_execution_range(), reduction_ptrs);
+	async.event = backend->enqueue_device_kernel(
+	    dkinstr.get_device_id(), *assignment.lane, dkinstr.get_launcher(), std::move(accessor_infos), dkinstr.get_execution_range(), reduction_ptrs);
 }
 
 void executor_impl::issue_async(const host_task_instruction& htinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
@@ -704,16 +704,15 @@ void executor_impl::issue_async(const host_task_instruction& htinstr, const out_
 
 	CELERITY_TRACE("[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), print_accesses(htinstr.get_access_allocations()));
 
-	prepare_accessor_hydration(htinstr.get_id(), target::host_task,
+	auto accessor_infos = make_accessor_infos(htinstr.get_id(), target::host_task,
 	    htinstr.get_access_allocations() //
 	    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, htinstr.get_oob_task_type(), htinstr.get_oob_task_id(), htinstr.get_oob_task_name(), async.oob_info));
-	const auto launch_hydrated = closure_hydrator::get_instance().hydrate<target::host_task>(htinstr.get_launcher());
 
 	const auto& execution_range = htinstr.get_execution_range();
 	const auto collective_comm =
 	    htinstr.get_collective_group_id() != non_collective_group_id ? cloned_communicators.at(htinstr.get_collective_group_id()).get() : nullptr;
 
-	async.event = backend->enqueue_host_task(*assignment.lane, launch_hydrated, execution_range, collective_comm);
+	async.event = backend->enqueue_host_task(*assignment.lane, htinstr.get_launcher(), std::move(accessor_infos), execution_range, collective_comm);
 }
 
 void executor_impl::issue_async(
@@ -776,11 +775,10 @@ void executor_impl::collect(const instruction_garbage& garbage) {
 	}
 }
 
-void executor_impl::prepare_accessor_hydration([[maybe_unused]] const instruction_id iid, target target,
+std::vector<closure_hydrator::accessor_info> executor_impl::make_accessor_infos([[maybe_unused]] const instruction_id iid, target target,
     const buffer_access_allocation_map& amap CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(
-        , const task_type tt, const task_id tid, const std::string& task_name, std::unique_ptr<boundary_check_info>& oob_info)) {
-	std::vector<closure_hydrator::accessor_info> accessor_infos(amap.size());
-
+        , const task_type tt, const task_id tid, const std::string& task_name, std::unique_ptr<boundary_check_info>& oob_info)) //
+{
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 	if(!amap.empty()) {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_init", Red, "I{} bounds check init", iid);
@@ -800,13 +798,13 @@ void executor_impl::prepare_accessor_hydration([[maybe_unused]] const instructio
 	}
 #endif
 
+	std::vector<closure_hydrator::accessor_info> accessor_infos(amap.size());
 	for(size_t i = 0; i < amap.size(); ++i) {
 		const auto ptr = allocations.at(amap[i].allocation_id);
 		accessor_infos[i] = closure_hydrator::accessor_info{ptr, amap[i].allocated_box_in_buffer,
 		    amap[i].accessed_box_in_buffer CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, &oob_info->illegal_access_bounding_boxes[i])};
 	}
-
-	closure_hydrator::get_instance().arm(target, std::move(accessor_infos));
+	return accessor_infos;
 }
 
 } // namespace celerity::detail::live_executor_detail

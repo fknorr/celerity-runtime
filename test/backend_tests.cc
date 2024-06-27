@@ -118,7 +118,7 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks are executed with the 
 		    CHECK(b == execution_range);
 		    CHECK(c == collective_comm);
 	    },
-	    execution_range, collective_comm));
+	    {} /* accessor_infos */, execution_range, collective_comm));
 	CHECK(value == 2);
 }
 
@@ -128,9 +128,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execu
 
 	constexpr size_t lane = 0;
 	const auto first = backend->enqueue_host_task(
-	    lane, [](const box<3>&, const communicator*) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }, box_cast<3>(box<0>()), nullptr);
+	    lane, [](const box<3>&, const communicator*) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }, {}, box_cast<3>(box<0>()), nullptr);
 	const auto second = backend->enqueue_host_task(
-	    lane, [](const box<3>&, const communicator* /* collective_comm */) {}, box_cast<3>(box<0>()), nullptr);
+	    lane, [](const box<3>&, const communicator* /* collective_comm */) {}, {}, box_cast<3>(box<0>()), nullptr);
 
 	for(;;) {
 		if(second.is_complete()) {
@@ -158,7 +158,7 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "device kernels command group are 
 			    CHECK(r == reduction_ptrs);
 			    cgh.single_task([=] { *value_ptr += 1; });
 		    },
-		    execution_range, reduction_ptrs));
+		    {} /* accessor_infos*/, execution_range, reduction_ptrs));
 		CHECK(*value_ptr == 2);
 	}
 	backend->debug_free(value_ptr);

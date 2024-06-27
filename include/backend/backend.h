@@ -1,6 +1,7 @@
 #pragma once
 
 #include "async_event.h"
+#include "closure_hydrator.h"
 #include "launcher.h"
 #include "types.h"
 
@@ -50,13 +51,13 @@ class backend {
 
 	/// Enqueues the asynchronous execution of a host task in a background thread identified by `host_lane`. The operation will complete in-order with respect
 	/// to any other asynchronous host operation on `host_lane`.
-	virtual async_event enqueue_host_task(
-	    size_t host_lane, const host_task_launcher& launcher, const box<3>& execution_range, const communicator* collective_comm) = 0;
+	virtual async_event enqueue_host_task(size_t host_lane, const host_task_launcher& launcher, std::vector<closure_hydrator::accessor_info> accessor_infos,
+	    const box<3>& execution_range, const communicator* collective_comm) = 0;
 
 	/// Enqueues the asynchronous execution of a kernel in an in-order device queue identified by `device` and `device_lane`. The operation will complete
 	/// in-order with respect to any other asynchronous device operation on `device` and `device_lane`.
-	virtual async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher, const box<3>& execution_range,
-	    const std::vector<void*>& reduction_ptrs) = 0;
+	virtual async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher,
+	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) = 0;
 
 	/// Enqueues an n-dimensional copy between two host allocations (both either device-accessible or user-allocated). The operation will complete
 	/// in-order with respect to any other asynchronous host operation on `host_lane`.

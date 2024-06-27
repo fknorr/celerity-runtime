@@ -57,11 +57,11 @@ class sycl_backend : public backend {
 
 	async_event enqueue_device_free(device_id device, void* ptr) override;
 
-	async_event enqueue_host_task(
-	    size_t host_lane, const host_task_launcher& launcher, const box<3>& execution_range, const communicator* collective_comm) override;
+	async_event enqueue_host_task(size_t host_lane, const host_task_launcher& launcher, std::vector<closure_hydrator::accessor_info> accessor_infos,
+	    const box<3>& execution_range, const communicator* collective_comm) override;
 
-	async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher, const box<3>& execution_range,
-	    const std::vector<void*>& reduction_ptrs) override;
+	async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher,
+	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) override;
 
 	async_event enqueue_host_copy(size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
 	    const region<3>& copy_region, const size_t elem_size) override;

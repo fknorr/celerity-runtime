@@ -187,18 +187,24 @@ async_event sycl_backend::enqueue_device_free(const device_id device, void* cons
 	return m_impl->host.alloc_queue.submit([this, device, ptr] { sycl::free(ptr, m_impl->devices[device].sycl_context); });
 }
 
-async_event sycl_backend::enqueue_host_task(
-    size_t host_lane, const host_task_launcher& launcher, const box<3>& execution_range, const communicator* collective_comm) {
-	return m_impl->get_host_queue(host_lane).submit([=] { launcher(execution_range, collective_comm); });
+async_event sycl_backend::enqueue_host_task(size_t host_lane, const host_task_launcher& launcher, std::vector<closure_hydrator::accessor_info> accessor_infos,
+    const box<3>& execution_range, const communicator* collective_comm) //
+{
+	auto& hydrator = closure_hydrator::get_instance();
+	hydrator.arm(target::host_task, std::move(accessor_infos));
+	auto launch_hydrated = hydrator.hydrate<target::host_task>(launcher);
+	return m_impl->get_host_queue(host_lane).submit([=, launch_hydrated = std::move(launch_hydrated)] { launch_hydrated(execution_range, collective_comm); });
 }
 
-async_event sycl_backend::enqueue_device_kernel(
-    const device_id device, const size_t lane, const device_kernel_launcher& launch, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+async_event sycl_backend::enqueue_device_kernel(const device_id device, const size_t lane, const device_kernel_launcher& launch,
+    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
 {
 	auto& queue = m_impl->get_device_queue(device, lane);
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2, "SYCL submit")
 	auto event = queue.submit([&](sycl::handler& sycl_cgh) {
-		const auto launch_hydrated = detail::closure_hydrator::get_instance().hydrate<target::device>(sycl_cgh, launch);
+		auto& hydrator = closure_hydrator::get_instance();
+		hydrator.arm(target::device, std::move(accessor_infos));
+		const auto launch_hydrated = hydrator.hydrate<target::device>(sycl_cgh, launch);
 		launch_hydrated(sycl_cgh, execution_range, reduction_ptrs);
 	});
 	sycl_backend_detail::flush(queue);
