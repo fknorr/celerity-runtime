@@ -5,6 +5,8 @@
 
 #include "backend/sycl_backend.h"
 #include "nd_memory.h"
+
+#include "copy_test_utils.h"
 #include "test_utils.h"
 
 using namespace celerity;
@@ -65,62 +67,6 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-f
 #endif
 }
 
-struct copy_test_layout {
-	box<3> source_box;
-	box<3> dest_box;
-	box<3> copy_box;
-};
-
-constexpr range<3> copy_test_max_range{6, 6, 6};
-
-std::vector<copy_test_layout> generate_copy_test_layouts() {
-	const std::vector<int> no_shifts = {0};
-	const std::vector<int> all_shifts = {-2, 0, 2};
-
-	std::vector<copy_test_layout> layouts;
-	for(int dims = 0; dims < 3; ++dims) {
-		id<3> copy_min{3, 4, 5};
-		id<3> copy_max{7, 8, 9};
-		for(int d = dims; d < 3; ++d) {
-			copy_min[d] = 0;
-			copy_max[d] = 1;
-		}
-
-		// A negative shift means the source/dest box exceeds the copy box on the left side, a positive shift means it exceeds it on the right side.
-		for(const int source_shift_x : dims > 0 ? all_shifts : no_shifts) {
-			for(const int dest_shift_x : dims > 0 ? all_shifts : no_shifts) {
-				for(const int source_shift_y : dims > 1 ? all_shifts : no_shifts) {
-					for(const int dest_shift_y : dims > 1 ? all_shifts : no_shifts) {
-						for(const int source_shift_z : dims > 2 ? all_shifts : no_shifts) {
-							for(const int dest_shift_z : dims > 2 ? all_shifts : no_shifts) {
-								id<3> source_min = copy_min;
-								id<3> source_max = copy_max;
-								id<3> dest_min = copy_min;
-								id<3> dest_max = copy_max;
-								const int source_shift[] = {source_shift_x, source_shift_y, source_shift_z};
-								const int dest_shift[] = {dest_shift_x, dest_shift_y, dest_shift_z};
-								for(int d = 0; d < dims; ++d) {
-									if(source_shift[d] > 0) { source_min[d] -= static_cast<size_t>(source_shift[d]); }
-									if(source_shift[d] < 0) { source_max[d] += static_cast<size_t>(-source_shift[d]); }
-									if(dest_shift[d] > 0) { dest_min[d] -= static_cast<size_t>(dest_shift[d]); }
-									if(dest_shift[d] < 0) { dest_max[d] += static_cast<size_t>(-dest_shift[d]); }
-								}
-								layouts.push_back({
-								    box<3>{source_min, source_max},
-								    box<3>{dest_min, dest_max},
-								    box<3>{copy_min, copy_max},
-								});
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return layouts;
-}
-
 TEST_CASE_METHOD(test_utils::backend_fixture, "backend::enqueue_copy works correctly on all source- and destination layouts", "[backend]") {
 	const auto backend_type = GENERATE(test_utils::from_vector(sycl_backend_enumerator{}.available_backends()));
 	auto sycl_devices = select_devices_for_backend(backend_type);
@@ -163,18 +109,18 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend::enqueue_copy works corre
 	sycl::queue source_sycl_queue(sycl_devices[0], sycl::property::queue::in_order{});
 	sycl::queue dest_sycl_queue(sycl_devices[direction == "device to peer" ? 1 : 0], sycl::property::queue::in_order{});
 
-	const auto source_base = backend_alloc(*backend, source_did, copy_test_max_range.size() * sizeof(int), alignof(int));
-	const auto dest_base = backend_alloc(*backend, dest_did, copy_test_max_range.size() * sizeof(int), alignof(int));
+	const auto source_base = backend_alloc(*backend, source_did, test_utils::copy_test_max_range.size() * sizeof(int), alignof(int));
+	const auto dest_base = backend_alloc(*backend, dest_did, test_utils::copy_test_max_range.size() * sizeof(int), alignof(int));
 
 	// generate the source pattern in user memory
-	std::vector<int> source_template(copy_test_max_range.size());
+	std::vector<int> source_template(test_utils::copy_test_max_range.size());
 	std::iota(source_template.begin(), source_template.end(), 1);
 
 	// use a loop instead of GENERATE() to avoid re-instantiating the backend and re-allocating device memory on each iteration (very expensive!)
-	for(const auto& [source_box, dest_box, copy_box] : generate_copy_test_layouts()) {
+	for(const auto& [source_box, dest_box, copy_box] : test_utils::generate_copy_test_layouts()) {
 		CAPTURE(source_box, dest_box, copy_box);
-		REQUIRE(all_true(source_box.get_range() <= copy_test_max_range));
-		REQUIRE(all_true(dest_box.get_range() <= copy_test_max_range));
+		REQUIRE(all_true(source_box.get_range() <= test_utils::copy_test_max_range));
+		REQUIRE(all_true(dest_box.get_range() <= test_utils::copy_test_max_range));
 
 		// reference is nd_copy_host (tested in nd_memory_tests)
 		std::vector<int> expected_dest(dest_box.get_area());
