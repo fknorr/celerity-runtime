@@ -141,17 +141,20 @@ class executor_test_context final : private executor::delegate {
 
 	~executor_test_context() { REQUIRE(m_has_shut_down); }
 
-	std::tuple<task_id, instruction_id> init() { return epoch({}, epoch_action::none, instruction_garbage{}); }
+	std::tuple<task_id, instruction_id> init() {
+		const auto iid = submit<epoch_instruction>({}, task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
+		return {task_manager::initial_epoch_task, iid};
+	}
 
 	std::tuple<task_id, instruction_id> horizon(const std::vector<instruction_id>& predecessors, instruction_garbage garbage = {}) {
 		const auto tid = m_next_task_id++;
-		const auto iid = submit<horizon_instruction>({}, m_next_task_id++, std::move(garbage));
+		const auto iid = submit<horizon_instruction>({}, tid, std::move(garbage));
 		return {tid, iid};
 	}
 
 	std::tuple<task_id, instruction_id> epoch(const std::vector<instruction_id>& predecessors, const epoch_action action, instruction_garbage garbage = {}) {
 		const auto tid = m_next_task_id++;
-		const auto iid = submit<epoch_instruction>({}, m_next_task_id++, action, std::move(garbage));
+		const auto iid = submit<epoch_instruction>({}, tid, action, std::move(garbage));
 		return {tid, iid};
 	}
 
@@ -168,19 +171,22 @@ class executor_test_context final : private executor::delegate {
 
 	void shutdown(const std::vector<instruction_id>& predecessors) {
 		CHECK(!m_has_shut_down);
-		submit<epoch_instruction>({}, m_next_task_id++, epoch_action::shutdown, instruction_garbage{});
+		epoch(predecessors, epoch_action::shutdown, instruction_garbage{});
 		m_executor->wait();
 		m_has_shut_down = true;
 	}
 
 	executor& get_executor() { return *m_executor; }
 
+	task_id get_last_epoch() { return m_epochs.get(); }
+	task_id get_last_horizon() { return m_horizons.get(); }
+
 	void await_horizon(const task_id tid) { m_horizons.await(tid); }
 	void await_epoch(const task_id tid) { m_epochs.await(tid); }
 
   private:
 	instruction_id m_next_iid = 1;
-	task_id m_next_task_id = 1;
+	task_id m_next_task_id = task_manager::initial_epoch_task + 1;
 	std::vector<std::unique_ptr<instruction>> m_instructions; // we need to guarantee liveness as long as the executor thread is around
 	bool m_has_shut_down = false;
 	std::unique_ptr<executor> m_executor;
@@ -202,6 +208,36 @@ class executor_test_context final : private executor::delegate {
 	void horizon_reached(const task_id tid) override { m_horizons.set(tid); }
 	void epoch_reached(const task_id tid) override { m_epochs.set(tid); }
 };
+
+
+TEST_CASE_METHOD(test_utils::executor_fixture, "executors notify delegate when encountering a horizon / epoch", "[executor]") {
+	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
+	CAPTURE(executor_type);
+
+	executor_test_context ectx(executor_type);
+	const auto [init_epoch_tid, init_epoch] = ectx.init();
+
+	CHECK(ectx.get_last_epoch() == task_id(0));
+	CHECK(ectx.get_last_horizon() == task_id(0));
+
+	instruction_id node = 0;
+
+	SECTION("on epochs") {
+		const auto [epoch_tid, epoch] = ectx.epoch({init_epoch}, epoch_action::none);
+		ectx.await_epoch(epoch_tid);
+		CHECK(ectx.get_last_epoch() == epoch_tid);
+		node = epoch;
+	}
+
+	SECTION("on horizons") {
+		const auto [horizon_tid, horizon] = ectx.horizon({init_epoch});
+		ectx.await_horizon(horizon_tid);
+		CHECK(ectx.get_last_horizon() == horizon_tid);
+		node = horizon;
+	}
+
+	ectx.shutdown({node});
+}
 
 TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
 	executor_test_context ectx(executor_type::dry_run);

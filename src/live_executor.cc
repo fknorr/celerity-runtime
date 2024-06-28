@@ -728,7 +728,8 @@ void executor_impl::issue_async(const host_task_instruction& htinstr, const out_
 }
 
 void executor_impl::issue_async(
-    const send_instruction& sinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
+    const send_instruction& sinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
+{
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
 	CELERITY_TRACE("[executor] I{}: send {}+{}, {}x{} bytes to N{} (MSG{})", sinstr.get_id(), sinstr.get_source_allocation_id(),
@@ -744,7 +745,8 @@ void executor_impl::issue_async(
 }
 
 void executor_impl::issue_async(
-    const receive_instruction& rinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
+    const receive_instruction& rinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
+{
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
 	CELERITY_TRACE("[executor] I{}: receive {} {}x{} bytes into {} ({})", rinstr.get_id(), rinstr.get_transfer_id(), rinstr.get_requested_region(),
@@ -756,7 +758,8 @@ void executor_impl::issue_async(
 }
 
 void executor_impl::issue_async(
-    const await_receive_instruction& arinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
+    const await_receive_instruction& arinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
+{
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
 	CELERITY_TRACE("[executor] I{}: await receive {} {}", arinstr.get_id(), arinstr.get_transfer_id(), arinstr.get_received_region());
@@ -765,7 +768,8 @@ void executor_impl::issue_async(
 }
 
 void executor_impl::issue_async(
-    const gather_receive_instruction& grinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
+    const gather_receive_instruction& grinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
+{
 	assert(assignment.target == out_of_order_engine::target::immediate);
 
 	CELERITY_TRACE("[executor] I{}: gather receive {} into {}, {} bytes / node", grinstr.get_id(), grinstr.get_transfer_id(), grinstr.get_dest_allocation_id(),
