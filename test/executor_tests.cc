@@ -110,43 +110,29 @@ class mock_fence_promise : public fence_promise {
 	std::condition_variable m_cv;
 };
 
-class mock_executor_delegate : public executor::delegate {
-  public:
-	std::atomic<task_id> last_horizon_reached{0};
-	std::atomic<task_id> last_epoch_reached{0};
+enum class executor_type { dry_run, live };
 
-	mock_executor_delegate() = default;
-	mock_executor_delegate(const mock_executor_delegate&) = delete;
-	mock_executor_delegate(mock_executor_delegate&&) = delete;
-	mock_executor_delegate& operator=(const mock_executor_delegate&) = delete;
-	mock_executor_delegate& operator=(mock_executor_delegate&&) = delete;
-	virtual ~mock_executor_delegate() = default;
-
-	void horizon_reached(task_id tid) override { last_horizon_reached = tid; }
-	void epoch_reached(task_id tid) override { last_epoch_reached = tid; }
+template <>
+struct Catch::StringMaker<executor_type> {
+	static std::string convert(executor_type value) {
+		switch(value) {
+		case executor_type::dry_run: return "dry_run";
+		case executor_type::live: return "live";
+		}
+	}
 };
 
-auto generate_executors() {
-	const auto executor_type = GENERATE(values<std::string>({"dry_run", "live"}));
-	CAPTURE(executor_type);
-
-	auto delegate = std::make_unique<mock_executor_delegate>();
-
-	std::unique_ptr<executor> executor;
-	if(executor_type == "dry_run") {
-		executor = std::make_unique<dry_run_executor>(delegate.get());
-	} else {
-		const auto system = test_utils::make_system_info(1 /* num devices */, false /* d2d copies*/);
-		executor = std::make_unique<live_executor>(std::make_unique<mock_backend>(system), std::make_unique<mock_local_communicator>(), delegate.get());
-	}
-
-	return std::tuple{executor_type, std::move(executor), std::move(delegate)};
-}
-
-class executor_test_context {
+class executor_test_context final : private executor::delegate {
   public:
-	executor_test_context(std::unique_ptr<executor> executor, std::unique_ptr<mock_executor_delegate> delegate)
-	    : m_executor(std::move(executor)), m_delegate(std::move(delegate)) {}
+	explicit executor_test_context(const executor_type type) {
+		if(type == executor_type::dry_run) {
+			m_executor = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
+		} else {
+			const auto system = test_utils::make_system_info(1 /* num devices */, false /* d2d copies*/);
+			m_executor = std::make_unique<live_executor>(
+			    std::make_unique<mock_backend>(system), std::make_unique<mock_local_communicator>(), static_cast<executor::delegate*>(this));
+		}
+	}
 
 	executor_test_context(const executor_test_context&) = delete;
 	executor_test_context(executor_test_context&&) = delete;
@@ -155,14 +141,18 @@ class executor_test_context {
 
 	~executor_test_context() { REQUIRE(m_has_shut_down); }
 
-	instruction_id init() { return submit<epoch_instruction>({}, m_next_task_id++, epoch_action::none, instruction_garbage{}); }
+	std::tuple<task_id, instruction_id> init() { return epoch({}, epoch_action::none, instruction_garbage{}); }
 
-	instruction_id horizon(const std::vector<instruction_id>& predecessors, instruction_garbage garbage = {}) {
-		return submit<horizon_instruction>({}, m_next_task_id++, std::move(garbage));
+	std::tuple<task_id, instruction_id> horizon(const std::vector<instruction_id>& predecessors, instruction_garbage garbage = {}) {
+		const auto tid = m_next_task_id++;
+		const auto iid = submit<horizon_instruction>({}, m_next_task_id++, std::move(garbage));
+		return {tid, iid};
 	}
 
-	instruction_id epoch(const std::vector<instruction_id>& predecessors, const epoch_action action, instruction_garbage garbage = {}) {
-		return submit<epoch_instruction>({}, m_next_task_id++, action, std::move(garbage));
+	std::tuple<task_id, instruction_id> epoch(const std::vector<instruction_id>& predecessors, const epoch_action action, instruction_garbage garbage = {}) {
+		const auto tid = m_next_task_id++;
+		const auto iid = submit<epoch_instruction>({}, m_next_task_id++, action, std::move(garbage));
+		return {tid, iid};
 	}
 
 	instruction_id fence_and_wait(const std::vector<instruction_id>& predecessors) {
@@ -187,7 +177,8 @@ class executor_test_context {
 	std::vector<std::unique_ptr<instruction>> m_instructions; // we need to guarantee liveness as long as the executor thread is around
 	bool m_has_shut_down = false;
 	std::unique_ptr<executor> m_executor;
-	std::unique_ptr<mock_executor_delegate> m_delegate;
+	std::atomic<task_id> m_last_horizon_reached{0};
+	std::atomic<task_id> m_last_epoch_reached{0};
 
 	template <typename Instruction, typename... CtorParams>
 	instruction_id submit(const std::vector<instruction_id>& predecessors, CtorParams&&... ctor_args) {
@@ -200,13 +191,14 @@ class executor_test_context {
 		m_instructions.push_back(std::move(instr));
 		return iid;
 	}
+
+	void horizon_reached(const task_id tid) override { m_last_horizon_reached.store(tid); }
+	void epoch_reached(const task_id tid) override { m_last_epoch_reached.store(tid); }
 };
 
 TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
-	auto delegate = std::make_unique<mock_executor_delegate>();
-	auto executor = std::make_unique<dry_run_executor>(delegate.get());
-	executor_test_context ectx(std::move(executor), std::move(delegate));
-	const auto init_epoch = ectx.init();
+	executor_test_context ectx(executor_type::dry_run);
+	const auto [_, init_epoch] = ectx.init();
 	const auto fence = ectx.fence_and_wait({init_epoch});
 	CHECK(test_utils::log_contains_exact(log_level::warn, "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this "
 	                                                      "operation will not match the expected output of an actual run."));
@@ -214,21 +206,21 @@ TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when enco
 }
 
 TEST_CASE_METHOD(test_utils::executor_fixture, "executors free all reducers that appear in horizon / epoch garbage lists  ", "[executor]") {
-	auto [executor_type, executor, delegate] = generate_executors();
+	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
-	const auto instruction_type = GENERATE(values<std::string>({"epoch", "horizon"}));
-	CAPTURE(instruction_type);
-
-	executor_test_context ectx(std::move(executor), std::move(delegate));
-	const auto init_epoch = ectx.init();
+	executor_test_context ectx(executor_type);
+	const auto [_1, init_epoch] = ectx.init();
 
 	const reduction_id rid(123);
 	std::atomic<bool> destroyed{false};
 	ectx.get_executor().announce_reducer(rid, std::make_unique<mock_reducer>(&destroyed));
 
-	const auto collector = instruction_type == "epoch" ? ectx.epoch({init_epoch}, epoch_action::none, instruction_garbage{{rid}, {}})
-	                                                   : ectx.horizon({init_epoch}, instruction_garbage{{rid}, {}});
+	const auto instruction_type = GENERATE(values<std::string>({"epoch", "horizon"}));
+	CAPTURE(instruction_type);
+
+	const auto [_2, collector] = instruction_type == "epoch" ? ectx.epoch({init_epoch}, epoch_action::none, instruction_garbage{{rid}, {}})
+	                                                         : ectx.horizon({init_epoch}, instruction_garbage{{rid}, {}});
 	const auto fence = ectx.fence_and_wait({collector});
 	CHECK(destroyed);
 
