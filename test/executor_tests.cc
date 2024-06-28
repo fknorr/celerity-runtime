@@ -92,12 +92,12 @@ struct send_payload {
 };
 
 struct collective_clone {
-	int parent_comm_index = 0;
-	int child_comm_index = 0;
+	const communicator* parent = nullptr;
+	const communicator* child = nullptr;
 };
 
 struct collective_barrier {
-	int comm_index = 0;
+	const communicator* comm = nullptr;
 };
 
 } // namespace ops
@@ -146,7 +146,7 @@ class mock_reducer final : public reducer {
 
 class mock_exec_communicator final : public communicator {
   public:
-	explicit mock_exec_communicator(operations_log* const log) : m_global_index(s_next_global_index++), m_log(log) {}
+	explicit mock_exec_communicator(operations_log* const log) : m_log(log) {}
 
 	size_t get_num_nodes() const override { return 2; }
 	node_id get_local_node_id() const override { return 0; }
@@ -167,22 +167,15 @@ class mock_exec_communicator final : public communicator {
 
 	std::unique_ptr<communicator> collective_clone() override {
 		auto clone = std::make_unique<mock_exec_communicator>(m_log);
-		m_log->push_back(ops::collective_clone{m_global_index, clone->m_global_index});
+		m_log->push_back(ops::collective_clone{this, clone.get()});
 		return clone;
 	}
 
-	void collective_barrier() override { m_log->push_back(ops::collective_barrier{m_global_index}); }
-
-	int get_global_index() const { return m_global_index; }
+	void collective_barrier() override { m_log->push_back(ops::collective_barrier{this}); }
 
   private:
-	static std::atomic<int> s_next_global_index;
-
-	int m_global_index;
 	operations_log* m_log;
 };
-
-std::atomic<int> mock_exec_communicator::s_next_global_index{0};
 
 class mock_backend final : public backend {
   public:
@@ -301,7 +294,7 @@ class executor_test_context final : private executor::delegate {
 			const auto system = test_utils::make_system_info(4 /* num devices */, false /* d2d copies*/);
 			auto backend = std::make_unique<mock_backend>(system, &m_log);
 			auto root_comm = std::make_unique<mock_exec_communicator>(&m_log);
-			m_root_comm_index = root_comm->get_global_index();
+			m_root_comm = root_comm.get();
 			m_executor = std::make_unique<live_executor>(std::move(backend), std::move(root_comm), static_cast<executor::delegate*>(this));
 		}
 	}
@@ -398,7 +391,7 @@ class executor_test_context final : private executor::delegate {
 	void await_horizon(const task_id tid) { m_horizons.await(tid); }
 	void await_epoch(const task_id tid) { m_epochs.await(tid); }
 
-	int get_root_comm_index() const { return m_root_comm_index; }
+	const communicator* get_root_communicator() const { return m_root_comm; }
 
   private:
 	instruction_id m_next_iid = 1;
@@ -409,8 +402,8 @@ class executor_test_context final : private executor::delegate {
 	std::unique_ptr<executor> m_executor;
 	epoch_monitor m_horizons{0};
 	epoch_monitor m_epochs{0};
-	operations_log m_log;      // mutated by executor thread - do not access before shutdown!
-	int m_root_comm_index = 0; // always 0 for executor_type::dry_run
+	operations_log m_log;                      // mutated by executor thread - do not access before shutdown!
+	const communicator* m_root_comm = nullptr; // always nullptr for dry_run_executor
 
 	template <typename Instruction, typename... CtorParams>
 	instruction_id submit(CtorParams&&... ctor_args) {
@@ -811,21 +804,21 @@ TEST_CASE("live_executor clones and submits barriers on the right communicators"
 	REQUIRE(log.size() == 4);
 
 	const auto clone1 = std::get<ops::collective_clone>(log[0]);
-	CHECK(clone1.parent_comm_index == ectx.get_root_comm_index());
-	CHECK(clone1.child_comm_index != clone1.parent_comm_index);
+	CHECK(clone1.parent == ectx.get_root_communicator());
+	CHECK(clone1.child != clone1.parent); // communicators are never deleted, so inequality-comparisons between communicator pointers are safe
 
 	const auto clone2 = std::get<ops::collective_clone>(log[1]);
-	CHECK(clone2.parent_comm_index == ectx.get_root_comm_index());
-	CHECK(clone2.child_comm_index != clone2.parent_comm_index);
-	CHECK(clone2.child_comm_index != clone1.parent_comm_index);
+	CHECK(clone2.parent == ectx.get_root_communicator());
+	CHECK(clone2.child != clone2.parent);
+	CHECK(clone2.child != clone1.parent);
 
 	const auto clone3 = std::get<ops::collective_clone>(log[2]);
-	CHECK(clone3.parent_comm_index == clone1.child_comm_index);
-	CHECK(clone3.child_comm_index != clone3.parent_comm_index);
-	CHECK(clone3.child_comm_index != ectx.get_root_comm_index());
+	CHECK(clone3.parent == clone1.child);
+	CHECK(clone3.child != clone3.parent);
+	CHECK(clone3.child != ectx.get_root_communicator());
 
 	const auto barrier = std::get<ops::collective_barrier>(log[3]);
-	CHECK(barrier.comm_index == ectx.get_root_comm_index());
+	CHECK(barrier.comm == ectx.get_root_communicator());
 }
 
 TEST_CASE("live_executor passes the correct metadata and pointers for p2p send", "[executor]") {
