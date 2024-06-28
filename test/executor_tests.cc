@@ -11,7 +11,7 @@ using namespace celerity;
 using namespace celerity::detail;
 
 
-// The mock implementation in this test append all operations to a sequential log, which is inspected after executor shutdown.
+// The mock implementations in this test append all operations to a sequential operations_log, which is inspected after executor shutdown.
 namespace ops {
 
 struct common_alloc {
@@ -80,6 +80,24 @@ struct fill_identity {
 	size_t count = 0;
 };
 
+struct send_outbound_pilot {
+	outbound_pilot pilot;
+};
+
+struct send_payload {
+	node_id to = 0;
+	message_id msgid = 0;
+	const void* base = nullptr;
+	communicator::stride stride;
+};
+
+struct receive_payload {
+	node_id from = 0;
+	message_id msgid = 0;
+	void* base = nullptr;
+	communicator::stride stride;
+};
+
 struct collective_clone {
 	int parent_comm_index = 0;
 	int child_comm_index = 0;
@@ -91,8 +109,9 @@ struct collective_barrier {
 
 } // namespace ops
 
-using operation = std::variant<ops::host_alloc, ops::device_alloc, ops::host_free, ops::device_free, ops::host_task, ops::device_kernel, ops::host_copy,
-    ops::device_copy, ops::reduce, ops::fill_identity, ops::collective_clone, ops::collective_barrier>;
+using operation =
+    std::variant<ops::host_alloc, ops::device_alloc, ops::host_free, ops::device_free, ops::host_task, ops::device_kernel, ops::host_copy, ops::device_copy,
+        ops::reduce, ops::fill_identity, ops::send_outbound_pilot, ops::send_payload, ops::receive_payload, ops::collective_clone, ops::collective_barrier>;
 using operations_log = std::vector<operation>;
 
 
@@ -125,6 +144,7 @@ class mock_reducer final : public reducer {
 	}
 
 	void reduce(void* dest, const void* src, size_t src_count) const override { m_log->push_back(ops::reduce{dest, src, src_count}); }
+
 	void fill_identity(void* dest, size_t count) const override { m_log->push_back(ops::fill_identity{dest, count}); }
 
   private:
@@ -132,21 +152,33 @@ class mock_reducer final : public reducer {
 	operations_log* m_log;
 };
 
-class mock_local_communicator final : public communicator {
+class mock_exec_communicator final : public communicator {
   public:
-	explicit mock_local_communicator(operations_log* const log) : m_global_index(s_next_global_index++), m_log(log) {}
+	explicit mock_exec_communicator(operations_log* const log) : m_global_index(s_next_global_index++), m_log(log) {}
 
 	size_t get_num_nodes() const override { return 1; }
 	node_id get_local_node_id() const override { return 0; }
 
-	std::vector<inbound_pilot> poll_inbound_pilots() override { return {}; }
+	std::vector<inbound_pilot> poll_inbound_pilots() override {
+		// TODO somehow queue-receive these from test main thread?
+		// or pass in through ctor?
+		return {};
+	}
 
-	void send_outbound_pilot(const outbound_pilot& pilot) override { utils::panic("not implemented"); }
-	async_event send_payload(node_id to, message_id msgid, const void* base, const stride& stride) override { utils::panic("not implemented"); }
-	async_event receive_payload(node_id from, message_id msgid, void* base, const stride& stride) override { utils::panic("not implemented"); }
+	void send_outbound_pilot(const outbound_pilot& pilot) override { m_log->push_back(ops::send_outbound_pilot{pilot}); }
+
+	async_event send_payload(node_id to, message_id msgid, const void* base, const stride& stride) override {
+		m_log->push_back(ops::send_payload({to, msgid, base, stride}));
+		return make_complete_event();
+	}
+
+	async_event receive_payload(node_id from, message_id msgid, void* base, const stride& stride) override {
+		m_log->push_back(ops::receive_payload{from, msgid, base, stride});
+		return make_complete_event();
+	}
 
 	std::unique_ptr<communicator> collective_clone() override {
-		auto clone = std::make_unique<mock_local_communicator>(m_log);
+		auto clone = std::make_unique<mock_exec_communicator>(m_log);
 		m_log->push_back(ops::collective_clone{m_global_index, clone->m_global_index});
 		return clone;
 	}
@@ -162,7 +194,7 @@ class mock_local_communicator final : public communicator {
 	operations_log* m_log;
 };
 
-std::atomic<int> mock_local_communicator::s_next_global_index{0};
+std::atomic<int> mock_exec_communicator::s_next_global_index{0};
 
 class mock_backend final : public backend {
   public:
@@ -280,7 +312,7 @@ class executor_test_context final : private executor::delegate {
 		} else {
 			const auto system = test_utils::make_system_info(4 /* num devices */, false /* d2d copies*/);
 			auto backend = std::make_unique<mock_backend>(system, &m_log);
-			auto root_comm = std::make_unique<mock_local_communicator>(&m_log);
+			auto root_comm = std::make_unique<mock_exec_communicator>(&m_log);
 			m_root_comm_index = root_comm->get_global_index();
 			m_executor = std::make_unique<live_executor>(std::move(backend), std::move(root_comm), static_cast<executor::delegate*>(this));
 		}
@@ -356,7 +388,7 @@ class executor_test_context final : private executor::delegate {
 		submit<reduce_instruction>(rid, source_allocation_id, num_source_values, dest_allocation_id);
 	}
 
-	operations_log shutdown() {
+	operations_log finish() {
 		CHECK(!m_has_shut_down);
 		epoch(epoch_action::shutdown, instruction_garbage{});
 		m_executor->wait();
@@ -422,7 +454,7 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors notify delegat
 		CHECK(ectx.get_last_horizon() == horizon_tid);
 	}
 
-	ectx.shutdown();
+	ectx.finish();
 }
 
 TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
@@ -431,7 +463,7 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "dry_run_executor warns w
 	ectx.fence_and_wait();
 	CHECK(test_utils::log_contains_exact(log_level::warn, "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this "
 	                                                      "operation will not match the expected output of an actual run."));
-	ectx.shutdown();
+	ectx.finish();
 }
 
 TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reducers that appear in garbage lists  ", "[executor]") {
@@ -455,7 +487,7 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reduc
 		ectx.await_horizon(horizon_tid);
 	}
 
-	ectx.shutdown();
+	ectx.finish();
 }
 
 TEST_CASE("host objects lifetime is controlled by destroy_host_object_instruction", "[executor]") {
@@ -481,7 +513,7 @@ TEST_CASE("host objects lifetime is controlled by destroy_host_object_instructio
 	ectx.await_horizon(after_destroy_tid);
 	CHECK(destroyed);
 
-	ectx.shutdown();
+	ectx.finish();
 }
 
 TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]") {
@@ -510,7 +542,7 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 	ectx.free(allocation_id(host_memory_id, 1));
 	ectx.free(allocation_id(host_memory_id, 2));
 
-	const auto log = ectx.shutdown();
+	const auto log = ectx.finish();
 	REQUIRE(log.size() == 5);
 
 	const auto log_alloc1 = std::get<ops::host_alloc>(log[0]);
@@ -560,7 +592,7 @@ TEST_CASE("live_executor passes correct allocations to reducers", "[executor]") 
 	ectx.free(source_aid);
 	ectx.free(dest_aid);
 
-	const auto log = ectx.shutdown();
+	const auto log = ectx.finish();
 	REQUIRE(log.size() == 6);
 
 	const auto log_source_alloc = std::get<ops::host_alloc>(log[0]);
@@ -625,7 +657,7 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 	ectx.free(allocation_id(mid, 3));
 	ectx.free(allocation_id(mid, 4));
 
-	const auto log = ectx.shutdown();
+	const auto log = ectx.finish();
 	REQUIRE(log.size() == 9);
 
 	const auto log_alloc1 = std::get<ops::device_alloc>(log[0]);
@@ -708,7 +740,7 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	ectx.free(source_aid);
 	ectx.free(dest_aid);
 
-	const auto log = ectx.shutdown();
+	const auto log = ectx.finish();
 	REQUIRE(log.size() == 5);
 
 	const ops::common_alloc* log_source_alloc = nullptr;
@@ -778,7 +810,7 @@ TEST_CASE("live_executor clones the right communicators", "[executor]") {
 	ectx.clone_collective_group(root_collective_group_id, root_collective_group_id + 2);
 	ectx.clone_collective_group(root_collective_group_id + 1, root_collective_group_id + 3);
 
-	const auto log = ectx.shutdown();
+	const auto log = ectx.finish();
 	REQUIRE(log.size() == 3);
 
 	const auto log_clone1 = std::get<ops::collective_clone>(log[0]);
