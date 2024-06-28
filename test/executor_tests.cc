@@ -790,7 +790,7 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	}
 }
 
-TEST_CASE("live_executor clones and submits barriers on the right communicators", "[executor]") {
+TEST_CASE("live_executor clones and issues barriers on the right communicators", "[executor]") {
 	executor_test_context ectx(executor_type::live);
 	ectx.init();
 
@@ -821,7 +821,7 @@ TEST_CASE("live_executor clones and submits barriers on the right communicators"
 	CHECK(barrier.comm == ectx.get_root_communicator());
 }
 
-TEST_CASE("live_executor passes the correct metadata and pointers for p2p send", "[executor]") {
+TEST_CASE("live_executor passes the correct metadata and pointers for peer-to-peer send", "[executor]") {
 	executor_test_context ectx(executor_type::live);
 
 	// outbound pilots are sent immediately, so we post them first to get a deterministically ordered log
@@ -864,3 +864,5 @@ TEST_CASE("live_executor passes the correct metadata and pointers for p2p send",
 	const auto free = std::get<ops::host_free>(log[3]);
 	CHECK(free.ptr == alloc.result);
 }
+
+// We don't test receives because it would be annoying, and most of the pointer juggling is handled by receive_arbiter anyway
