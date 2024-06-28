@@ -32,8 +32,8 @@ class mock_reducer final : public reducer {
 	mock_reducer& operator=(mock_reducer&&) = delete;
 	~mock_reducer() override { *destroyed = true; }
 
-	void reduce(void* dest, const void* src, size_t src_count) const override { utils::panic("not implemented"); }
-	void fill_identity(void* dest, size_t count) const override { utils::panic("not implemented"); }
+	void reduce(void* dest, const void* src, size_t src_count) const override { (void)dest, (void)src, (void)src_count; }
+	void fill_identity(void* dest, size_t count) const override { (void)dest, (void)count; }
 };
 
 class mock_local_communicator final : public communicator {
@@ -53,40 +53,175 @@ class mock_local_communicator final : public communicator {
 
 class mock_backend final : public backend {
   public:
-	mock_backend(const system_info& system) : m_system(system) {}
+	struct host_alloc {
+		size_t size = 0;
+		size_t alignment = 0;
+		void* result = nullptr;
+
+		friend bool operator==(const host_alloc& lhs, const host_alloc& rhs) { return lhs.size == rhs.size && lhs.alignment == rhs.alignment; }
+		friend bool operator!=(const host_alloc& lhs, const host_alloc& rhs) { return !(lhs == rhs); }
+	};
+
+	struct device_alloc {
+		device_id device = 0;
+		size_t size = 0;
+		size_t alignment = 0;
+		void* result = nullptr;
+
+		friend bool operator==(const device_alloc& lhs, const device_alloc& rhs) {
+			return lhs.device == rhs.device && lhs.size == rhs.size && lhs.alignment == rhs.alignment;
+		}
+		friend bool operator!=(const device_alloc& lhs, const device_alloc& rhs) { return !(lhs == rhs); }
+	};
+
+	struct host_free {
+		void* ptr = nullptr;
+
+		friend bool operator==(const host_free& lhs, const host_free& rhs) { return lhs.ptr == rhs.ptr; }
+		friend bool operator!=(const host_free& lhs, const host_free& rhs) { return !(lhs == rhs); }
+	};
+
+	struct device_free {
+		device_id device = 0;
+		void* ptr = nullptr;
+
+		friend bool operator==(const device_free& lhs, const device_free& rhs) { return lhs.device == rhs.device && lhs.ptr == rhs.ptr; }
+		friend bool operator!=(const device_free& lhs, const device_free& rhs) { return !(lhs == rhs); }
+	};
+
+	struct host_task {
+		size_t host_lane;
+		std::vector<closure_hydrator::accessor_info> accessor_infos;
+		box<3> execution_range;
+		const communicator* collective_comm = nullptr;
+
+		friend bool operator==(const host_task& lhs, const host_task& rhs) {
+			return lhs.host_lane == rhs.host_lane && lhs.accessor_infos == rhs.accessor_infos && lhs.execution_range == rhs.execution_range
+			       && lhs.collective_comm == rhs.collective_comm;
+		}
+		friend bool operator!=(const host_task& lhs, const host_task& rhs) { return !(lhs == rhs); }
+	};
+
+	struct device_kernel {
+		device_id device = 0;
+		size_t device_lane = 0;
+		std::vector<closure_hydrator::accessor_info> accessor_infos;
+		box<3> execution_range;
+		std::vector<void*> reduction_ptrs;
+
+		friend bool operator==(const device_kernel& lhs, const device_kernel& rhs) {
+			return lhs.device == rhs.device && lhs.device_lane == rhs.device_lane && lhs.accessor_infos == rhs.accessor_infos
+			       && lhs.execution_range == rhs.execution_range && lhs.reduction_ptrs == rhs.reduction_ptrs;
+		}
+		friend bool operator!=(const device_kernel& lhs, const device_kernel& rhs) { return !(lhs == rhs); }
+	};
+
+	struct host_copy {
+		size_t host_lane = 0;
+		const void* source_base = nullptr;
+		void* dest_base = nullptr;
+		box<3> source_box;
+		box<3> dest_box;
+		region<3> copy_region;
+		size_t elem_size = 0;
+
+		friend bool operator==(const host_copy& lhs, const host_copy& rhs) {
+			return lhs.host_lane == rhs.host_lane && lhs.source_base == rhs.source_base && lhs.dest_base == rhs.dest_base && lhs.source_box == rhs.source_box
+			       && lhs.dest_box == rhs.dest_box && lhs.copy_region == rhs.copy_region && lhs.elem_size == rhs.elem_size;
+		}
+		friend bool operator!=(const host_copy& lhs, const host_copy& rhs) { return !(lhs == rhs); }
+	};
+
+	struct device_copy {
+		device_id device = 0;
+		size_t device_lane = 0;
+		const void* source_base = nullptr;
+		void* dest_base = nullptr;
+		box<3> source_box;
+		box<3> dest_box;
+		region<3> copy_region;
+		size_t elem_size = 0;
+
+		friend bool operator==(const device_copy& lhs, const device_copy& rhs) {
+			return lhs.device == rhs.device && lhs.device_lane == rhs.device_lane && lhs.source_base == rhs.source_base && lhs.dest_base == rhs.dest_base
+			       && lhs.source_box == rhs.source_box && lhs.dest_box == rhs.dest_box && lhs.copy_region == rhs.copy_region && lhs.elem_size == rhs.elem_size;
+		}
+		friend bool operator!=(const device_copy& lhs, const device_copy& rhs) { return !(lhs == rhs); }
+	};
+
+	using operation = std::variant<host_alloc, device_alloc, host_free, device_free, host_task, device_kernel, host_copy, device_copy>;
+
+	mock_backend(const system_info& system, std::vector<operation>* const log) : m_system(system), m_log(log) {}
 
 	const system_info& get_system_info() const override { return m_system; }
 
 	void* debug_alloc(size_t size) override { return malloc(size); }
 	void debug_free(void* ptr) override { free(ptr); }
 
-	async_event enqueue_host_alloc(size_t size, size_t alignment) override { utils::panic("not implemented"); }
-	async_event enqueue_device_alloc(device_id device, size_t size, size_t alignment) override { utils::panic("not implemented"); }
-	async_event enqueue_host_free(void* ptr) override { utils::panic("not implemented"); }
-	async_event enqueue_device_free(device_id device, void* ptr) override { utils::panic("not implemented"); }
-
-	async_event enqueue_host_task(size_t host_lane, const host_task_launcher& launcher, std::vector<closure_hydrator::accessor_info> accessor_infos,
-	    const box<3>& execution_range, const communicator* collective_comm) override {
-		utils::panic("not implemented");
+	async_event enqueue_host_alloc(const size_t size, const size_t alignment) override {
+		const auto ptr = mock_alloc(size, alignment);
+		m_log->push_back(host_alloc{size, alignment, ptr});
+		return make_complete_event(ptr);
 	}
 
-	async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher,
-	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) override {
-		utils::panic("not implemented");
+	async_event enqueue_device_alloc(const device_id device, const size_t size, const size_t alignment) override {
+		const auto ptr = mock_alloc(size, alignment);
+		m_log->push_back(device_alloc{device, size, alignment, ptr});
+		return make_complete_event(ptr);
 	}
 
-	async_event enqueue_host_copy(size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
-	    const region<3>& copy_region, const size_t elem_size) override {
-		utils::panic("not implemented");
+	async_event enqueue_host_free(void* const ptr) override {
+		m_log->push_back(host_free{ptr});
+		return make_complete_event();
 	}
 
-	async_event enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
-	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override {
-		utils::panic("not implemented");
+	async_event enqueue_device_free(const device_id device, void* const ptr) override {
+		m_log->push_back(device_free{device, ptr});
+		return make_complete_event();
+	}
+
+	async_event enqueue_host_task(const size_t host_lane, const host_task_launcher& launcher, std::vector<closure_hydrator::accessor_info> accessor_infos,
+	    const box<3>& execution_range, const communicator* const collective_comm) override //
+	{
+		m_log->push_back(host_task{host_lane, std::move(accessor_infos), execution_range, collective_comm});
+		return make_complete_event();
+	}
+
+	async_event enqueue_device_kernel(const device_id device, const size_t device_lane, const device_kernel_launcher& launcher,
+	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) override //
+	{
+		m_log->push_back(device_kernel{device, device_lane, std::move(accessor_infos), execution_range, reduction_ptrs});
+		return make_complete_event();
+	}
+
+	async_event enqueue_host_copy(const size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
+	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override //
+	{
+		m_log->push_back(host_copy{host_lane, source_base, dest_base, source_box, dest_box, copy_region, elem_size});
+		return make_complete_event();
+	}
+
+	async_event enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
+	    const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override //
+	{
+		m_log->push_back(device_copy{device, device_lane, source_base, dest_base, source_box, dest_box, copy_region, elem_size});
+		return make_complete_event();
 	}
 
   private:
 	system_info m_system;
+	uintptr_t m_last_mock_alloc_address = 0;
+	std::vector<operation>* m_log;
+
+	void* mock_alloc(const size_t size, const size_t alignment) {
+		CHECK(size > 0);
+		CHECK(alignment > 0);
+		CHECK(size >= alignment);
+		CHECK(size % alignment == 0);
+		const auto address = (m_last_mock_alloc_address + alignment) / alignment * alignment;
+		m_last_mock_alloc_address = address + size;
+		return reinterpret_cast<void*>(address);
+	}
 };
 
 class mock_fence_promise : public fence_promise {
@@ -128,9 +263,9 @@ class executor_test_context final : private executor::delegate {
 		if(type == executor_type::dry_run) {
 			m_executor = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
 		} else {
-			const auto system = test_utils::make_system_info(1 /* num devices */, false /* d2d copies*/);
+			const auto system = test_utils::make_system_info(4 /* num devices */, false /* d2d copies*/);
 			m_executor = std::make_unique<live_executor>(
-			    std::make_unique<mock_backend>(system), std::make_unique<mock_local_communicator>(), static_cast<executor::delegate*>(this));
+			    std::make_unique<mock_backend>(system, &m_backend_log), std::make_unique<mock_local_communicator>(), static_cast<executor::delegate*>(this));
 		}
 	}
 
@@ -158,6 +293,26 @@ class executor_test_context final : private executor::delegate {
 		return {tid, iid};
 	}
 
+	instruction_id alloc(const std::vector<instruction_id>& predecessors, const allocation_id aid, const size_t size, const size_t alignment) {
+		return submit<alloc_instruction>(predecessors, aid, size, alignment);
+	}
+
+	instruction_id free(const std::vector<instruction_id>& predecessors, const allocation_id aid) { return submit<free_instruction>(predecessors, aid); }
+
+	instruction_id host_task(const std::vector<instruction_id>& predecessors, const box<3>& execution_range, const range<3>& global_range,
+	    buffer_access_allocation_map amap, const collective_group_id cgid) //
+	{
+		return submit<host_task_instruction>(predecessors, host_task_launcher{}, execution_range, global_range, std::move(amap),
+		    cgid CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::host_compute, task_id(1), "task_name"));
+	}
+
+	instruction_id device_kernel(const std::vector<instruction_id>& predecessors, const device_id did, const box<3>& execution_range,
+	    buffer_access_allocation_map amap, buffer_access_allocation_map rmap) //
+	{
+		return submit<device_kernel_instruction>(predecessors, did, device_kernel_launcher{}, execution_range, std::move(amap),
+		    std::move(rmap) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::device_compute, task_id(1), "task_name"));
+	}
+
 	instruction_id destroy_host_object(const std::vector<instruction_id>& predecessors, const host_object_id hoid) {
 		return submit<destroy_host_object_instruction>(predecessors, hoid);
 	}
@@ -169,11 +324,12 @@ class executor_test_context final : private executor::delegate {
 		return iid;
 	}
 
-	void shutdown(const std::vector<instruction_id>& predecessors) {
+	std::vector<mock_backend::operation> shutdown(const std::vector<instruction_id>& predecessors) {
 		CHECK(!m_has_shut_down);
 		epoch(predecessors, epoch_action::shutdown, instruction_garbage{});
 		m_executor->wait();
 		m_has_shut_down = true;
+		return std::move(m_backend_log);
 	}
 
 	executor& get_executor() { return *m_executor; }
@@ -192,6 +348,7 @@ class executor_test_context final : private executor::delegate {
 	std::unique_ptr<executor> m_executor;
 	epoch_monitor m_horizons{0};
 	epoch_monitor m_epochs{0};
+	std::vector<mock_backend::operation> m_backend_log; // mutated by executor thread - do not access before shutdown!
 
 	template <typename Instruction, typename... CtorParams>
 	instruction_id submit(const std::vector<instruction_id>& predecessors, CtorParams&&... ctor_args) {
@@ -210,7 +367,7 @@ class executor_test_context final : private executor::delegate {
 };
 
 
-TEST_CASE_METHOD(test_utils::executor_fixture, "executors notify delegate when encountering a horizon / epoch", "[executor]") {
+TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors notify delegate when encountering a horizon / epoch", "[executor]") {
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -239,7 +396,7 @@ TEST_CASE_METHOD(test_utils::executor_fixture, "executors notify delegate when e
 	ectx.shutdown({node});
 }
 
-TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
+TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
 	executor_test_context ectx(executor_type::dry_run);
 	const auto [_, init_epoch] = ectx.init();
 	const auto fence = ectx.fence_and_wait({init_epoch});
@@ -248,7 +405,7 @@ TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when enco
 	ectx.shutdown({fence});
 }
 
-TEST_CASE_METHOD(test_utils::executor_fixture, "executors free all reducers that appear in garbage lists  ", "[executor]") {
+TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reducers that appear in garbage lists  ", "[executor]") {
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -276,7 +433,7 @@ TEST_CASE_METHOD(test_utils::executor_fixture, "executors free all reducers that
 	ectx.shutdown({collector});
 }
 
-TEST_CASE_METHOD(test_utils::executor_fixture, "host objects lifetime is controlled by destroy_host_object_instruction", "[executor]") {
+TEST_CASE("host objects lifetime is controlled by destroy_host_object_instruction", "[executor]") {
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -300,4 +457,167 @@ TEST_CASE_METHOD(test_utils::executor_fixture, "host objects lifetime is control
 	CHECK(destroyed);
 
 	ectx.shutdown({after_destroy});
+}
+
+TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]") {
+	executor_test_context ectx(executor_type::live);
+	const auto [_1, init_epoch] = ectx.init();
+
+	const auto alloc1 = ectx.alloc({init_epoch}, allocation_id(host_memory_id, 1), 1024, 8);
+	const auto alloc2 = ectx.alloc({init_epoch, alloc1}, allocation_id(host_memory_id, 2), 2048, 16);
+
+	const auto ht_amap = buffer_access_allocation_map{
+	    {
+	        allocation_id(host_memory_id, 1),
+	        box<3>({0, 0, 0}, {32, 32, 1}),
+	        box<3>({8, 8, 0}, {24, 24, 1}),
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(1, "buffer1"),
+	    },
+	    {
+	        allocation_id(host_memory_id, 2),
+	        box<3>({0, 0, 0}, {64, 16, 1}),
+	        box<3>({0, 0, 0}, {16, 16, 1}),
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(2, "buffer2"),
+	    },
+	};
+	const auto ht = ectx.host_task({alloc1, alloc2}, box<3>{{0, 1, 2}, {3, 4, 5}}, range<3>{7, 8, 9}, ht_amap, non_collective_group_id);
+
+	const auto free1 = ectx.free({ht}, allocation_id(host_memory_id, 1));
+	const auto free2 = ectx.free({ht, free1}, allocation_id(host_memory_id, 2));
+
+	const auto log = ectx.shutdown({free1, free2});
+	REQUIRE(log.size() == 5);
+
+	const auto log_alloc1 = std::get<mock_backend::host_alloc>(log[0]);
+	CHECK(log_alloc1.size == 1024);
+	CHECK(log_alloc1.alignment == 8);
+	CHECK(log_alloc1.result != nullptr);
+
+	const auto log_alloc2 = std::get<mock_backend::host_alloc>(log[1]);
+	CHECK(log_alloc2.size == 2048);
+	CHECK(log_alloc2.alignment == 16);
+	CHECK(log_alloc2.result != nullptr);
+
+	const auto log_ht = std::get<mock_backend::host_task>(log[2]);
+	CHECK(log_ht.collective_comm == nullptr);
+	CHECK(log_ht.execution_range == box<3>{{0, 1, 2}, {3, 4, 5}});
+
+	REQUIRE(log_ht.accessor_infos.size() == 2);
+	CHECK(log_ht.accessor_infos[0].ptr == log_alloc1.result);
+	CHECK(log_ht.accessor_infos[0].allocated_box_in_buffer == ht_amap[0].allocated_box_in_buffer);
+	CHECK(log_ht.accessor_infos[0].accessed_box_in_buffer == ht_amap[0].accessed_box_in_buffer);
+	CHECK(log_ht.accessor_infos[1].ptr == log_alloc2.result);
+	CHECK(log_ht.accessor_infos[1].allocated_box_in_buffer == ht_amap[1].allocated_box_in_buffer);
+	CHECK(log_ht.accessor_infos[1].accessed_box_in_buffer == ht_amap[1].accessed_box_in_buffer);
+
+	const auto log_free1 = std::get<mock_backend::host_free>(log[3]);
+	CHECK(log_free1.ptr == log_alloc1.result);
+
+	const auto log_free2 = std::get<mock_backend::host_free>(log[4]);
+	CHECK(log_free2.ptr == log_alloc2.result);
+}
+
+TEST_CASE("live_executor passes correct allocations to device kernels", "[executor]") {
+	executor_test_context ectx(executor_type::live);
+	const auto [_1, init_epoch] = ectx.init();
+
+	const auto did = GENERATE(values<device_id>({0, 1}));
+	const auto mid = memory_id(first_device_memory_id + did);
+
+	const auto alloc1 = ectx.alloc({init_epoch}, allocation_id(mid, 1), 1024, 8);
+	const auto alloc2 = ectx.alloc({init_epoch, alloc1}, allocation_id(mid, 2), 2048, 16);
+	const auto alloc3 = ectx.alloc({init_epoch, alloc2}, allocation_id(mid, 3), 4, 4);
+	const auto alloc4 = ectx.alloc({init_epoch, alloc3}, allocation_id(mid, 4), 4, 4);
+
+	const auto amap = buffer_access_allocation_map{
+	    {
+	        allocation_id(mid, 1),
+	        box<3>({0, 0, 0}, {32, 32, 1}),
+	        box<3>({8, 8, 0}, {24, 24, 1}),
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(1, "buffer1"),
+	    },
+	    {
+	        allocation_id(mid, 2),
+	        box<3>({0, 0, 0}, {64, 16, 1}),
+	        box<3>({0, 0, 0}, {16, 16, 1}),
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(2, "buffer2"),
+	    },
+	};
+	const auto rmap = buffer_access_allocation_map{
+	    {
+	        allocation_id(mid, 3),
+	        box<3>({0, 0, 0}, {1, 1, 1}),
+	        box<3>({0, 0, 0}, {1, 1, 1}),
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(3, "buffer3"),
+	    },
+	    {
+	        allocation_id(mid, 4),
+	        box<3>({0, 0, 0}, {1, 1, 1}),
+	        box<3>({0, 0, 0}, {1, 1, 1}),
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(4, "buffer4"),
+	    },
+	};
+	const auto kernel = ectx.device_kernel({alloc1, alloc2, alloc3, alloc4}, did, box<3>({1, 2, 3}, {4, 5, 6}), amap, rmap);
+
+	const auto free1 = ectx.free({kernel}, allocation_id(mid, 1));
+	const auto free2 = ectx.free({kernel, free1}, allocation_id(mid, 2));
+	const auto free3 = ectx.free({kernel, free2}, allocation_id(mid, 3));
+	const auto free4 = ectx.free({kernel, free3}, allocation_id(mid, 4));
+
+	const auto log = ectx.shutdown({free1, free2, free3, free4});
+	REQUIRE(log.size() == 9);
+
+	const auto log_alloc1 = std::get<mock_backend::device_alloc>(log[0]);
+	CHECK(log_alloc1.device == did);
+	CHECK(log_alloc1.size == 1024);
+	CHECK(log_alloc1.alignment == 8);
+	CHECK(log_alloc1.result != nullptr);
+
+	const auto log_alloc2 = std::get<mock_backend::device_alloc>(log[1]);
+	CHECK(log_alloc2.device == did);
+	CHECK(log_alloc2.size == 2048);
+	CHECK(log_alloc2.alignment == 16);
+	CHECK(log_alloc2.result != nullptr);
+
+	const auto log_alloc3 = std::get<mock_backend::device_alloc>(log[2]);
+	CHECK(log_alloc3.device == did);
+	CHECK(log_alloc3.size == 4);
+	CHECK(log_alloc3.alignment == 4);
+	CHECK(log_alloc3.result != nullptr);
+
+	const auto log_alloc4 = std::get<mock_backend::device_alloc>(log[3]);
+	CHECK(log_alloc4.device == did);
+	CHECK(log_alloc4.size == 4);
+	CHECK(log_alloc4.alignment == 4);
+	CHECK(log_alloc4.result != nullptr);
+
+	const auto log_kernel = std::get<mock_backend::device_kernel>(log[4]);
+	CHECK(log_kernel.device == did);
+	CHECK(log_kernel.execution_range == box<3>({1, 2, 3}, {4, 5, 6}));
+
+	REQUIRE(log_kernel.accessor_infos.size() == 2);
+	CHECK(log_kernel.accessor_infos[0].ptr == log_alloc1.result);
+	CHECK(log_kernel.accessor_infos[0].allocated_box_in_buffer == amap[0].allocated_box_in_buffer);
+	CHECK(log_kernel.accessor_infos[0].accessed_box_in_buffer == amap[0].accessed_box_in_buffer);
+	CHECK(log_kernel.accessor_infos[1].ptr == log_alloc2.result);
+	CHECK(log_kernel.accessor_infos[1].allocated_box_in_buffer == amap[1].allocated_box_in_buffer);
+	CHECK(log_kernel.accessor_infos[1].accessed_box_in_buffer == amap[1].accessed_box_in_buffer);
+
+	CHECK(log_kernel.reduction_ptrs == std::vector{log_alloc3.result, log_alloc4.result});
+
+	const auto log_free1 = std::get<mock_backend::device_free>(log[5]);
+	CHECK(log_free1.device == did);
+	CHECK(log_free1.ptr == log_alloc1.result);
+
+	const auto log_free2 = std::get<mock_backend::device_free>(log[6]);
+	CHECK(log_free2.device == did);
+	CHECK(log_free2.ptr == log_alloc2.result);
+
+	const auto log_free3 = std::get<mock_backend::device_free>(log[7]);
+	CHECK(log_free3.device == did);
+	CHECK(log_free3.ptr == log_alloc3.result);
+
+	const auto log_free4 = std::get<mock_backend::device_free>(log[8]);
+	CHECK(log_free4.device == did);
+	CHECK(log_free4.ptr == log_alloc4.result);
 }

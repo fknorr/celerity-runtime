@@ -148,7 +148,6 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host task lambdas are hydrated an
 	    [&](const box<3>& b, const communicator* c) {
 		    CHECK(b == execution_range);
 		    CHECK(c == collective_comm);
-
 		    value += 1;
 	    },
 	    {}, execution_range, collective_comm));
@@ -157,19 +156,10 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host task lambdas are hydrated an
 	test_utils::await(backend->enqueue_host_task(
 	    lane,
 	    [&, acc1, acc2](const box<3>& b, const communicator* c) {
-		    CHECK(acc1.info->ptr == accessor_infos[0].ptr);
-		    CHECK(acc1.info->allocated_box_in_buffer == accessor_infos[0].allocated_box_in_buffer);
-		    CHECK(acc1.info->accessed_box_in_buffer == accessor_infos[0].accessed_box_in_buffer);
-		    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc1.info->out_of_bounds_indices == accessor_infos[0].out_of_bounds_indices);)
-
-		    CHECK(acc2.info->ptr == accessor_infos[1].ptr);
-		    CHECK(acc2.info->allocated_box_in_buffer == accessor_infos[1].allocated_box_in_buffer);
-		    CHECK(acc2.info->accessed_box_in_buffer == accessor_infos[1].accessed_box_in_buffer);
-		    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc2.info->out_of_bounds_indices == accessor_infos[1].out_of_bounds_indices);)
-
+		    CHECK(acc1.info == accessor_infos[0]);
+		    CHECK(acc2.info == accessor_infos[1]);
 		    CHECK(b == execution_range);
 		    CHECK(c == collective_comm);
-
 		    value += 1;
 	    },
 	    accessor_infos, execution_range, collective_comm));
@@ -222,7 +212,6 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "device kernel command groups are 
 		    [&](sycl::handler& cgh, const box<3>& b, const std::vector<void*>& r) {
 			    CHECK(b == execution_range);
 			    CHECK(r == reduction_ptrs);
-
 			    cgh.single_task([=] { *value_ptr += 1; });
 		    },
 		    {}, execution_range, reduction_ptrs));
@@ -231,19 +220,10 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "device kernel command groups are 
 		test_utils::await(backend->enqueue_device_kernel(
 		    did, lane,
 		    [&, acc1, acc2](sycl::handler& cgh, const box<3>& b, const std::vector<void*>& r) {
-			    CHECK(acc1.info->ptr == accessor_infos[0].ptr);
-			    CHECK(acc1.info->allocated_box_in_buffer == accessor_infos[0].allocated_box_in_buffer);
-			    CHECK(acc1.info->accessed_box_in_buffer == accessor_infos[0].accessed_box_in_buffer);
-			    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc1.info->out_of_bounds_indices == accessor_infos[0].out_of_bounds_indices);)
-
-			    CHECK(acc2.info->ptr == accessor_infos[1].ptr);
-			    CHECK(acc2.info->allocated_box_in_buffer == accessor_infos[1].allocated_box_in_buffer);
-			    CHECK(acc2.info->accessed_box_in_buffer == accessor_infos[1].accessed_box_in_buffer);
-			    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(CHECK(acc2.info->out_of_bounds_indices == accessor_infos[1].out_of_bounds_indices);)
-
+			    CHECK(acc1.info == accessor_infos[0]);
+			    CHECK(acc2.info == accessor_infos[1]);
 			    CHECK(b == execution_range);
 			    CHECK(r == reduction_ptrs);
-
 			    cgh.single_task([=] { *value_ptr += 1; });
 		    },
 		    accessor_infos, execution_range, reduction_ptrs));

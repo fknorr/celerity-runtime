@@ -381,9 +381,9 @@ namespace test_utils {
 		backend_fixture();
 	};
 
-	class executor_fixture {
+	class dry_run_executor_fixture {
 	  public:
-		executor_fixture();
+		dry_run_executor_fixture();
 	};
 
 	template <int>

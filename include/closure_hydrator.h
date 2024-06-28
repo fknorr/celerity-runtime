@@ -73,6 +73,15 @@ class closure_hydrator {
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 		oob_bounding_box* out_of_bounds_indices = nullptr;
 #endif
+
+		friend bool operator==(const accessor_info& lhs, const accessor_info& rhs) {
+			return lhs.ptr == rhs.ptr && lhs.allocated_box_in_buffer == rhs.allocated_box_in_buffer && lhs.accessed_box_in_buffer == rhs.accessed_box_in_buffer
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+			       && lhs.out_of_bounds_indices == rhs.out_of_bounds_indices
+#endif
+			    ;
+		}
+		friend bool operator!=(const accessor_info& lhs, const accessor_info& rhs) { return !(lhs == rhs); }
 	};
 
 	closure_hydrator(const closure_hydrator&) = delete;
