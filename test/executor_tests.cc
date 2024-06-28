@@ -91,13 +91,6 @@ struct send_payload {
 	communicator::stride stride;
 };
 
-struct receive_payload {
-	node_id from = 0;
-	message_id msgid = 0;
-	void* base = nullptr;
-	communicator::stride stride;
-};
-
 struct collective_clone {
 	int parent_comm_index = 0;
 	int child_comm_index = 0;
@@ -109,9 +102,8 @@ struct collective_barrier {
 
 } // namespace ops
 
-using operation =
-    std::variant<ops::host_alloc, ops::device_alloc, ops::host_free, ops::device_free, ops::host_task, ops::device_kernel, ops::host_copy, ops::device_copy,
-        ops::reduce, ops::fill_identity, ops::send_outbound_pilot, ops::send_payload, ops::receive_payload, ops::collective_clone, ops::collective_barrier>;
+using operation = std::variant<ops::host_alloc, ops::device_alloc, ops::host_free, ops::device_free, ops::host_task, ops::device_kernel, ops::host_copy,
+    ops::device_copy, ops::reduce, ops::fill_identity, ops::send_outbound_pilot, ops::send_payload, ops::collective_clone, ops::collective_barrier>;
 using operations_log = std::vector<operation>;
 
 
@@ -159,11 +151,7 @@ class mock_exec_communicator final : public communicator {
 	size_t get_num_nodes() const override { return 2; }
 	node_id get_local_node_id() const override { return 0; }
 
-	std::vector<inbound_pilot> poll_inbound_pilots() override {
-		// TODO somehow queue-receive these from test main thread?
-		// or pass in through ctor?
-		return {};
-	}
+	std::vector<inbound_pilot> poll_inbound_pilots() override { return {}; }
 
 	void send_outbound_pilot(const outbound_pilot& pilot) override { m_log->push_back(ops::send_outbound_pilot{pilot}); }
 
@@ -173,8 +161,8 @@ class mock_exec_communicator final : public communicator {
 	}
 
 	async_event receive_payload(node_id from, message_id msgid, void* base, const stride& stride) override {
-		m_log->push_back(ops::receive_payload{from, msgid, base, stride});
-		return make_complete_event();
+		// we don't test receiving because it would be annoying, and most of the pointer juggling is handled by receive_arbiter anyway
+		utils::panic("not implemented");
 	}
 
 	std::unique_ptr<communicator> collective_clone() override {
