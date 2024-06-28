@@ -245,6 +245,9 @@ const char* const expected_backend_warnings_regex =
     "No common backend specialization available for all selected devices, falling back to .*\\. Performance may be degraded\\.|"
     "All selected devices are compatible with specialized .* backend, but it has not been compiled\\. Performance may be degraded\\.";
 
+const char* const expected_executor_warnings_regex = "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this operation "
+                                                     "will not match the expected output of an actual run.";
+
 } // namespace celerity::test_utils_detail
 
 namespace celerity::test_utils {
@@ -287,6 +290,8 @@ runtime_fixture::~runtime_fixture() {
 }
 
 backend_fixture::backend_fixture() { allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_backend_warnings_regex); }
+
+executor_fixture::executor_fixture() { allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_executor_warnings_regex); }
 
 bool g_print_graphs = false;
 

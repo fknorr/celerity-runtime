@@ -143,38 +143,94 @@ auto generate_executors() {
 	return std::tuple{executor_type, std::move(executor), std::move(delegate)};
 }
 
-TEST_CASE("executors free all reducers that appear in horizon / epoch garbage lists  ", "[executor]") {
-	const auto [executor_type, executor, delegate] = generate_executors();
+class executor_test_context {
+  public:
+	executor_test_context(std::unique_ptr<executor> executor, std::unique_ptr<mock_executor_delegate> delegate)
+	    : m_executor(std::move(executor)), m_delegate(std::move(delegate)) {}
+
+	executor_test_context(const executor_test_context&) = delete;
+	executor_test_context(executor_test_context&&) = delete;
+	executor_test_context& operator=(const executor_test_context&) = delete;
+	executor_test_context& operator=(executor_test_context&&) = delete;
+
+	~executor_test_context() { REQUIRE(m_has_shut_down); }
+
+	instruction_id init() { return submit<epoch_instruction>({}, m_next_task_id++, epoch_action::none, instruction_garbage{}); }
+
+	instruction_id horizon(const std::vector<instruction_id>& predecessors, instruction_garbage garbage = {}) {
+		return submit<horizon_instruction>({}, m_next_task_id++, std::move(garbage));
+	}
+
+	instruction_id epoch(const std::vector<instruction_id>& predecessors, const epoch_action action, instruction_garbage garbage = {}) {
+		return submit<epoch_instruction>({}, m_next_task_id++, action, std::move(garbage));
+	}
+
+	instruction_id fence_and_wait(const std::vector<instruction_id>& predecessors) {
+		mock_fence_promise fence_promise;
+		const auto iid = submit<fence_instruction>(predecessors, &fence_promise);
+		fence_promise.wait();
+		return iid;
+	}
+
+	void shutdown(const std::vector<instruction_id>& predecessors) {
+		CHECK(!m_has_shut_down);
+		submit<epoch_instruction>({}, m_next_task_id++, epoch_action::shutdown, instruction_garbage{});
+		m_executor->wait();
+		m_has_shut_down = true;
+	}
+
+	executor& get_executor() { return *m_executor; }
+
+  private:
+	instruction_id m_next_iid = 1;
+	task_id m_next_task_id = 1;
+	std::vector<std::unique_ptr<instruction>> m_instructions; // we need to guarantee liveness as long as the executor thread is around
+	bool m_has_shut_down = false;
+	std::unique_ptr<executor> m_executor;
+	std::unique_ptr<mock_executor_delegate> m_delegate;
+
+	template <typename Instruction, typename... CtorParams>
+	instruction_id submit(const std::vector<instruction_id>& predecessors, CtorParams&&... ctor_args) {
+		const auto iid = instruction_id(m_next_iid++);
+		auto instr = std::make_unique<Instruction>(iid, 0, std::forward<CtorParams>(ctor_args)...);
+		for(const auto pred : predecessors) {
+			instr->add_dependency(pred);
+		}
+		m_executor->submit({instr.get()}, {});
+		m_instructions.push_back(std::move(instr));
+		return iid;
+	}
+};
+
+TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
+	auto delegate = std::make_unique<mock_executor_delegate>();
+	auto executor = std::make_unique<dry_run_executor>(delegate.get());
+	executor_test_context ectx(std::move(executor), std::move(delegate));
+	const auto init_epoch = ectx.init();
+	const auto fence = ectx.fence_and_wait({init_epoch});
+	CHECK(test_utils::log_contains_exact(log_level::warn, "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this "
+	                                                      "operation will not match the expected output of an actual run."));
+	ectx.shutdown({fence});
+}
+
+TEST_CASE_METHOD(test_utils::executor_fixture, "executors free all reducers that appear in horizon / epoch garbage lists  ", "[executor]") {
+	auto [executor_type, executor, delegate] = generate_executors();
 	CAPTURE(executor_type);
 
 	const auto instruction_type = GENERATE(values<std::string>({"epoch", "horizon"}));
 	CAPTURE(instruction_type);
 
-	const auto init_epoch = std::make_unique<epoch_instruction>(instruction_id(1), 0, task_id(1), epoch_action::none, instruction_garbage{});
-	executor->submit({init_epoch.get()}, {});
+	executor_test_context ectx(std::move(executor), std::move(delegate));
+	const auto init_epoch = ectx.init();
 
 	const reduction_id rid(123);
 	std::atomic<bool> destroyed{false};
-	executor->announce_reducer(rid, std::make_unique<mock_reducer>(&destroyed));
+	ectx.get_executor().announce_reducer(rid, std::make_unique<mock_reducer>(&destroyed));
 
-	std::unique_ptr<instruction> collecting_instruction;
-	if(instruction_type == "epoch") {
-		collecting_instruction = std::make_unique<epoch_instruction>(instruction_id(2), 0, task_id(2), epoch_action::none, instruction_garbage{{rid}, {}});
-	} else {
-		collecting_instruction = std::make_unique<horizon_instruction>(instruction_id(2), 0, task_id(2), instruction_garbage{{rid}, {}});
-	}
-	collecting_instruction->add_dependency(init_epoch->get_id());
-
-	mock_fence_promise fence_promise;
-	const auto fence = std::make_unique<fence_instruction>(instruction_id(3), 0, &fence_promise);
-	fence->add_dependency(collecting_instruction->get_id());
-
-	executor->submit({collecting_instruction.get(), fence.get()}, {});
-
-	fence_promise.wait();
+	const auto collector = instruction_type == "epoch" ? ectx.epoch({init_epoch}, epoch_action::none, instruction_garbage{{rid}, {}})
+	                                                   : ectx.horizon({init_epoch}, instruction_garbage{{rid}, {}});
+	const auto fence = ectx.fence_and_wait({collector});
 	CHECK(destroyed);
 
-	const auto shutdown_epoch = std::make_unique<epoch_instruction>(instruction_id(4), 0, task_id(4), epoch_action::shutdown, instruction_garbage{});
-	executor->submit({shutdown_epoch.get()}, {});
-    executor->wait();
+	ectx.shutdown({fence});
 }

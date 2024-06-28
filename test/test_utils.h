@@ -381,6 +381,11 @@ namespace test_utils {
 		backend_fixture();
 	};
 
+	class executor_fixture {
+	  public:
+		executor_fixture();
+	};
+
 	template <int>
 	class backend_fixture_dims : public backend_fixture {};
 
