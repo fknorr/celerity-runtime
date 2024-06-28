@@ -545,33 +545,33 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 	const auto log = ectx.finish();
 	REQUIRE(log.size() == 5);
 
-	const auto log_alloc1 = std::get<ops::host_alloc>(log[0]);
-	CHECK(log_alloc1.size == 1024);
-	CHECK(log_alloc1.alignment == 8);
-	CHECK(log_alloc1.result != nullptr);
+	const auto alloc1 = std::get<ops::host_alloc>(log[0]);
+	CHECK(alloc1.size == 1024);
+	CHECK(alloc1.alignment == 8);
+	CHECK(alloc1.result != nullptr);
 
-	const auto log_alloc2 = std::get<ops::host_alloc>(log[1]);
-	CHECK(log_alloc2.size == 2048);
-	CHECK(log_alloc2.alignment == 16);
-	CHECK(log_alloc2.result != nullptr);
+	const auto alloc2 = std::get<ops::host_alloc>(log[1]);
+	CHECK(alloc2.size == 2048);
+	CHECK(alloc2.alignment == 16);
+	CHECK(alloc2.result != nullptr);
 
-	const auto log_ht = std::get<ops::host_task>(log[2]);
-	CHECK(log_ht.collective_comm == nullptr);
-	CHECK(log_ht.execution_range == box<3>{{0, 1, 2}, {3, 4, 5}});
+	const auto host_task = std::get<ops::host_task>(log[2]);
+	CHECK(host_task.collective_comm == nullptr);
+	CHECK(host_task.execution_range == box<3>{{0, 1, 2}, {3, 4, 5}});
 
-	REQUIRE(log_ht.accessor_infos.size() == 2);
-	CHECK(log_ht.accessor_infos[0].ptr == log_alloc1.result);
-	CHECK(log_ht.accessor_infos[0].allocated_box_in_buffer == amap[0].allocated_box_in_buffer);
-	CHECK(log_ht.accessor_infos[0].accessed_box_in_buffer == amap[0].accessed_box_in_buffer);
-	CHECK(log_ht.accessor_infos[1].ptr == log_alloc2.result);
-	CHECK(log_ht.accessor_infos[1].allocated_box_in_buffer == amap[1].allocated_box_in_buffer);
-	CHECK(log_ht.accessor_infos[1].accessed_box_in_buffer == amap[1].accessed_box_in_buffer);
+	REQUIRE(host_task.accessor_infos.size() == 2);
+	CHECK(host_task.accessor_infos[0].ptr == alloc1.result);
+	CHECK(host_task.accessor_infos[0].allocated_box_in_buffer == amap[0].allocated_box_in_buffer);
+	CHECK(host_task.accessor_infos[0].accessed_box_in_buffer == amap[0].accessed_box_in_buffer);
+	CHECK(host_task.accessor_infos[1].ptr == alloc2.result);
+	CHECK(host_task.accessor_infos[1].allocated_box_in_buffer == amap[1].allocated_box_in_buffer);
+	CHECK(host_task.accessor_infos[1].accessed_box_in_buffer == amap[1].accessed_box_in_buffer);
 
-	const auto log_free1 = std::get<ops::host_free>(log[3]);
-	CHECK(log_free1.ptr == log_alloc1.result);
+	const auto free1 = std::get<ops::host_free>(log[3]);
+	CHECK(free1.ptr == alloc1.result);
 
-	const auto log_free2 = std::get<ops::host_free>(log[4]);
-	CHECK(log_free2.ptr == log_alloc2.result);
+	const auto free2 = std::get<ops::host_free>(log[4]);
+	CHECK(free2.ptr == alloc2.result);
 }
 
 TEST_CASE("live_executor passes correct allocations to reducers", "[executor]") {
@@ -595,17 +595,17 @@ TEST_CASE("live_executor passes correct allocations to reducers", "[executor]") 
 	const auto log = ectx.finish();
 	REQUIRE(log.size() == 6);
 
-	const auto log_source_alloc = std::get<ops::host_alloc>(log[0]);
-	const auto log_dest_alloc = std::get<ops::host_alloc>(log[1]);
+	const auto source_alloc = std::get<ops::host_alloc>(log[0]);
+	const auto dest_alloc = std::get<ops::host_alloc>(log[1]);
 
-	const auto log_fill_identity = std::get<ops::fill_identity>(log[2]);
-	CHECK(log_fill_identity.dest == log_source_alloc.result);
-	CHECK(log_fill_identity.count == num_source_values);
+	const auto fill_identity = std::get<ops::fill_identity>(log[2]);
+	CHECK(fill_identity.dest == source_alloc.result);
+	CHECK(fill_identity.count == num_source_values);
 
-	const auto log_reduce = std::get<ops::reduce>(log[3]);
-	CHECK(log_reduce.dest == log_dest_alloc.result);
-	CHECK(log_reduce.src == log_source_alloc.result);
-	CHECK(log_reduce.src_count == num_source_values);
+	const auto reduce = std::get<ops::reduce>(log[3]);
+	CHECK(reduce.dest == dest_alloc.result);
+	CHECK(reduce.src == source_alloc.result);
+	CHECK(reduce.src_count == num_source_values);
 
 	// correct arguments to alloc / free have already been tested above
 }
@@ -660,59 +660,59 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 	const auto log = ectx.finish();
 	REQUIRE(log.size() == 9);
 
-	const auto log_alloc1 = std::get<ops::device_alloc>(log[0]);
-	CHECK(log_alloc1.device == did);
-	CHECK(log_alloc1.size == 1024);
-	CHECK(log_alloc1.alignment == 8);
-	CHECK(log_alloc1.result != nullptr);
+	const auto alloc1 = std::get<ops::device_alloc>(log[0]);
+	CHECK(alloc1.device == did);
+	CHECK(alloc1.size == 1024);
+	CHECK(alloc1.alignment == 8);
+	CHECK(alloc1.result != nullptr);
 
-	const auto log_alloc2 = std::get<ops::device_alloc>(log[1]);
-	CHECK(log_alloc2.device == did);
-	CHECK(log_alloc2.size == 2048);
-	CHECK(log_alloc2.alignment == 16);
-	CHECK(log_alloc2.result != nullptr);
+	const auto alloc2 = std::get<ops::device_alloc>(log[1]);
+	CHECK(alloc2.device == did);
+	CHECK(alloc2.size == 2048);
+	CHECK(alloc2.alignment == 16);
+	CHECK(alloc2.result != nullptr);
 
-	const auto log_alloc3 = std::get<ops::device_alloc>(log[2]);
-	CHECK(log_alloc3.device == did);
-	CHECK(log_alloc3.size == 4);
-	CHECK(log_alloc3.alignment == 4);
-	CHECK(log_alloc3.result != nullptr);
+	const auto alloc3 = std::get<ops::device_alloc>(log[2]);
+	CHECK(alloc3.device == did);
+	CHECK(alloc3.size == 4);
+	CHECK(alloc3.alignment == 4);
+	CHECK(alloc3.result != nullptr);
 
-	const auto log_alloc4 = std::get<ops::device_alloc>(log[3]);
-	CHECK(log_alloc4.device == did);
-	CHECK(log_alloc4.size == 4);
-	CHECK(log_alloc4.alignment == 4);
-	CHECK(log_alloc4.result != nullptr);
+	const auto alloc4 = std::get<ops::device_alloc>(log[3]);
+	CHECK(alloc4.device == did);
+	CHECK(alloc4.size == 4);
+	CHECK(alloc4.alignment == 4);
+	CHECK(alloc4.result != nullptr);
 
-	const auto log_kernel = std::get<ops::device_kernel>(log[4]);
-	CHECK(log_kernel.device == did);
-	CHECK(log_kernel.execution_range == box<3>({1, 2, 3}, {4, 5, 6}));
+	const auto kernel = std::get<ops::device_kernel>(log[4]);
+	CHECK(kernel.device == did);
+	CHECK(kernel.execution_range == box<3>({1, 2, 3}, {4, 5, 6}));
 
-	REQUIRE(log_kernel.accessor_infos.size() == 2);
-	CHECK(log_kernel.accessor_infos[0].ptr == log_alloc1.result);
-	CHECK(log_kernel.accessor_infos[0].allocated_box_in_buffer == amap[0].allocated_box_in_buffer);
-	CHECK(log_kernel.accessor_infos[0].accessed_box_in_buffer == amap[0].accessed_box_in_buffer);
-	CHECK(log_kernel.accessor_infos[1].ptr == log_alloc2.result);
-	CHECK(log_kernel.accessor_infos[1].allocated_box_in_buffer == amap[1].allocated_box_in_buffer);
-	CHECK(log_kernel.accessor_infos[1].accessed_box_in_buffer == amap[1].accessed_box_in_buffer);
+	REQUIRE(kernel.accessor_infos.size() == 2);
+	CHECK(kernel.accessor_infos[0].ptr == alloc1.result);
+	CHECK(kernel.accessor_infos[0].allocated_box_in_buffer == amap[0].allocated_box_in_buffer);
+	CHECK(kernel.accessor_infos[0].accessed_box_in_buffer == amap[0].accessed_box_in_buffer);
+	CHECK(kernel.accessor_infos[1].ptr == alloc2.result);
+	CHECK(kernel.accessor_infos[1].allocated_box_in_buffer == amap[1].allocated_box_in_buffer);
+	CHECK(kernel.accessor_infos[1].accessed_box_in_buffer == amap[1].accessed_box_in_buffer);
 
-	CHECK(log_kernel.reduction_ptrs == std::vector{log_alloc3.result, log_alloc4.result});
+	CHECK(kernel.reduction_ptrs == std::vector{alloc3.result, alloc4.result});
 
-	const auto log_free1 = std::get<ops::device_free>(log[5]);
-	CHECK(log_free1.device == did);
-	CHECK(log_free1.ptr == log_alloc1.result);
+	const auto free1 = std::get<ops::device_free>(log[5]);
+	CHECK(free1.device == did);
+	CHECK(free1.ptr == alloc1.result);
 
-	const auto log_free2 = std::get<ops::device_free>(log[6]);
-	CHECK(log_free2.device == did);
-	CHECK(log_free2.ptr == log_alloc2.result);
+	const auto free2 = std::get<ops::device_free>(log[6]);
+	CHECK(free2.device == did);
+	CHECK(free2.ptr == alloc2.result);
 
-	const auto log_free3 = std::get<ops::device_free>(log[7]);
-	CHECK(log_free3.device == did);
-	CHECK(log_free3.ptr == log_alloc3.result);
+	const auto free3 = std::get<ops::device_free>(log[7]);
+	CHECK(free3.device == did);
+	CHECK(free3.ptr == alloc3.result);
 
-	const auto log_free4 = std::get<ops::device_free>(log[8]);
-	CHECK(log_free4.device == did);
-	CHECK(log_free4.ptr == log_alloc4.result);
+	const auto free4 = std::get<ops::device_free>(log[8]);
+	CHECK(free4.device == did);
+	CHECK(free4.ptr == alloc4.result);
 }
 
 TEST_CASE("live_executor passes correct allocation pointers to copy instructions", "[executor]") {
@@ -743,61 +743,61 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	const auto log = ectx.finish();
 	REQUIRE(log.size() == 5);
 
-	const ops::common_alloc* log_source_alloc = nullptr;
+	const ops::common_alloc* source_alloc = nullptr;
 	if(source_mid == host_memory_id) {
-		log_source_alloc = &std::get<ops::host_alloc>(log[0]);
+		source_alloc = &std::get<ops::host_alloc>(log[0]);
 	} else {
-		const auto& log_source_device_alloc = std::get<ops::device_alloc>(log[0]);
-		CHECK(log_source_device_alloc.device == did);
-		log_source_alloc = &log_source_device_alloc;
+		const auto& source_device_alloc = std::get<ops::device_alloc>(log[0]);
+		CHECK(source_device_alloc.device == did);
+		source_alloc = &source_device_alloc;
 	}
-	CHECK(log_source_alloc->size == 4096);
-	CHECK(log_source_alloc->alignment == 8);
-	CHECK(log_source_alloc->result != nullptr);
+	CHECK(source_alloc->size == 4096);
+	CHECK(source_alloc->alignment == 8);
+	CHECK(source_alloc->result != nullptr);
 
-	const ops::common_alloc* log_dest_alloc = nullptr;
+	const ops::common_alloc* dest_alloc = nullptr;
 	if(dest_mid == host_memory_id) {
-		log_dest_alloc = &std::get<ops::host_alloc>(log[1]);
+		dest_alloc = &std::get<ops::host_alloc>(log[1]);
 	} else {
-		const auto& log_dest_device_alloc = std::get<ops::device_alloc>(log[1]);
-		CHECK(log_dest_device_alloc.device == did);
-		log_dest_alloc = &log_dest_device_alloc;
+		const auto& dest_device_alloc = std::get<ops::device_alloc>(log[1]);
+		CHECK(dest_device_alloc.device == did);
+		dest_alloc = &dest_device_alloc;
 	}
-	CHECK(log_dest_alloc->size == 4096);
-	CHECK(log_dest_alloc->alignment == 8);
-	CHECK(log_dest_alloc->result != nullptr);
+	CHECK(dest_alloc->size == 4096);
+	CHECK(dest_alloc->alignment == 8);
+	CHECK(dest_alloc->result != nullptr);
 
-	const ops::common_copy* log_copy = nullptr;
+	const ops::common_copy* copy = nullptr;
 	if(source_mid == host_memory_id && dest_mid == host_memory_id) {
-		log_copy = &std::get<ops::host_copy>(log[2]);
+		copy = &std::get<ops::host_copy>(log[2]);
 	} else {
-		const auto& log_device_copy = std::get<ops::device_copy>(log[2]);
-		CHECK(log_device_copy.device == did);
-		log_copy = &log_device_copy;
+		const auto& device_copy = std::get<ops::device_copy>(log[2]);
+		CHECK(device_copy.device == did);
+		copy = &device_copy;
 	}
-	CHECK(log_copy->source_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(log_source_alloc->result) + source_offset));
-	CHECK(log_copy->dest_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(log_dest_alloc->result) + dest_offset));
-	CHECK(log_copy->source_box == source_box);
-	CHECK(log_copy->dest_box == dest_box);
-	CHECK(log_copy->copy_region == copy_region);
-	CHECK(log_copy->elem_size == elem_size);
+	CHECK(copy->source_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(source_alloc->result) + source_offset));
+	CHECK(copy->dest_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(dest_alloc->result) + dest_offset));
+	CHECK(copy->source_box == source_box);
+	CHECK(copy->dest_box == dest_box);
+	CHECK(copy->copy_region == copy_region);
+	CHECK(copy->elem_size == elem_size);
 
 	if(source_mid == host_memory_id) {
-		const auto log_source_free = std::get<ops::host_free>(log[3]);
-		CHECK(log_source_free.ptr == log_source_alloc->result);
+		const auto source_free = std::get<ops::host_free>(log[3]);
+		CHECK(source_free.ptr == source_alloc->result);
 	} else {
-		const auto log_source_free = std::get<ops::device_free>(log[3]);
-		CHECK(log_source_free.device == did);
-		CHECK(log_source_free.ptr == log_source_alloc->result);
+		const auto source_free = std::get<ops::device_free>(log[3]);
+		CHECK(source_free.device == did);
+		CHECK(source_free.ptr == source_alloc->result);
 	}
 
 	if(dest_mid == host_memory_id) {
-		const auto log_dest_free = std::get<ops::host_free>(log[4]);
-		CHECK(log_dest_free.ptr == log_dest_alloc->result);
+		const auto dest_free = std::get<ops::host_free>(log[4]);
+		CHECK(dest_free.ptr == dest_alloc->result);
 	} else {
-		const auto log_dest_free = std::get<ops::device_free>(log[4]);
-		CHECK(log_dest_free.device == did);
-		CHECK(log_dest_free.ptr == log_dest_alloc->result);
+		const auto dest_free = std::get<ops::device_free>(log[4]);
+		CHECK(dest_free.device == did);
+		CHECK(dest_free.ptr == dest_alloc->result);
 	}
 }
 
@@ -813,19 +813,19 @@ TEST_CASE("live_executor clones the right communicators", "[executor]") {
 	const auto log = ectx.finish();
 	REQUIRE(log.size() == 3);
 
-	const auto log_clone1 = std::get<ops::collective_clone>(log[0]);
-	CHECK(log_clone1.parent_comm_index == ectx.get_root_comm_index());
-	CHECK(log_clone1.child_comm_index != log_clone1.parent_comm_index);
+	const auto clone1 = std::get<ops::collective_clone>(log[0]);
+	CHECK(clone1.parent_comm_index == ectx.get_root_comm_index());
+	CHECK(clone1.child_comm_index != clone1.parent_comm_index);
 
-	const auto log_clone2 = std::get<ops::collective_clone>(log[1]);
-	CHECK(log_clone2.parent_comm_index == ectx.get_root_comm_index());
-	CHECK(log_clone2.child_comm_index != log_clone2.parent_comm_index);
-	CHECK(log_clone2.child_comm_index != log_clone1.parent_comm_index);
+	const auto clone2 = std::get<ops::collective_clone>(log[1]);
+	CHECK(clone2.parent_comm_index == ectx.get_root_comm_index());
+	CHECK(clone2.child_comm_index != clone2.parent_comm_index);
+	CHECK(clone2.child_comm_index != clone1.parent_comm_index);
 
-	const auto log_clone3 = std::get<ops::collective_clone>(log[2]);
-	CHECK(log_clone3.parent_comm_index == log_clone1.child_comm_index);
-	CHECK(log_clone3.child_comm_index != log_clone3.parent_comm_index);
-	CHECK(log_clone3.child_comm_index != ectx.get_root_comm_index());
+	const auto clone3 = std::get<ops::collective_clone>(log[2]);
+	CHECK(clone3.parent_comm_index == clone1.child_comm_index);
+	CHECK(clone3.child_comm_index != clone3.parent_comm_index);
+	CHECK(clone3.child_comm_index != ectx.get_root_comm_index());
 }
 
 // TODO test send / recv
