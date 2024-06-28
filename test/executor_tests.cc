@@ -53,20 +53,19 @@ class mock_local_communicator final : public communicator {
 
 class mock_backend final : public backend {
   public:
-	struct host_alloc {
+	struct common_alloc {
 		size_t size = 0;
 		size_t alignment = 0;
 		void* result = nullptr;
+	};
 
+	struct host_alloc : common_alloc {
 		friend bool operator==(const host_alloc& lhs, const host_alloc& rhs) { return lhs.size == rhs.size && lhs.alignment == rhs.alignment; }
 		friend bool operator!=(const host_alloc& lhs, const host_alloc& rhs) { return !(lhs == rhs); }
 	};
 
-	struct device_alloc {
+	struct device_alloc : common_alloc {
 		device_id device = 0;
-		size_t size = 0;
-		size_t alignment = 0;
-		void* result = nullptr;
 
 		friend bool operator==(const device_alloc& lhs, const device_alloc& rhs) {
 			return lhs.device == rhs.device && lhs.size == rhs.size && lhs.alignment == rhs.alignment;
@@ -74,16 +73,17 @@ class mock_backend final : public backend {
 		friend bool operator!=(const device_alloc& lhs, const device_alloc& rhs) { return !(lhs == rhs); }
 	};
 
-	struct host_free {
+	struct common_free {
 		void* ptr = nullptr;
+	};
 
+	struct host_free : common_free {
 		friend bool operator==(const host_free& lhs, const host_free& rhs) { return lhs.ptr == rhs.ptr; }
 		friend bool operator!=(const host_free& lhs, const host_free& rhs) { return !(lhs == rhs); }
 	};
 
-	struct device_free {
+	struct device_free : common_free {
 		device_id device = 0;
-		void* ptr = nullptr;
 
 		friend bool operator==(const device_free& lhs, const device_free& rhs) { return lhs.device == rhs.device && lhs.ptr == rhs.ptr; }
 		friend bool operator!=(const device_free& lhs, const device_free& rhs) { return !(lhs == rhs); }
@@ -116,14 +116,17 @@ class mock_backend final : public backend {
 		friend bool operator!=(const device_kernel& lhs, const device_kernel& rhs) { return !(lhs == rhs); }
 	};
 
-	struct host_copy {
-		size_t host_lane = 0;
+	struct common_copy {
 		const void* source_base = nullptr;
 		void* dest_base = nullptr;
 		box<3> source_box;
 		box<3> dest_box;
 		region<3> copy_region;
 		size_t elem_size = 0;
+	};
+
+	struct host_copy : common_copy {
+		size_t host_lane = 0;
 
 		friend bool operator==(const host_copy& lhs, const host_copy& rhs) {
 			return lhs.host_lane == rhs.host_lane && lhs.source_base == rhs.source_base && lhs.dest_base == rhs.dest_base && lhs.source_box == rhs.source_box
@@ -132,15 +135,9 @@ class mock_backend final : public backend {
 		friend bool operator!=(const host_copy& lhs, const host_copy& rhs) { return !(lhs == rhs); }
 	};
 
-	struct device_copy {
+	struct device_copy : common_copy {
 		device_id device = 0;
 		size_t device_lane = 0;
-		const void* source_base = nullptr;
-		void* dest_base = nullptr;
-		box<3> source_box;
-		box<3> dest_box;
-		region<3> copy_region;
-		size_t elem_size = 0;
 
 		friend bool operator==(const device_copy& lhs, const device_copy& rhs) {
 			return lhs.device == rhs.device && lhs.device_lane == rhs.device_lane && lhs.source_base == rhs.source_base && lhs.dest_base == rhs.dest_base
@@ -160,23 +157,23 @@ class mock_backend final : public backend {
 
 	async_event enqueue_host_alloc(const size_t size, const size_t alignment) override {
 		const auto ptr = mock_alloc(size, alignment);
-		m_log->push_back(host_alloc{size, alignment, ptr});
+		m_log->push_back(host_alloc{{size, alignment, ptr}});
 		return make_complete_event(ptr);
 	}
 
 	async_event enqueue_device_alloc(const device_id device, const size_t size, const size_t alignment) override {
 		const auto ptr = mock_alloc(size, alignment);
-		m_log->push_back(device_alloc{device, size, alignment, ptr});
+		m_log->push_back(device_alloc{{size, alignment, ptr}, device});
 		return make_complete_event(ptr);
 	}
 
 	async_event enqueue_host_free(void* const ptr) override {
-		m_log->push_back(host_free{ptr});
+		m_log->push_back(host_free{{ptr}});
 		return make_complete_event();
 	}
 
 	async_event enqueue_device_free(const device_id device, void* const ptr) override {
-		m_log->push_back(device_free{device, ptr});
+		m_log->push_back(device_free{{ptr}, device});
 		return make_complete_event();
 	}
 
@@ -197,14 +194,14 @@ class mock_backend final : public backend {
 	async_event enqueue_host_copy(const size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
 	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override //
 	{
-		m_log->push_back(host_copy{host_lane, source_base, dest_base, source_box, dest_box, copy_region, elem_size});
+		m_log->push_back(host_copy{{source_base, dest_base, source_box, dest_box, copy_region, elem_size}, host_lane});
 		return make_complete_event();
 	}
 
 	async_event enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
 	    const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override //
 	{
-		m_log->push_back(device_copy{device, device_lane, source_base, dest_base, source_box, dest_box, copy_region, elem_size});
+		m_log->push_back(device_copy{{source_base, dest_base, source_box, dest_box, copy_region, elem_size}, device, device_lane});
 		return make_complete_event();
 	}
 
@@ -311,6 +308,12 @@ class executor_test_context final : private executor::delegate {
 	{
 		return submit<device_kernel_instruction>(predecessors, did, device_kernel_launcher{}, execution_range, std::move(amap),
 		    std::move(rmap) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::device_compute, task_id(1), "task_name"));
+	}
+
+	instruction_id copy(const std::vector<instruction_id>& predecessors, const allocation_with_offset& source_alloc, const allocation_with_offset& dest_alloc,
+	    const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size) //
+	{
+		return submit<copy_instruction>(predecessors, source_alloc, dest_alloc, source_box, dest_box, std::move(copy_region), elem_size);
 	}
 
 	instruction_id destroy_host_object(const std::vector<instruction_id>& predecessors, const host_object_id hoid) {
@@ -620,4 +623,91 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 	const auto log_free4 = std::get<mock_backend::device_free>(log[8]);
 	CHECK(log_free4.device == did);
 	CHECK(log_free4.ptr == log_alloc4.result);
+}
+
+TEST_CASE("live_executor passes correct allocation pointers to copy instructions", "[executor]") {
+	executor_test_context ectx(executor_type::live);
+	const auto [_1, init_epoch] = ectx.init();
+
+	const auto did = device_id(1);
+	const auto source_mid = GENERATE(values({host_memory_id, memory_id(first_device_memory_id + 1)}));
+	const auto dest_mid = GENERATE(values({host_memory_id, memory_id(first_device_memory_id + 1)}));
+	const auto source_offset = GENERATE(values<size_t>({0, 16}));
+	const auto dest_offset = GENERATE(values<size_t>({0, 32}));
+
+	const auto source_aid = allocation_id(source_mid, 1);
+	const auto source_alloc = ectx.alloc({init_epoch}, source_aid, 4096, 8);
+	const auto dest_aid = allocation_id(dest_mid, 2);
+	const auto dest_alloc = ectx.alloc({init_epoch, source_alloc}, dest_aid, 4096, 8);
+
+	const auto source_box = box<3>{{4, 0, 0}, {16, 16, 1}};
+	const auto dest_box = box<3>{{8, 0, 0}, {16, 16, 1}};
+	const auto copy_region = region<3>({box<3>({8, 0, 0}, {12, 8, 1}), box<3>({12, 0, 0}, {16, 4, 1})});
+	const auto elem_size = 4;
+
+	const auto copy = ectx.copy({source_alloc, dest_alloc}, allocation_with_offset(source_aid, source_offset), allocation_with_offset(dest_aid, dest_offset),
+	    source_box, dest_box, copy_region, elem_size);
+
+	const auto source_free = ectx.free({copy}, source_aid);
+	const auto dest_free = ectx.free({copy, source_free}, dest_aid);
+
+	const auto log = ectx.shutdown({source_free, dest_free});
+	REQUIRE(log.size() == 5);
+
+	const mock_backend::common_alloc* log_source_alloc = nullptr;
+	if(source_mid == host_memory_id) {
+		log_source_alloc = &std::get<mock_backend::host_alloc>(log[0]);
+	} else {
+		const auto& log_source_device_alloc = std::get<mock_backend::device_alloc>(log[0]);
+		CHECK(log_source_device_alloc.device == did);
+		log_source_alloc = &log_source_device_alloc;
+	}
+	CHECK(log_source_alloc->size == 4096);
+	CHECK(log_source_alloc->alignment == 8);
+	CHECK(log_source_alloc->result != nullptr);
+
+	const mock_backend::common_alloc* log_dest_alloc = nullptr;
+	if(dest_mid == host_memory_id) {
+		log_dest_alloc = &std::get<mock_backend::host_alloc>(log[1]);
+	} else {
+		const auto& log_dest_device_alloc = std::get<mock_backend::device_alloc>(log[1]);
+		CHECK(log_dest_device_alloc.device == did);
+		log_dest_alloc = &log_dest_device_alloc;
+	}
+	CHECK(log_dest_alloc->size == 4096);
+	CHECK(log_dest_alloc->alignment == 8);
+	CHECK(log_dest_alloc->result != nullptr);
+
+	const mock_backend::common_copy* log_copy = nullptr;
+	if(source_mid == host_memory_id && dest_mid == host_memory_id) {
+		log_copy = &std::get<mock_backend::host_copy>(log[2]);
+	} else {
+		const auto& log_device_copy = std::get<mock_backend::device_copy>(log[2]);
+		CHECK(log_device_copy.device == did);
+		log_copy = &log_device_copy;
+	}
+	CHECK(log_copy->source_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(log_source_alloc->result) + source_offset));
+	CHECK(log_copy->dest_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(log_dest_alloc->result) + dest_offset));
+	CHECK(log_copy->source_box == source_box);
+	CHECK(log_copy->dest_box == dest_box);
+	CHECK(log_copy->copy_region == copy_region);
+	CHECK(log_copy->elem_size == elem_size);
+
+	if(source_mid == host_memory_id) {
+		const auto log_source_free = std::get<mock_backend::host_free>(log[3]);
+		CHECK(log_source_free.ptr == log_source_alloc->result);
+	} else {
+		const auto log_source_free = std::get<mock_backend::device_free>(log[3]);
+		CHECK(log_source_free.device == did);
+		CHECK(log_source_free.ptr == log_source_alloc->result);
+	}
+
+	if(dest_mid == host_memory_id) {
+		const auto log_dest_free = std::get<mock_backend::host_free>(log[4]);
+		CHECK(log_dest_free.ptr == log_dest_alloc->result);
+	} else {
+		const auto log_dest_free = std::get<mock_backend::device_free>(log[4]);
+		CHECK(log_dest_free.device == did);
+		CHECK(log_dest_free.ptr == log_dest_alloc->result);
+	}
 }
