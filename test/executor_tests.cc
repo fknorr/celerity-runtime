@@ -10,15 +10,15 @@
 using namespace celerity;
 using namespace celerity::detail;
 
-struct mock_host_object_instance final : host_object_instance {
+struct mock_host_object final : host_object_instance {
 	std::atomic<bool>* destroyed;
 
-	explicit mock_host_object_instance(std::atomic<bool>* const destroyed) : destroyed(destroyed) {}
-	mock_host_object_instance(const mock_host_object_instance&) = delete;
-	mock_host_object_instance(mock_host_object_instance&&) = delete;
-	mock_host_object_instance& operator=(const mock_host_object_instance&) = delete;
-	mock_host_object_instance& operator=(mock_host_object_instance&&) = delete;
-	~mock_host_object_instance() override { *destroyed = true; }
+	explicit mock_host_object(std::atomic<bool>* const destroyed) : destroyed(destroyed) {}
+	mock_host_object(const mock_host_object&) = delete;
+	mock_host_object(mock_host_object&&) = delete;
+	mock_host_object& operator=(const mock_host_object&) = delete;
+	mock_host_object& operator=(mock_host_object&&) = delete;
+	~mock_host_object() override { *destroyed = true; }
 };
 
 class mock_reducer final : public reducer {
@@ -155,6 +155,10 @@ class executor_test_context final : private executor::delegate {
 		return {tid, iid};
 	}
 
+	instruction_id destroy_host_object(const std::vector<instruction_id>& predecessors, const host_object_id hoid) {
+		return submit<destroy_host_object_instruction>(predecessors, hoid);
+	}
+
 	instruction_id fence_and_wait(const std::vector<instruction_id>& predecessors) {
 		mock_fence_promise fence_promise;
 		const auto iid = submit<fence_instruction>(predecessors, &fence_promise);
@@ -171,14 +175,17 @@ class executor_test_context final : private executor::delegate {
 
 	executor& get_executor() { return *m_executor; }
 
+	void await_horizon(const task_id tid) { m_horizons.await(tid); }
+	void await_epoch(const task_id tid) { m_epochs.await(tid); }
+
   private:
 	instruction_id m_next_iid = 1;
 	task_id m_next_task_id = 1;
 	std::vector<std::unique_ptr<instruction>> m_instructions; // we need to guarantee liveness as long as the executor thread is around
 	bool m_has_shut_down = false;
 	std::unique_ptr<executor> m_executor;
-	std::atomic<task_id> m_last_horizon_reached{0};
-	std::atomic<task_id> m_last_epoch_reached{0};
+	epoch_monitor m_horizons{0};
+	epoch_monitor m_epochs{0};
 
 	template <typename Instruction, typename... CtorParams>
 	instruction_id submit(const std::vector<instruction_id>& predecessors, CtorParams&&... ctor_args) {
@@ -192,8 +199,8 @@ class executor_test_context final : private executor::delegate {
 		return iid;
 	}
 
-	void horizon_reached(const task_id tid) override { m_last_horizon_reached.store(tid); }
-	void epoch_reached(const task_id tid) override { m_last_epoch_reached.store(tid); }
+	void horizon_reached(const task_id tid) override { m_horizons.set(tid); }
+	void epoch_reached(const task_id tid) override { m_epochs.set(tid); }
 };
 
 TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
@@ -205,7 +212,7 @@ TEST_CASE_METHOD(test_utils::executor_fixture, "dry_run_executor warns when enco
 	ectx.shutdown({fence});
 }
 
-TEST_CASE_METHOD(test_utils::executor_fixture, "executors free all reducers that appear in horizon / epoch garbage lists  ", "[executor]") {
+TEST_CASE_METHOD(test_utils::executor_fixture, "executors free all reducers that appear in garbage lists  ", "[executor]") {
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -216,13 +223,45 @@ TEST_CASE_METHOD(test_utils::executor_fixture, "executors free all reducers that
 	std::atomic<bool> destroyed{false};
 	ectx.get_executor().announce_reducer(rid, std::make_unique<mock_reducer>(&destroyed));
 
-	const auto instruction_type = GENERATE(values<std::string>({"epoch", "horizon"}));
-	CAPTURE(instruction_type);
+	instruction_id collector = 0;
 
-	const auto [_2, collector] = instruction_type == "epoch" ? ectx.epoch({init_epoch}, epoch_action::none, instruction_garbage{{rid}, {}})
-	                                                         : ectx.horizon({init_epoch}, instruction_garbage{{rid}, {}});
-	const auto fence = ectx.fence_and_wait({collector});
+	SECTION("on epochs") {
+		const auto [epoch_tid, epoch] = ectx.epoch({init_epoch}, epoch_action::none, instruction_garbage{{rid}, {}});
+		ectx.await_epoch(epoch_tid);
+		collector = epoch;
+	}
+
+	SECTION("on horizons") {
+		const auto [horizon_tid, horizon] = ectx.horizon({init_epoch}, instruction_garbage{{rid}, {}});
+		ectx.await_horizon(horizon_tid);
+		collector = horizon;
+	}
+
+	ectx.shutdown({collector});
+}
+
+TEST_CASE_METHOD(test_utils::executor_fixture, "host objects lifetime is controlled by destroy_host_object_instruction", "[executor]") {
+	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
+	CAPTURE(executor_type);
+
+	executor_test_context ectx(executor_type);
+	const auto [_1, init_epoch] = ectx.init();
+
+	const host_object_id hoid(42);
+	std::atomic<bool> destroyed{false};
+	ectx.get_executor().announce_host_object_instance(hoid, std::make_unique<mock_host_object>(&destroyed));
+	CHECK_FALSE(destroyed.load());
+
+	const auto [after_announce_tid, after_announce] = ectx.horizon({init_epoch});
+	CHECK_FALSE(destroyed.load());
+
+	ectx.await_horizon(after_announce_tid);
+	CHECK_FALSE(destroyed.load());
+
+	const auto destroy = ectx.destroy_host_object({after_announce}, hoid);
+	const auto [after_destroy_tid, after_destroy] = ectx.horizon({destroy});
+	ectx.await_horizon(after_destroy_tid);
 	CHECK(destroyed);
 
-	ectx.shutdown({fence});
+	ectx.shutdown({after_destroy});
 }
