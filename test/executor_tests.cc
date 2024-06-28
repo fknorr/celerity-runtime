@@ -301,79 +301,64 @@ class executor_test_context final : private executor::delegate {
 		m_executor->announce_host_object_instance(hoid, std::make_unique<mock_host_object>(destroyed));
 	}
 
-	std::tuple<task_id, instruction_id> init() {
-		const auto iid = submit<epoch_instruction>({}, task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
-		return {task_manager::initial_epoch_task, iid};
+	task_id init() {
+		submit<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
+		return task_manager::initial_epoch_task;
 	}
 
-	std::tuple<task_id, instruction_id> horizon(const std::vector<instruction_id>& predecessors, instruction_garbage garbage = {}) {
+	task_id horizon(instruction_garbage garbage = {}) {
 		const auto tid = m_next_task_id++;
-		const auto iid = submit<horizon_instruction>({}, tid, std::move(garbage));
-		return {tid, iid};
+		submit<horizon_instruction>(tid, std::move(garbage));
+		return tid;
 	}
 
-	std::tuple<task_id, instruction_id> epoch(const std::vector<instruction_id>& predecessors, const epoch_action action, instruction_garbage garbage = {}) {
+	task_id epoch(const epoch_action action, instruction_garbage garbage = {}) {
 		const auto tid = m_next_task_id++;
-		const auto iid = submit<epoch_instruction>({}, tid, action, std::move(garbage));
-		return {tid, iid};
+		submit<epoch_instruction>(tid, action, std::move(garbage));
+		return tid;
 	}
 
-	instruction_id clone_collective_group(
-	    const std::vector<instruction_id>& predecessors, const collective_group_id original_cgid, const collective_group_id new_cgid) //
-	{
-		return submit<clone_collective_group_instruction>(predecessors, original_cgid, new_cgid);
+	void clone_collective_group(const collective_group_id original_cgid, const collective_group_id new_cgid) {
+		submit<clone_collective_group_instruction>(original_cgid, new_cgid);
 	}
 
-	instruction_id alloc(const std::vector<instruction_id>& predecessors, const allocation_id aid, const size_t size, const size_t alignment) {
-		return submit<alloc_instruction>(predecessors, aid, size, alignment);
-	}
+	void alloc(const allocation_id aid, const size_t size, const size_t alignment) { submit<alloc_instruction>(aid, size, alignment); }
 
-	instruction_id free(const std::vector<instruction_id>& predecessors, const allocation_id aid) { return submit<free_instruction>(predecessors, aid); }
+	void free(const allocation_id aid) { submit<free_instruction>(aid); }
 
-	instruction_id host_task(const std::vector<instruction_id>& predecessors, const box<3>& execution_range, const range<3>& global_range,
-	    buffer_access_allocation_map amap, const collective_group_id cgid) //
-	{
-		return submit<host_task_instruction>(predecessors, host_task_launcher{}, execution_range, global_range, std::move(amap),
+	void host_task(const box<3>& execution_range, const range<3>& global_range, buffer_access_allocation_map amap, const collective_group_id cgid) {
+		submit<host_task_instruction>(host_task_launcher{}, execution_range, global_range, std::move(amap),
 		    cgid CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::host_compute, task_id(1), "task_name"));
 	}
 
-	instruction_id device_kernel(const std::vector<instruction_id>& predecessors, const device_id did, const box<3>& execution_range,
-	    buffer_access_allocation_map amap, buffer_access_allocation_map rmap) //
-	{
-		return submit<device_kernel_instruction>(predecessors, did, device_kernel_launcher{}, execution_range, std::move(amap),
+	void device_kernel(const device_id did, const box<3>& execution_range, buffer_access_allocation_map amap, buffer_access_allocation_map rmap) {
+		submit<device_kernel_instruction>(did, device_kernel_launcher{}, execution_range, std::move(amap),
 		    std::move(rmap) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::device_compute, task_id(1), "task_name"));
 	}
 
-	instruction_id copy(const std::vector<instruction_id>& predecessors, const allocation_with_offset& source_alloc, const allocation_with_offset& dest_alloc,
-	    const box<3>& source_box, const box<3>& dest_box, region<3> copy_region, const size_t elem_size) //
+	void copy(const allocation_with_offset& source_alloc, const allocation_with_offset& dest_alloc, const box<3>& source_box, const box<3>& dest_box,
+	    region<3> copy_region, const size_t elem_size) //
 	{
-		return submit<copy_instruction>(predecessors, source_alloc, dest_alloc, source_box, dest_box, std::move(copy_region), elem_size);
+		submit<copy_instruction>(source_alloc, dest_alloc, source_box, dest_box, std::move(copy_region), elem_size);
 	}
 
-	instruction_id destroy_host_object(const std::vector<instruction_id>& predecessors, const host_object_id hoid) {
-		return submit<destroy_host_object_instruction>(predecessors, hoid);
-	}
+	void destroy_host_object(const host_object_id hoid) { submit<destroy_host_object_instruction>(hoid); }
 
-	instruction_id fence_and_wait(const std::vector<instruction_id>& predecessors) {
+	void fence_and_wait() {
 		mock_fence_promise fence_promise;
-		const auto iid = submit<fence_instruction>(predecessors, &fence_promise);
+		const auto iid = submit<fence_instruction>(&fence_promise);
 		fence_promise.wait();
-		return iid;
 	}
 
-	instruction_id fill_identity(const std::vector<instruction_id>& predecessors, const reduction_id rid, const allocation_id aid, const size_t num_values) {
-		return submit<fill_identity_instruction>(predecessors, rid, aid, num_values);
+	void fill_identity(const reduction_id rid, const allocation_id aid, const size_t num_values) { submit<fill_identity_instruction>(rid, aid, num_values); }
+
+	void reduce(const reduction_id rid, const allocation_id source_allocation_id, const size_t num_source_values, const allocation_id dest_allocation_id) {
+		submit<reduce_instruction>(rid, source_allocation_id, num_source_values, dest_allocation_id);
 	}
 
-	instruction_id reduce(const std::vector<instruction_id>& predecessors, const reduction_id rid, const allocation_id source_allocation_id,
-	    const size_t num_source_values, const allocation_id dest_allocation_id) //
-	{
-		return submit<reduce_instruction>(predecessors, rid, source_allocation_id, num_source_values, dest_allocation_id);
-	}
-
-	operations_log shutdown(const std::vector<instruction_id>& predecessors) {
+	operations_log shutdown() {
 		CHECK(!m_has_shut_down);
-		epoch(predecessors, epoch_action::shutdown, instruction_garbage{});
+		epoch(epoch_action::shutdown, instruction_garbage{});
 		m_executor->wait();
 		m_has_shut_down = true;
 		return std::move(m_log);
@@ -389,6 +374,7 @@ class executor_test_context final : private executor::delegate {
 
   private:
 	instruction_id m_next_iid = 1;
+	std::optional<instruction_id> m_last_iid; // serialize all instructions for simplicity - we do not test OoO capabilities here
 	task_id m_next_task_id = task_manager::initial_epoch_task + 1;
 	std::vector<std::unique_ptr<instruction>> m_instructions; // we need to guarantee liveness as long as the executor thread is around
 	bool m_has_shut_down = false;
@@ -399,14 +385,13 @@ class executor_test_context final : private executor::delegate {
 	int m_root_comm_index = 0; // always 0 for executor_type::dry_run
 
 	template <typename Instruction, typename... CtorParams>
-	instruction_id submit(const std::vector<instruction_id>& predecessors, CtorParams&&... ctor_args) {
+	instruction_id submit(CtorParams&&... ctor_args) {
 		const auto iid = instruction_id(m_next_iid++);
 		auto instr = std::make_unique<Instruction>(iid, 0, std::forward<CtorParams>(ctor_args)...);
-		for(const auto pred : predecessors) {
-			instr->add_dependency(pred);
-		}
+		if(m_last_iid.has_value()) { instr->add_dependency(*m_last_iid); }
 		m_executor->submit({instr.get()}, {});
 		m_instructions.push_back(std::move(instr));
+		m_last_iid = iid;
 		return iid;
 	}
 
@@ -420,37 +405,33 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors notify delegat
 	CAPTURE(executor_type);
 
 	executor_test_context ectx(executor_type);
-	const auto [init_epoch_tid, init_epoch] = ectx.init();
+	ectx.init();
 
 	CHECK(ectx.get_last_epoch() == task_id(0));
 	CHECK(ectx.get_last_horizon() == task_id(0));
 
-	instruction_id node = 0;
-
 	SECTION("on epochs") {
-		const auto [epoch_tid, epoch] = ectx.epoch({init_epoch}, epoch_action::none);
+		const auto epoch_tid = ectx.epoch(epoch_action::none);
 		ectx.await_epoch(epoch_tid);
 		CHECK(ectx.get_last_epoch() == epoch_tid);
-		node = epoch;
 	}
 
 	SECTION("on horizons") {
-		const auto [horizon_tid, horizon] = ectx.horizon({init_epoch});
+		const auto horizon_tid = ectx.horizon();
 		ectx.await_horizon(horizon_tid);
 		CHECK(ectx.get_last_horizon() == horizon_tid);
-		node = horizon;
 	}
 
-	ectx.shutdown({node});
+	ectx.shutdown();
 }
 
 TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
 	executor_test_context ectx(executor_type::dry_run);
-	const auto [_, init_epoch] = ectx.init();
-	const auto fence = ectx.fence_and_wait({init_epoch});
+	ectx.init();
+	ectx.fence_and_wait();
 	CHECK(test_utils::log_contains_exact(log_level::warn, "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this "
 	                                                      "operation will not match the expected output of an actual run."));
-	ectx.shutdown({fence});
+	ectx.shutdown();
 }
 
 TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reducers that appear in garbage lists  ", "[executor]") {
@@ -458,27 +439,23 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reduc
 	CAPTURE(executor_type);
 
 	executor_test_context ectx(executor_type);
-	const auto [_1, init_epoch] = ectx.init();
+	ectx.init();
 
 	const reduction_id rid(123);
 	std::atomic<bool> destroyed{false};
 	ectx.announce_reducer(rid, &destroyed);
 
-	instruction_id collector = 0;
-
 	SECTION("on epochs") {
-		const auto [epoch_tid, epoch] = ectx.epoch({init_epoch}, epoch_action::none, instruction_garbage{{rid}, {}});
+		const auto epoch_tid = ectx.epoch(epoch_action::none, instruction_garbage{{rid}, {}});
 		ectx.await_epoch(epoch_tid);
-		collector = epoch;
 	}
 
 	SECTION("on horizons") {
-		const auto [horizon_tid, horizon] = ectx.horizon({init_epoch}, instruction_garbage{{rid}, {}});
+		const auto horizon_tid = ectx.horizon(instruction_garbage{{rid}, {}});
 		ectx.await_horizon(horizon_tid);
-		collector = horizon;
 	}
 
-	ectx.shutdown({collector});
+	ectx.shutdown();
 }
 
 TEST_CASE("host objects lifetime is controlled by destroy_host_object_instruction", "[executor]") {
@@ -486,35 +463,35 @@ TEST_CASE("host objects lifetime is controlled by destroy_host_object_instructio
 	CAPTURE(executor_type);
 
 	executor_test_context ectx(executor_type);
-	const auto [_1, init_epoch] = ectx.init();
+	ectx.init();
 
 	const host_object_id hoid(42);
 	std::atomic<bool> destroyed{false};
 	ectx.announce_host_object(hoid, &destroyed);
 	CHECK_FALSE(destroyed.load());
 
-	const auto [after_announce_tid, after_announce] = ectx.horizon({init_epoch});
+	const auto after_announce_tid = ectx.horizon();
 	CHECK_FALSE(destroyed.load());
 
 	ectx.await_horizon(after_announce_tid);
 	CHECK_FALSE(destroyed.load());
 
-	const auto destroy = ectx.destroy_host_object({after_announce}, hoid);
-	const auto [after_destroy_tid, after_destroy] = ectx.horizon({destroy});
+	ectx.destroy_host_object(hoid);
+	const auto after_destroy_tid = ectx.horizon();
 	ectx.await_horizon(after_destroy_tid);
 	CHECK(destroyed);
 
-	ectx.shutdown({after_destroy});
+	ectx.shutdown();
 }
 
 TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]") {
 	executor_test_context ectx(executor_type::live);
-	const auto [_1, init_epoch] = ectx.init();
+	ectx.init();
 
-	const auto alloc1 = ectx.alloc({init_epoch}, allocation_id(host_memory_id, 1), 1024, 8);
-	const auto alloc2 = ectx.alloc({init_epoch, alloc1}, allocation_id(host_memory_id, 2), 2048, 16);
+	ectx.alloc(allocation_id(host_memory_id, 1), 1024, 8);
+	ectx.alloc(allocation_id(host_memory_id, 2), 2048, 16);
 
-	const auto ht_amap = buffer_access_allocation_map{
+	const auto amap = buffer_access_allocation_map{
 	    {
 	        allocation_id(host_memory_id, 1),
 	        box<3>({0, 0, 0}, {32, 32, 1}),
@@ -528,12 +505,12 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(2, "buffer2"),
 	    },
 	};
-	const auto ht = ectx.host_task({alloc1, alloc2}, box<3>{{0, 1, 2}, {3, 4, 5}}, range<3>{7, 8, 9}, ht_amap, non_collective_group_id);
+	ectx.host_task(box<3>{{0, 1, 2}, {3, 4, 5}}, range<3>{7, 8, 9}, amap, non_collective_group_id);
 
-	const auto free1 = ectx.free({ht}, allocation_id(host_memory_id, 1));
-	const auto free2 = ectx.free({ht, free1}, allocation_id(host_memory_id, 2));
+	ectx.free(allocation_id(host_memory_id, 1));
+	ectx.free(allocation_id(host_memory_id, 2));
 
-	const auto log = ectx.shutdown({free1, free2});
+	const auto log = ectx.shutdown();
 	REQUIRE(log.size() == 5);
 
 	const auto log_alloc1 = std::get<ops::host_alloc>(log[0]);
@@ -552,11 +529,11 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 
 	REQUIRE(log_ht.accessor_infos.size() == 2);
 	CHECK(log_ht.accessor_infos[0].ptr == log_alloc1.result);
-	CHECK(log_ht.accessor_infos[0].allocated_box_in_buffer == ht_amap[0].allocated_box_in_buffer);
-	CHECK(log_ht.accessor_infos[0].accessed_box_in_buffer == ht_amap[0].accessed_box_in_buffer);
+	CHECK(log_ht.accessor_infos[0].allocated_box_in_buffer == amap[0].allocated_box_in_buffer);
+	CHECK(log_ht.accessor_infos[0].accessed_box_in_buffer == amap[0].accessed_box_in_buffer);
 	CHECK(log_ht.accessor_infos[1].ptr == log_alloc2.result);
-	CHECK(log_ht.accessor_infos[1].allocated_box_in_buffer == ht_amap[1].allocated_box_in_buffer);
-	CHECK(log_ht.accessor_infos[1].accessed_box_in_buffer == ht_amap[1].accessed_box_in_buffer);
+	CHECK(log_ht.accessor_infos[1].allocated_box_in_buffer == amap[1].allocated_box_in_buffer);
+	CHECK(log_ht.accessor_infos[1].accessed_box_in_buffer == amap[1].accessed_box_in_buffer);
 
 	const auto log_free1 = std::get<ops::host_free>(log[3]);
 	CHECK(log_free1.ptr == log_alloc1.result);
@@ -567,23 +544,23 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 
 TEST_CASE("live_executor passes correct allocations to reducers", "[executor]") {
 	executor_test_context ectx(executor_type::live);
-	const auto [_1, init_epoch] = ectx.init();
+	ectx.init();
 
 	const auto source_aid = allocation_id(host_memory_id, 1);
 	const auto dest_aid = allocation_id(host_memory_id, 2);
 	const size_t num_source_values = 4;
-	const auto alloc_source = ectx.alloc({init_epoch}, source_aid, 4 * sizeof(int), alignof(int));
-	const auto alloc_dest = ectx.alloc({init_epoch, alloc_source}, dest_aid, sizeof(int), alignof(int));
+	ectx.alloc(source_aid, 4 * sizeof(int), alignof(int));
+	ectx.alloc(dest_aid, sizeof(int), alignof(int));
 
 	const reduction_id rid(42);
 	ectx.announce_reducer(rid, nullptr);
-	const auto fill_identity = ectx.fill_identity({alloc_source, alloc_dest}, rid, source_aid, num_source_values);
-	const auto reduce = ectx.reduce({alloc_source, alloc_dest, fill_identity}, rid, source_aid, num_source_values, dest_aid);
+	ectx.fill_identity(rid, source_aid, num_source_values);
+	ectx.reduce(rid, source_aid, num_source_values, dest_aid);
 
-	ectx.free({reduce}, source_aid);
-	ectx.free({reduce}, dest_aid);
+	ectx.free(source_aid);
+	ectx.free(dest_aid);
 
-	const auto log = ectx.shutdown({reduce});
+	const auto log = ectx.shutdown();
 	REQUIRE(log.size() == 6);
 
 	const auto log_source_alloc = std::get<ops::host_alloc>(log[0]);
@@ -603,15 +580,15 @@ TEST_CASE("live_executor passes correct allocations to reducers", "[executor]") 
 
 TEST_CASE("live_executor passes correct allocations to device kernels", "[executor]") {
 	executor_test_context ectx(executor_type::live);
-	const auto [_1, init_epoch] = ectx.init();
+	ectx.init();
 
 	const auto did = GENERATE(values<device_id>({0, 1}));
 	const auto mid = memory_id(first_device_memory_id + did);
 
-	const auto alloc1 = ectx.alloc({init_epoch}, allocation_id(mid, 1), 1024, 8);
-	const auto alloc2 = ectx.alloc({init_epoch, alloc1}, allocation_id(mid, 2), 2048, 16);
-	const auto alloc3 = ectx.alloc({init_epoch, alloc2}, allocation_id(mid, 3), 4, 4);
-	const auto alloc4 = ectx.alloc({init_epoch, alloc3}, allocation_id(mid, 4), 4, 4);
+	ectx.alloc(allocation_id(mid, 1), 1024, 8);
+	ectx.alloc(allocation_id(mid, 2), 2048, 16);
+	ectx.alloc(allocation_id(mid, 3), 4, 4);
+	ectx.alloc(allocation_id(mid, 4), 4, 4);
 
 	const auto amap = buffer_access_allocation_map{
 	    {
@@ -641,14 +618,14 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(4, "buffer4"),
 	    },
 	};
-	const auto kernel = ectx.device_kernel({alloc1, alloc2, alloc3, alloc4}, did, box<3>({1, 2, 3}, {4, 5, 6}), amap, rmap);
+	ectx.device_kernel(did, box<3>({1, 2, 3}, {4, 5, 6}), amap, rmap);
 
-	const auto free1 = ectx.free({kernel}, allocation_id(mid, 1));
-	const auto free2 = ectx.free({kernel, free1}, allocation_id(mid, 2));
-	const auto free3 = ectx.free({kernel, free2}, allocation_id(mid, 3));
-	const auto free4 = ectx.free({kernel, free3}, allocation_id(mid, 4));
+	ectx.free(allocation_id(mid, 1));
+	ectx.free(allocation_id(mid, 2));
+	ectx.free(allocation_id(mid, 3));
+	ectx.free(allocation_id(mid, 4));
 
-	const auto log = ectx.shutdown({free1, free2, free3, free4});
+	const auto log = ectx.shutdown();
 	REQUIRE(log.size() == 9);
 
 	const auto log_alloc1 = std::get<ops::device_alloc>(log[0]);
@@ -708,7 +685,7 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 
 TEST_CASE("live_executor passes correct allocation pointers to copy instructions", "[executor]") {
 	executor_test_context ectx(executor_type::live);
-	const auto [_1, init_epoch] = ectx.init();
+	ectx.init();
 
 	const auto did = device_id(1);
 	const auto source_mid = GENERATE(values({host_memory_id, memory_id(first_device_memory_id + 1)}));
@@ -717,22 +694,21 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	const auto dest_offset = GENERATE(values<size_t>({0, 32}));
 
 	const auto source_aid = allocation_id(source_mid, 1);
-	const auto source_alloc = ectx.alloc({init_epoch}, source_aid, 4096, 8);
+	ectx.alloc(source_aid, 4096, 8);
 	const auto dest_aid = allocation_id(dest_mid, 2);
-	const auto dest_alloc = ectx.alloc({init_epoch, source_alloc}, dest_aid, 4096, 8);
+	ectx.alloc(dest_aid, 4096, 8);
 
 	const auto source_box = box<3>{{4, 0, 0}, {16, 16, 1}};
 	const auto dest_box = box<3>{{8, 0, 0}, {16, 16, 1}};
 	const auto copy_region = region<3>({box<3>({8, 0, 0}, {12, 8, 1}), box<3>({12, 0, 0}, {16, 4, 1})});
 	const auto elem_size = 4;
 
-	const auto copy = ectx.copy({source_alloc, dest_alloc}, allocation_with_offset(source_aid, source_offset), allocation_with_offset(dest_aid, dest_offset),
-	    source_box, dest_box, copy_region, elem_size);
+	ectx.copy(allocation_with_offset(source_aid, source_offset), allocation_with_offset(dest_aid, dest_offset), source_box, dest_box, copy_region, elem_size);
 
-	const auto source_free = ectx.free({copy}, source_aid);
-	const auto dest_free = ectx.free({copy, source_free}, dest_aid);
+	ectx.free(source_aid);
+	ectx.free(dest_aid);
 
-	const auto log = ectx.shutdown({source_free, dest_free});
+	const auto log = ectx.shutdown();
 	REQUIRE(log.size() == 5);
 
 	const ops::common_alloc* log_source_alloc = nullptr;
@@ -795,14 +771,14 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 
 TEST_CASE("live_executor clones the right communicators", "[executor]") {
 	executor_test_context ectx(executor_type::live);
-	const auto [_1, init_epoch] = ectx.init();
+	ectx.init();
 
 	// clone a tree: root -> clone1; root -> clone2; clone1 -> clone3
-	const auto clone1 = ectx.clone_collective_group({init_epoch}, root_collective_group_id, root_collective_group_id + 1);
-	const auto clone2 = ectx.clone_collective_group({init_epoch, clone1}, root_collective_group_id, root_collective_group_id + 2);
-	const auto clone3 = ectx.clone_collective_group({init_epoch, clone2}, root_collective_group_id + 1, root_collective_group_id + 3);
+	ectx.clone_collective_group(root_collective_group_id, root_collective_group_id + 1);
+	ectx.clone_collective_group(root_collective_group_id, root_collective_group_id + 2);
+	ectx.clone_collective_group(root_collective_group_id + 1, root_collective_group_id + 3);
 
-	const auto log = ectx.shutdown({clone1, clone2, clone3});
+	const auto log = ectx.shutdown();
 	REQUIRE(log.size() == 3);
 
 	const auto log_clone1 = std::get<ops::collective_clone>(log[0]);
@@ -819,3 +795,6 @@ TEST_CASE("live_executor clones the right communicators", "[executor]") {
 	CHECK(log_clone3.child_comm_index != log_clone3.parent_comm_index);
 	CHECK(log_clone3.child_comm_index != ectx.get_root_comm_index());
 }
+
+// TODO test send / recv
+// TODO test barriers
