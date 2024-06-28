@@ -10,34 +10,132 @@
 using namespace celerity;
 using namespace celerity::detail;
 
+
+// The mock implementation in this test append all operations to a sequential log, which is inspected after executor shutdown.
+namespace ops {
+
+struct common_alloc {
+	size_t size = 0;
+	size_t alignment = 0;
+	void* result = nullptr;
+};
+
+struct host_alloc : common_alloc {};
+
+struct device_alloc : common_alloc {
+	device_id device = 0;
+};
+
+struct common_free {
+	void* ptr = nullptr;
+};
+
+struct host_free : common_free {};
+
+struct device_free : common_free {
+	device_id device = 0;
+};
+
+struct host_task {
+	size_t host_lane;
+	std::vector<closure_hydrator::accessor_info> accessor_infos;
+	box<3> execution_range;
+	const communicator* collective_comm = nullptr;
+};
+
+struct device_kernel {
+	device_id device = 0;
+	size_t device_lane = 0;
+	std::vector<closure_hydrator::accessor_info> accessor_infos;
+	box<3> execution_range;
+	std::vector<void*> reduction_ptrs;
+};
+
+struct common_copy {
+	const void* source_base = nullptr;
+	void* dest_base = nullptr;
+	box<3> source_box;
+	box<3> dest_box;
+	region<3> copy_region;
+	size_t elem_size = 0;
+};
+
+struct host_copy : common_copy {
+	size_t host_lane = 0;
+};
+
+struct device_copy : common_copy {
+	device_id device = 0;
+	size_t device_lane = 0;
+};
+
+struct reduce {
+	void* dest = nullptr;
+	const void* src = nullptr;
+	size_t src_count = 0;
+};
+
+struct fill_identity {
+	void* dest = nullptr;
+	size_t count = 0;
+};
+
+struct collective_clone {
+	int parent_comm_index = 0;
+	int child_comm_index = 0;
+};
+
+struct collective_barrier {
+	int comm_index = 0;
+};
+
+} // namespace ops
+
+using operation = std::variant<ops::host_alloc, ops::device_alloc, ops::host_free, ops::device_free, ops::host_task, ops::device_kernel, ops::host_copy,
+    ops::device_copy, ops::reduce, ops::fill_identity, ops::collective_clone, ops::collective_barrier>;
+using operations_log = std::vector<operation>;
+
+
 struct mock_host_object final : host_object_instance {
-	std::atomic<bool>* destroyed;
+	std::atomic<bool>* destroyed = nullptr;
 
 	explicit mock_host_object(std::atomic<bool>* const destroyed) : destroyed(destroyed) {}
+
 	mock_host_object(const mock_host_object&) = delete;
 	mock_host_object(mock_host_object&&) = delete;
 	mock_host_object& operator=(const mock_host_object&) = delete;
 	mock_host_object& operator=(mock_host_object&&) = delete;
-	~mock_host_object() override { *destroyed = true; }
+
+	~mock_host_object() override {
+		if(destroyed != nullptr) { destroyed->store(true); }
+	}
 };
 
 class mock_reducer final : public reducer {
   public:
-	std::atomic<bool>* destroyed;
+	explicit mock_reducer(std::atomic<bool>* const destroyed, operations_log* const log) : m_destroyed(destroyed), m_log(log) {}
 
-	explicit mock_reducer(std::atomic<bool>* const destroyed) : destroyed(destroyed) {}
 	mock_reducer(const mock_reducer&) = delete;
 	mock_reducer(mock_reducer&&) = delete;
 	mock_reducer& operator=(const mock_reducer&) = delete;
 	mock_reducer& operator=(mock_reducer&&) = delete;
-	~mock_reducer() override { *destroyed = true; }
 
-	void reduce(void* dest, const void* src, size_t src_count) const override { (void)dest, (void)src, (void)src_count; }
-	void fill_identity(void* dest, size_t count) const override { (void)dest, (void)count; }
+	~mock_reducer() override {
+		if(m_destroyed != nullptr) { m_destroyed->store(true); }
+	}
+
+	void reduce(void* dest, const void* src, size_t src_count) const override { m_log->push_back(ops::reduce{dest, src, src_count}); }
+	void fill_identity(void* dest, size_t count) const override { m_log->push_back(ops::fill_identity{dest, count}); }
+
+  private:
+	std::atomic<bool>* m_destroyed;
+	operations_log* m_log;
 };
 
 class mock_local_communicator final : public communicator {
   public:
+	explicit mock_local_communicator(operations_log* const log) : m_global_index(s_next_global_index++), m_log(log) {}
+
 	size_t get_num_nodes() const override { return 1; }
 	node_id get_local_node_id() const override { return 0; }
 
@@ -47,108 +145,28 @@ class mock_local_communicator final : public communicator {
 	async_event send_payload(node_id to, message_id msgid, const void* base, const stride& stride) override { utils::panic("not implemented"); }
 	async_event receive_payload(node_id from, message_id msgid, void* base, const stride& stride) override { utils::panic("not implemented"); }
 
-	std::unique_ptr<communicator> collective_clone() override { return std::make_unique<mock_local_communicator>(); }
-	void collective_barrier() override {}
+	std::unique_ptr<communicator> collective_clone() override {
+		auto clone = std::make_unique<mock_local_communicator>(m_log);
+		m_log->push_back(ops::collective_clone{m_global_index, clone->m_global_index});
+		return clone;
+	}
+
+	void collective_barrier() override { m_log->push_back(ops::collective_barrier{m_global_index}); }
+
+	int get_global_index() const { return m_global_index; }
+
+  private:
+	static std::atomic<int> s_next_global_index;
+
+	int m_global_index;
+	operations_log* m_log;
 };
+
+std::atomic<int> mock_local_communicator::s_next_global_index{0};
 
 class mock_backend final : public backend {
   public:
-	struct common_alloc {
-		size_t size = 0;
-		size_t alignment = 0;
-		void* result = nullptr;
-	};
-
-	struct host_alloc : common_alloc {
-		friend bool operator==(const host_alloc& lhs, const host_alloc& rhs) { return lhs.size == rhs.size && lhs.alignment == rhs.alignment; }
-		friend bool operator!=(const host_alloc& lhs, const host_alloc& rhs) { return !(lhs == rhs); }
-	};
-
-	struct device_alloc : common_alloc {
-		device_id device = 0;
-
-		friend bool operator==(const device_alloc& lhs, const device_alloc& rhs) {
-			return lhs.device == rhs.device && lhs.size == rhs.size && lhs.alignment == rhs.alignment;
-		}
-		friend bool operator!=(const device_alloc& lhs, const device_alloc& rhs) { return !(lhs == rhs); }
-	};
-
-	struct common_free {
-		void* ptr = nullptr;
-	};
-
-	struct host_free : common_free {
-		friend bool operator==(const host_free& lhs, const host_free& rhs) { return lhs.ptr == rhs.ptr; }
-		friend bool operator!=(const host_free& lhs, const host_free& rhs) { return !(lhs == rhs); }
-	};
-
-	struct device_free : common_free {
-		device_id device = 0;
-
-		friend bool operator==(const device_free& lhs, const device_free& rhs) { return lhs.device == rhs.device && lhs.ptr == rhs.ptr; }
-		friend bool operator!=(const device_free& lhs, const device_free& rhs) { return !(lhs == rhs); }
-	};
-
-	struct host_task {
-		size_t host_lane;
-		std::vector<closure_hydrator::accessor_info> accessor_infos;
-		box<3> execution_range;
-		const communicator* collective_comm = nullptr;
-
-		friend bool operator==(const host_task& lhs, const host_task& rhs) {
-			return lhs.host_lane == rhs.host_lane && lhs.accessor_infos == rhs.accessor_infos && lhs.execution_range == rhs.execution_range
-			       && lhs.collective_comm == rhs.collective_comm;
-		}
-		friend bool operator!=(const host_task& lhs, const host_task& rhs) { return !(lhs == rhs); }
-	};
-
-	struct device_kernel {
-		device_id device = 0;
-		size_t device_lane = 0;
-		std::vector<closure_hydrator::accessor_info> accessor_infos;
-		box<3> execution_range;
-		std::vector<void*> reduction_ptrs;
-
-		friend bool operator==(const device_kernel& lhs, const device_kernel& rhs) {
-			return lhs.device == rhs.device && lhs.device_lane == rhs.device_lane && lhs.accessor_infos == rhs.accessor_infos
-			       && lhs.execution_range == rhs.execution_range && lhs.reduction_ptrs == rhs.reduction_ptrs;
-		}
-		friend bool operator!=(const device_kernel& lhs, const device_kernel& rhs) { return !(lhs == rhs); }
-	};
-
-	struct common_copy {
-		const void* source_base = nullptr;
-		void* dest_base = nullptr;
-		box<3> source_box;
-		box<3> dest_box;
-		region<3> copy_region;
-		size_t elem_size = 0;
-	};
-
-	struct host_copy : common_copy {
-		size_t host_lane = 0;
-
-		friend bool operator==(const host_copy& lhs, const host_copy& rhs) {
-			return lhs.host_lane == rhs.host_lane && lhs.source_base == rhs.source_base && lhs.dest_base == rhs.dest_base && lhs.source_box == rhs.source_box
-			       && lhs.dest_box == rhs.dest_box && lhs.copy_region == rhs.copy_region && lhs.elem_size == rhs.elem_size;
-		}
-		friend bool operator!=(const host_copy& lhs, const host_copy& rhs) { return !(lhs == rhs); }
-	};
-
-	struct device_copy : common_copy {
-		device_id device = 0;
-		size_t device_lane = 0;
-
-		friend bool operator==(const device_copy& lhs, const device_copy& rhs) {
-			return lhs.device == rhs.device && lhs.device_lane == rhs.device_lane && lhs.source_base == rhs.source_base && lhs.dest_base == rhs.dest_base
-			       && lhs.source_box == rhs.source_box && lhs.dest_box == rhs.dest_box && lhs.copy_region == rhs.copy_region && lhs.elem_size == rhs.elem_size;
-		}
-		friend bool operator!=(const device_copy& lhs, const device_copy& rhs) { return !(lhs == rhs); }
-	};
-
-	using operation = std::variant<host_alloc, device_alloc, host_free, device_free, host_task, device_kernel, host_copy, device_copy>;
-
-	mock_backend(const system_info& system, std::vector<operation>* const log) : m_system(system), m_log(log) {}
+	mock_backend(const system_info& system, operations_log* const log) : m_system(system), m_log(log) {}
 
 	const system_info& get_system_info() const override { return m_system; }
 
@@ -157,58 +175,58 @@ class mock_backend final : public backend {
 
 	async_event enqueue_host_alloc(const size_t size, const size_t alignment) override {
 		const auto ptr = mock_alloc(size, alignment);
-		m_log->push_back(host_alloc{{size, alignment, ptr}});
+		m_log->push_back(ops::host_alloc{{size, alignment, ptr}});
 		return make_complete_event(ptr);
 	}
 
 	async_event enqueue_device_alloc(const device_id device, const size_t size, const size_t alignment) override {
 		const auto ptr = mock_alloc(size, alignment);
-		m_log->push_back(device_alloc{{size, alignment, ptr}, device});
+		m_log->push_back(ops::device_alloc{{size, alignment, ptr}, device});
 		return make_complete_event(ptr);
 	}
 
 	async_event enqueue_host_free(void* const ptr) override {
-		m_log->push_back(host_free{{ptr}});
+		m_log->push_back(ops::host_free{{ptr}});
 		return make_complete_event();
 	}
 
 	async_event enqueue_device_free(const device_id device, void* const ptr) override {
-		m_log->push_back(device_free{{ptr}, device});
+		m_log->push_back(ops::device_free{{ptr}, device});
 		return make_complete_event();
 	}
 
 	async_event enqueue_host_task(const size_t host_lane, const host_task_launcher& launcher, std::vector<closure_hydrator::accessor_info> accessor_infos,
 	    const box<3>& execution_range, const communicator* const collective_comm) override //
 	{
-		m_log->push_back(host_task{host_lane, std::move(accessor_infos), execution_range, collective_comm});
+		m_log->push_back(ops::host_task{host_lane, std::move(accessor_infos), execution_range, collective_comm});
 		return make_complete_event();
 	}
 
 	async_event enqueue_device_kernel(const device_id device, const size_t device_lane, const device_kernel_launcher& launcher,
 	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) override //
 	{
-		m_log->push_back(device_kernel{device, device_lane, std::move(accessor_infos), execution_range, reduction_ptrs});
+		m_log->push_back(ops::device_kernel{device, device_lane, std::move(accessor_infos), execution_range, reduction_ptrs});
 		return make_complete_event();
 	}
 
 	async_event enqueue_host_copy(const size_t host_lane, const void* const source_base, void* const dest_base, const box<3>& source_box,
 	    const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override //
 	{
-		m_log->push_back(host_copy{{source_base, dest_base, source_box, dest_box, copy_region, elem_size}, host_lane});
+		m_log->push_back(ops::host_copy{{source_base, dest_base, source_box, dest_box, copy_region, elem_size}, host_lane});
 		return make_complete_event();
 	}
 
 	async_event enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
 	    const box<3>& source_box, const box<3>& dest_box, const region<3>& copy_region, const size_t elem_size) override //
 	{
-		m_log->push_back(device_copy{{source_base, dest_base, source_box, dest_box, copy_region, elem_size}, device, device_lane});
+		m_log->push_back(ops::device_copy{{source_base, dest_base, source_box, dest_box, copy_region, elem_size}, device, device_lane});
 		return make_complete_event();
 	}
 
   private:
 	system_info m_system;
 	uintptr_t m_last_mock_alloc_address = 0;
-	std::vector<operation>* m_log;
+	operations_log* m_log;
 
 	void* mock_alloc(const size_t size, const size_t alignment) {
 		CHECK(size > 0);
@@ -221,7 +239,7 @@ class mock_backend final : public backend {
 	}
 };
 
-class mock_fence_promise : public fence_promise {
+class mock_fence_promise final : public fence_promise {
   public:
 	void fulfill() override {
 		std::lock_guard lock(m_mutex);
@@ -261,8 +279,10 @@ class executor_test_context final : private executor::delegate {
 			m_executor = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
 		} else {
 			const auto system = test_utils::make_system_info(4 /* num devices */, false /* d2d copies*/);
-			m_executor = std::make_unique<live_executor>(
-			    std::make_unique<mock_backend>(system, &m_backend_log), std::make_unique<mock_local_communicator>(), static_cast<executor::delegate*>(this));
+			auto backend = std::make_unique<mock_backend>(system, &m_log);
+			auto root_comm = std::make_unique<mock_local_communicator>(&m_log);
+			m_root_comm_index = root_comm->get_global_index();
+			m_executor = std::make_unique<live_executor>(std::move(backend), std::move(root_comm), static_cast<executor::delegate*>(this));
 		}
 	}
 
@@ -272,6 +292,14 @@ class executor_test_context final : private executor::delegate {
 	executor_test_context& operator=(executor_test_context&&) = delete;
 
 	~executor_test_context() { REQUIRE(m_has_shut_down); }
+
+	void announce_reducer(const reduction_id rid, std::atomic<bool>* destroyed) {
+		m_executor->announce_reducer(rid, std::make_unique<mock_reducer>(destroyed, &m_log));
+	}
+
+	void announce_host_object(const host_object_id hoid, std::atomic<bool>* destroyed) {
+		m_executor->announce_host_object_instance(hoid, std::make_unique<mock_host_object>(destroyed));
+	}
 
 	std::tuple<task_id, instruction_id> init() {
 		const auto iid = submit<epoch_instruction>({}, task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
@@ -288,6 +316,12 @@ class executor_test_context final : private executor::delegate {
 		const auto tid = m_next_task_id++;
 		const auto iid = submit<epoch_instruction>({}, tid, action, std::move(garbage));
 		return {tid, iid};
+	}
+
+	instruction_id clone_collective_group(
+	    const std::vector<instruction_id>& predecessors, const collective_group_id original_cgid, const collective_group_id new_cgid) //
+	{
+		return submit<clone_collective_group_instruction>(predecessors, original_cgid, new_cgid);
 	}
 
 	instruction_id alloc(const std::vector<instruction_id>& predecessors, const allocation_id aid, const size_t size, const size_t alignment) {
@@ -327,21 +361,31 @@ class executor_test_context final : private executor::delegate {
 		return iid;
 	}
 
-	std::vector<mock_backend::operation> shutdown(const std::vector<instruction_id>& predecessors) {
+	instruction_id fill_identity(const std::vector<instruction_id>& predecessors, const reduction_id rid, const allocation_id aid, const size_t num_values) {
+		return submit<fill_identity_instruction>(predecessors, rid, aid, num_values);
+	}
+
+	instruction_id reduce(const std::vector<instruction_id>& predecessors, const reduction_id rid, const allocation_id source_allocation_id,
+	    const size_t num_source_values, const allocation_id dest_allocation_id) //
+	{
+		return submit<reduce_instruction>(predecessors, rid, source_allocation_id, num_source_values, dest_allocation_id);
+	}
+
+	operations_log shutdown(const std::vector<instruction_id>& predecessors) {
 		CHECK(!m_has_shut_down);
 		epoch(predecessors, epoch_action::shutdown, instruction_garbage{});
 		m_executor->wait();
 		m_has_shut_down = true;
-		return std::move(m_backend_log);
+		return std::move(m_log);
 	}
-
-	executor& get_executor() { return *m_executor; }
 
 	task_id get_last_epoch() { return m_epochs.get(); }
 	task_id get_last_horizon() { return m_horizons.get(); }
 
 	void await_horizon(const task_id tid) { m_horizons.await(tid); }
 	void await_epoch(const task_id tid) { m_epochs.await(tid); }
+
+	int get_root_comm_index() const { return m_root_comm_index; }
 
   private:
 	instruction_id m_next_iid = 1;
@@ -351,7 +395,8 @@ class executor_test_context final : private executor::delegate {
 	std::unique_ptr<executor> m_executor;
 	epoch_monitor m_horizons{0};
 	epoch_monitor m_epochs{0};
-	std::vector<mock_backend::operation> m_backend_log; // mutated by executor thread - do not access before shutdown!
+	operations_log m_log;      // mutated by executor thread - do not access before shutdown!
+	int m_root_comm_index = 0; // always 0 for executor_type::dry_run
 
 	template <typename Instruction, typename... CtorParams>
 	instruction_id submit(const std::vector<instruction_id>& predecessors, CtorParams&&... ctor_args) {
@@ -417,7 +462,7 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reduc
 
 	const reduction_id rid(123);
 	std::atomic<bool> destroyed{false};
-	ectx.get_executor().announce_reducer(rid, std::make_unique<mock_reducer>(&destroyed));
+	ectx.announce_reducer(rid, &destroyed);
 
 	instruction_id collector = 0;
 
@@ -445,7 +490,7 @@ TEST_CASE("host objects lifetime is controlled by destroy_host_object_instructio
 
 	const host_object_id hoid(42);
 	std::atomic<bool> destroyed{false};
-	ectx.get_executor().announce_host_object_instance(hoid, std::make_unique<mock_host_object>(&destroyed));
+	ectx.announce_host_object(hoid, &destroyed);
 	CHECK_FALSE(destroyed.load());
 
 	const auto [after_announce_tid, after_announce] = ectx.horizon({init_epoch});
@@ -491,17 +536,17 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 	const auto log = ectx.shutdown({free1, free2});
 	REQUIRE(log.size() == 5);
 
-	const auto log_alloc1 = std::get<mock_backend::host_alloc>(log[0]);
+	const auto log_alloc1 = std::get<ops::host_alloc>(log[0]);
 	CHECK(log_alloc1.size == 1024);
 	CHECK(log_alloc1.alignment == 8);
 	CHECK(log_alloc1.result != nullptr);
 
-	const auto log_alloc2 = std::get<mock_backend::host_alloc>(log[1]);
+	const auto log_alloc2 = std::get<ops::host_alloc>(log[1]);
 	CHECK(log_alloc2.size == 2048);
 	CHECK(log_alloc2.alignment == 16);
 	CHECK(log_alloc2.result != nullptr);
 
-	const auto log_ht = std::get<mock_backend::host_task>(log[2]);
+	const auto log_ht = std::get<ops::host_task>(log[2]);
 	CHECK(log_ht.collective_comm == nullptr);
 	CHECK(log_ht.execution_range == box<3>{{0, 1, 2}, {3, 4, 5}});
 
@@ -513,11 +558,47 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 	CHECK(log_ht.accessor_infos[1].allocated_box_in_buffer == ht_amap[1].allocated_box_in_buffer);
 	CHECK(log_ht.accessor_infos[1].accessed_box_in_buffer == ht_amap[1].accessed_box_in_buffer);
 
-	const auto log_free1 = std::get<mock_backend::host_free>(log[3]);
+	const auto log_free1 = std::get<ops::host_free>(log[3]);
 	CHECK(log_free1.ptr == log_alloc1.result);
 
-	const auto log_free2 = std::get<mock_backend::host_free>(log[4]);
+	const auto log_free2 = std::get<ops::host_free>(log[4]);
 	CHECK(log_free2.ptr == log_alloc2.result);
+}
+
+TEST_CASE("live_executor passes correct allocations to reducers", "[executor]") {
+	executor_test_context ectx(executor_type::live);
+	const auto [_1, init_epoch] = ectx.init();
+
+	const auto source_aid = allocation_id(host_memory_id, 1);
+	const auto dest_aid = allocation_id(host_memory_id, 2);
+	const size_t num_source_values = 4;
+	const auto alloc_source = ectx.alloc({init_epoch}, source_aid, 4 * sizeof(int), alignof(int));
+	const auto alloc_dest = ectx.alloc({init_epoch, alloc_source}, dest_aid, sizeof(int), alignof(int));
+
+	const reduction_id rid(42);
+	ectx.announce_reducer(rid, nullptr);
+	const auto fill_identity = ectx.fill_identity({alloc_source, alloc_dest}, rid, source_aid, num_source_values);
+	const auto reduce = ectx.reduce({alloc_source, alloc_dest, fill_identity}, rid, source_aid, num_source_values, dest_aid);
+
+	ectx.free({reduce}, source_aid);
+	ectx.free({reduce}, dest_aid);
+
+	const auto log = ectx.shutdown({reduce});
+	REQUIRE(log.size() == 6);
+
+	const auto log_source_alloc = std::get<ops::host_alloc>(log[0]);
+	const auto log_dest_alloc = std::get<ops::host_alloc>(log[1]);
+
+	const auto log_fill_identity = std::get<ops::fill_identity>(log[2]);
+	CHECK(log_fill_identity.dest == log_source_alloc.result);
+	CHECK(log_fill_identity.count == num_source_values);
+
+	const auto log_reduce = std::get<ops::reduce>(log[3]);
+	CHECK(log_reduce.dest == log_dest_alloc.result);
+	CHECK(log_reduce.src == log_source_alloc.result);
+	CHECK(log_reduce.src_count == num_source_values);
+
+	// correct arguments to alloc / free have already been tested above
 }
 
 TEST_CASE("live_executor passes correct allocations to device kernels", "[executor]") {
@@ -570,31 +651,31 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 	const auto log = ectx.shutdown({free1, free2, free3, free4});
 	REQUIRE(log.size() == 9);
 
-	const auto log_alloc1 = std::get<mock_backend::device_alloc>(log[0]);
+	const auto log_alloc1 = std::get<ops::device_alloc>(log[0]);
 	CHECK(log_alloc1.device == did);
 	CHECK(log_alloc1.size == 1024);
 	CHECK(log_alloc1.alignment == 8);
 	CHECK(log_alloc1.result != nullptr);
 
-	const auto log_alloc2 = std::get<mock_backend::device_alloc>(log[1]);
+	const auto log_alloc2 = std::get<ops::device_alloc>(log[1]);
 	CHECK(log_alloc2.device == did);
 	CHECK(log_alloc2.size == 2048);
 	CHECK(log_alloc2.alignment == 16);
 	CHECK(log_alloc2.result != nullptr);
 
-	const auto log_alloc3 = std::get<mock_backend::device_alloc>(log[2]);
+	const auto log_alloc3 = std::get<ops::device_alloc>(log[2]);
 	CHECK(log_alloc3.device == did);
 	CHECK(log_alloc3.size == 4);
 	CHECK(log_alloc3.alignment == 4);
 	CHECK(log_alloc3.result != nullptr);
 
-	const auto log_alloc4 = std::get<mock_backend::device_alloc>(log[3]);
+	const auto log_alloc4 = std::get<ops::device_alloc>(log[3]);
 	CHECK(log_alloc4.device == did);
 	CHECK(log_alloc4.size == 4);
 	CHECK(log_alloc4.alignment == 4);
 	CHECK(log_alloc4.result != nullptr);
 
-	const auto log_kernel = std::get<mock_backend::device_kernel>(log[4]);
+	const auto log_kernel = std::get<ops::device_kernel>(log[4]);
 	CHECK(log_kernel.device == did);
 	CHECK(log_kernel.execution_range == box<3>({1, 2, 3}, {4, 5, 6}));
 
@@ -608,19 +689,19 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 
 	CHECK(log_kernel.reduction_ptrs == std::vector{log_alloc3.result, log_alloc4.result});
 
-	const auto log_free1 = std::get<mock_backend::device_free>(log[5]);
+	const auto log_free1 = std::get<ops::device_free>(log[5]);
 	CHECK(log_free1.device == did);
 	CHECK(log_free1.ptr == log_alloc1.result);
 
-	const auto log_free2 = std::get<mock_backend::device_free>(log[6]);
+	const auto log_free2 = std::get<ops::device_free>(log[6]);
 	CHECK(log_free2.device == did);
 	CHECK(log_free2.ptr == log_alloc2.result);
 
-	const auto log_free3 = std::get<mock_backend::device_free>(log[7]);
+	const auto log_free3 = std::get<ops::device_free>(log[7]);
 	CHECK(log_free3.device == did);
 	CHECK(log_free3.ptr == log_alloc3.result);
 
-	const auto log_free4 = std::get<mock_backend::device_free>(log[8]);
+	const auto log_free4 = std::get<ops::device_free>(log[8]);
 	CHECK(log_free4.device == did);
 	CHECK(log_free4.ptr == log_alloc4.result);
 }
@@ -654,11 +735,11 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	const auto log = ectx.shutdown({source_free, dest_free});
 	REQUIRE(log.size() == 5);
 
-	const mock_backend::common_alloc* log_source_alloc = nullptr;
+	const ops::common_alloc* log_source_alloc = nullptr;
 	if(source_mid == host_memory_id) {
-		log_source_alloc = &std::get<mock_backend::host_alloc>(log[0]);
+		log_source_alloc = &std::get<ops::host_alloc>(log[0]);
 	} else {
-		const auto& log_source_device_alloc = std::get<mock_backend::device_alloc>(log[0]);
+		const auto& log_source_device_alloc = std::get<ops::device_alloc>(log[0]);
 		CHECK(log_source_device_alloc.device == did);
 		log_source_alloc = &log_source_device_alloc;
 	}
@@ -666,11 +747,11 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	CHECK(log_source_alloc->alignment == 8);
 	CHECK(log_source_alloc->result != nullptr);
 
-	const mock_backend::common_alloc* log_dest_alloc = nullptr;
+	const ops::common_alloc* log_dest_alloc = nullptr;
 	if(dest_mid == host_memory_id) {
-		log_dest_alloc = &std::get<mock_backend::host_alloc>(log[1]);
+		log_dest_alloc = &std::get<ops::host_alloc>(log[1]);
 	} else {
-		const auto& log_dest_device_alloc = std::get<mock_backend::device_alloc>(log[1]);
+		const auto& log_dest_device_alloc = std::get<ops::device_alloc>(log[1]);
 		CHECK(log_dest_device_alloc.device == did);
 		log_dest_alloc = &log_dest_device_alloc;
 	}
@@ -678,11 +759,11 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	CHECK(log_dest_alloc->alignment == 8);
 	CHECK(log_dest_alloc->result != nullptr);
 
-	const mock_backend::common_copy* log_copy = nullptr;
+	const ops::common_copy* log_copy = nullptr;
 	if(source_mid == host_memory_id && dest_mid == host_memory_id) {
-		log_copy = &std::get<mock_backend::host_copy>(log[2]);
+		log_copy = &std::get<ops::host_copy>(log[2]);
 	} else {
-		const auto& log_device_copy = std::get<mock_backend::device_copy>(log[2]);
+		const auto& log_device_copy = std::get<ops::device_copy>(log[2]);
 		CHECK(log_device_copy.device == did);
 		log_copy = &log_device_copy;
 	}
@@ -694,20 +775,47 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	CHECK(log_copy->elem_size == elem_size);
 
 	if(source_mid == host_memory_id) {
-		const auto log_source_free = std::get<mock_backend::host_free>(log[3]);
+		const auto log_source_free = std::get<ops::host_free>(log[3]);
 		CHECK(log_source_free.ptr == log_source_alloc->result);
 	} else {
-		const auto log_source_free = std::get<mock_backend::device_free>(log[3]);
+		const auto log_source_free = std::get<ops::device_free>(log[3]);
 		CHECK(log_source_free.device == did);
 		CHECK(log_source_free.ptr == log_source_alloc->result);
 	}
 
 	if(dest_mid == host_memory_id) {
-		const auto log_dest_free = std::get<mock_backend::host_free>(log[4]);
+		const auto log_dest_free = std::get<ops::host_free>(log[4]);
 		CHECK(log_dest_free.ptr == log_dest_alloc->result);
 	} else {
-		const auto log_dest_free = std::get<mock_backend::device_free>(log[4]);
+		const auto log_dest_free = std::get<ops::device_free>(log[4]);
 		CHECK(log_dest_free.device == did);
 		CHECK(log_dest_free.ptr == log_dest_alloc->result);
 	}
+}
+
+TEST_CASE("live_executor clones the right communicators", "[executor]") {
+	executor_test_context ectx(executor_type::live);
+	const auto [_1, init_epoch] = ectx.init();
+
+	// clone a tree: root -> clone1; root -> clone2; clone1 -> clone3
+	const auto clone1 = ectx.clone_collective_group({init_epoch}, root_collective_group_id, root_collective_group_id + 1);
+	const auto clone2 = ectx.clone_collective_group({init_epoch, clone1}, root_collective_group_id, root_collective_group_id + 2);
+	const auto clone3 = ectx.clone_collective_group({init_epoch, clone2}, root_collective_group_id + 1, root_collective_group_id + 3);
+
+	const auto log = ectx.shutdown({clone1, clone2, clone3});
+	REQUIRE(log.size() == 3);
+
+	const auto log_clone1 = std::get<ops::collective_clone>(log[0]);
+	CHECK(log_clone1.parent_comm_index == ectx.get_root_comm_index());
+	CHECK(log_clone1.child_comm_index != log_clone1.parent_comm_index);
+
+	const auto log_clone2 = std::get<ops::collective_clone>(log[1]);
+	CHECK(log_clone2.parent_comm_index == ectx.get_root_comm_index());
+	CHECK(log_clone2.child_comm_index != log_clone2.parent_comm_index);
+	CHECK(log_clone2.child_comm_index != log_clone1.parent_comm_index);
+
+	const auto log_clone3 = std::get<ops::collective_clone>(log[2]);
+	CHECK(log_clone3.parent_comm_index == log_clone1.child_comm_index);
+	CHECK(log_clone3.child_comm_index != log_clone3.parent_comm_index);
+	CHECK(log_clone3.child_comm_index != ectx.get_root_comm_index());
 }
