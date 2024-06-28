@@ -156,7 +156,7 @@ class mock_exec_communicator final : public communicator {
   public:
 	explicit mock_exec_communicator(operations_log* const log) : m_global_index(s_next_global_index++), m_log(log) {}
 
-	size_t get_num_nodes() const override { return 1; }
+	size_t get_num_nodes() const override { return 2; }
 	node_id get_local_node_id() const override { return 0; }
 
 	std::vector<inbound_pilot> poll_inbound_pilots() override {
@@ -386,6 +386,14 @@ class executor_test_context final : private executor::delegate {
 
 	void reduce(const reduction_id rid, const allocation_id source_allocation_id, const size_t num_source_values, const allocation_id dest_allocation_id) {
 		submit<reduce_instruction>(rid, source_allocation_id, num_source_values, dest_allocation_id);
+	}
+
+	void outbound_pilot(const outbound_pilot& pilot) { m_executor->submit({}, {pilot}); }
+
+	void send(const node_id to_nid, const message_id msgid, const allocation_id source_aid, const range<3>& source_alloc_range, const id<3>& offset_in_alloc,
+	    const range<3>& send_range, const size_t elem_size) //
+	{
+		submit<send_instruction>(to_nid, msgid, source_aid, source_alloc_range, offset_in_alloc, send_range, elem_size);
 	}
 
 	operations_log finish() {
@@ -801,7 +809,7 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	}
 }
 
-TEST_CASE("live_executor clones the right communicators", "[executor]") {
+TEST_CASE("live_executor clones and submits barriers on the right communicators", "[executor]") {
 	executor_test_context ectx(executor_type::live);
 	ectx.init();
 
@@ -809,9 +817,10 @@ TEST_CASE("live_executor clones the right communicators", "[executor]") {
 	ectx.clone_collective_group(root_collective_group_id, root_collective_group_id + 1);
 	ectx.clone_collective_group(root_collective_group_id, root_collective_group_id + 2);
 	ectx.clone_collective_group(root_collective_group_id + 1, root_collective_group_id + 3);
+	ectx.epoch(epoch_action::barrier); // must happen on root communicator
 
 	const auto log = ectx.finish();
-	REQUIRE(log.size() == 3);
+	REQUIRE(log.size() == 4);
 
 	const auto clone1 = std::get<ops::collective_clone>(log[0]);
 	CHECK(clone1.parent_comm_index == ectx.get_root_comm_index());
@@ -826,7 +835,51 @@ TEST_CASE("live_executor clones the right communicators", "[executor]") {
 	CHECK(clone3.parent_comm_index == clone1.child_comm_index);
 	CHECK(clone3.child_comm_index != clone3.parent_comm_index);
 	CHECK(clone3.child_comm_index != ectx.get_root_comm_index());
+
+	const auto barrier = std::get<ops::collective_barrier>(log[3]);
+	CHECK(barrier.comm_index == ectx.get_root_comm_index());
 }
 
-// TODO test send / recv
-// TODO test barriers
+TEST_CASE("live_executor passes the correct metadata and pointers for p2p send", "[executor]") {
+	executor_test_context ectx(executor_type::live);
+
+	// outbound pilots are sent immediately, so we post them first to get a deterministically ordered log
+	const node_id peer = 1;
+	const message_id msgid = 123;
+	const transfer_id trid{1, 2, 0};
+	const box<3> send_box{{0, 1, 2}, {4, 5, 6}};
+	ectx.outbound_pilot({peer, {msgid, trid, send_box}});
+
+	ectx.init();
+
+	const auto source_aid = allocation_id(host_memory_id, 1);
+	const auto source_box = box<3>{{0, 0, 0}, {7, 8, 9}};
+	ectx.alloc(source_aid, source_box.get_area() * sizeof(int), alignof(int));
+	ectx.send(peer, msgid, source_aid, source_box.get_range(), send_box.get_offset(), send_box.get_range(), sizeof(int));
+
+	ectx.free(source_aid);
+
+	const auto log = ectx.finish();
+	REQUIRE(log.size() == 4);
+
+	const auto send_pilot = std::get<ops::send_outbound_pilot>(log[0]);
+	CHECK(send_pilot.pilot.to == peer);
+	CHECK(send_pilot.pilot.message.id == msgid);
+	CHECK(send_pilot.pilot.message.transfer_id == trid);
+	CHECK(send_pilot.pilot.message.box == send_box);
+
+	const auto alloc = std::get<ops::host_alloc>(log[1]);
+	CHECK(alloc.size == source_box.get_area() * sizeof(int));
+	CHECK(alloc.alignment == alignof(int));
+
+	const auto send_payload = std::get<ops::send_payload>(log[2]);
+	CHECK(send_payload.to == peer);
+	CHECK(send_payload.base == alloc.result);
+	CHECK(send_payload.msgid == msgid);
+	CHECK(send_payload.stride.allocation_range == source_box.get_range());
+	CHECK(send_payload.stride.transfer == send_box.get_subrange());
+	CHECK(send_payload.stride.element_size == sizeof(int));
+
+	const auto free = std::get<ops::host_free>(log[3]);
+	CHECK(free.ptr == alloc.result);
+}
