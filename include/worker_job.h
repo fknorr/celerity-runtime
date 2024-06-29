@@ -16,7 +16,7 @@ namespace celerity {
 namespace detail {
 
 	class device_queue;
-	class executor;
+	class legacy_executor;
 	class task_manager;
 	class reduction_manager;
 	class buffer_manager;
