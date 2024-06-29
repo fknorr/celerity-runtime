@@ -24,6 +24,9 @@ endif()
 option(CELERITY_ACCESS_PATTERN_DIAGNOSTICS "Diagnose uninitialized reads and overlapping writes" ${DEFAULT_ENABLE_DEBUG_CHECKS})
 option(CELERITY_ACCESSOR_BOUNDARY_CHECK "Enable accessor boundary check" ${DEFAULT_ENABLE_DEBUG_CHECKS})
 
+# buggy Nvidia drivers < 550 erroneously report p2p capabilities between RTX 30xx / 40xx series GPUs, causing a kernel panic on access
+option(CELERITY_DISABLE_CUDA_PEER_ACCESS "Do not attempt peer-to-peer copies between CUDA devices" OFF)
+
 if(CELERITY_ACCESSOR_BOUNDARY_CHECK AND NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
   message(STATUS "Accessor boundary check enabled - this will impact kernel performance")
 endif()
@@ -199,6 +202,7 @@ set(SOURCES
   src/device_queue.cc
   src/legacy_executor.cc
   src/distributed_graph_generator.cc
+  src/dry_run_executor.cc
   src/graph_serializer.cc
   src/grid.cc
   src/instruction_graph_generator.cc
@@ -278,6 +282,9 @@ target_link_libraries(celerity_runtime PUBLIC
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/legacy_backend)
 target_link_libraries(celerity_runtime PUBLIC celerity_legacy_backends)
 
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/backend)
+target_link_libraries(celerity_runtime PUBLIC celerity_backends)
+
 # Deprecated feature flags
 set(CELERITY_FEATURE_SIMPLE_SCALAR_REDUCTIONS ${CELERITY_FEATURE_SCALAR_REDUCTIONS})
 set(CELERITY_FEATURE_LOCAL_ACCESSOR ON)
@@ -306,6 +313,7 @@ target_compile_definitions(celerity_runtime PUBLIC
   CELERITY_FEATURE_UNNAMED_KERNELS=$<BOOL:${CELERITY_FEATURE_UNNAMED_KERNELS}>
   CELERITY_DETAIL_HAS_NAMED_THREADS=$<BOOL:${CELERITY_DETAIL_HAS_NAMED_THREADS}>
   CELERITY_ACCESSOR_BOUNDARY_CHECK=$<BOOL:${CELERITY_ACCESSOR_BOUNDARY_CHECK}>
+  CELERITY_DISABLE_CUDA_PEER_ACCESS=$<BOOL:${CELERITY_DISABLE_CUDA_PEER_ACCESS}>
   CELERITY_ACCESS_PATTERN_DIAGNOSTICS=$<BOOL:${CELERITY_ACCESS_PATTERN_DIAGNOSTICS}>
 )
 
@@ -373,7 +381,7 @@ install(
   DESTINATION include/celerity/vendor
 )
 install(
-  TARGETS celerity_runtime celerity_legacy_backends
+  TARGETS celerity_runtime celerity_backends celerity_legacy_backends
   EXPORT install_exports
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib

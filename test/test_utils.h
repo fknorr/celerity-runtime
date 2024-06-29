@@ -12,6 +12,7 @@
 
 #include <catch2/benchmark/catch_optimizer.hpp> // for keep_memory()
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <celerity.h>
 
 #include "async_event.h"
@@ -345,6 +346,19 @@ namespace test_utils {
 		~mpi_fixture() = default;
 	};
 
+	class backend_fixture {
+	  public:
+		backend_fixture();
+	};
+
+	class dry_run_executor_fixture {
+	  public:
+		dry_run_executor_fixture();
+	};
+
+	template <int>
+	class backend_fixture_dims : public backend_fixture {};
+
 	// This fixture (or a subclass) must be used by all tests that transitively instantiate the runtime.
 	class runtime_fixture : public mpi_fixture {
 	  public:
@@ -457,6 +471,23 @@ namespace test_utils {
 	template <int Dims>
 	detail::box<Dims> truncate_box(const detail::box<3>& b3) {
 		return detail::box<Dims>(truncate_id<Dims>(b3.get_min()), truncate_id<Dims>(b3.get_max()));
+	}
+
+	template <typename T>
+	class vector_generator final : public Catch::Generators::IGenerator<T> {
+	  public:
+		explicit vector_generator(std::vector<T>&& values) : m_values(std::move(values)) {}
+		const T& get() const override { return m_values[m_idx]; }
+		bool next() override { return ++m_idx < m_values.size(); }
+
+	  private:
+		std::vector<T> m_values;
+		size_t m_idx = 0;
+	};
+
+	template <typename T>
+	Catch::Generators::GeneratorWrapper<T> from_vector(std::vector<T> values) {
+		return Catch::Generators::GeneratorWrapper<T>(Catch::Detail::make_unique<vector_generator<T>>(std::move(values)));
 	}
 
 	inline void* await(const celerity::detail::async_event& evt) {

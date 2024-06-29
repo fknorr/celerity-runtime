@@ -61,6 +61,17 @@ struct host_object_tracker : public lifetime_extending_state {
 	~host_object_tracker() { detail::runtime::get_instance().destroy_host_object(id); }
 };
 
+/// Host objects that own their instance (i.e. not host_object<T&> nor host_object<void>) wrap it in a type deriving from this struct in order to pass it to
+/// the executor for (virtual) destruction from within the instruction graph.
+struct host_object_instance {
+	host_object_instance() = default;
+	host_object_instance(const host_object_instance&) = delete;
+	host_object_instance(host_object_instance&&) = delete;
+	host_object_instance& operator=(host_object_instance&&) = delete;
+	host_object_instance& operator=(const host_object_instance&) = delete;
+	virtual ~host_object_instance() = default;
+};
+
 // see host_object deduction guides
 template <typename T>
 struct assert_host_object_ctor_param_is_rvalue {
