@@ -57,14 +57,6 @@ struct instruction_id_less {
 	bool operator()(const std::unique_ptr<instruction>& lhs, const std::unique_ptr<instruction>& rhs) const { return lhs->get_id() < rhs->get_id(); }
 };
 
-/// Hash function for `unordered_sets/maps` of `instruction *` that is deterministic even as allocation addresses change between application runs.
-struct instruction_hash_by_id {
-	template <typename Pointer>
-	constexpr size_t operator()(const Pointer instr) const {
-		return std::hash<instruction_id>()(instr->get_id());
-	}
-};
-
 /// Creates a new (MPI) collective group by cloning an existing one. The instuction is issued whenever the first host task on a new collective_group is
 /// compiled, and itself is a collective operation.
 class clone_collective_group_instruction : public matchbox::implement_acceptor<instruction, clone_collective_group_instruction> {

@@ -18,7 +18,7 @@ class dense_map : private std::vector<Value> {
 	explicit dense_map(const size_t size) : vector(size) {}
 
 	template <typename InputIterator>
-	explicit dense_map(const InputIterator first, const InputIterator last) : vector(first, last) {}
+	explicit dense_map(const InputIterator begin, const InputIterator end) : vector(begin, end) {}
 
 	using vector::begin, vector::end, vector::cbegin, vector::cend, vector::empty, vector::size, vector::resize;
 

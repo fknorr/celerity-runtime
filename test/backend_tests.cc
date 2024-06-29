@@ -71,6 +71,12 @@ std::tuple<sycl_backend_type, std::unique_ptr<backend>, std::vector<sycl::device
 	return {backend_type, std::move(backend), std::move(sycl_devices)};
 }
 
+bool accessor_info_equal(const closure_hydrator::accessor_info& lhs, const closure_hydrator::accessor_info& rhs) {
+	bool equal = lhs.ptr == rhs.ptr && lhs.allocated_box_in_buffer == rhs.allocated_box_in_buffer && lhs.accessed_box_in_buffer == rhs.accessed_box_in_buffer;
+	CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(equal &= lhs.out_of_bounds_indices == rhs.out_of_bounds_indices;)
+	return equal;
+}
+
 TEST_CASE_METHOD(test_utils::backend_fixture, "debug allocations are host- and device-accessible", "[backend]") {
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
@@ -156,8 +162,10 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host task lambdas are hydrated an
 	test_utils::await(backend->enqueue_host_task(
 	    lane,
 	    [&, acc1, acc2](const box<3>& b, const communicator* c) {
-		    CHECK(acc1.info == accessor_infos[0]);
-		    CHECK(acc2.info == accessor_infos[1]);
+		    REQUIRE(acc1.info.has_value());
+		    REQUIRE(acc2.info.has_value());
+		    CHECK(accessor_info_equal(*acc1.info, accessor_infos[0]));
+		    CHECK(accessor_info_equal(*acc2.info, accessor_infos[1]));
 		    CHECK(b == execution_range);
 		    CHECK(c == collective_comm);
 		    value += 1;
@@ -220,8 +228,10 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "device kernel command groups are 
 		test_utils::await(backend->enqueue_device_kernel(
 		    did, lane,
 		    [&, acc1, acc2](sycl::handler& cgh, const box<3>& b, const std::vector<void*>& r) {
-			    CHECK(acc1.info == accessor_infos[0]);
-			    CHECK(acc2.info == accessor_infos[1]);
+			    REQUIRE(acc1.info.has_value());
+			    REQUIRE(acc2.info.has_value());
+			    CHECK(accessor_info_equal(*acc1.info, accessor_infos[0]));
+			    CHECK(accessor_info_equal(*acc2.info, accessor_infos[1]));
 			    CHECK(b == execution_range);
 			    CHECK(r == reduction_ptrs);
 			    cgh.single_task([=] { *value_ptr += 1; });

@@ -523,10 +523,10 @@ class accessor<DataT, Dims, Mode, target::host_task> : public detail::accessor_b
 	// This does not necessarily correspond to the backing buffer's range.
 	CELERITY_DETAIL_NO_UNIQUE_ADDRESS subrange<Dims> m_accessed_buffer_subrange;
 
-	// Offset of the backing buffer relative to the virtual buffer.
+	// Offset of the backing allocation relative to the buffer.
 	CELERITY_DETAIL_NO_UNIQUE_ADDRESS id<Dims> m_allocation_offset;
 
-	// Range of the backing buffer.
+	// Range of the backing allocation.
 	CELERITY_DETAIL_NO_UNIQUE_ADDRESS range<Dims> m_allocation_range = detail::zeros;
 
 	// The range of the Celerity buffer as created by the user.

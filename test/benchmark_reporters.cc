@@ -162,7 +162,6 @@ class markdown_table_printer {
 	}
 
 	void print(std::ostream& os) const {
-#if 0 // TODO this is somehow broken at least for old DPC++ versions?
       // fmt does not allow to set alignment dynamically, so we need a helper function.
       // Replaces 'A' in fmt_str with '<','>' or '^'.
 		constexpr auto align_fmt = [](std::string fmt_str, align a) {
@@ -194,7 +193,6 @@ class markdown_table_printer {
 			}
 			fmt::print(os, "\n");
 		}
-#endif
 	}
 
   private:

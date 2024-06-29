@@ -141,12 +141,6 @@ namespace detail {
 		 */
 		void await_epoch(task_id epoch);
 
-		/**
-		 * @brief Shuts down the task_manager, freeing all stored tasks.
-		 TODO remove, runtime calls the destructor instead
-		 */
-		void shutdown() { m_task_buffer.clear(); }
-
 		void set_horizon_step(const int step) {
 			assert(step >= 0);
 			m_task_horizon_step_size = step;
