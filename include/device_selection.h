@@ -148,12 +148,12 @@ auto pick_devices(const host_config& cfg, const DevicesOrSelector& user_devices_
 /*
 template<typename T>
 concept BackendEnumerator = requires(const T &a) {
-	typename T::backend_type;
-	typename T::device_type;
-	{a.compatible_backends(std::declval<typename T::device_type>)} -> std::same_as<std::vector<T::backend_type>>;
-	{a.available_backends()} -> std::same_as<std::vector<T::backend_type>>;
-	{a.is_specialized(std::declval<T::backend_type>())} -> std::same_as<bool>;
-	{a.get_priority(std::declval<T::backend_type>())} -> std::same_as<int>;
+    typename T::backend_type;
+    typename T::device_type;
+    {a.compatible_backends(std::declval<typename T::device_type>)} -> std::same_as<std::vector<T::backend_type>>;
+    {a.available_backends()} -> std::same_as<std::vector<T::backend_type>>;
+    {a.is_specialized(std::declval<T::backend_type>())} -> std::same_as<bool>;
+    {a.get_priority(std::declval<T::backend_type>())} -> std::same_as<int>;
 };
 */
 
