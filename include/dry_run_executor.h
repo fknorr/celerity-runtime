@@ -1,15 +1,21 @@
 #pragma once
 
+#include "double_buffered_queue.h"
 #include "executor.h"
 
-#include <condition_variable>
-#include <mutex>
+#include <thread>
+#include <variant>
 
 namespace celerity::detail {
 
+/// Executor implementation selected when Celerity performs a dry run, that is, graph generation for debugging purposes without actually allocating memory,
+/// launching kernels or issuing data transfers.
+///
+/// `dry_run_executor` still executes horizon-, epoch- and fence instructions to guarantee forward progress in the user application.
 class dry_run_executor final : public executor {
   public:
-	explicit dry_run_executor(delegate* dlg) : m_delegate(dlg) {}
+	/// `dlg` (optional) receives notifications about reached horizons and epochs from the executor thread.
+	explicit dry_run_executor(delegate* dlg);
 
 	void announce_user_allocation(allocation_id aid, void* ptr) override;
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
@@ -20,16 +26,13 @@ class dry_run_executor final : public executor {
 	void wait() override;
 
   private:
-	delegate* m_delegate;
+	using host_object_instance_announcement = std::pair<host_object_id, std::unique_ptr<host_object_instance>>;
+	using submission = std::variant<std::vector<const instruction*>, host_object_instance_announcement>;
 
-	// for blocking in wait()
-	std::mutex m_resume_mutex;
-	std::condition_variable m_resume;
-	bool m_has_shut_down = false;
+	double_buffered_queue<submission> m_submission_queue;
+	std::thread m_thread;
 
-	// host objects must live exactly as long as they would with an live_executor
-	std::mutex m_host_object_instances_mutex;
-	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> m_host_object_instances;
+	void thread_main(delegate* dlg);
 };
 
 } // namespace celerity::detail

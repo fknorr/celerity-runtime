@@ -35,9 +35,14 @@ class communicator;
 struct system_info;
 class backend;
 
+/// Executor implementation for a normal (non-dry) run of a Celerity application. Internal instruction dependencies are resolved by means of an
+/// out_of_order_engine and receive_arbiter, and the resulting operations dispatched to a `backend` and `communicator` implementation.
 class live_executor final : public executor {
   public:
+	/// Operations are dispatched to `backend` and `root_comm` or one of its clones.
+	/// `dlg` (optional) receives notifications about reached horizons and epochs from the executor thread.
 	explicit live_executor(std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* dlg);
+
 	live_executor(const live_executor&) = delete;
 	live_executor(live_executor&&) = delete;
 	live_executor& operator=(const live_executor&) = delete;

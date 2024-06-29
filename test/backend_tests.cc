@@ -298,7 +298,7 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend copies work correctly on 
 	}
 	CAPTURE(source_did, dest_did);
 
-	// use a helper SYCL queues to init allocations and copy between user and source/dest memories
+	// use a helper SYCL queue to init allocations and copy between user and source/dest memories
 	sycl::queue source_sycl_queue(sycl_devices[0], sycl::property::queue::in_order{});
 	sycl::queue dest_sycl_queue(sycl_devices[direction == "device to peer" ? 1 : 0], sycl::property::queue::in_order{});
 

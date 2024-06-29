@@ -421,7 +421,7 @@ class executor_test_context final : private executor::delegate {
 };
 
 
-TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors notify delegate when encountering a horizon / epoch", "[executor]") {
+TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors notify their delegate when encountering a horizon / epoch", "[executor]") {
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -479,7 +479,7 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reduc
 	ectx.finish();
 }
 
-TEST_CASE("host objects lifetime is controlled by destroy_host_object_instruction", "[executor]") {
+TEST_CASE("host object lifetime is controlled by destroy_host_object_instruction", "[executor]") {
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -790,7 +790,7 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	}
 }
 
-TEST_CASE("live_executor clones and issues barriers on the right communicators", "[executor]") {
+TEST_CASE("live_executor clones communicators and issues barriers correctly", "[executor]") {
 	executor_test_context ectx(executor_type::live);
 	ectx.init();
 
