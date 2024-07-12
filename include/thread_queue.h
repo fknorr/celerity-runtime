@@ -42,6 +42,8 @@ class thread_queue {
 	/// `fn` must take no arguments and return either `void` or a type convertible to `void *`, which will be forwarded as the result into the event.
 	template <typename Fn>
 	async_event submit(Fn&& fn) {
+		static_assert(std::is_void_v<std::invoke_result_t<std::decay_t<Fn>>> || std::is_convertible_v<std::invoke_result_t<std::decay_t<Fn>>, void*>,
+		    "job function must return either void or a pointer convertible to void*");
 		assert(m_impl != nullptr);
 		job job(std::forward<Fn>(fn));
 		auto evt = make_async_event<thread_queue::event>(job.promise.get_future());
@@ -65,12 +67,12 @@ class thread_queue {
 		job() = default; // empty (default-constructed) fn signals termination
 
 		/// Constructor overload for `fn` returning `void`.
-		template <typename Fn, std::enable_if_t<std::is_same_v<std::invoke_result_t<Fn>, void>, int> = 0>
-		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)] { return std::invoke(fn), nullptr; }) {}
+		template <typename Fn, std::enable_if_t<std::is_void_v<std::invoke_result_t<std::decay_t<Fn>>>, int> = 0>
+		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)]() mutable { return std::invoke(fn), nullptr; }) {}
 
 		/// Constructor overload for `fn` returning `void*`.
-		template <typename Fn, std::enable_if_t<std::is_invocable_r_v<void*, Fn>, int> = 0>
-		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)] { return std::invoke(fn); }) {}
+		template <typename Fn, std::enable_if_t<std::is_convertible_v<std::invoke_result_t<std::decay_t<Fn>>, void*>, int> = 0>
+		job(Fn&& fn) : fn([fn = std::forward<Fn>(fn)]() mutable { return std::invoke(fn); }) {}
 	};
 
 	class event : public async_event_impl {
