@@ -141,6 +141,9 @@ namespace detail {
 			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", m_local_nid, int(ceil(log10(double(m_num_nodes))))));
 		}
 
+		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
+		    get_build_type(), get_mimalloc_string());
+
 #ifndef __APPLE__
 		if(const uint32_t cores = affinity_cores_available(); cores < min_cores_needed) {
 			CELERITY_WARN("Celerity has detected that only {} logical cores are available to this process. It is recommended to assign at least {} "
@@ -204,9 +207,6 @@ namespace detail {
 		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, system, *m_task_mngr, static_cast<abstract_scheduler::delegate*>(this),
 		    m_command_recorder.get(), m_instruction_recorder.get(), schdlr_policy);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
-
-		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
-		    get_build_type(), get_mimalloc_string());
 	}
 
 	void runtime::require_call_from_application_thread() const {
