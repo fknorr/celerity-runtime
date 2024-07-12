@@ -42,10 +42,10 @@ inline std::vector<copy_test_layout> generate_copy_test_layouts() {
 								const padding source_padding[] = {source_padding_x, source_padding_y, source_padding_z};
 								const padding dest_padding[] = {dest_padding_x, dest_padding_y, dest_padding_z};
 								for(int d = 0; d < dims; ++d) {
-									if(source_padding[d] & left) { source_min[d] -= padding_width; }
-									if(source_padding[d] & right) { source_max[d] += padding_width; }
-									if(dest_padding[d] & left) { dest_min[d] -= padding_width; }
-									if(dest_padding[d] & right) { dest_max[d] += padding_width; }
+									if((source_padding[d] & left) != 0) { source_min[d] -= padding_width; }
+									if((source_padding[d] & right) != 0) { source_max[d] += padding_width; }
+									if((dest_padding[d] & left) != 0) { dest_min[d] -= padding_width; }
+									if((dest_padding[d] & right) != 0) { dest_max[d] += padding_width; }
 								}
 								layouts.push_back({
 								    detail::box<3>{source_min, source_max},

@@ -7,7 +7,7 @@
 
 namespace celerity::detail {
 
-/// Describes a a box-shaped copy operation between two box-shaped allocations in terms of linear offsets and strides.
+/// Describes a box-shaped copy operation between two box-shaped allocations in terms of linear offsets and strides.
 struct nd_copy_layout {
 	struct stride_dimension {
 		size_t source_stride = 1; ///< by how many bytes to advance the source pointer after one step in this dimension.
