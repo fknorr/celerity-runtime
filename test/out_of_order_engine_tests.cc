@@ -130,7 +130,8 @@ class out_of_order_test_context {
 	const instruction* host_task(const std::vector<const instruction*>& dependencies, const int priority = 0) {
 		return create<host_task_instruction>(
 		    dependencies, priority, host_task_launcher{}, box<3>(), range<3>(), buffer_access_allocation_map{},
-		    collective_group_id {} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::device_compute, task_id(0), "task"));
+		    collective_group_id {} //
+		    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::device_compute, task_id(0), "task"));
 	}
 
 	const instruction* epoch(const std::vector<const instruction*>& dependencies, const int priority = 0) {
