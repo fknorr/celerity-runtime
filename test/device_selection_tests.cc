@@ -386,21 +386,21 @@ TEST_CASE("pick_devices prints device and platform information", "[device-select
 
 	SECTION("when devices are provided by user") {
 		pick_devices(h_cfg, std::vector<mock_device>{mds[0], mds[1]}, std::vector<mock_platform>{mp});
-		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My first device' (specified by user)"));
-		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My second device' (specified by user)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My first device\" as D0 (specified by user)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My second device\" as D1 (specified by user)"));
 	}
 
 	SECTION("when automatically selecting a device") {
 		pick_devices(h_cfg, auto_select_devices{}, std::vector<mock_platform>{mp});
-		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My first device' (automatically selected)"));
-		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My second device' (automatically selected)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My first device\" as D0 (automatically selected)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My second device\" as D1 (automatically selected)"));
 	}
 
 	SECTION("when a device selector is provided") {
 		const auto selector = [mds](const mock_device&) { return 100; };
 		pick_devices(h_cfg, selector, std::vector<mock_platform>{mp});
-		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My first device' (via user-provided selector)"));
-		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform 'My platform', device 'My second device' (via user-provided selector)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My first device\" as D0 (via user-provided selector)"));
+		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My second device\" as D1 (via user-provided selector)"));
 	}
 }
 

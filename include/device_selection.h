@@ -72,7 +72,8 @@ auto pick_devices(const host_config& cfg, const DevicesOrSelector& user_devices_
 					try {
 						check_required_device_aspects(devices[j]);
 					} catch(std::runtime_error& e) {
-						CELERITY_TRACE("Ignoring device {} on platform {}: {}", j, i, e.what());
+						CELERITY_TRACE("Ignoring platform {} \"{}\", device {} \"{}\": {}", i, platforms[i].template get_info<sycl::info::platform::name>(), j,
+						    devices[j].template get_info<sycl::info::device::name>(), e.what());
 						continue;
 					}
 					const auto score = selector(devices[j]);
@@ -136,14 +137,26 @@ auto pick_devices(const host_config& cfg, const DevicesOrSelector& user_devices_
 		}
 	}
 
-	for(auto& device : selected_devices) {
-		const auto platform_name = device.get_platform().template get_info<sycl::info::platform::name>();
-		const auto device_name = device.template get_info<sycl::info::device::name>();
-		CELERITY_INFO("Using platform '{}', device '{}' ({})", platform_name, device_name, how_selected);
+	for(device_id did = 0; did < selected_devices.size(); ++did) {
+		const auto platform_name = selected_devices[did].get_platform().template get_info<sycl::info::platform::name>();
+		const auto device_name = selected_devices[did].template get_info<sycl::info::device::name>();
+		CELERITY_INFO("Using platform \"{}\", device \"{}\" as D{} ({})", platform_name, device_name, did, how_selected);
 	}
 
 	return selected_devices;
 }
+
+/*
+template<typename T>
+concept BackendEnumerator = requires(const T &a) {
+    typename T::backend_type;
+    typename T::device_type;
+    {a.compatible_backends(std::declval<typename T::device_type>)} -> std::same_as<std::vector<T::backend_type>>;
+    {a.available_backends()} -> std::same_as<std::vector<T::backend_type>>;
+    {a.is_specialized(std::declval<T::backend_type>())} -> std::same_as<bool>;
+    {a.get_priority(std::declval<T::backend_type>())} -> std::same_as<int>;
+};
+*/
 
 template <typename BackendEnumerator>
 inline auto select_backend(const BackendEnumerator& enumerator, const std::vector<typename BackendEnumerator::device_type>& devices) {
