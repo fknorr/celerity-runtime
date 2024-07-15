@@ -523,7 +523,7 @@ namespace detail {
 		});
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "attempting a reduction on buffers with size != 1 throws", "[task-manager]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "attempting a reduction on buffers with size != 1 throws", "[task-manager][reduction]") {
 		test_utils::allow_max_log_level(detail::log_level::warn); // throwing in submit() will warn about unconsumed task_id reservation
 
 		runtime::init(nullptr, nullptr);
@@ -628,7 +628,7 @@ namespace detail {
 		});
 	}
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "reductions can be passed into nd_range kernels", "[handler]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "reductions can be passed into nd_range kernels", "[handler][reduction]") {
 		// Note: We assume a local range size of 16 here, this should be supported by most devices.
 
 		buffer<int, 1> b{range<1>{1}};
@@ -641,7 +641,7 @@ namespace detail {
 
 #if CELERITY_FEATURE_UNNAMED_KERNELS
 
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "handler::parallel_for kernel names are optional", "[handler]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "handler::parallel_for kernel names are optional", "[handler][reduction]") {
 		distr_queue q;
 
 		// Note: We assume a local range size of 32 here, this should be supported by most devices.

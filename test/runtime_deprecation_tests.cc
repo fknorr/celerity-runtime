@@ -11,12 +11,10 @@ namespace detail {
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture,
 	    "distr_queue::submit(allow_by_ref_t, ...) and creation of accessors/side-effects/reductions from const buffers/host-objects continues to work",
-	    "[handler][deprecated]") {
+	    "[handler][deprecated][reduction]") {
 		distr_queue q;
 		buffer<size_t, 1> buf{32};
-#if CELERITY_FEATURE_SCALAR_REDUCTIONS
 		buffer<size_t, 1> reduction_buf{1};
-#endif
 		experimental::host_object<size_t> ho;
 		int my_int = 33;
 		q.submit(allow_by_ref, [= /* capture buffer/host-object by value */, &my_int](handler& cgh) {
