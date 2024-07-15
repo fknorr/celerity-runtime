@@ -516,14 +516,14 @@ TEST_CASE("live_executor passes correct allocations to host tasks", "[executor]"
 	    {
 	        allocation_id(host_memory_id, 1),
 	        box<3>({0, 0, 0}, {32, 32, 1}),
-	        box<3>({8, 8, 0}, {24, 24, 1}),
-	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(1, "buffer1"),
+	        box<3>({8, 8, 0}, {24, 24, 1}) //
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, 1, "buffer1"),
 	    },
 	    {
 	        allocation_id(host_memory_id, 2),
 	        box<3>({0, 0, 0}, {64, 16, 1}),
-	        box<3>({0, 0, 0}, {16, 16, 1}),
-	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(2, "buffer2"),
+	        box<3>({0, 0, 0}, {16, 16, 1}) //
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, 2, "buffer2"),
 	    },
 	};
 	ectx.host_task(box<3>{{0, 1, 2}, {3, 4, 5}}, range<3>{7, 8, 9}, amap, non_collective_group_id);
@@ -615,28 +615,28 @@ TEST_CASE("live_executor passes correct allocations to device kernels", "[execut
 	    {
 	        allocation_id(mid, 1),
 	        box<3>({0, 0, 0}, {32, 32, 1}),
-	        box<3>({8, 8, 0}, {24, 24, 1}),
-	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(1, "buffer1"),
+	        box<3>({8, 8, 0}, {24, 24, 1}) //
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, 1, "buffer1"),
 	    },
 	    {
 	        allocation_id(mid, 2),
 	        box<3>({0, 0, 0}, {64, 16, 1}),
-	        box<3>({0, 0, 0}, {16, 16, 1}),
-	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(2, "buffer2"),
+	        box<3>({0, 0, 0}, {16, 16, 1}) //
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, 2, "buffer2"),
 	    },
 	};
 	const auto rmap = buffer_access_allocation_map{
 	    {
 	        allocation_id(mid, 3),
 	        box<3>({0, 0, 0}, {1, 1, 1}),
-	        box<3>({0, 0, 0}, {1, 1, 1}),
-	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(3, "buffer3"),
+	        box<3>({0, 0, 0}, {1, 1, 1}) //
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, 3, "buffer3"),
 	    },
 	    {
 	        allocation_id(mid, 4),
 	        box<3>({0, 0, 0}, {1, 1, 1}),
-	        box<3>({0, 0, 0}, {1, 1, 1}),
-	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(4, "buffer4"),
+	        box<3>({0, 0, 0}, {1, 1, 1}) //
+	        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, 4, "buffer4"),
 	    },
 	};
 	ectx.device_kernel(did, box<3>({1, 2, 3}, {4, 5, 6}), amap, rmap);
