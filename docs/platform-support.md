@@ -37,11 +37,11 @@ Those are (CRT = Intel Compute Runtime, L0 = oneAPI Level Zero):
 
 | SYCL       | SYCL version                                                                               | OS           | GPU             | Build type     |
 |------------|--------------------------------------------------------------------------------------------|--------------|-----------------|----------------|
-| DPC++      | [`89327e0a`](https://github.com/intel/llvm/commit/89327e0a) (CRT 24.13.29138.7, L0 1.17.0) | Ubuntu 22.04 | Intel Arc A770  | Debug          |
-| DPC++      | [`HEAD`](https://github.com/intel/llvm/) (CRT 24.13.29138.7, L0 1.17.0)                    | Ubuntu 22.04 | Intel Arc A770  | Debug, Release |
-| hipSYCL    | [`2636e1ff`](https://github.com/illuhad/hipSYCL/commit/d2bd9fc7) (Clang 14, CUDA 11.8.0)   | Ubuntu 22.04 | NVIDIA RTX 2070 | Debug, Release |
-| hipSYCL    | [`HEAD`](https://github.com/illuhad/hipSYCL) (Clang 16, CUDA 12.2.0)\*                     | Ubuntu 23.04 | NVIDIA RTX 2070 | Debug, Release |
-| SimSYCL    | [`HEAD`](https://github.com/celerity/SimSYCL) (GCC 11.4)                                   | Ubuntu 22.04 | (None)          | Debug, Release |
+| DPC++      | [`89327e0a`](https://github.com/intel/llvm/commit/89327e0a) (CRT 24.13.29138.7, L0 1.17.0) | Ubuntu 22.04 | Intel Arc A770  | Debug, Release |
+| DPC++      | [`HEAD`](https://github.com/intel/llvm/) (CRT 24.13.29138.7, L0 1.17.0)                    | Ubuntu 24.04 | Intel Arc A770  | Debug, Release |
+| hipSYCL    | [`2636e1ff`](https://github.com/illuhad/hipSYCL/commit/d2bd9fc7) (Clang 14.0, CUDA 11.8.0) | Ubuntu 22.04 | NVIDIA RTX 2070 | Debug, Release |
+| hipSYCL    | [`HEAD`](https://github.com/illuhad/hipSYCL) (Clang 18.0, CUDA 12.5.0)\*                   | Ubuntu 24.04 | NVIDIA RTX 2070 | Debug, Release |
+| SimSYCL    | [`HEAD`](https://github.com/celerity/SimSYCL) (GCC 13.2)                                   | Ubuntu 24.04 | (None)          | Debug, Release |
 
 \* currently requires a patch for an illegal macro definition in CUDA:
 
