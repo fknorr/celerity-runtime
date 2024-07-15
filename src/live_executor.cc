@@ -117,7 +117,8 @@ struct executor_impl {
 	void issue(const epoch_instruction& einstr);
 
 	template <typename Instr>
-	auto dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment) //
+	auto dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment)
+	    // SFINAE: there is a (synchronous) `issue` overload above for the concrete Instr type
 	    -> decltype(issue(instr));
 
 	void issue_async(const alloc_instruction& ainstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async);
@@ -132,6 +133,7 @@ struct executor_impl {
 
 	template <typename Instr>
 	auto dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment)
+	    // SFINAE: there is an `issue_async` overload above for the concrete Instr type
 	    -> decltype(issue_async(instr, assignment, std::declval<async_instruction_state&>()));
 
 	std::vector<closure_hydrator::accessor_info> make_accessor_infos(const buffer_access_allocation_map& amap) const;
