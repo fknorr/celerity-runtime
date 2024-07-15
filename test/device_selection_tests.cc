@@ -400,7 +400,8 @@ TEST_CASE("pick_devices prints device and platform information", "[device-select
 		const auto selector = [mds](const mock_device&) { return 100; };
 		pick_devices(h_cfg, selector, std::vector<mock_platform>{mp});
 		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My first device\" as D0 (via user-provided selector)"));
-		CHECK(test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My second device\" as D1 (via user-provided selector)"));
+		CHECK(
+		    test_utils::log_contains_exact(log_level::info, "Using platform \"My platform\", device \"My second device\" as D1 (via user-provided selector)"));
 	}
 }
 
