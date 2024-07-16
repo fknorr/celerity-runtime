@@ -6,7 +6,7 @@ set -eu -o pipefail
 SOURCE_DIR="$(realpath "$1")"
 BUILD_DIR="$(realpath "$2")"
 
-# --exclude: fastcov picks up non-existant files in src/catch2, but it's not clear why
+# --exclude: fastcov picks up nonexistent files in src/catch2, but it's not clear why
 exec fastcov \
 	--compiler-directory "$SOURCE_DIR" \
 	--search-directory "$BUILD_DIR" \
