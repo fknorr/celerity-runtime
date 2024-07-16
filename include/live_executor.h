@@ -4,6 +4,7 @@
 #include "executor.h"
 
 #include <memory>
+#include <optional>
 #include <thread>
 #include <variant>
 
@@ -39,9 +40,14 @@ class backend;
 /// out_of_order_engine and receive_arbiter, and the resulting operations dispatched to a `backend` and `communicator` implementation.
 class live_executor final : public executor {
   public:
+	struct policy_set {
+		std::optional<std::chrono::milliseconds> progress_warning_timeout = std::chrono::seconds(3);
+	};
+
 	/// Operations are dispatched to `backend` and `root_comm` or one of its clones.
 	/// `dlg` (optional) receives notifications about reached horizons and epochs from the executor thread.
-	explicit live_executor(std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* dlg);
+	explicit live_executor(
+	    std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* dlg, const policy_set& policy = default_policy_set());
 
 	live_executor(const live_executor&) = delete;
 	live_executor(live_executor&&) = delete;
@@ -64,7 +70,11 @@ class live_executor final : public executor {
 	double_buffered_queue<live_executor_detail::submission> m_submission_queue;
 	std::thread m_thread;
 
-	void thread_main(std::unique_ptr<backend> backend, delegate* dlg);
+	void thread_main(std::unique_ptr<backend> backend, delegate* dlg, const policy_set& policy);
+
+	/// Default-constructs a `policy_set` - this must be a function because we can't use the implicit default constructor of `policy_set`, which has member
+	/// initializers, within its surrounding class (Clang diagnostic).
+	constexpr static policy_set default_policy_set() { return {}; }
 };
 
 } // namespace celerity::detail

@@ -1,6 +1,8 @@
 #include "dry_run_executor.h"
 #include "executor.h"
 #include "live_executor.h"
+#include "reduction.h"
+#include "thread_queue.h"
 
 #include "test_utils.h"
 
@@ -216,7 +218,12 @@ class mock_backend final : public backend {
 	    const box<3>& execution_range, const communicator* const collective_comm) override //
 	{
 		m_log->push_back(ops::host_task{host_lane, std::move(accessor_infos), execution_range, collective_comm});
-		return make_complete_event();
+		if(launcher) {
+			// probably a delay task: submit to thread queue so we can return before it completes
+			return m_host_queue.submit([=] { launcher(execution_range, collective_comm); });
+		} else {
+			return make_complete_event();
+		}
 	}
 
 	async_event enqueue_device_kernel(const device_id device, const size_t device_lane, const device_kernel_launcher& launcher,
@@ -244,6 +251,7 @@ class mock_backend final : public backend {
 	system_info m_system;
 	uintptr_t m_last_mock_alloc_address = 0;
 	operations_log* m_log;
+	thread_queue m_host_queue{"cy-mock-host"}; // for host tasks with in-tact launcher (= delay tasks)
 
 	/// alloc operations must return a non-null pointer, which we simply conjure from an integer to allow tests to identify allocations in the log.
 	void* mock_alloc(const size_t size, const size_t alignment) {
@@ -296,7 +304,7 @@ struct Catch::StringMaker<executor_type> {
 /// submits individual instructions without an actual source task_graph / command_graph.
 class executor_test_context final : private executor::delegate {
   public:
-	explicit executor_test_context(const executor_type type) {
+	explicit executor_test_context(const executor_type type, const live_executor::policy_set& live_policy = {}) {
 		if(type == executor_type::dry_run) {
 			m_executor = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
 		} else {
@@ -304,7 +312,7 @@ class executor_test_context final : private executor::delegate {
 			auto backend = std::make_unique<mock_backend>(system, &m_log);
 			auto root_comm = std::make_unique<mock_exec_communicator>(&m_log);
 			m_root_comm = root_comm.get();
-			m_executor = std::make_unique<live_executor>(std::move(backend), std::move(root_comm), static_cast<executor::delegate*>(this));
+			m_executor = std::make_unique<live_executor>(std::move(backend), std::move(root_comm), static_cast<executor::delegate*>(this), live_policy);
 		}
 	}
 
@@ -389,6 +397,14 @@ class executor_test_context final : private executor::delegate {
 	    const range<3>& send_range, const size_t elem_size) //
 	{
 		submit<send_instruction>(to_nid, msgid, source_aid, source_alloc_range, offset_in_alloc, send_range, elem_size);
+	}
+
+	/// Submits a host task that sleeps for the given duration.
+	void delay(const std::chrono::milliseconds& duration) {
+		submit<host_task_instruction>(
+		    [=](const box<3>& /* execution_range */, const communicator* /* collective_comm */) { std::this_thread::sleep_for(duration); },
+		    subrange(id<3>(0, 0, 0), range<3>(1, 1, 1)), range<3>(1, 1, 1), buffer_access_allocation_map{},
+		    collective_group_id(0) CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, task_type::host_compute, task_id(1), "task_name"));
 	}
 
 	/// Submits and awaits the shutdown epoch, then returns the collected operations log. Call after the last submission.
@@ -905,3 +921,19 @@ TEST_CASE("live_executor passes the correct metadata and pointers for peer-to-pe
 }
 
 // We don't test receives because it would be annoying, and most of the pointer juggling is handled by receive_arbiter anyway
+
+TEST_CASE("live_executor emits progress warning when a task appears stuck", "[executor]") {
+	test_utils::allow_max_log_level(log_level::warn);
+
+	live_executor::policy_set policy;
+	policy.progress_warning_timeout = std::chrono::milliseconds(100);
+	executor_test_context ectx(executor_type::live, policy);
+
+	ectx.init();
+	ectx.delay(std::chrono::milliseconds(200));
+	ectx.finish();
+
+	// no regex search in log, so we test two substrings of the warning message
+	CHECK(test_utils::log_contains_substring(log_level::warn, "[executor] no progress for "));
+	CHECK(test_utils::log_contains_substring(log_level::warn, " seconds, might be stuck. Active instructions: I"));
+}

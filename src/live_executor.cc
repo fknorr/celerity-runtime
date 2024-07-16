@@ -74,6 +74,7 @@ struct executor_impl {
 	communicator* const root_communicator;
 	double_buffered_queue<submission>* const submission_queue;
 	live_executor::delegate* const delegate;
+	const live_executor::policy_set policy;
 
 	receive_arbiter recv_arbiter{*root_communicator};
 	out_of_order_engine engine{backend->get_system_info()};
@@ -97,8 +98,8 @@ struct executor_impl {
 	    out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id);
 #endif
 
-	executor_impl(
-	    std::unique_ptr<detail::backend> backend, communicator* root_comm, double_buffered_queue<submission>& submission_queue, live_executor::delegate* dlg);
+	executor_impl(std::unique_ptr<detail::backend> backend, communicator* root_comm, double_buffered_queue<submission>& submission_queue,
+	    live_executor::delegate* dlg, const live_executor::policy_set& policy);
 
 	void run();
 	void poll_in_flight_async_instructions();
@@ -316,8 +317,8 @@ void tracy_end_async_zone(tracy_async_lane& lane, const tracy_async_zone& zone) 
 #endif
 
 executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communicator* const root_comm, double_buffered_queue<submission>& submission_queue,
-    live_executor::delegate* const dlg)
-    : backend(std::move(backend)), root_communicator(root_comm), submission_queue(&submission_queue), delegate(dlg) {}
+    live_executor::delegate* const dlg, const live_executor::policy_set& policy)
+    : backend(std::move(backend)), root_communicator(root_comm), submission_queue(&submission_queue), delegate(dlg), policy(policy) {}
 
 void executor_impl::run() {
 	closure_hydrator::make_available();
@@ -522,15 +523,16 @@ void executor_impl::try_issue_one_instruction() {
 }
 
 void executor_impl::check_progress() {
+	if(!policy.progress_warning_timeout.has_value()) return;
+
 	if(made_progress) {
 		last_progress_timestamp = std::chrono::steady_clock::now();
 		progress_warning_emitted = false;
 		made_progress = false;
 	} else if(last_progress_timestamp.has_value()) {
 		// being stuck either means a deadlock in the user application, or a bug in Celerity.
-		const auto assume_stuck_after = std::chrono::seconds(3);
 		const auto elapsed_since_last_progress = std::chrono::steady_clock::now() - *last_progress_timestamp;
-		if(elapsed_since_last_progress > assume_stuck_after && !progress_warning_emitted) {
+		if(elapsed_since_last_progress > *policy.progress_warning_timeout && !progress_warning_emitted) {
 			std::string instr_list;
 			for(auto& in_flight : in_flight_async_instructions) {
 				if(!instr_list.empty()) instr_list += ", ";
@@ -833,8 +835,8 @@ std::unique_ptr<boundary_check_info> executor_impl::attach_boundary_check_info(s
 
 namespace celerity::detail {
 
-live_executor::live_executor(std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* const dlg)
-    : m_root_comm(std::move(root_comm)), m_thread(&live_executor::thread_main, this, std::move(backend), dlg) //
+live_executor::live_executor(std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* const dlg, const policy_set& policy)
+    : m_root_comm(std::move(root_comm)), m_thread(&live_executor::thread_main, this, std::move(backend), dlg, policy) //
 {
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
@@ -863,10 +865,10 @@ void live_executor::wait() {
 	if(m_thread.joinable()) { m_thread.join(); }
 }
 
-void live_executor::thread_main(std::unique_ptr<backend> backend, delegate* const dlg) {
+void live_executor::thread_main(std::unique_ptr<backend> backend, delegate* const dlg, const policy_set& policy) {
 	CELERITY_DETAIL_TRACY_SET_THREAD_NAME("cy-executor");
 	try {
-		live_executor_detail::executor_impl(std::move(backend), m_root_comm.get(), m_submission_queue, dlg).run();
+		live_executor_detail::executor_impl(std::move(backend), m_root_comm.get(), m_submission_queue, dlg, policy).run();
 	}
 	// LCOV_EXCL_START
 	catch(const std::exception& e) {
