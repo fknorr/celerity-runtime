@@ -323,6 +323,10 @@ class executor_test_context final : private executor::delegate {
 		m_executor->announce_host_object_instance(hoid, std::make_unique<mock_host_object>(destroyed));
 	}
 
+	void announce_user_allocation(const allocation_id aid, void* const ptr) { //
+		m_executor->announce_user_allocation(aid, ptr);
+	}
+
 	/// Submit the init epoch instruction. Call before any other submission.
 	task_id init() {
 		submit<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
@@ -463,6 +467,30 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "dry_run_executor warns w
 	ectx.fence_and_wait();
 	CHECK(test_utils::log_contains_exact(log_level::warn, "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this "
 	                                                      "operation will not match the expected output of an actual run."));
+	ectx.finish();
+}
+
+TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors accept user allocations in garbage lists", "[executor]") {
+	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
+	CAPTURE(executor_type);
+
+	executor_test_context ectx(executor_type);
+	ectx.init();
+
+	const allocation_id aid(user_memory_id, raw_allocation_id(123));
+	const auto ptr = reinterpret_cast<void*>(0x1234);
+	ectx.announce_user_allocation(aid, ptr);
+
+	SECTION("on epochs") {
+		const auto epoch_tid = ectx.epoch(epoch_action::none, instruction_garbage{{}, {aid}});
+		ectx.await_epoch(epoch_tid);
+	}
+
+	SECTION("on horizons") {
+		const auto horizon_tid = ectx.horizon(instruction_garbage{{}, {aid}});
+		ectx.await_horizon(horizon_tid);
+	}
+
 	ectx.finish();
 }
 

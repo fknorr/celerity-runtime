@@ -61,13 +61,13 @@ std::vector<sycl::device> select_devices_for_backend(sycl_backend_type type) {
 	return backend_devices;
 }
 
-std::tuple<sycl_backend_type, std::unique_ptr<backend>, std::vector<sycl::device>> generate_backends_with_devices() {
+std::tuple<sycl_backend_type, std::unique_ptr<backend>, std::vector<sycl::device>> generate_backends_with_devices(bool enable_profiling = false) {
 	const auto backend_type = GENERATE(test_utils::from_vector(sycl_backend_enumerator{}.available_backends()));
 	auto sycl_devices = select_devices_for_backend(backend_type);
 	CAPTURE(backend_type, sycl_devices);
 
 	if(sycl_devices.empty()) { SKIP("No devices available for backend"); }
-	auto backend = make_sycl_backend(backend_type, sycl_devices, false /* enable_profiling */);
+	auto backend = make_sycl_backend(backend_type, sycl_devices, enable_profiling);
 	return {backend_type, std::move(backend), std::move(sycl_devices)};
 }
 
@@ -278,8 +278,8 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend copies work correctly on 
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
-	// device_to_itself is used for buffer resizes, and device_to_peer for coherence (if the backend supports it)
-	const auto direction = GENERATE(values<std::string>({"host to device", "device to host", "device to peer", "device to itself"}));
+	// "device to itself" is used for buffer resizes, and "device to peer" for coherence (if the backend supports it)
+	const auto direction = GENERATE(values<std::string>({"host to host", "host to device", "device to host", "device to peer", "device to itself"}));
 	CAPTURE(direction);
 
 	std::optional<device_id> source_did; // host memory if nullopt
@@ -303,7 +303,7 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend copies work correctly on 
 		}
 		source_did = device_id(0);
 		dest_did = device_id(1);
-	} else {
+	} else if(direction != "host to host") {
 		FAIL("Unknown test type");
 	}
 	CAPTURE(source_did, dest_did);
@@ -343,4 +343,62 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend copies work correctly on 
 
 	backend_free(*backend, source_did, source_base);
 	backend_free(*backend, dest_did, dest_base);
+}
+
+TEST_CASE("SYCL backend enumerator classifies backends correctly", "[backend]") {
+	CHECK_FALSE(sycl_backend_enumerator().is_specialized(sycl_backend_type::generic));
+	CHECK(sycl_backend_enumerator().is_specialized(sycl_backend_type::cuda));
+	CHECK(sycl_backend_enumerator().get_priority(sycl_backend_type::cuda) > sycl_backend_enumerator().get_priority(sycl_backend_type::generic));
+}
+
+TEST_CASE_METHOD(test_utils::backend_fixture, "backends report execution time iff profiling is enabled", "[backend]") {
+	const auto enable_profiling = static_cast<bool>(GENERATE(values({0, 1})));
+	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices(enable_profiling);
+	CAPTURE(backend_type, sycl_devices);
+
+	const auto dummy_ptr = static_cast<volatile int*>(backend->debug_alloc(sizeof(int)));
+	const size_t host_device_alloc_size = 4096;
+	const std::vector<uint8_t> user_alloc(4096);
+	const auto host_ptr = test_utils::await(backend->enqueue_host_alloc(host_device_alloc_size, 1));
+	const auto device_ptr = test_utils::await(backend->enqueue_device_alloc(device_id(1), host_device_alloc_size, 1));
+
+	async_event event;
+
+	SECTION("on device kernels") {
+		*dummy_ptr = 0;
+		event = backend->enqueue_device_kernel(device_id(0), /* lane */ 0,
+		    [=](sycl::handler& cgh, const box<3>&, const std::vector<void*>&) {
+			    cgh.single_task([=] {
+				    while(++*dummy_ptr < 100'000) {} // busy "wait" - takes ~1ms on hipSYCL debug build with RTX 3090
+			    });
+		    },
+		    {}, box_cast<3>(box<0>()), {});
+	}
+
+	SECTION("on host tasks") {
+		event = backend->enqueue_host_task(
+		    /* lane */ 0, [&](const box<3>&, const communicator*) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }, {}, box_cast<3>(box<0>()),
+		    nullptr);
+	}
+
+	const auto unit_box = box_cast<3>(box<0>());
+
+	SECTION("on host copies") {
+		event = backend->enqueue_host_copy(/* lane */ 0, user_alloc.data(), host_ptr, unit_box, unit_box, unit_box, host_device_alloc_size);
+	}
+
+	SECTION("on device copies") {
+		event = backend->enqueue_device_copy(device_id(0), /* lane */ 0, host_ptr, device_ptr, unit_box, unit_box, unit_box, host_device_alloc_size);
+	}
+
+	test_utils::await(event);
+
+	const auto time = event.get_native_execution_time();
+	REQUIRE(time.has_value() == enable_profiling);
+
+	if(enable_profiling) { CHECK(time.value() > std::chrono::nanoseconds(0)); }
+
+	test_utils::await(backend->enqueue_device_free(device_id(0), device_ptr));
+	test_utils::await(backend->enqueue_host_free(host_ptr));
+	backend->debug_free(const_cast<int*>(dummy_ptr));
 }

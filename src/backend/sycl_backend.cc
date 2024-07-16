@@ -261,7 +261,7 @@ bool sycl_backend_enumerator::is_specialized(backend_type type) const {
 	switch(type) {
 	case backend_type::generic: return false;
 	case backend_type::cuda: return true;
-	default: utils::unreachable();
+	default: utils::unreachable(); // LCOV_EXCL_LINE
 	}
 }
 
@@ -269,7 +269,7 @@ int sycl_backend_enumerator::get_priority(backend_type type) const {
 	switch(type) {
 	case backend_type::generic: return 0;
 	case backend_type::cuda: return 1;
-	default: utils::unreachable();
+	default: utils::unreachable(); // LCOV_EXCL_LINE
 	}
 }
 
@@ -292,7 +292,7 @@ std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const s
 		utils::panic("CUDA backend has not been compiled");
 #endif
 	}
-	utils::unreachable();
+	utils::unreachable(); // LCOV_EXCL_LINE
 }
 
 } // namespace celerity::detail

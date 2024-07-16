@@ -867,10 +867,13 @@ void live_executor::thread_main(std::unique_ptr<backend> backend, delegate* cons
 	CELERITY_DETAIL_TRACY_SET_THREAD_NAME("cy-executor");
 	try {
 		live_executor_detail::executor_impl(std::move(backend), m_root_comm.get(), m_submission_queue, dlg).run();
-	} catch(const std::exception& e) {
+	}
+	// LCOV_EXCL_START
+	catch(const std::exception& e) {
 		CELERITY_CRITICAL("[executor] {}", e.what());
 		std::abort();
 	}
+	// LCOV_EXCL_STOP
 }
 
 } // namespace celerity::detail
