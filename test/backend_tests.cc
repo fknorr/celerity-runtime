@@ -360,7 +360,7 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backends report execution time if
 	const size_t host_device_alloc_size = 4096;
 	const std::vector<uint8_t> user_alloc(4096);
 	const auto host_ptr = test_utils::await(backend->enqueue_host_alloc(host_device_alloc_size, 1));
-	const auto device_ptr = test_utils::await(backend->enqueue_device_alloc(device_id(1), host_device_alloc_size, 1));
+	const auto device_ptr = test_utils::await(backend->enqueue_device_alloc(device_id(0), host_device_alloc_size, 1));
 
 	async_event event;
 
