@@ -30,6 +30,7 @@ void flush(sycl::queue& queue) {
 #endif
 }
 
+// LCOV_EXCL_START
 void report_errors(const sycl::exception_list& errors) {
 	if(errors.size() == 0) return;
 
@@ -48,6 +49,7 @@ void report_errors(const sycl::exception_list& errors) {
 
 	utils::panic("asynchronous SYCL error: {}", fmt::join(what, "; "));
 }
+// LCOV_EXCL_STOP
 
 async_event nd_copy_device(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
     const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //

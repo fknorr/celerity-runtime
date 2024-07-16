@@ -34,6 +34,7 @@ inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doub
 
 namespace celerity::detail {
 
+/// Backend implementation which sources all allocations from SYCL and dispatches device kernels to SYCL in-order queues.
 class sycl_backend : public backend {
   public:
 	explicit sycl_backend(const std::vector<sycl::device>& devices, bool enable_profiling);

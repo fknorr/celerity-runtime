@@ -10,6 +10,7 @@ namespace celerity::detail::sycl_backend_detail {
 async_event nd_copy_device_generic(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
     const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //
 {
+	// We remember the first and last submission event to report completion time spanning the entire region copy
 	std::optional<sycl::event> first;
 	sycl::event last;
 	for(const auto& copy_box : copy_region.get_boxes()) {

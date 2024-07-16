@@ -72,7 +72,7 @@ void nd_copy_device_async(cudaStream_t stream, const void* const source_base, vo
 // DPC++ dos not have a custom-enqueue primitive, but implements get_native(queue), so we call cudaMemcpy* right directly from the executor thread and record
 // native CUDA events instead of wrapped SYCL events. Doing this has several downsides:
 //   - DPC++'s queue does not learn about our submission, and so we do not get back a SYCL event and querying for the last submission will return nonsense.
-//   - There are no real thread-safety guarantees. DPC++ currently does not submit kernels from background threads, but if it ever starts doing so, this   will
+//   - There are no real thread-safety guarantees. DPC++ currently does not submit kernels from background threads, but if it ever starts doing so, this will
 //     break more-or-less silently.
 // There is an open GitHub issue on the matter: https://github.com/intel/llvm/issues/13706
 #if CELERITY_WORKAROUND(DPCPP)
