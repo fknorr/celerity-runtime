@@ -85,7 +85,7 @@ endforeach()
 
 # Add instruction_graph_tests executable
 add_executable(instruction_graph_tests
-$<TARGET_OBJECTS:instruction_graph_grid_tests_OBJ>
+  $<TARGET_OBJECTS:instruction_graph_grid_tests_OBJ>
   $<TARGET_OBJECTS:instruction_graph_memory_tests_OBJ>
   $<TARGET_OBJECTS:instruction_graph_misc_tests_OBJ>
   $<TARGET_OBJECTS:instruction_graph_p2p_tests_OBJ>
