@@ -291,7 +291,9 @@ runtime_fixture::~runtime_fixture() {
 
 backend_fixture::backend_fixture() { allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_backend_warnings_regex); }
 
-dry_run_executor_fixture::dry_run_executor_fixture() { allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_executor_warnings_regex); }
+dry_run_executor_fixture::dry_run_executor_fixture() {
+	allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_executor_warnings_regex);
+}
 
 bool g_print_graphs = false;
 

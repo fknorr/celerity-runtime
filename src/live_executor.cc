@@ -70,24 +70,24 @@ struct async_instruction_state {
 };
 
 struct executor_impl {
-	live_executor::delegate* delegate;
-	double_buffered_queue<submission>* submission_queue;
+	const std::unique_ptr<detail::backend> backend;
+	communicator* const root_communicator;
+	double_buffered_queue<submission>* const submission_queue;
+	live_executor::delegate* const delegate;
 
-	communicator* root_communicator;
-	bool expecting_more_submissions = true;
-	std::unique_ptr<detail::backend> backend;
-	std::unordered_map<allocation_id, void*> allocations{{null_allocation_id, nullptr}};
-	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> host_object_instances;
-	std::unordered_map<collective_group_id, std::unique_ptr<communicator>> cloned_communicators;
-	std::unordered_map<reduction_id, std::unique_ptr<reducer>> reducers;
 	receive_arbiter recv_arbiter{*root_communicator};
+	out_of_order_engine engine{backend->get_system_info()};
 
+	bool expecting_more_submissions = true; ///< shutdown epoch has not been executed yet
 	std::vector<async_instruction_state> in_flight_async_instructions;
-	out_of_order_engine engine;
+	std::unordered_map<allocation_id, void*> allocations{{null_allocation_id, nullptr}}; ///< obtained from alloc_instruction or announce_user_allocation
+	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> host_object_instances; ///< passed in through announce_host_object_instance
+	std::unordered_map<collective_group_id, std::unique_ptr<communicator>> cloned_communicators;     ///< transitive clones of root_communicator
+	std::unordered_map<reduction_id, std::unique_ptr<reducer>> reducers; ///< passed in through announce_reducer, erased on epochs / horizons
 
-	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp;
-	bool made_progress = false;
-	bool progress_warning_emitted = false;
+	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp; ///< last successful call to check_progress
+	bool made_progress = false;                                                   ///< progress was made since `last_progress_timestamp`
+	bool progress_warning_emitted = false;                                        ///< no progress was made since warning was emitted
 
 #if CELERITY_ENABLE_TRACY
 	std::vector<std::unique_ptr<tracy_async_lane>>
@@ -107,6 +107,7 @@ struct executor_impl {
 	void retire_async_instruction(async_instruction_state& async);
 	void check_progress();
 
+	// Instruction types that complete synchronously within the executor.
 	void issue(const clone_collective_group_instruction& ccginstr);
 	void issue(const split_receive_instruction& srinstr);
 	void issue(const fill_identity_instruction& fiinstr);
@@ -117,10 +118,11 @@ struct executor_impl {
 	void issue(const epoch_instruction& einstr);
 
 	template <typename Instr>
-	auto dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment)
+	auto dispatch(const Instr& instr, const out_of_order_engine::assignment& assignment)
 	    // SFINAE: there is a (synchronous) `issue` overload above for the concrete Instr type
 	    -> decltype(issue(instr));
 
+	// Instruction types that complete asynchronously via async_event, outside the executor.
 	void issue_async(const alloc_instruction& ainstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async);
 	void issue_async(const free_instruction& finstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async);
 	void issue_async(const copy_instruction& cinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async);
@@ -132,7 +134,7 @@ struct executor_impl {
 	void issue_async(const gather_receive_instruction& grinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async);
 
 	template <typename Instr>
-	auto dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment)
+	auto dispatch(const Instr& instr, const out_of_order_engine::assignment& assignment)
 	    // SFINAE: there is an `issue_async` overload above for the concrete Instr type
 	    -> decltype(issue_async(instr, assignment, std::declval<async_instruction_state&>()));
 
@@ -315,8 +317,7 @@ void tracy_end_async_zone(tracy_async_lane& lane, const tracy_async_zone& zone) 
 
 executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communicator* const root_comm, double_buffered_queue<submission>& submission_queue,
     live_executor::delegate* const dlg)
-    : delegate(dlg), submission_queue(&submission_queue), root_communicator(root_comm), backend(std::move(backend)), recv_arbiter(*root_communicator),
-      engine(this->backend->get_system_info()) {}
+    : backend(std::move(backend)), root_communicator(root_comm), submission_queue(&submission_queue), delegate(dlg) {}
 
 void executor_impl::run() {
 	closure_hydrator::make_available();
@@ -329,21 +330,23 @@ void executor_impl::run() {
 
 	for(;;) {
 		if(engine.is_idle()) {
-			if(!expecting_more_submissions) break;
-			submission_queue->wait_while_empty();
-			last_progress_timestamp.reset();
+			if(!expecting_more_submissions) break; // shutdown complete
+			submission_queue->wait_while_empty();  // we are stalled on the scheduler, suspend thread
+			last_progress_timestamp.reset();       // do not treat suspension as being stuck
 		}
 
 		recv_arbiter.poll_communicator();
 		poll_in_flight_async_instructions();
 		poll_submission_queue();
-		try_issue_one_instruction();
+		try_issue_one_instruction(); // potentially expensive, so only issue one per loop to continue checking for async completion in between
 		check_progress();
 	}
 
 	assert(in_flight_async_instructions.empty());
+	// check that for each alloc_instruction, we executed a corresponding free_instruction
 	assert(std::all_of(allocations.begin(), allocations.end(),
 	    [](const std::pair<allocation_id, void*>& p) { return p.first == null_allocation_id || p.first.get_memory_id() == user_memory_id; }));
+	// check that for each announce_host_object_instance, we executed a destroy_host_object_instruction
 	assert(host_object_instances.empty());
 
 	closure_hydrator::teardown();
@@ -463,8 +466,9 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 }
 
 template <typename Instr>
-auto executor_impl::dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment) //
-    -> decltype(issue(instr))                                                                             //
+auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assignment& assignment)
+    // SFINAE: there is a (synchronous) `issue` overload above for the concrete Instr type
+    -> decltype(issue(instr)) //
 {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 	assert(!assignment.lane.has_value());
@@ -472,7 +476,7 @@ auto executor_impl::dispatch_issue(const Instr& instr, const out_of_order_engine
 	const auto zone = tracy_begin_zone(instr, false /* eager */);
 	TracyPlot("active instrs", static_cast<int64_t>(in_flight_async_instructions.size() + 1));
 #endif
-	issue(instr);
+	issue(instr); // completes immediately
 	engine.complete_assigned(&instr);
 #if CELERITY_ENABLE_TRACY
 	tracy_end_zone(zone);
@@ -481,12 +485,13 @@ auto executor_impl::dispatch_issue(const Instr& instr, const out_of_order_engine
 }
 
 template <typename Instr>
-auto executor_impl::dispatch_issue(const Instr& instr, const out_of_order_engine::assignment& assignment)
+auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assignment& assignment)
+    // SFINAE: there is an `issue_async` overload above for the concrete Instr type
     -> decltype(issue_async(instr, assignment, std::declval<async_instruction_state&>())) //
 {
 	auto& async = in_flight_async_instructions.emplace_back();
 	async.instr = assignment.instruction;
-	issue_async(instr, assignment, async);
+	issue_async(instr, assignment, async); // stores event in `async` and completes asynchronously
 
 #if CELERITY_ENABLE_TRACY
 	const auto cursor = tracy_get_async_lane_cursor(
@@ -512,17 +517,17 @@ void executor_impl::try_issue_one_instruction() {
 	if(!assignment.has_value()) return;
 
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue", Blue, "issue");
-	matchbox::match(*assignment->instruction, [&](const auto& instr) { dispatch_issue(instr, *assignment); });
+	matchbox::match(*assignment->instruction, [&](const auto& instr) { dispatch(instr, *assignment); });
 	made_progress = true;
 }
 
 void executor_impl::check_progress() {
-	// TODO consider rate-limiting this (e.g. with an overflow counter) if steady_clock::now() turns out to have measurable latency
 	if(made_progress) {
 		last_progress_timestamp = std::chrono::steady_clock::now();
 		progress_warning_emitted = false;
 		made_progress = false;
 	} else if(last_progress_timestamp.has_value()) {
+		// being stuck either means a deadlock in the user application, or a bug in Celerity.
 		const auto assume_stuck_after = std::chrono::seconds(3);
 		const auto elapsed_since_last_progress = std::chrono::steady_clock::now() - *last_progress_timestamp;
 		if(elapsed_since_last_progress > assume_stuck_after && !progress_warning_emitted) {
@@ -531,7 +536,7 @@ void executor_impl::check_progress() {
 				if(!instr_list.empty()) instr_list += ", ";
 				fmt::format_to(std::back_inserter(instr_list), "I{}", in_flight.instr->get_id());
 			}
-			CELERITY_WARN("[executor] no progress for {:.3f} seconds, potentially stuck. Active instructions: {}",
+			CELERITY_WARN("[executor] no progress for {:.3f} seconds, might be stuck. Active instructions: {}",
 			    std::chrono::duration_cast<std::chrono::duration<double>>(elapsed_since_last_progress).count(),
 			    in_flight_async_instructions.empty() ? "none" : instr_list);
 			progress_warning_emitted = true;
@@ -617,7 +622,7 @@ void executor_impl::issue(const epoch_instruction& einstr) {
 		expecting_more_submissions = false;
 		break;
 	}
-	if(delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO tm doesn't expect us to actually execute the init epoch */) {
+	if(delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO task_manager doesn't expect us to actually execute the init epoch */) {
 		delegate->epoch_reached(einstr.get_epoch_task_id());
 	}
 	collect(einstr.get_garbage());
@@ -674,7 +679,7 @@ void executor_impl::issue_async(const copy_instruction& cinstr, const out_of_ord
 	}
 }
 
-std::string print_accesses(const buffer_access_allocation_map& map) {
+std::string format_access_log(const buffer_access_allocation_map& map) {
 	std::string acc_log;
 	for(size_t i = 0; i < map.size(); ++i) {
 		auto& aa = map[i];
@@ -691,7 +696,7 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	assert(assignment.lane.has_value());
 
 	CELERITY_TRACE("[executor] I{}: launch device kernel on D{}, {}{}", dkinstr.get_id(), dkinstr.get_device_id(), dkinstr.get_execution_range(),
-	    print_accesses(dkinstr.get_access_allocations()));
+	    format_access_log(dkinstr.get_access_allocations()));
 
 	auto accessor_infos = make_accessor_infos(dkinstr.get_access_allocations());
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
@@ -699,10 +704,10 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	    accessor_infos, dkinstr.get_access_allocations(), dkinstr.get_oob_task_type(), dkinstr.get_oob_task_id(), dkinstr.get_oob_task_name());
 #endif
 
-	std::vector<void*> reduction_ptrs;
-	reduction_ptrs.reserve(dkinstr.get_reduction_allocations().size());
-	for(const auto& ra : dkinstr.get_reduction_allocations()) {
-		reduction_ptrs.push_back(allocations.at(ra.allocation_id));
+	const auto& reduction_allocs = dkinstr.get_reduction_allocations();
+	std::vector<void*> reduction_ptrs(reduction_allocs.size());
+	for(size_t i = 0; i < reduction_allocs.size(); ++i) {
+		reduction_ptrs[i] = allocations.at(reduction_allocs[i].allocation_id);
 	}
 
 	async.event = backend->enqueue_device_kernel(
@@ -714,7 +719,8 @@ void executor_impl::issue_async(const host_task_instruction& htinstr, const out_
 	assert(!assignment.device.has_value());
 	assert(assignment.lane.has_value());
 
-	CELERITY_TRACE("[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), print_accesses(htinstr.get_access_allocations()));
+	CELERITY_TRACE(
+	    "[executor] I{}: launch host task, {}{}", htinstr.get_id(), htinstr.get_execution_range(), format_access_log(htinstr.get_access_allocations()));
 
 	auto accessor_infos = make_accessor_infos(htinstr.get_access_allocations());
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK

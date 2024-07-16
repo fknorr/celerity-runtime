@@ -51,6 +51,7 @@ struct device_kernel {
 	std::vector<void*> reduction_ptrs;
 };
 
+// base type for host_copy / device_copy only
 struct common_copy {
 	const void* source_base = nullptr;
 	void* dest_base = nullptr;
@@ -107,6 +108,7 @@ using operation = std::variant<ops::host_alloc, ops::device_alloc, ops::host_fre
 using operations_log = std::vector<operation>;
 
 
+/// A mock host object instance type that notifies the owner about its destruction.
 struct mock_host_object final : host_object_instance {
 	std::atomic<bool>* destroyed = nullptr;
 
@@ -122,6 +124,7 @@ struct mock_host_object final : host_object_instance {
 	}
 };
 
+/// Mock reducer implementation that collects an `operations_log` and notifies the owner about its destruction.
 class mock_reducer final : public reducer {
   public:
 	explicit mock_reducer(std::atomic<bool>* const destroyed, operations_log* const log) : m_destroyed(destroyed), m_log(log) {}
@@ -136,7 +139,6 @@ class mock_reducer final : public reducer {
 	}
 
 	void reduce(void* dest, const void* src, size_t src_count) const override { m_log->push_back(ops::reduce{dest, src, src_count}); }
-
 	void fill_identity(void* dest, size_t count) const override { m_log->push_back(ops::fill_identity{dest, count}); }
 
   private:
@@ -144,6 +146,7 @@ class mock_reducer final : public reducer {
 	operations_log* m_log;
 };
 
+/// Mock (send-only) communicator implementation that collects an `operations_log`.
 class mock_exec_communicator final : public communicator {
   public:
 	explicit mock_exec_communicator(operations_log* const log) : m_log(log) {}
@@ -177,6 +180,7 @@ class mock_exec_communicator final : public communicator {
 	operations_log* m_log;
 };
 
+/// Mock backend implementation that collects an `operations_log` and does some lightweight checking on operation arguments.
 class mock_backend final : public backend {
   public:
 	mock_backend(const system_info& system, operations_log* const log) : m_system(system), m_log(log) {}
@@ -241,6 +245,7 @@ class mock_backend final : public backend {
 	uintptr_t m_last_mock_alloc_address = 0;
 	operations_log* m_log;
 
+	/// alloc operations must return a non-null pointer, which we simply conjure from an integer to allow tests to identify allocations in the log.
 	void* mock_alloc(const size_t size, const size_t alignment) {
 		CHECK(size > 0);
 		CHECK(alignment > 0);
@@ -252,6 +257,7 @@ class mock_backend final : public backend {
 	}
 };
 
+/// Minimal mock implementation of fence_promise that allows a test await completion of a fence instruction.
 class mock_fence_promise final : public fence_promise {
   public:
 	void fulfill() override {
@@ -273,6 +279,7 @@ class mock_fence_promise final : public fence_promise {
 	std::condition_variable m_cv;
 };
 
+// GENERATE() infrastructure
 enum class executor_type { dry_run, live };
 
 template <>
@@ -285,6 +292,8 @@ struct Catch::StringMaker<executor_type> {
 	}
 };
 
+/// Constructs a dry_run_ or live_executor with mock backend / communicator for collecting and inspecting operation logs and provides a test interface that
+/// submits individual instructions without an actual source task_graph / command_graph.
 class executor_test_context final : private executor::delegate {
   public:
 	explicit executor_test_context(const executor_type type) {
@@ -314,6 +323,7 @@ class executor_test_context final : private executor::delegate {
 		m_executor->announce_host_object_instance(hoid, std::make_unique<mock_host_object>(destroyed));
 	}
 
+	/// Submit the init epoch instruction. Call before any other submission.
 	task_id init() {
 		submit<epoch_instruction>(task_manager::initial_epoch_task, epoch_action::none, instruction_garbage{});
 		return task_manager::initial_epoch_task;
@@ -377,6 +387,7 @@ class executor_test_context final : private executor::delegate {
 		submit<send_instruction>(to_nid, msgid, source_aid, source_alloc_range, offset_in_alloc, send_range, elem_size);
 	}
 
+	/// Submits and awaits the shutdown epoch, then returns the collected operations log. Call after the last submission.
 	operations_log finish() {
 		CHECK(!m_has_shut_down);
 		epoch(epoch_action::shutdown, instruction_garbage{});
