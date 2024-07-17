@@ -406,5 +406,42 @@ namespace detail {
 		CHECK(test_utils::log_contains_substring(log_level::err, error_message) == CELERITY_ACCESS_PATTERN_DIAGNOSTICS);
 	}
 
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "buffer transfers are performed correctly on transposed access patterns", "[runtime]") {
+		const bool oversubscribed_producer = GENERATE(values<int>({false, true}));
+		const bool oversubscribed_consumer = GENERATE(values<int>({false, true}));
+		CAPTURE(oversubscribed_producer, oversubscribed_consumer);
+
+		// This test covers split/await-receive operations. Assumes a 1d split along dim0.
+		distr_queue q;
+
+		// 1. Write with row/col transposed access, such that each device owns a column of data.
+		buffer<id<2>, 2> transposed_buf(range(1024, 1024));
+		q.submit([&](handler& cgh) {
+			const auto transposed = [](const celerity::chunk<2> in) -> subrange<2> { return {{in.offset[1], in.offset[0]}, {in.range[1], in.range[0]}}; };
+			accessor acc(transposed_buf, cgh, transposed, write_only, no_init);
+			if(oversubscribed_producer) { experimental::hint(cgh, experimental::hints::oversubscribe(2)); }
+			cgh.parallel_for(transposed_buf.get_range(), [=](item<2> item) {
+				const id transposed_id(item[1], item[0]);
+				acc[transposed_id] = transposed_id;
+			});
+		});
+
+		// 2. Read with 1:1 access such that each device must collect one row of data. On a multi-device system this will generate a split_receive_instruction,
+		// since it is not known on the consumer side how the producer will subdivide its pushes.
+		buffer<id<2>, 2> copy_buf(transposed_buf.get_range());
+		q.submit([&](handler& cgh) {
+			accessor acc_in(transposed_buf, cgh, celerity::access::one_to_one(), read_only);
+			accessor acc_out(copy_buf, cgh, celerity::access::one_to_one(), write_only, no_init);
+			if(oversubscribed_consumer) { experimental::hint(cgh, experimental::hints::oversubscribe(2)); }
+			cgh.parallel_for(copy_buf.get_range(), [=](item<2> item) { acc_out[item] = acc_in[item]; });
+		});
+
+		// 3. Verify the result
+		auto result = q.fence(copy_buf).get();
+		experimental::for_each_item(copy_buf.get_range(), [&](const item<2>& item) {
+			REQUIRE_LOOP(result[item] == item.get_id()); //
+		});
+	}
+
 } // namespace detail
 } // namespace celerity
