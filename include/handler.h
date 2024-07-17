@@ -469,7 +469,7 @@ class handler {
 		return result;
 	}
 
-	void create_host_compute_task(detail::task_geometry geometry, detail::command_group_launcher launcher) {
+	void create_host_compute_task(const detail::task_geometry& geometry, detail::host_task_launcher launcher) {
 		assert(m_task == nullptr);
 		if(geometry.global_size.size() == 0) {
 			// TODO this can be easily supported by not creating a task in case the execution range is empty
@@ -481,7 +481,7 @@ class handler {
 		m_task->set_debug_name(m_usr_def_task_name.value_or(""));
 	}
 
-	void create_device_compute_task(detail::task_geometry geometry, std::string debug_name, detail::command_group_launcher launcher) {
+	void create_device_compute_task(const detail::task_geometry& geometry, const std::string& debug_name, detail::device_kernel_launcher launcher) {
 		assert(m_task == nullptr);
 		if(geometry.global_size.size() == 0) {
 			// TODO unless reductions are involved, this can be easily supported by not creating a task in case the execution range is empty.
@@ -497,14 +497,14 @@ class handler {
 		m_task->set_debug_name(m_usr_def_task_name.value_or(debug_name));
 	}
 
-	void create_collective_task(detail::collective_group_id cgid, detail::command_group_launcher launcher) {
+	void create_collective_task(const detail::collective_group_id cgid, detail::host_task_launcher launcher) {
 		assert(m_task == nullptr);
 		m_task = detail::task::make_collective(m_tid, cgid, m_num_collective_nodes, std::move(launcher), std::move(m_access_map), std::move(m_side_effects));
 
 		m_task->set_debug_name(m_usr_def_task_name.value_or(""));
 	}
 
-	void create_master_node_task(detail::command_group_launcher launcher) {
+	void create_master_node_task(detail::host_task_launcher launcher) {
 		assert(m_task == nullptr);
 		m_task = detail::task::make_master_node(m_tid, std::move(launcher), std::move(m_access_map), std::move(m_side_effects));
 

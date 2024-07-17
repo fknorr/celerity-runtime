@@ -167,27 +167,26 @@ namespace detail {
 			return std::unique_ptr<task>(new task(tid, task_type::epoch, non_collective_group_id, task_geometry{}, {}, {}, {}, {}, action, nullptr));
 		}
 
-		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map,
+		static std::unique_ptr<task> make_host_compute(task_id tid, task_geometry geometry, host_task_launcher launcher, buffer_access_map access_map,
 		    side_effect_map side_effect_map, reduction_set reductions) {
 			return std::unique_ptr<task>(new task(tid, task_type::host_compute, non_collective_group_id, geometry, std::move(launcher), std::move(access_map),
 			    std::move(side_effect_map), std::move(reductions), {}, nullptr));
 		}
 
 		static std::unique_ptr<task> make_device_compute(
-		    task_id tid, task_geometry geometry, command_group_launcher launcher, buffer_access_map access_map, reduction_set reductions) {
+		    task_id tid, task_geometry geometry, device_kernel_launcher launcher, buffer_access_map access_map, reduction_set reductions) {
 			return std::unique_ptr<task>(new task(tid, task_type::device_compute, non_collective_group_id, geometry, std::move(launcher), std::move(access_map),
 			    {}, std::move(reductions), {}, nullptr));
 		}
 
-		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes, command_group_launcher launcher,
+		static std::unique_ptr<task> make_collective(task_id tid, collective_group_id cgid, size_t num_collective_nodes, host_task_launcher launcher,
 		    buffer_access_map access_map, side_effect_map side_effect_map) {
 			const task_geometry geometry{1, detail::range_cast<3>(range(num_collective_nodes)), {}, {1, 1, 1}};
 			return std::unique_ptr<task>(
 			    new task(tid, task_type::collective, cgid, geometry, std::move(launcher), std::move(access_map), std::move(side_effect_map), {}, {}, nullptr));
 		}
 
-		static std::unique_ptr<task> make_master_node(
-		    task_id tid, command_group_launcher launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
+		static std::unique_ptr<task> make_master_node(task_id tid, host_task_launcher launcher, buffer_access_map access_map, side_effect_map side_effect_map) {
 			return std::unique_ptr<task>(new task(tid, task_type::master_node, non_collective_group_id, task_geometry{}, std::move(launcher),
 			    std::move(access_map), std::move(side_effect_map), {}, {}, nullptr));
 		}
