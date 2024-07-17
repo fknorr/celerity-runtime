@@ -1,31 +1,15 @@
 #include "scheduler.h"
 
 #include "distributed_graph_generator.h"
-#include "instruction_graph.h"
 #include "instruction_graph_generator.h"
 #include "log.h"
 #include "named_threads.h"
 #include "recorders.h"
-#include "task.h"
 #include "tracy.h"
 
 
 namespace celerity {
 namespace detail {
-
-	// TODO this is Tracy only code
-	const char* command_type_string(const command_type ct) {
-		switch(ct) {
-		case command_type::epoch: return "epoch";
-		case command_type::horizon: return "horizon";
-		case command_type::execution: return "execution";
-		case command_type::push: return "push";
-		case command_type::await_push: return "await_push";
-		case command_type::reduction: return "reduction";
-		case command_type::fence: return "fence";
-		default: return "unknown";
-		}
-	}
 
 	abstract_scheduler::abstract_scheduler(const size_t num_nodes, const node_id local_node_id, const system_info& system, const task_manager& tm,
 	    delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec, const policy_set& policy)
@@ -61,7 +45,7 @@ namespace detail {
 
 					    for(const auto cmd : commands) {
 						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::compile_command", MidnightBlue, "C{} compile", cmd->get_cid());
-						    CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", command_type_string(cmd->get_type()));
+						    CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", cmd->get_type());
 
 						    m_iggen->compile(*cmd);
 
