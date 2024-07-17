@@ -118,13 +118,17 @@ namespace detail {
 		});
 	}
 
-	TEST_CASE_METHOD(
-	    test_utils::runtime_fixture, "runtime-shutdown graph printing works in the presence of a finished reduction", "[reductions][print_graph][smoke-test]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "runtime-shutdown graph printing works in the presence of a finished reduction",
+	    "[reductions][print_graph][smoke-test]") //
+	{
 		env::scoped_test_environment test_env(print_graphs_env_setting);
 		// init runtime early so the distr_queue ctor doesn't override the log level set by log_capture
 		runtime::init(nullptr, nullptr);
 
-		const bool is_node_0 = runtime::get_instance().get_local_nid() == 0; // runtime instance is gone after queue destruction
+		const auto num_nodes = runtime_testspy::get_num_nodes(runtime::get_instance());
+		if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
+
+		const bool is_node_0 = runtime_testspy::get_local_nid(runtime::get_instance()) == 0; // runtime instance is gone after queue destruction
 
 		{
 			distr_queue q;
@@ -178,11 +182,12 @@ namespace detail {
 	TEMPLATE_TEST_CASE_METHOD_SIG(
 	    dimension_runtime_fixture, "nd_item and group return correct execution space geometry", "[item]", ((int Dims), Dims), 1, 2, 3) {
 		distr_queue q;
-		auto n = runtime::get_instance().get_num_nodes();
+		const auto num_nodes = runtime_testspy::get_num_nodes(runtime::get_instance());
+		if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
 
 		// Note: We assume a local range size of 165 here, this may not be supported by all devices.
 
-		const auto global_range = test_utils::truncate_range<Dims>({n * 4 * 3, 3 * 5, 2 * 11});
+		const auto global_range = test_utils::truncate_range<Dims>({num_nodes * 4 * 3, 3 * 5, 2 * 11});
 		const auto local_range = test_utils::truncate_range<Dims>({3, 5, 11});
 		const auto group_range = global_range / local_range;
 
@@ -241,7 +246,8 @@ namespace detail {
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "generating same task graph on different nodes", "[task-graph]") {
 		env::scoped_test_environment tenv(print_graphs_env_setting);
 		distr_queue q;
-		REQUIRE(runtime::get_instance().get_num_nodes() > 1);
+		const auto num_nodes = runtime_testspy::get_num_nodes(runtime::get_instance());
+		if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
 
 		constexpr int N = 1000;
 
@@ -306,8 +312,8 @@ namespace detail {
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "nodes do not receive commands for empty chunks", "[command-graph]") {
 		distr_queue q;
-		auto n = runtime::get_instance().get_num_nodes();
-		REQUIRE(n > 1);
+		const auto num_nodes = runtime_testspy::get_num_nodes(runtime::get_instance());
+		if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
 
 		buffer<float, 2> buf{{1, 100}};
 
@@ -374,7 +380,7 @@ namespace detail {
 		test_utils::allow_max_log_level(detail::log_level::err);
 
 		distr_queue q;
-		const auto num_nodes = runtime::get_instance().get_num_nodes();
+		const auto num_nodes = runtime_testspy::get_num_nodes(runtime::get_instance());
 		if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
 
 		buffer<int, 1> buf(1);

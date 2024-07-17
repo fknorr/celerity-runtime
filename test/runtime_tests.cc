@@ -315,7 +315,7 @@ namespace detail {
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "collective host_task produces one item per rank", "[task]") {
 		distr_queue q;
-		const auto num_nodes = runtime::get_instance().get_num_nodes(); // capture here since runtime destructor will run before the host_task
+		const auto num_nodes = runtime_testspy::get_num_nodes(runtime::get_instance()); // capture here since runtime destructor will run before the host_task
 		q.submit([=](handler& cgh) {
 			cgh.host_task(experimental::collective, [=](experimental::collective_partition part) {
 				CHECK(part.get_global_size().size() == num_nodes);
@@ -1347,7 +1347,7 @@ namespace detail {
 		test_utils::allow_max_log_level(log_level::err);
 
 		distr_queue q;
-		const auto num_devices = runtime::get_instance().get_num_local_devices();
+		const auto num_devices = runtime_testspy::get_num_local_devices(runtime::get_instance());
 		if(num_devices < 2) { SKIP("Test needs at least 2 devices"); }
 
 		buffer<int, 1> buf(1);

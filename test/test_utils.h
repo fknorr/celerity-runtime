@@ -79,6 +79,10 @@ namespace detail {
 	};
 
 	struct runtime_testspy {
+		static node_id get_local_nid(const runtime& rt) { return rt.m_local_nid; }
+		static size_t get_num_nodes(const runtime& rt) { return rt.m_num_nodes; }
+		static size_t get_num_local_devices(const runtime& rt) { return rt.m_num_local_devices; }
+
 		static scheduler& get_schdlr(runtime& rt) { return *rt.m_schdlr; }
 		static executor& get_exec(runtime& rt) { return *rt.m_exec; }
 

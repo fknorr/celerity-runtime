@@ -45,12 +45,6 @@ namespace detail {
 
 		void sync(detail::epoch_action action);
 
-		node_id get_local_nid() const { return m_local_nid; }
-
-		size_t get_num_nodes() const { return m_num_nodes; }
-
-		size_t get_num_local_devices() const { return m_num_local_devices; }
-
 		task_manager& get_task_manager() const;
 
 		experimental::bench::detail::user_benchmarker& get_user_benchmarker() const { return *m_user_bench; }
@@ -95,7 +89,7 @@ namespace detail {
 		std::unique_ptr<experimental::bench::detail::user_benchmarker> m_user_bench;
 		size_t m_num_nodes = 0;
 		node_id m_local_nid = 0;
-		size_t m_num_local_devices;
+		size_t m_num_local_devices = 0;
 
 		// track all instances of celerity::distr_queue, celerity::buffer and celerity::host_object to know when to destroy s_instance
 		bool m_has_live_queue = false;
