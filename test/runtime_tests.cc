@@ -895,6 +895,7 @@ namespace detail {
 
 		constexpr int extents = 16;
 
+		// TODO IDAG why not host init like before?
 		buffer<int, 1> buf_a(extents);
 		q.submit([&](handler& cgh) {
 			accessor acc{buf_a, cgh, celerity::access::all{}, celerity::write_only_host_task, celerity::no_init};
@@ -920,6 +921,7 @@ namespace detail {
 			q.slow_full_sync();
 
 			// TODO these checks are meaningless for horizons as the actual task deletion happens because of the epochs inserted on `slow_full_sync`
+			// TODO IDAG wait, didn't we fix that already?
 
 			CHECK(tm.get_current_task_count() < task_limit);
 

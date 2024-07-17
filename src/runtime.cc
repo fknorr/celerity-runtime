@@ -129,11 +129,11 @@ namespace detail {
 		} else {
 			int world_size = -1;
 			MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-			m_num_nodes = world_size;
+			m_num_nodes = static_cast<size_t>(world_size);
 
 			int world_rank = -1;
 			MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-			m_local_nid = world_rank;
+			m_local_nid = static_cast<node_id>(world_rank);
 		}
 
 		if(!s_test_mode) { // do not touch logger settings in tests, where the full (trace) logs are captured
@@ -158,6 +158,25 @@ namespace detail {
 
 		cgf_diagnostics::make_available();
 
+		std::vector<sycl::device> devices;
+		{
+			CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::pick_devices", PaleVioletRed, "device selection");
+			devices = std::visit(
+			    [&](const auto& value) { return pick_devices(m_cfg->get_host_config(), value, sycl::platform::get_platforms()); }, user_devices_or_selector);
+			assert(!devices.empty());
+		}
+
+		const bool enable_profiling = m_cfg->get_enable_device_profiling().value_or(false);
+		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices, enable_profiling);
+		const auto system = backend->get_system_info(); // backend is about to be moved
+
+		if(m_cfg->is_dry_run()) {
+			m_exec = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
+		} else {
+			auto comm = std::make_unique<mpi_communicator>(collective_clone_from, MPI_COMM_WORLD);
+			m_exec = std::make_unique<live_executor>(std::move(backend), std::move(comm), static_cast<executor::delegate*>(this));
+		}
+
 		if(m_cfg->should_record()) {
 			m_task_recorder = std::make_unique<task_recorder>();
 			m_command_recorder = std::make_unique<command_recorder>();
@@ -174,27 +193,6 @@ namespace detail {
 		if(m_cfg->get_horizon_step()) m_task_mngr->set_horizon_step(m_cfg->get_horizon_step().value());
 		if(m_cfg->get_horizon_max_parallelism()) m_task_mngr->set_horizon_max_parallelism(m_cfg->get_horizon_max_parallelism().value());
 
-		std::vector<sycl::device> devices;
-		{
-			CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::pick_devices", PaleVioletRed, "device selection");
-			devices = std::visit(
-			    [&](const auto& value) { return pick_devices(m_cfg->get_host_config(), value, sycl::platform::get_platforms()); }, user_devices_or_selector);
-			assert(!devices.empty());
-		}
-
-		const bool enable_profiling = m_cfg->get_enable_device_profiling().value_or(false);
-		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices, enable_profiling);
-		const auto system = backend->get_system_info(); // backend is about to be moved
-
-		m_num_local_devices = devices.size();
-
-		if(m_cfg->is_dry_run()) {
-			m_exec = std::make_unique<dry_run_executor>(static_cast<executor::delegate*>(this));
-		} else {
-			auto comm = std::make_unique<mpi_communicator>(collective_clone_from, MPI_COMM_WORLD);
-			m_exec = std::make_unique<live_executor>(std::move(backend), std::move(comm), static_cast<executor::delegate*>(this));
-		}
-
 		scheduler::policy_set schdlr_policy;
 		// Any uninitialized read that is observed on CDAG generation was already logged on task generation, unless we have a bug.
 		schdlr_policy.command_graph_generator.uninitialized_read_error = error_policy::ignore;
@@ -207,6 +205,8 @@ namespace detail {
 		m_schdlr = std::make_unique<scheduler>(m_num_nodes, m_local_nid, system, *m_task_mngr, static_cast<abstract_scheduler::delegate*>(this),
 		    m_command_recorder.get(), m_instruction_recorder.get(), schdlr_policy);
 		m_task_mngr->register_task_callback([this](const task* tsk) { m_schdlr->notify_task_created(tsk); });
+
+		m_num_local_devices = system.devices.size();
 	}
 
 	void runtime::require_call_from_application_thread() const {
@@ -217,13 +217,13 @@ namespace detail {
 	}
 
 	runtime::~runtime() {
+		// LCOV_EXCL_START
 		if(!is_unreferenced()) {
 			// this call might originate from static destruction - we cannot assume spdlog to still be around
-			fputs("[CRITICAL] Detected an attempt to destroy runtime while at least one distr_queue, buffer or host_object was still alive. This likely means "
-			      "that one of these objects was leaked, or at least its lifetime extended beyond the scope of main(). This is undefined.\n",
-			    stderr);
-			abort();
+			utils::panic("Detected an attempt to destroy runtime while at least one distr_queue, buffer or host_object was still alive. This likely means "
+			             "that one of these objects was leaked, or at least its lifetime extended beyond the scope of main(). This is undefined.");
 		}
+		// LCOV_EXCL_STOP
 
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::shutdown", Gray, "runtime shutdown");
 

@@ -13,6 +13,7 @@
 namespace celerity {
 namespace detail {
 
+	// TODO this is Tracy only code
 	const char* command_type_string(const command_type ct) {
 		switch(ct) {
 		case command_type::epoch: return "epoch";
@@ -39,7 +40,7 @@ namespace detail {
 	void abstract_scheduler::schedule() {
 		bool shutdown = false;
 		while(!shutdown) {
-			// Assumption: We can frequently suspend / resume the scheduler thread without sacrificing latency since the executor queue remains filled
+			// We can frequently suspend / resume the scheduler thread without adding latency as long as the executor queue remains filled
 			m_event_queue.wait_while_empty();
 
 			for(auto& event : m_event_queue.pop_all()) {
@@ -101,7 +102,7 @@ namespace detail {
 					    m_iggen->notify_host_object_destroyed(e.hoid);
 				    },
 				    [&](const event_epoch_reached& e) { //
-					    // The dggen automatically prunes the CDAG on generation, which is safe because it's not used across threads.
+					    // The dggen automatically prunes the CDAG on generation, which is safe because commands are not shared across threads.
 					    // We might want to refactor this to match the IDAG behavior in the future.
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::prune_idag", Gray, "prune");
 					    m_idag->prune_before_epoch(e.tid);
@@ -130,10 +131,13 @@ namespace detail {
 		CELERITY_DETAIL_TRACY_SET_THREAD_NAME("cy-scheduler")
 		try {
 			schedule();
-		} catch(const std::exception& e) {
+		}
+		// LCOV_EXCL_START
+		catch(const std::exception& e) {
 			CELERITY_CRITICAL("[scheduler] {}", e.what());
 			std::abort();
 		}
+		// LCOV_EXCL_STOP
 	}
 
 } // namespace detail

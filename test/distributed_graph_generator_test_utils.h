@@ -642,6 +642,7 @@ class dist_cdag_test_context {
 	}
 
 	void maybe_log_graphs() {
+		// Cannot use log macros here, because logs are captured (and discarded in successful tests). This emulates the Catch2 test case "headers" instead.
 		if(test_utils::g_print_graphs) {
 			fmt::print("{}\n", std::string(79, '-'));
 			if(const auto capture = Catch::getCurrentContext().getResultCapture()) { fmt::print("DAGs for [{}]\n", capture->getCurrentTestName()); }

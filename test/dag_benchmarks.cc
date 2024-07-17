@@ -518,8 +518,9 @@ TEMPLATE_TEST_CASE_SIG(
 	run_benchmarks([] { return instruction_graph_generator_benchmark_context(num_nodes, NumDevices); });
 }
 
-TEMPLATE_TEST_CASE_SIG(
-    "building command graphs in a dedicated scheduler thread for N nodes", "[benchmark][group:scheduler]", ((size_t NumNodes), NumNodes), 1, 4) {
+TEMPLATE_TEST_CASE_SIG("building command- and instruction graphs in a dedicated scheduler thread for N nodes", "[benchmark][group:scheduler]",
+    ((size_t NumNodes), NumNodes), 1, 4) //
+{
 	constexpr static size_t num_devices = 1;
 	SECTION("reference: single-threaded immediate graph generation") {
 		run_benchmarks([&] { return command_graph_generator_benchmark_context(NumNodes); });

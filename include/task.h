@@ -91,7 +91,7 @@ namespace detail {
 		virtual ~fence_promise() = default;
 
 		virtual void fulfill() = 0;
-		virtual allocation_id get_user_allocation_id() = 0; // TODO this shouldn't be here - refactor fences
+		virtual allocation_id get_user_allocation_id() = 0; // TODO move to struct task instead
 	};
 
 	struct task_geometry {

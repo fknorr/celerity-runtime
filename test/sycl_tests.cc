@@ -3,6 +3,7 @@
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/generators/catch_generators_all.hpp>
 
+
 using namespace celerity;
 using namespace celerity::detail;
 

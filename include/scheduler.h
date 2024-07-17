@@ -36,6 +36,7 @@ namespace detail {
 
 		abstract_scheduler(size_t num_nodes, node_id local_node_id, const system_info& system_info, const task_manager& tm, delegate* delegate,
 		    command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
+
 		abstract_scheduler(const abstract_scheduler&) = delete;
 		abstract_scheduler(abstract_scheduler&&) = delete;
 		abstract_scheduler& operator=(const abstract_scheduler&) = delete;
