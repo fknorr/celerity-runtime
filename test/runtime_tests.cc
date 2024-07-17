@@ -325,7 +325,6 @@ namespace detail {
 	}
 
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "collective host_task share MPI a communicator iff they are on the same collective_group", "[task]") {
-		std::thread::id default1_thread, default2_thread, primary1_thread, primary2_thread, secondary1_thread, secondary2_thread;
 		MPI_Comm default1_comm, default2_comm, primary1_comm, primary2_comm, secondary1_comm, secondary2_comm;
 
 		{
@@ -335,55 +334,47 @@ namespace detail {
 
 			q.submit([&](handler& cgh) {
 				cgh.host_task(experimental::collective, [&](experimental::collective_partition part) {
-					default1_thread = std::this_thread::get_id();
-					default1_comm = part.get_collective_mpi_comm();
+					default1_comm = part.get_collective_mpi_comm(); //
 				});
 			});
 			q.submit([&](handler& cgh) {
 				cgh.host_task(experimental::collective(primary_group), [&](experimental::collective_partition part) {
-					primary1_thread = std::this_thread::get_id();
-					primary1_comm = part.get_collective_mpi_comm();
+					primary1_comm = part.get_collective_mpi_comm(); //
 				});
 			});
 			q.submit([&](handler& cgh) {
 				cgh.host_task(experimental::collective(secondary_group), [&](experimental::collective_partition part) {
-					secondary1_thread = std::this_thread::get_id();
-					secondary1_comm = part.get_collective_mpi_comm();
+					secondary1_comm = part.get_collective_mpi_comm(); //
 				});
 			});
 			q.submit([&](handler& cgh) {
 				cgh.host_task(experimental::collective, [&](experimental::collective_partition part) {
-					default2_thread = std::this_thread::get_id();
-					default2_comm = part.get_collective_mpi_comm();
+					default2_comm = part.get_collective_mpi_comm(); //
 				});
 			});
 			q.submit([&](handler& cgh) {
 				cgh.host_task(experimental::collective(primary_group), [&](experimental::collective_partition part) {
-					primary2_thread = std::this_thread::get_id();
-					primary2_comm = part.get_collective_mpi_comm();
+					primary2_comm = part.get_collective_mpi_comm(); //
 				});
 			});
 			q.submit([&](handler& cgh) {
 				cgh.host_task(experimental::collective(secondary_group), [&](experimental::collective_partition part) {
-					secondary2_thread = std::this_thread::get_id();
-					secondary2_comm = part.get_collective_mpi_comm();
+					secondary2_comm = part.get_collective_mpi_comm(); //
 				});
 			});
 		}
 
-		// TODO we don't guarantee this anymore because we create new threads on the fly to provide full concurrency
-		// CHECK(default1_thread == default2_thread);
-		// CHECK(primary1_thread == primary2_thread);
-		// CHECK(primary1_thread != default1_thread);
-		// CHECK(secondary1_thread == secondary2_thread);
-		// CHECK(secondary1_thread != default1_thread);
-		// CHECK(secondary1_thread != primary1_thread);
 		CHECK(default1_comm == default2_comm);
 		CHECK(primary1_comm == primary2_comm);
 		CHECK(primary1_comm != default1_comm);
 		CHECK(secondary1_comm == secondary2_comm);
 		CHECK(secondary1_comm != default1_comm);
 		CHECK(secondary1_comm != primary1_comm);
+
+		// Celerity must also ensure that no non-deterministic, artificial dependency chains are introduced by submitting independent tasks from multiple
+		// collective groups onto the same backend thread in-order. If that were to happen, an inter-node mismatch between execution orders nodes would cause
+		// deadlocks in the user-provided collective operations. An earlier version of the runtime ensured this by spawning a separate thread per collective
+		// group, whereas currently, we allow unbounded concurrency between host instructions to provide the same guarantees.
 	}
 
 	template <typename T>
@@ -886,47 +877,47 @@ namespace detail {
 	}
 
 	// This test case requires actual command execution, which is why it is not in graph_compaction_tests
-	TEST_CASE_METHOD(test_utils::runtime_fixture, "tasks behind the applied horizon are deleted", "[task_manager][task-graph][task-horizon]") {
+	TEST_CASE_METHOD(test_utils::runtime_fixture, "tasks behind the deletion horizon are deleted", "[task_manager][task-graph][task-horizon]") {
 		using namespace cl::sycl::access;
+
+		constexpr int horizon_step_size = 2;
 
 		distr_queue q;
 		auto& tm = runtime::get_instance().get_task_manager();
-		tm.set_horizon_step(2);
+		tm.set_horizon_step(horizon_step_size);
 
-		constexpr int extents = 16;
-
-		// TODO IDAG why not host init like before?
-		buffer<int, 1> buf_a(extents);
-		q.submit([&](handler& cgh) {
-			accessor acc{buf_a, cgh, celerity::access::all{}, celerity::write_only_host_task, celerity::no_init};
-			cgh.host_task(on_master_node, [=] { (void)acc; });
-		});
+		const int init = 42;
+		buffer<int, 0> buf_a(&init, {});
 
 		SECTION("in a simple linear chain of tasks") {
-			constexpr int chain_length = 1000;
-			constexpr int task_limit = 15;
+			std::mutex m;
+			int completed_step = -1;
+			std::condition_variable cv;
 
+			constexpr int chain_length = 1000;
 			for(int i = 0; i < chain_length; ++i) {
 				q.submit([&](handler& cgh) {
 					accessor acc{buf_a, cgh, celerity::access::all{}, celerity::read_write_host_task};
-					cgh.host_task(on_master_node, [=] { (void)acc; });
+					cgh.host_task(on_master_node, [&, acc, i] {
+						(void)acc;
+						std::lock_guard lock(m);
+						completed_step = i;
+						cv.notify_all();
+					});
 				});
 
-				// we need to wait in each iteration, so that tasks are still generated after some have already been executed
-				// (and after they therefore triggered their horizons)
-				q.slow_full_sync();
+				// We need to wait in each iteration, so that tasks are still generated after some have already been executed (and after they therefore
+				// triggered their horizons). We can't use slow_full_sync for this as it will begin a new epoch and force-prune the task graph itself.
+				std::unique_lock lock(m);
+				cv.wait(lock, [&] { return completed_step == i; });
 			}
 
-			// need to wait for commands to actually be executed, otherwise no tasks are deleted
-			q.slow_full_sync();
-
-			// TODO these checks are meaningless for horizons as the actual task deletion happens because of the epochs inserted on `slow_full_sync`
-			// TODO IDAG wait, didn't we fix that already?
-
-			CHECK(tm.get_current_task_count() < task_limit);
-
-			auto& scheduler = runtime_testspy::get_schdlr(runtime::get_instance());
-			CHECK(scheduler_testspy::get_live_instruction_count(scheduler) < task_limit);
+			// There are 2 sets of `horizon_step_size` host tasks after the current effective epoch, 2 horizon tasks, plus up to `horizon_step_size` additional
+			// host tasks that will be deleted on the next submission.
+			constexpr int visible_horizons = 2;
+			constexpr int max_visible_host_tasks = (visible_horizons + 1) * horizon_step_size;
+			constexpr int task_limit = max_visible_host_tasks + visible_horizons;
+			CHECK(tm.get_current_task_count() <= task_limit);
 		}
 	}
 

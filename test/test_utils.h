@@ -55,17 +55,10 @@ namespace detail {
 		static std::thread& get_thread(scheduler& schdlr) { return schdlr.m_thread; }
 
 		template <typename F>
-		static decltype(auto) inspect_thread(scheduler& schdlr, F&& f) {
+		static auto inspect_thread(scheduler& schdlr, F&& f) {
 			using return_t = decltype(f());
 			std::promise<return_t> channel;
-			schdlr.notify(scheduler::event_test_inspect{[&] {
-				if constexpr(!std::is_void_v<return_t>) {
-					channel.set_value(f());
-				} else {
-					f();
-					channel.set_value();
-				}
-			}});
+			schdlr.notify(scheduler::event_test_inspect{[&] { channel.set_value(f()); }});
 			return channel.get_future().get();
 		}
 
