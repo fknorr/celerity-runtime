@@ -297,13 +297,27 @@ dry_run_executor_fixture::dry_run_executor_fixture() {
 
 bool g_print_graphs = false;
 
+std::string make_test_graph_title(const std::string& type) {
+	const auto test_name = Catch::getResultCapture().getCurrentTestName();
+	auto title = fmt::format("<br/>{}", type);
+	if(!test_name.empty()) { fmt::format_to(std::back_inserter(title), "<br/><b>{}</b>", test_name); }
+	return title;
+}
+
+std::string make_test_graph_title(const std::string& type, const size_t num_nodes, const detail::node_id local_nid) {
+	auto title = make_test_graph_title(type);
+	fmt::format_to(std::back_inserter(title), "<br/>for N{} out of {} nodes", local_nid, num_nodes);
+	return title;
+}
+
+std::string make_test_graph_title(const std::string& type, const size_t num_nodes, const detail::node_id local_nid, const size_t num_devices_per_node) {
+	auto title = make_test_graph_title(type, num_nodes, local_nid);
+	fmt::format_to(std::back_inserter(title), ", with {} devices / node", num_devices_per_node);
+	return title;
+}
+
 task_test_context::~task_test_context() {
-	if(g_print_graphs) {
-		fmt::print("{}\n", std::string(79, '-'));
-		if(const auto capture = Catch::getCurrentContext().getResultCapture()) { fmt::print("DAGs for [{}]\n", capture->getCurrentTestName()); }
-		fmt::print("\n{}\n", detail::print_task_graph(trec));
-		fmt::print("\n{}\n\n", std::string(79, '-'));
-	}
+	if(g_print_graphs) { fmt::print("\n{}\n", detail::print_task_graph(trec, make_test_graph_title("Task Graph"))); }
 }
 
 } // namespace celerity::test_utils

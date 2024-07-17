@@ -695,12 +695,9 @@ class idag_test_context {
 
 	void maybe_log_graphs() {
 		if(test_utils::g_print_graphs) {
-			fmt::print("{}\n", std::string(79, '-'));
-			if(const auto capture = Catch::getCurrentContext().getResultCapture()) { fmt::print("DAGs for [{}]\n", capture->getCurrentTestName()); }
 			fmt::print("\n{}\n", print_task_graph());
 			fmt::print("\n{}\n", print_command_graph());
 			fmt::print("\n{}\n", print_instruction_graph());
-			fmt::print("\n{}\n\n", std::string(79, '-'));
 		}
 	}
 

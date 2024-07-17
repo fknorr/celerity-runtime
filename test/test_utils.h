@@ -429,6 +429,10 @@ namespace test_utils {
 	// Printing of graphs can be enabled using the "--print-graphs" command line flag
 	extern bool g_print_graphs;
 
+	std::string make_test_graph_title(const std::string& type);
+	std::string make_test_graph_title(const std::string& type, size_t num_nodes, detail::node_id local_nid);
+	std::string make_test_graph_title(const std::string& type, size_t num_nodes, detail::node_id local_nid, size_t num_devices_per_node);
+
 	struct task_test_context {
 		detail::task_recorder trec;
 		detail::task_manager tm;
