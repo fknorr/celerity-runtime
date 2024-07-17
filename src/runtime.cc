@@ -327,10 +327,9 @@ namespace detail {
 	}
 
 	void runtime::horizon_reached(const task_id horizon_tid) {
-		// thread-safe
-		m_task_mngr->notify_horizon_reached(horizon_tid);
+		m_task_mngr->notify_horizon_reached(horizon_tid); // thread-safe
 
-		// TODO duplicated from task_manager::notify_horizon_reached
+		// The two-horizon logic is duplicated from task_manager::notify_horizon_reached. TODO move epoch_monitor from task_manager to runtime.
 		if(m_latest_horizon_reached.has_value()) { m_schdlr->notify_epoch_reached(*m_latest_horizon_reached); }
 		m_latest_horizon_reached = horizon_tid;
 	}
