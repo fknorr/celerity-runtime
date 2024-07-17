@@ -15,20 +15,6 @@ class host_object;
 
 namespace celerity::detail {
 
-/// Kept as a std::shared_ptr within host_objects, this notifies the runtime when the last reference to a host object goes out of scope.
-struct host_object_tracker {
-	detail::host_object_id id{};
-
-	explicit host_object_tracker(detail::host_object_id id) : id(id) {}
-
-	host_object_tracker(const host_object_tracker&) = delete;
-	host_object_tracker(host_object_tracker&&) = delete;
-	host_object_tracker& operator=(host_object_tracker&&) = delete;
-	host_object_tracker& operator=(const host_object_tracker&) = delete;
-
-	~host_object_tracker() { detail::runtime::get_instance().destroy_host_object(id); }
-};
-
 /// Host objects that own their instance (i.e. not host_object<T&> nor host_object<void>) wrap it in a type deriving from this struct in order to pass it to
 /// the executor for (virtual) destruction from within the instruction graph.
 struct host_object_instance {
@@ -38,6 +24,23 @@ struct host_object_instance {
 	host_object_instance& operator=(host_object_instance&&) = delete;
 	host_object_instance& operator=(const host_object_instance&) = delete;
 	virtual ~host_object_instance() = default;
+};
+
+/// Kept as a std::shared_ptr within host_objects, this notifies the runtime when the last reference to a host object goes out of scope.
+struct host_object_tracker {
+	detail::host_object_id id{};
+
+	explicit host_object_tracker(std::unique_ptr<host_object_instance> instance) {
+		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
+		id = detail::runtime::get_instance().create_host_object(std::move(instance));
+	}
+
+	host_object_tracker(const host_object_tracker&) = delete;
+	host_object_tracker(host_object_tracker&&) = delete;
+	host_object_tracker& operator=(host_object_tracker&&) = delete;
+	host_object_tracker& operator=(const host_object_tracker&) = delete;
+
+	~host_object_tracker() { detail::runtime::get_instance().destroy_host_object(id); }
 };
 
 // see host_object deduction guides
@@ -53,12 +56,16 @@ using assert_host_object_ctor_param_is_rvalue_t = typename assert_host_object_ct
 
 template <typename T>
 host_object_id get_host_object_id(const experimental::host_object<T>& ho) {
+	assert(ho.m_tracker != nullptr);
 	return ho.m_tracker->id;
 }
 
 template <typename T>
 typename experimental::host_object<T>::instance_type* get_host_object_instance(const experimental::host_object<T>& ho) {
-	return ho.m_instance;
+	// By attaching `instance` to `tracker` instead of `host_object` directly, we guarantee that a pointer returned by get_host_object_instance (for an owning
+	// host_object) can never be dangling even if the `host_object` (reference-type) has been moved from.
+	assert(ho.m_tracker != nullptr);
+	return ho.m_tracker->instance;
 }
 
 
@@ -83,31 +90,30 @@ class host_object {
   public:
 	using instance_type = T;
 
-	host_object() : host_object(std::make_unique<instance_wrapper>(std::in_place)) {}
-
-	explicit host_object(const instance_type& obj) : host_object(std::make_unique<instance_wrapper>(std::in_place, obj)) {}
-
-	explicit host_object(instance_type&& obj) : host_object(std::make_unique<instance_wrapper>(std::in_place, std::move(obj))) {}
+	host_object() : host_object(std::in_place) {}
+	explicit host_object(const instance_type& obj) : host_object(std::in_place, obj) {}
+	explicit host_object(instance_type&& obj) : host_object(std::in_place, std::move(obj)) {}
 
 	/// Constructs the object in-place with the given constructor arguments.
 	template <typename... CtorParams>
-	explicit host_object(const std::in_place_t /* tag */, CtorParams&&... ctor_args) // requiring std::in_place avoids overriding copy and move constructors
-	    : host_object(std::make_unique<instance_wrapper>(std::in_place, std::forward<CtorParams>(ctor_args)...)) {}
+	explicit host_object(const std::in_place_t /* tag */, CtorParams&&... ctor_args)
+	    : m_tracker(std::make_shared<tracker>(std::make_unique<instance>(std::in_place, std::forward<CtorParams>(ctor_args)...))) {}
 
   private:
-	struct instance_wrapper : public detail::host_object_instance {
+	struct instance : detail::host_object_instance {
 		instance_type value;
 
 		template <typename... CtorParams>
-		explicit instance_wrapper(const std::in_place_t /* tag */, CtorParams&&... ctor_args) : value(std::forward<CtorParams>(ctor_args)...) {}
+		explicit instance(const std::in_place_t /* do not override copy / move ctors */, CtorParams&&... ctor_args)
+		    : value(std::forward<CtorParams>(ctor_args)...) {}
 	};
 
-	explicit host_object(std::unique_ptr<instance_wrapper> instance) {
-		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
-		m_instance = &instance->value;
-		const auto id = detail::runtime::get_instance().create_host_object(std::move(instance));
-		m_tracker = std::make_shared<detail::host_object_tracker>(id);
-	}
+	struct tracker : detail::host_object_tracker {
+		instance_type* instance = nullptr; // owned by host_object_instance (executor)
+
+		explicit tracker(std::unique_ptr<struct instance> instance) : tracker(&instance->value, instance) {} // delegate to read .value before moving instance
+		explicit tracker(instance_type* const ref, std::unique_ptr<struct instance>& owned) : detail::host_object_tracker(std::move(owned)), instance(ref) {}
+	};
 
 	template <typename U>
 	friend detail::host_object_id detail::get_host_object_id(const experimental::host_object<U>& ho);
@@ -115,8 +121,7 @@ class host_object {
 	template <typename U>
 	friend typename experimental::host_object<U>::instance_type* detail::get_host_object_instance(const experimental::host_object<U>& ho);
 
-	std::shared_ptr<detail::host_object_tracker> m_tracker;
-	instance_type* m_instance; // owned by runtime::executor
+	std::shared_ptr<tracker> m_tracker;
 };
 
 template <typename T>
@@ -124,24 +129,22 @@ class host_object<T&> {
   public:
 	using instance_type = T;
 
-	explicit host_object(instance_type& obj) {
-		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
-		m_instance = &obj;
-		const auto id = detail::runtime::get_instance().create_host_object();
-		m_tracker = std::make_shared<detail::host_object_tracker>(id);
-	}
-
+	explicit host_object(instance_type& obj) : m_tracker(std::make_shared<tracker>(&obj)) {}
 	explicit host_object(const std::reference_wrapper<instance_type> ref) : host_object(ref.get()) {}
 
   private:
+	struct tracker : detail::host_object_tracker {
+		instance_type* instance = nullptr; // owned by user
+		explicit tracker(instance_type* const ref) : detail::host_object_tracker(nullptr /* no owned instance */), instance(ref) {}
+	};
+
 	template <typename U>
 	friend detail::host_object_id detail::get_host_object_id(const experimental::host_object<U>& ho);
 
 	template <typename U>
 	friend typename experimental::host_object<U>::instance_type* detail::get_host_object_instance(const experimental::host_object<U>& ho);
 
-	std::shared_ptr<detail::host_object_tracker> m_tracker;
-	instance_type* m_instance; // owned by application
+	std::shared_ptr<tracker> m_tracker;
 };
 
 template <>
@@ -149,17 +152,17 @@ class host_object<void> {
   public:
 	using instance_type = void;
 
-	explicit host_object() {
-		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
-		const auto id = detail::runtime::get_instance().create_host_object();
-		m_tracker = std::make_shared<detail::host_object_tracker>(id);
-	}
+	explicit host_object() : m_tracker(std::make_shared<tracker>()) {}
 
   private:
+	struct tracker : detail::host_object_tracker {
+		tracker() : detail::host_object_tracker(nullptr /* no owned instance */) {}
+	};
+
 	template <typename U>
 	friend detail::host_object_id detail::get_host_object_id(const experimental::host_object<U>& ho);
 
-	std::shared_ptr<detail::host_object_tracker> m_tracker;
+	std::shared_ptr<tracker> m_tracker;
 };
 
 // The universal reference parameter T&& matches U& as well as U&& for object types U, but we don't want to implicitly invoke a copy constructor: the user

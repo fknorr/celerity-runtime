@@ -61,13 +61,13 @@ namespace detail {
 
 		allocation_id create_user_allocation(void* ptr);
 
-		buffer_id create_buffer(int dims, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid);
+		buffer_id create_buffer(const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid);
 
 		void set_buffer_debug_name(buffer_id bid, const std::string& debug_name);
 
 		void destroy_buffer(buffer_id bid);
 
-		host_object_id create_host_object(std::unique_ptr<host_object_instance> instance = nullptr);
+		host_object_id create_host_object(std::unique_ptr<host_object_instance> instance /* optional */);
 
 		void destroy_host_object(host_object_id hoid);
 

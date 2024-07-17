@@ -370,7 +370,7 @@ namespace detail {
 		return aid;
 	}
 
-	buffer_id runtime::create_buffer(const int dims, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_aid) {
+	buffer_id runtime::create_buffer(const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_aid) {
 		require_call_from_application_thread();
 
 		const auto bid = m_next_buffer_id++;

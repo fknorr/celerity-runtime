@@ -8,26 +8,37 @@
 #include "runtime.h"
 #include "sycl_wrappers.h"
 
+
 namespace celerity {
 
 template <typename DataT, int Dims = 1>
 class buffer;
 
-namespace detail {
+}
 
-	template <typename T, int D>
-	buffer_id get_buffer_id(const buffer<T, D>& buff);
+namespace celerity::detail {
 
-	template <typename DataT, int Dims>
-	void set_buffer_name(const celerity::buffer<DataT, Dims>& buff, const std::string& debug_name) {
-		buff.m_impl->debug_name = debug_name;
-	};
-	template <typename DataT, int Dims>
-	std::string get_buffer_name(const celerity::buffer<DataT, Dims>& buff) {
-		return buff.m_impl->debug_name;
-	};
+template <typename T, int D>
+buffer_id get_buffer_id(const buffer<T, D>& buff) {
+	assert(buff.m_tracker != nullptr);
+	return buff.m_tracker->id;
+}
 
-} // namespace detail
+template <typename DataT, int Dims>
+void set_buffer_name(const celerity::buffer<DataT, Dims>& buff, const std::string& debug_name) {
+	assert(buff.m_tracker != nullptr);
+	buff.m_tracker->debug_name = debug_name;
+}
+
+template <typename DataT, int Dims>
+std::string get_buffer_name(const celerity::buffer<DataT, Dims>& buff) {
+	assert(buff.m_tracker != nullptr);
+	return buff.m_tracker->debug_name;
+}
+
+} // namespace celerity::detail
+
+namespace celerity {
 
 template <typename DataT, int Dims, access_mode Mode, target Target>
 class accessor;
@@ -40,9 +51,9 @@ class buffer {
 	template <int D = Dims, typename = std::enable_if_t<D == 0>>
 	buffer() : buffer(nullptr, {}) {}
 
-	explicit buffer(const DataT* host_ptr, range<Dims> range) : m_impl(std::make_shared<impl>(range, host_ptr)) {}
+	explicit buffer(const DataT* host_ptr, const range<Dims>& range) : m_tracker(std::make_shared<tracker>(range, host_ptr)) {}
 
-	explicit buffer(range<Dims> range) : buffer(nullptr, range) {}
+	explicit buffer(const range<Dims>& range) : buffer(nullptr, range) {}
 
 	template <int D = Dims, typename = std::enable_if_t<D == 0>>
 	buffer(const DataT& value) : buffer(&value, {}) {}
@@ -78,32 +89,36 @@ class buffer {
 		return accessor<DataT, Dims, Mode, Target>(*this, cgh, rmfn);
 	}
 
-	const range<Dims>& get_range() const { return m_impl->range; }
+	const range<Dims>& get_range() const {
+		assert(m_tracker != nullptr);
+		return m_tracker->range;
+	}
 
   private:
-	struct impl {
-		impl(celerity::range<Dims> rng, const void* host_init_ptr) : range(rng) {
+	struct tracker {
+		tracker(const celerity::range<Dims>& range, const void* const host_ptr) : range(range) {
 			if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
 			auto user_aid = detail::null_allocation_id;
-			if(host_init_ptr != nullptr) {
-				user_aid = detail::runtime::get_instance().create_user_allocation(
-				    const_cast<void*>(host_init_ptr) /* instruction_graph_generator will never issue a write to this allocation */);
+			if(host_ptr != nullptr) {
+				const auto user_ptr = const_cast<void*>(host_ptr); // promise: instruction_graph_generator will never issue a write to this allocation
+				user_aid = detail::runtime::get_instance().create_user_allocation(user_ptr);
 			}
-			id = detail::runtime::get_instance().create_buffer(Dims, detail::range_cast<3>(range), sizeof(DataT), alignof(DataT), user_aid);
+			id = detail::runtime::get_instance().create_buffer(detail::range_cast<3>(range), sizeof(DataT), alignof(DataT), user_aid);
 		}
 
-		impl(const impl&) = delete;
-		impl(impl&&) = delete;
-		impl& operator=(const impl&) = delete;
-		impl& operator=(impl&&) = delete;
-		~impl() { detail::runtime::get_instance().destroy_buffer(id); }
+		tracker(const tracker&) = delete;
+		tracker(tracker&&) = delete;
+		tracker& operator=(const tracker&) = delete;
+		tracker& operator=(tracker&&) = delete;
+
+		~tracker() { detail::runtime::get_instance().destroy_buffer(id); }
 
 		detail::buffer_id id;
 		celerity::range<Dims> range;
 		std::string debug_name;
 	};
 
-	std::shared_ptr<impl> m_impl = nullptr;
+	std::shared_ptr<tracker> m_tracker = nullptr;
 
 	template <typename T, int D>
 	friend detail::buffer_id detail::get_buffer_id(const buffer<T, D>& buff);
@@ -112,14 +127,5 @@ class buffer {
 	template <typename T, int D>
 	friend std::string detail::get_buffer_name(const celerity::buffer<T, D>& buff);
 };
-
-namespace detail {
-
-	template <typename T, int D>
-	buffer_id get_buffer_id(const buffer<T, D>& buff) {
-		return buff.m_impl->id;
-	}
-
-} // namespace detail
 
 } // namespace celerity
