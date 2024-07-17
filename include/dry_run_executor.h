@@ -17,13 +17,18 @@ class dry_run_executor final : public executor {
 	/// `dlg` (optional) receives notifications about reached horizons and epochs from the executor thread.
 	explicit dry_run_executor(delegate* dlg);
 
+	dry_run_executor(const dry_run_executor&) = delete;
+	dry_run_executor(dry_run_executor&&) = delete;
+	dry_run_executor& operator=(const dry_run_executor&) = delete;
+	dry_run_executor& operator=(dry_run_executor&&) = delete;
+
+	~dry_run_executor() override;
+
 	void announce_user_allocation(allocation_id aid, void* ptr) override;
 	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
 	void announce_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) override;
 
 	void submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) override;
-
-	void wait() override;
 
   private:
 	using host_object_instance_announcement = std::pair<host_object_id, std::unique_ptr<host_object_instance>>;

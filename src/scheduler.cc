@@ -22,8 +22,10 @@ namespace detail {
 	abstract_scheduler::~abstract_scheduler() = default;
 
 	void abstract_scheduler::schedule() {
-		bool shutdown = false;
-		while(!shutdown) {
+		std::optional<task_id> shutdown_epoch_emitted = std::nullopt;
+		bool shutdown_epoch_reached = false;
+
+		while(!shutdown_epoch_reached) {
 			// We can frequently suspend / resume the scheduler thread without adding latency as long as the executor queue remains filled
 			m_event_queue.wait_while_empty();
 
@@ -31,7 +33,7 @@ namespace detail {
 				matchbox::match(
 				    event,
 				    [&](const event_task_available& e) {
-					    assert(!shutdown);
+					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
 					    assert(e.tsk != nullptr);
 					    auto& tsk = *e.tsk;
 
@@ -44,52 +46,61 @@ namespace detail {
 					    }
 
 					    for(const auto cmd : commands) {
+						    // If there are multiple commands, the shutdown epoch must come last. m_iggen.delegate must be considered dangling after receiving
+						    // the corresponding instruction, as runtime will begin destroying the executor after it has observed the epoch to be reached.
+						    assert(!shutdown_epoch_emitted);
+
 						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::compile_command", MidnightBlue, "C{} compile", cmd->get_cid());
 						    CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", cmd->get_type());
 
 						    m_iggen->compile(*cmd);
 
 						    if(tsk.get_type() == task_type::epoch && tsk.get_epoch_action() == epoch_action::shutdown) {
-							    shutdown = true;
-							    // m_iggen.delegate must be considered dangling as soon as the instructions for the shutdown epoch have been emitted
+							    shutdown_epoch_emitted = tsk.get_id();
 						    }
 					    }
 				    },
 				    [&](const event_buffer_created& e) {
-					    assert(!shutdown);
+					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::create_buffer", DarkGreen, "B{} create", e.bid);
 					    m_dggen->notify_buffer_created(e.bid, e.range, e.user_allocation_id != null_allocation_id);
 					    m_iggen->notify_buffer_created(e.bid, e.range, e.elem_size, e.elem_align, e.user_allocation_id);
 				    },
 				    [&](const event_buffer_debug_name_changed& e) {
-					    assert(!shutdown);
+					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::set_buffer_name", DarkGreen, "B{} set name", e.bid);
 					    m_dggen->notify_buffer_debug_name_changed(e.bid, e.debug_name);
 					    m_iggen->notify_buffer_debug_name_changed(e.bid, e.debug_name);
 				    },
 				    [&](const event_buffer_destroyed& e) {
-					    assert(!shutdown);
+					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::destroy_buffer", DarkGreen, "B{} destroy", e.bid);
 					    m_dggen->notify_buffer_destroyed(e.bid);
 					    m_iggen->notify_buffer_destroyed(e.bid);
 				    },
 				    [&](const event_host_object_created& e) {
-					    assert(!shutdown);
+					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::create_host_object", DarkGreen, "H{} create", e.hoid);
 					    m_dggen->notify_host_object_created(e.hoid);
 					    m_iggen->notify_host_object_created(e.hoid, e.owns_instance);
 				    },
 				    [&](const event_host_object_destroyed& e) {
-					    assert(!shutdown);
+					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::destroy_host_object", DarkGreen, "H{} destroy", e.hoid);
 					    m_dggen->notify_host_object_destroyed(e.hoid);
 					    m_iggen->notify_host_object_destroyed(e.hoid);
 				    },
 				    [&](const event_epoch_reached& e) { //
-					    // The dggen automatically prunes the CDAG on generation, which is safe because commands are not shared across threads.
-					    // We might want to refactor this to match the IDAG behavior in the future.
-					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::prune_idag", Gray, "prune");
-					    m_idag->prune_before_epoch(e.tid);
+					    assert(!shutdown_epoch_reached);
+					    {
+						    // The dggen automatically prunes the CDAG on generation, which is safe because commands are not shared across threads.
+						    // We might want to refactor this to match the IDAG behavior in the future.
+						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::prune_idag", Gray, "prune");
+						    m_idag->prune_before_epoch(e.tid);
+					    }
+
+					    // The scheduler will receive the shutdown-epoch completion event via the runtime even if executor destruction has already begun.
+					    if(shutdown_epoch_emitted && e.tid == *shutdown_epoch_emitted) { shutdown_epoch_reached = true; }
 				    },
 				    [&](const event_test_inspect& e) { //
 					    e.inspect();

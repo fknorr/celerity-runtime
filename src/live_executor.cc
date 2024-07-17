@@ -841,7 +841,9 @@ live_executor::live_executor(std::unique_ptr<backend> backend, std::unique_ptr<c
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
 
-live_executor::~live_executor() { wait(); }
+live_executor::~live_executor() {
+	m_thread.join(); // thread_main will exit only after executing shutdown epoch
+}
 
 void live_executor::announce_user_allocation(const allocation_id aid, void* const ptr) {
 	m_submission_queue.push(live_executor_detail::user_allocation_announcement{aid, ptr});
@@ -859,10 +861,6 @@ void live_executor::announce_reducer(const reduction_id rid, std::unique_ptr<red
 
 void live_executor::submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) {
 	m_submission_queue.push(live_executor_detail::instruction_pilot_batch{std::move(instructions), std::move(pilots)});
-}
-
-void live_executor::wait() {
-	if(m_thread.joinable()) { m_thread.join(); }
 }
 
 void live_executor::thread_main(std::unique_ptr<backend> backend, delegate* const dlg, const policy_set& policy) {

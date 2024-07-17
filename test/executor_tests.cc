@@ -321,7 +321,7 @@ class executor_test_context final : private executor::delegate {
 	executor_test_context& operator=(const executor_test_context&) = delete;
 	executor_test_context& operator=(executor_test_context&&) = delete;
 
-	~executor_test_context() { REQUIRE(m_has_shut_down); }
+	~executor_test_context() { REQUIRE(m_executor == nullptr); }
 
 	void announce_reducer(const reduction_id rid, std::atomic<bool>* destroyed) {
 		m_executor->announce_reducer(rid, std::make_unique<mock_reducer>(destroyed, &m_log));
@@ -409,10 +409,9 @@ class executor_test_context final : private executor::delegate {
 
 	/// Submits and awaits the shutdown epoch, then returns the collected operations log. Call after the last submission.
 	operations_log finish() {
-		CHECK(!m_has_shut_down);
+		CHECK(m_executor != nullptr);
 		epoch(epoch_action::shutdown, instruction_garbage{});
-		m_executor->wait();
-		m_has_shut_down = true;
+		m_executor.reset();
 		return std::move(m_log);
 	}
 
@@ -429,7 +428,6 @@ class executor_test_context final : private executor::delegate {
 	std::optional<instruction_id> m_last_iid; // serialize all instructions for simplicity - we do not test OoO capabilities here
 	task_id m_next_task_id = task_manager::initial_epoch_task + 1;
 	std::vector<std::unique_ptr<instruction>> m_instructions; // we need to guarantee liveness as long as the executor thread is around
-	bool m_has_shut_down = false;
 	std::unique_ptr<executor> m_executor;
 	epoch_monitor m_horizons{0};
 	epoch_monitor m_epochs{0};

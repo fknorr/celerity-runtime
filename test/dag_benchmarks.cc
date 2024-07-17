@@ -314,7 +314,7 @@ class benchmark_scheduler final : public abstract_scheduler {
 	benchmark_scheduler& operator=(benchmark_scheduler&&) = delete;
 
 	~benchmark_scheduler() override {
-		// schedule() will exit as soon as it has processed the shutdown epoch
+		// schedule() will exit as soon as it has acknowledged the shutdown epoch
 		m_thread->join();
 	}
 
@@ -343,8 +343,9 @@ struct scheduler_benchmark_context {
 	scheduler_benchmark_context& operator=(scheduler_benchmark_context&&) = delete;
 
 	~scheduler_benchmark_context() {
-		tm.generate_epoch_task(celerity::detail::epoch_action::shutdown);
-		// destroying the scheduler will await processing of all pending tasks first
+		const auto tid = tm.generate_epoch_task(celerity::detail::epoch_action::shutdown);
+		// There is no executor thread and notifications are processed in-order, so we can immediately notify the scheduler about shutdown-epoch completion
+		schdlr.notify_epoch_reached(tid);
 	}
 
 	template <int KernelDims, typename CGF>

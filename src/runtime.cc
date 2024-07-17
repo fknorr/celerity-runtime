@@ -211,8 +211,8 @@ namespace detail {
 
 	void runtime::require_call_from_application_thread() const {
 		if(std::this_thread::get_id() != m_application_thread) {
-			throw std::runtime_error("Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destroyed from "
-			                         "the application thread. Make sure that you did not accidentally capture one of these types in a host_task.");
+			utils::panic("Celerity runtime, distr_queue, handler, buffer and host_object types must only be constructed, used, and destroyed from the "
+			             "application thread. Make sure that you did not accidentally capture one of these types in a host_task.");
 		}
 	}
 
@@ -225,25 +225,25 @@ namespace detail {
 		}
 		// LCOV_EXCL_STOP
 
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::shutdown", Gray, "runtime shutdown");
-
 		require_call_from_application_thread();
 
-		// create a shutdown epoch and pass it to the scheduler via callback
-		const auto shutdown_epoch = m_task_mngr->generate_epoch_task(epoch_action::shutdown);
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::shutdown", Gray, "runtime shutdown");
 
-		// Wait for the executor to exit its thread after processing the shutdown-epoch instruction.
-		m_exec->wait();
+		// Create and await the shutdown epoch
+		sync(epoch_action::shutdown);
 
-		// The scheduler will have exited by now as well after processing the shutdown epoch. Destroy it *after* the executor because it owns the CDAG and IDAG.
-		m_schdlr.reset();
-
-		// with the scheduler gone, nobody will submit instructions and pilots to the runtime anymore and we can get rid of the executor.
+		// The shutdown epoch is, by definition, the last task (and command / instruction) issued. Since they have now completed, no more scheduler ->
+		// executor traffic will occur, and `runtime` can stop functioning as a scheduler_delegate (which would require m_exec to be live).
 		m_exec.reset();
 
-		// TODO does this actually do anything? Once the executor has exited we are guaranteed to arrived at this epoch anyway
-		m_task_mngr->await_epoch(shutdown_epoch);
+		// ~executor() joins its thread after notifying the scheduler that the shutdown epoch has been reached, which means that this notification is
+		// sequenced-before the destructor return, and `runtime` can now stop functioning as an executor_delegate (which would require m_schdlr to be live).
+		m_schdlr.reset();
 
+		// Since scheduler and executor threads are gone, task_manager::epoch_monitor is not shared across threads anymore
+		m_task_mngr.reset();
+
+		// With scheduler and executor threads gone, all recorders can be safely accessed from the runtime / application thread
 		if(spdlog::should_log(log_level::info) && m_cfg->should_print_graphs()) {
 			if(m_local_nid == 0) { // It's the same across all nodes
 				assert(m_task_recorder.get() != nullptr);
@@ -268,12 +268,6 @@ namespace detail {
 				CELERITY_INFO("Instruction graph on node 0:\n\n{}\n", idag_str);
 			}
 		}
-
-		m_task_mngr.reset();
-
-		// all buffers and host objects should have unregistered themselves by now.
-		assert(m_live_buffers.empty());
-		assert(m_live_host_objects.empty());
 
 		m_instruction_recorder.reset();
 		m_command_recorder.reset();

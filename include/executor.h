@@ -37,6 +37,8 @@ class executor {
 	executor(executor&&) = delete;
 	executor& operator=(const executor&) = delete;
 	executor& operator=(executor&&) = delete;
+
+	/// Waits until an epoch with `epoch_action::shutdown` has executed and the executor thread has exited.
 	virtual ~executor() = default;
 
 	/// Informs the executor about the runtime address of an allocation on user_memory_id. Must be called before submitting any instruction referring to the
@@ -57,9 +59,6 @@ class executor {
 	/// recipients as soon as possible. Instructions must be in topological order of dependencies, as must be the concatenation of all vectors passed to
 	/// subsequent invocations of this function.
 	virtual void submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) = 0;
-
-	/// Waits until an epoch with `epoch_action::shutdown` has executed and the executor thread has exited.
-	virtual void wait() = 0;
 };
 
 } // namespace celerity::detail

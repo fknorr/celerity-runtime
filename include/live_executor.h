@@ -53,6 +53,7 @@ class live_executor final : public executor {
 	live_executor(live_executor&&) = delete;
 	live_executor& operator=(const live_executor&) = delete;
 	live_executor& operator=(live_executor&&) = delete;
+
 	~live_executor() override;
 
 	void announce_user_allocation(allocation_id aid, void* ptr) override;
@@ -60,8 +61,6 @@ class live_executor final : public executor {
 	void announce_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) override;
 
 	void submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) override;
-
-	void wait() override;
 
   private:
 	friend struct executor_testspy;

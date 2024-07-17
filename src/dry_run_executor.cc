@@ -11,6 +11,8 @@ dry_run_executor::dry_run_executor(delegate* const dlg) : m_thread(&dry_run_exec
 	set_thread_name(m_thread.native_handle(), "cy-executor");
 }
 
+dry_run_executor::~dry_run_executor() { m_thread.join(); }
+
 void dry_run_executor::announce_user_allocation(const allocation_id aid, void* const ptr) {
 	(void)aid; // ignore
 	(void)ptr; // ignore (allocation is owned by user)
@@ -29,8 +31,6 @@ void dry_run_executor::submit(std::vector<const instruction*> instructions, std:
 	m_submission_queue.push(std::move(instructions));
 	(void)pilots; // ignore;
 }
-
-void dry_run_executor::wait() { m_thread.join(); }
 
 void dry_run_executor::thread_main(delegate* const dlg) {
 	// For simplicity we keep all executor state within this function.
