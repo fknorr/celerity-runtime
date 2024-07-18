@@ -586,7 +586,9 @@ TEST_CASE("eager assignment is only attempted when the one incomplete dependency
 	CHECK(iq_12.assignment_for(k2).lane != iq_3.assignment_for(k3).lane);
 }
 
-TEST_CASE("multiple conditional-eagerly-assignable instructions with the same predecessor be re-ordered on assignment", "[out_of_order_engine][regression]") {
+TEST_CASE("multiple conditional-eagerly-assignable instructions with the same predecessor can be re-ordered on assignment",
+    "[out_of_order_engine][regression]") //
+{
 	out_of_order_test_context octx(1);
 	const auto k1 = octx.device_kernel({}, device_id(0));
 
