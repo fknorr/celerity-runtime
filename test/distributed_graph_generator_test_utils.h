@@ -485,7 +485,7 @@ class dist_cdag_test_context {
 		}
 	}
 
-	~dist_cdag_test_context() { maybe_log_graphs(); }
+	~dist_cdag_test_context() { maybe_print_graphs(); }
 
 	dist_cdag_test_context(const dist_cdag_test_context&) = delete;
 	dist_cdag_test_context(dist_cdag_test_context&&) = delete;
@@ -614,7 +614,7 @@ class dist_cdag_test_context {
 		m_most_recently_built_horizon = current_horizon;
 	}
 
-	void maybe_log_graphs() {
+	void maybe_print_graphs() {
 		if(test_utils::g_print_graphs) {
 			fmt::print("\n{}\n", print_task_graph());
 			std::vector<std::string> graphs;
