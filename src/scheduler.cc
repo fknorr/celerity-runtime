@@ -26,7 +26,7 @@ namespace detail {
 		bool shutdown_epoch_reached = false;
 
 		while(!shutdown_epoch_reached) {
-			// We can frequently suspend / resume the scheduler thread without adding latency as long as the executor queue remains filled
+			// We can frequently suspend / resume the scheduler thread without adding latency as long as the executor queue remains non-empty
 			m_event_queue.wait_while_empty();
 
 			for(auto& event : m_event_queue.pop_all()) {

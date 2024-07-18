@@ -124,7 +124,7 @@ namespace detail {
 		m_cfg = std::make_unique<config>(argc, argv);
 
 		if(m_cfg->is_dry_run()) {
-			m_num_nodes = m_cfg->get_dry_run_nodes();
+			m_num_nodes = static_cast<size_t>(m_cfg->get_dry_run_nodes());
 			m_local_nid = 0;
 		} else {
 			int world_size = -1;
@@ -138,6 +138,7 @@ namespace detail {
 
 		if(!s_test_mode) { // do not touch logger settings in tests, where the full (trace) logs are captured
 			spdlog::set_level(m_cfg->get_log_level());
+			// TODO is the runtime ctor really the right place to set these globals?
 			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", m_local_nid, int(ceil(log10(double(m_num_nodes))))));
 		}
 
@@ -232,8 +233,8 @@ namespace detail {
 		// Create and await the shutdown epoch
 		sync(epoch_action::shutdown);
 
-		// The shutdown epoch is, by definition, the last task (and command / instruction) issued. Since they have now completed, no more scheduler ->
-		// executor traffic will occur, and `runtime` can stop functioning as a scheduler_delegate (which would require m_exec to be live).
+		// The shutdown epoch is, by definition, the last task (and command / instruction) issued. Since it has now completed, no more scheduler -> executor
+		// traffic will occur, and `runtime` can stop functioning as a scheduler_delegate (which would require m_exec to be live).
 		m_exec.reset();
 
 		// ~executor() joins its thread after notifying the scheduler that the shutdown epoch has been reached, which means that this notification is
@@ -320,23 +321,31 @@ namespace detail {
 		return combine_command_graphs(graphs);
 	}
 
+	// scheduler::delegate
+
 	void runtime::flush(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) {
 		// thread-safe
 		assert(m_exec != nullptr);
 		m_exec->submit(std::move(instructions), std::move(pilots));
 	}
 
+	// executor::delegate
+
 	void runtime::horizon_reached(const task_id horizon_tid) {
+		assert(m_task_mngr != nullptr);
 		m_task_mngr->notify_horizon_reached(horizon_tid); // thread-safe
 
 		// The two-horizon logic is duplicated from task_manager::notify_horizon_reached. TODO move epoch_monitor from task_manager to runtime.
+		assert(m_schdlr != nullptr);
 		if(m_latest_horizon_reached.has_value()) { m_schdlr->notify_epoch_reached(*m_latest_horizon_reached); }
 		m_latest_horizon_reached = horizon_tid;
 	}
 
 	void runtime::epoch_reached(const task_id epoch_tid) {
+		assert(m_task_mngr != nullptr);
 		m_task_mngr->notify_epoch_reached(epoch_tid); // thread-safe
 
+		assert(m_schdlr != nullptr);
 		m_schdlr->notify_epoch_reached(epoch_tid);
 		m_latest_horizon_reached = std::nullopt; // Any non-applied horizon is now behind the epoch and will therefore never become an epoch itself
 	}

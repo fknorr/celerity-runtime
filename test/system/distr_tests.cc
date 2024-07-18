@@ -51,8 +51,8 @@ namespace detail {
 	// Distributed test, since the single-node case optimizes the reduction command away
 	TEST_CASE_METHOD(test_utils::runtime_fixture, "reduction commands perform host -> device transfers if necessary", "[reductions]") {
 		distr_queue q;
-
-		// TODO skip for single-node single-device
+		const auto num_nodes = runtime_testspy::get_num_nodes(runtime::get_instance());
+		if(num_nodes < 2) { SKIP("Test needs at least 2 participating nodes"); }
 
 		const int N = 1000;
 		const int init = 42;

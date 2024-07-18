@@ -95,12 +95,14 @@ class buffer {
 	}
 
   private:
+	/// Shared across all shallow copies of a celerity::buffer, the tracker notifies the runtime of buffer creation and destruction and also persists changes of
+	/// the buffer debug name.
 	struct tracker {
-		tracker(const celerity::range<Dims>& range, const void* const host_ptr) : range(range) {
+		tracker(const celerity::range<Dims>& range, const void* const host_init_ptr) : range(range) {
 			if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr); }
 			auto user_aid = detail::null_allocation_id;
-			if(host_ptr != nullptr) {
-				const auto user_ptr = const_cast<void*>(host_ptr); // promise: instruction_graph_generator will never issue a write to this allocation
+			if(host_init_ptr != nullptr) {
+				const auto user_ptr = const_cast<void*>(host_init_ptr); // promise: instruction_graph_generator will never issue a write to this allocation
 				user_aid = detail::runtime::get_instance().create_user_allocation(user_ptr);
 			}
 			id = detail::runtime::get_instance().create_buffer(detail::range_cast<3>(range), sizeof(DataT), alignof(DataT), user_aid);

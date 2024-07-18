@@ -178,7 +178,7 @@ struct fmt::formatter<celerity::detail::command_type> : fmt::formatter<std::stri
 			case celerity::detail::command_type::horizon: return "horizon";
 			case celerity::detail::command_type::execution: return "execution";
 			case celerity::detail::command_type::push: return "push";
-			case celerity::detail::command_type::await_push: return "await-push";
+			case celerity::detail::command_type::await_push: return "await push";
 			case celerity::detail::command_type::reduction: return "reduction";
 			case celerity::detail::command_type::fence: return "fence";
 			default: return "???";

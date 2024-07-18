@@ -99,7 +99,7 @@ namespace detail {
 		buffer_id m_next_buffer_id = 0;
 		raw_allocation_id m_next_user_allocation_id = 1;
 		host_object_id m_next_host_object_id = 0;
-		reduction_id m_next_reduction_id = 1;
+		reduction_id m_next_reduction_id = no_reduction_id + 1;
 
 		std::unique_ptr<scheduler> m_schdlr;
 
@@ -114,17 +114,18 @@ namespace detail {
 
 		runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector);
 
-		// Throw if not called from m_application_thread (see that variable for more info on the matter). Since there are thread-safe and non thread-safe member
-		// functions, we call this check at the beginning of all the non-safe ones.
+		/// Panic when not called from m_application_thread (see that variable for more info on the matter). Since there are thread-safe and non thread-safe
+		/// member functions, we call this check at the beginning of all the non-safe ones.
 		void require_call_from_application_thread() const;
 
-		// abstract_scheduler::delegate
+		// scheduler::delegate
 		void flush(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilot) override;
 
-		// live_executor::delegate
+		// executor::delegate
 		void horizon_reached(task_id horizon_tid) override;
 		void epoch_reached(task_id epoch_tid) override;
 
+		/// True when no buffers, host objects or queues are live that keep the runtime alive.
 		bool is_unreferenced() const;
 
 		/**
@@ -182,7 +183,7 @@ namespace detail {
 		inline static bool s_test_runtime_was_instantiated = false;
 	};
 
-	// Returns the combined command graph of all nodes on node 0, an empty string on other nodes
+	/// Returns the combined command graph of all nodes on node 0, an empty string on other nodes
 	std::string gather_command_graph(const std::string& graph_str, const size_t num_nodes, const node_id local_nid);
 
 } // namespace detail
