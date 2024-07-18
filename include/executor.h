@@ -25,10 +25,10 @@ class executor {
 		~delegate() = default; // do not allow destruction through base pointer
 
 	  public:
-		/// Called from the executor thread as soon as a horizon_instuction has finished executing.
+		/// Called from the executor thread as soon as a horizon_instruction has finished executing.
 		virtual void horizon_reached(task_id tid) = 0;
 
-		/// Called from the executor thread as soon as an epoch_instuction has finished executing.
+		/// Called from the executor thread as soon as an epoch_instruction has finished executing.
 		virtual void epoch_reached(task_id tid) = 0;
 	};
 

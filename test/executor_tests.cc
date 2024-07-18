@@ -255,8 +255,8 @@ class mock_backend final : public backend {
 
 	/// alloc operations must return a non-null pointer, which we simply conjure from an integer to allow tests to identify allocations in the log.
 	void* mock_alloc(const size_t size, const size_t alignment) {
-		CHECK(size > 0);
-		CHECK(alignment > 0);
+		REQUIRE(size > 0);
+		REQUIRE(alignment > 0);
 		CHECK(size >= alignment);
 		CHECK(size % alignment == 0);
 		const auto address = (m_last_mock_alloc_address + alignment) / alignment * alignment;
@@ -381,7 +381,7 @@ class executor_test_context final : private executor::delegate {
 
 	void fence_and_wait() {
 		mock_fence_promise fence_promise;
-		const auto iid = submit<fence_instruction>(&fence_promise);
+		submit<fence_instruction>(&fence_promise);
 		fence_promise.wait();
 	}
 
@@ -817,8 +817,8 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 		CHECK(device_copy.device == did);
 		copy = &device_copy;
 	}
-	CHECK(copy->source_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(source_alloc->result) + source_offset));
-	CHECK(copy->dest_base == reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(dest_alloc->result) + dest_offset));
+	CHECK(copy->source_base == static_cast<std::byte*>(source_alloc->result) + source_offset);
+	CHECK(copy->dest_base == static_cast<std::byte*>(dest_alloc->result) + dest_offset);
 	CHECK(copy->source_box == source_box);
 	CHECK(copy->dest_box == dest_box);
 	CHECK(copy->copy_region == copy_region);
@@ -933,5 +933,5 @@ TEST_CASE("live_executor emits progress warning when a task appears stuck", "[ex
 
 	// no regex search in log, so we test two substrings of the warning message
 	CHECK(test_utils::log_contains_substring(log_level::warn, "[executor] no progress for "));
-	CHECK(test_utils::log_contains_substring(log_level::warn, " seconds, might be stuck. Active instructions: I"));
+	CHECK(test_utils::log_contains_substring(log_level::warn, ", might be stuck. Active instructions: I"));
 }

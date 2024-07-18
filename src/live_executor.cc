@@ -422,12 +422,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 
 	if(spdlog::should_log(spdlog::level::trace)) {
 		if(const auto native_time = async.event.get_native_execution_time(); native_time.has_value()) {
-			auto unit_time = std::chrono::duration_cast<std::chrono::duration<double>>(*native_time).count();
-			auto unit = "s";
-			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "ms"; }
-			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "µs"; }
-			if(unit_time < 1.0) { unit_time *= 1000.0, unit = "ns"; }
-			CELERITY_TRACE("[executor] retired I{} after {:.2f} {}", async.instr->get_id(), unit_time, unit);
+			CELERITY_TRACE("[executor] retired I{} after {:.2f}", async.instr->get_id(), as_sub_second(*native_time));
 		} else {
 			CELERITY_TRACE("[executor] retired I{}", async.instr->get_id());
 		}
@@ -538,8 +533,7 @@ void executor_impl::check_progress() {
 				if(!instr_list.empty()) instr_list += ", ";
 				fmt::format_to(std::back_inserter(instr_list), "I{}", in_flight.instr->get_id());
 			}
-			CELERITY_WARN("[executor] no progress for {:.3f} seconds, might be stuck. Active instructions: {}",
-			    std::chrono::duration_cast<std::chrono::duration<double>>(elapsed_since_last_progress).count(),
+			CELERITY_WARN("[executor] no progress for {:.2f}, might be stuck. Active instructions: {}", as_sub_second(elapsed_since_last_progress),
 			    in_flight_async_instructions.empty() ? "none" : instr_list);
 			progress_warning_emitted = true;
 		}
