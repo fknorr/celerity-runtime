@@ -38,8 +38,8 @@ void nd_copy_device_async(const cudaStream_t stream, const void* const source_ba
 	} else {
 		assert(layout.num_complex_strides == 2);
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::memcpy_3d", ForestGreen, "cudaMemcpy3DAsync")
-		// Arriving in the 3D case means no dimensionality reduction was possible, and cudaMemcpy3D is more closely aligned to the parameters to nd_copy_device
-		// than to nd_copy_layout, so we don't compute cudaMemcpy3DParms from `layout`.
+		// Arriving in the 3D case means no dimensionality reduction was possible, and cudaMemcpy3D is more closely aligned to the parameters to
+		// nd_copy_device_async than to nd_copy_layout, so we don't compute cudaMemcpy3DParms from `layout`.
 		cudaMemcpy3DParms parms = {};
 		parms.srcPos = make_cudaPos(offset_in_source[2] * elem_size, offset_in_source[1], offset_in_source[0]);
 		parms.srcPtr = make_cudaPitchedPtr(
@@ -69,13 +69,13 @@ void nd_copy_device_async(cudaStream_t stream, const void* const source_base, vo
 	}
 }
 
-// DPC++ dos not have a custom-enqueue primitive, but implements get_native(queue), so we call cudaMemcpy* right directly from the executor thread and record
-// native CUDA events instead of wrapped SYCL events. Doing this has several downsides:
+// DPC++ dos not have a custom-enqueue primitive, but implements get_native(queue), so we call cudaMemcpy* directly from the executor thread and record native
+// CUDA events instead of wrapped SYCL events. Doing this has several downsides:
 //   - DPC++'s queue does not learn about our submission, and so we do not get back a SYCL event and querying for the last submission will return nonsense.
 //   - There are no real thread-safety guarantees. DPC++ currently does not submit kernels from background threads, but if it ever starts doing so, this will
 //     break more-or-less silently.
 // There is an open GitHub issue on the matter: https://github.com/intel/llvm/issues/13706
-#if CELERITY_WORKAROUND(DPCPP)
+#if defined(CELERITY_DPCPP)
 
 struct cuda_native_event_deleter {
 	void operator()(const cudaEvent_t evt) const { CELERITY_CUDA_CHECK(cudaEventDestroy, evt); }
@@ -118,7 +118,7 @@ class cuda_event final : public async_event_impl {
 	unique_cuda_native_event m_after;
 };
 
-#endif // CELERITY_WORKAROUND(DPCPP)
+#endif // defined(CELERITY_DPCPP)
 
 bool can_enable_peer_access(const int id_device, const int id_peer) {
 	// RTX 30xx and 40xx GPUs do not support peer access, but Nvidia Driver < 550 incorrectly reports that it does, causing kernel panics when enabling it
@@ -152,7 +152,7 @@ namespace celerity::detail::sycl_backend_detail {
 async_event nd_copy_device_cuda(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
     const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //
 {
-#if CELERITY_WORKAROUND(HIPSYCL)
+#if defined(__HIPSYCL__)
 	// hipSYCL provides first-class custom backend op submission without a host round-trip like sycl::queue::host_task would require.
 	auto event = queue.AdaptiveCpp_enqueue_custom_operation([=](sycl::interop_handle handle) {
 		const auto stream = handle.get_native_queue<sycl::backend::cuda>();
@@ -160,7 +160,7 @@ async_event nd_copy_device_cuda(sycl::queue& queue, const void* const source_bas
 	});
 	sycl_backend_detail::flush(queue);
 	return make_async_event<sycl_event>(std::move(event), enable_profiling);
-#elif CELERITY_WORKAROUND(DPCPP)
+#elif defined(CELERITY_DPCPP)
 	// With DPC++, we must submit from the executor thread - see the comment on cuda_native_event above.
 	const auto stream = sycl::get_native<sycl::backend::ext_oneapi_cuda>(queue);
 	auto before = enable_profiling ? cuda_backend_detail::record_native_event(stream, enable_profiling) : nullptr;
@@ -172,7 +172,7 @@ async_event nd_copy_device_cuda(sycl::queue& queue, const void* const source_bas
 #endif
 }
 
-#if CELERITY_WORKAROUND(DPCPP)
+#if defined(CELERITY_DPCPP)
 constexpr sycl::backend sycl_cuda_backend = sycl::backend::ext_oneapi_cuda;
 #else
 constexpr sycl::backend sycl_cuda_backend = sycl::backend::cuda;

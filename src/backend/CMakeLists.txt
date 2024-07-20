@@ -9,9 +9,7 @@ if(NOT CELERITY_SYCL_IMPL STREQUAL "SimSYCL")
   endif()
   # find_package(LevelZero QUIET) # TODO: Need find module?
   # find_package(ROCM QUIET) # TODO: Need find module?
-endif()
 
-if(NOT CELERITY_SYCL_IMPL STREQUAL "SimSYCL")
   option(CELERITY_ENABLE_CUDA_BACKEND "Enable optimized code paths for CUDA backends" ${CUDA_OR_CUDA_TOOLKIT_FOUND})
 else()
   set(CELERITY_ENABLE_CUDA_BACKEND FALSE)

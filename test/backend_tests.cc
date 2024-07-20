@@ -180,10 +180,17 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execu
 	CAPTURE(backend_type, sycl_devices);
 
 	constexpr size_t lane = 0;
-	const auto first = backend->enqueue_host_task(
-	    lane, [](const box<3>&, const communicator*) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }, {}, box_cast<3>(box<0>()), nullptr);
-	const auto second = backend->enqueue_host_task(
-	    lane, [](const box<3>&, const communicator* /* collective_comm */) {}, {}, box_cast<3>(box<0>()), nullptr);
+
+	std::optional<std::thread::id> first_thread_id;
+	const auto first_fn = [&](const box<3>&, const communicator*) {
+		first_thread_id = std::this_thread::get_id();
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	};
+	const auto first = backend->enqueue_host_task(lane, first_fn, {}, box_cast<3>(box<0>()), nullptr);
+
+	std::optional<std::thread::id> second_thread_id;
+	const auto second_fn = [&](const box<3>&, const communicator* /* collective_comm */) { second_thread_id = std::this_thread::get_id(); };
+	const auto second = backend->enqueue_host_task(lane, second_fn, {}, box_cast<3>(box<0>()), nullptr);
 
 	for(;;) {
 		if(second.is_complete()) {
@@ -191,6 +198,10 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execu
 			break;
 		}
 	}
+
+	REQUIRE(first_thread_id.has_value());
+	REQUIRE(second_thread_id.has_value());
+	CHECK(*first_thread_id == *second_thread_id);
 }
 
 TEST_CASE_METHOD(test_utils::backend_fixture, "device kernel command groups are hydrated and invoked with the correct parameters", "[backend]") {

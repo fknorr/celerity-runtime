@@ -46,7 +46,7 @@ void report_errors(const sycl::exception_list& errors) {
 		}
 	}
 
-	utils::panic("asynchronous SYCL error: {}", fmt::join(what, "; "));
+	utils::panic("asynchronous SYCL error(s): {}", fmt::join(what, "; "));
 }
 // LCOV_EXCL_STOP
 
