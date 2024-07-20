@@ -404,7 +404,7 @@ namespace test_utils {
 	  public:
 		sycl_queue_fixture() {
 			try {
-				m_queue = sycl::queue(sycl::gpu_selector_v);
+				m_queue = sycl::queue(sycl::gpu_selector_v, sycl::property::queue::in_order{});
 			} catch(sycl::exception&) { SKIP("no GPUs available"); }
 		}
 
