@@ -373,18 +373,11 @@ namespace test_utils {
 		~mpi_fixture() = default;
 	};
 
-	class backend_fixture {
-	  public:
-		backend_fixture();
-	};
+	// Allow "falling back to generic backend" warnings to appear in log
+	void allow_backend_fallback_warnings();
 
-	class dry_run_executor_fixture {
-	  public:
-		dry_run_executor_fixture();
-	};
-
-	template <int>
-	class backend_fixture_dims : public backend_fixture {};
+	// Allow "fence in dry run" warning to appear in log
+	void allow_dry_run_executor_warnings();
 
 	// This fixture (or a subclass) must be used by all tests that transitively instantiate the runtime.
 	class runtime_fixture : public mpi_fixture {

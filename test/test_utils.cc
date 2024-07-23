@@ -241,12 +241,12 @@ const char* const expected_runtime_init_warnings_regex = "Celerity has detected 
 
 const char* const expected_device_enumeration_warnings_regex = "Found fewer devices .* than local nodes .*, multiple nodes will use the same device.*";
 
-const char* const expected_backend_warnings_regex =
+const char* const expected_backend_fallback_warnings_regex =
     "No common backend specialization available for all selected devices, falling back to .*\\. Performance may be degraded\\.|"
     "All selected devices are compatible with specialized .* backend, but it has not been compiled\\. Performance may be degraded\\.";
 
-const char* const expected_executor_warnings_regex = "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this operation "
-                                                     "will not match the expected output of an actual run.";
+const char* const expected_dry_run_executor_warnings_regex = "Encountered a \"fence\" command while \"CELERITY_DRY_RUN_NODES\" is set. The result of this "
+                                                             "operation will not match the expected output of an actual run.";
 
 } // namespace celerity::test_utils_detail
 
@@ -281,7 +281,7 @@ runtime_fixture::runtime_fixture() {
 	detail::runtime::test_case_enter();
 	allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_runtime_init_warnings_regex);
 	allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_device_enumeration_warnings_regex);
-	allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_backend_warnings_regex);
+	allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_backend_fallback_warnings_regex);
 }
 
 runtime_fixture::~runtime_fixture() {
@@ -289,11 +289,9 @@ runtime_fixture::~runtime_fixture() {
 	detail::runtime::test_case_exit();
 }
 
-backend_fixture::backend_fixture() { allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_backend_warnings_regex); }
+void allow_backend_fallback_warnings() { allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_backend_fallback_warnings_regex); }
 
-dry_run_executor_fixture::dry_run_executor_fixture() {
-	allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_executor_warnings_regex);
-}
+void allow_dry_run_executor_warnings() { allow_higher_level_log_messages(spdlog::level::warn, test_utils_detail::expected_dry_run_executor_warnings_regex); }
 
 bool g_print_graphs = false;
 

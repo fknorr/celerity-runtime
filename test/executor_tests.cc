@@ -450,7 +450,9 @@ class executor_test_context final : private executor::delegate {
 };
 
 
-TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors notify their delegate when encountering a horizon / epoch", "[executor]") {
+TEST_CASE("executors notify their delegate when encountering a horizon / epoch", "[executor]") {
+	test_utils::allow_dry_run_executor_warnings();
+
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -475,7 +477,9 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors notify their d
 	ectx.finish();
 }
 
-TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
+TEST_CASE("dry_run_executor warns when encountering a fence instruction ", "[executor][dry_run]") {
+	test_utils::allow_dry_run_executor_warnings();
+
 	executor_test_context ectx(executor_type::dry_run);
 	ectx.init();
 	ectx.fence_and_wait();
@@ -484,7 +488,9 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "dry_run_executor warns w
 	ectx.finish();
 }
 
-TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors accept user allocations in garbage lists", "[executor]") {
+TEST_CASE("executors accept user allocations in garbage lists", "[executor]") {
+	test_utils::allow_dry_run_executor_warnings();
+
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 
@@ -508,7 +514,9 @@ TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors accept user al
 	ectx.finish();
 }
 
-TEST_CASE_METHOD(test_utils::dry_run_executor_fixture, "executors free all reducers that appear in garbage lists  ", "[executor]") {
+TEST_CASE("executors free all reducers that appear in garbage lists  ", "[executor]") {
+	test_utils::allow_dry_run_executor_warnings();
+
 	const auto executor_type = GENERATE(values({executor_type::dry_run, executor_type::live}));
 	CAPTURE(executor_type);
 

@@ -77,7 +77,9 @@ bool accessor_info_equal(const closure_hydrator::accessor_info& lhs, const closu
 	return equal;
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "debug allocations are host- and device-accessible", "[backend]") {
+TEST_CASE("debug allocations are host- and device-accessible", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
@@ -88,7 +90,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "debug allocations are host- and d
 	backend->debug_free(debug_ptr);
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are properly aligned", "[backend]") {
+TEST_CASE("backend allocations are properly aligned", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
@@ -107,7 +111,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are properly 
 	}
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-filled in debug builds", "[backend]") {
+TEST_CASE("backend allocations are pattern-filled in debug builds", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 #if defined(CELERITY_DETAIL_ENABLE_DEBUG)
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
@@ -130,7 +136,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "backend allocations are pattern-f
 #endif
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "host task lambdas are hydrated and invoked with the correct parameters", "[backend]") {
+TEST_CASE("host task lambdas are hydrated and invoked with the correct parameters", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
@@ -175,7 +183,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host task lambdas are hydrated an
 	CHECK(value == 3);
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execute in-order", "[backend]") {
+TEST_CASE("host tasks in a single lane execute in-order", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
@@ -204,7 +214,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "host tasks in a single lane execu
 	CHECK(*first_thread_id == *second_thread_id);
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "device kernel command groups are hydrated and invoked with the correct parameters", "[backend]") {
+TEST_CASE("device kernel command groups are hydrated and invoked with the correct parameters", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
@@ -255,7 +267,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "device kernel command groups are 
 	backend->debug_free(value_ptr);
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "device kernels in a single lane execute in-order", "[backend]") {
+TEST_CASE("device kernels in a single lane execute in-order", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
@@ -285,7 +299,9 @@ TEST_CASE_METHOD(test_utils::backend_fixture, "device kernels in a single lane e
 	backend->debug_free(const_cast<int*>(dummy));
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "backend copies work correctly on all source- and destination layouts", "[backend]") {
+TEST_CASE("backend copies work correctly on all source- and destination layouts", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices();
 	CAPTURE(backend_type, sycl_devices);
 
@@ -362,7 +378,9 @@ TEST_CASE("SYCL backend enumerator classifies backends correctly", "[backend]") 
 	CHECK(sycl_backend_enumerator().get_priority(sycl_backend_type::cuda) > sycl_backend_enumerator().get_priority(sycl_backend_type::generic));
 }
 
-TEST_CASE_METHOD(test_utils::backend_fixture, "backends report execution time iff profiling is enabled", "[backend]") {
+TEST_CASE("backends report execution time iff profiling is enabled", "[backend]") {
+	test_utils::allow_backend_fallback_warnings();
+
 	const auto enable_profiling = static_cast<bool>(GENERATE(values({0, 1})));
 	const auto [backend_type, backend, sycl_devices] = generate_backends_with_devices(enable_profiling);
 	CAPTURE(backend_type, sycl_devices);
