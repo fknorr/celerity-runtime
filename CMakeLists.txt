@@ -24,9 +24,6 @@ endif()
 option(CELERITY_ACCESS_PATTERN_DIAGNOSTICS "Diagnose uninitialized reads and overlapping writes" ${DEFAULT_ENABLE_DEBUG_CHECKS})
 option(CELERITY_ACCESSOR_BOUNDARY_CHECK "Enable accessor boundary check" ${DEFAULT_ENABLE_DEBUG_CHECKS})
 
-# buggy Nvidia drivers < 550 erroneously report p2p capabilities between RTX 30xx / 40xx series GPUs, causing a kernel panic on access
-option(CELERITY_DISABLE_CUDA_PEER_ACCESS "Do not attempt peer-to-peer copies between CUDA devices" OFF)
-
 if(CELERITY_ACCESSOR_BOUNDARY_CHECK AND NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
   message(STATUS "Accessor boundary check enabled - this will impact kernel performance")
 endif()
@@ -317,7 +314,6 @@ target_compile_definitions(celerity_runtime PUBLIC
   CELERITY_FEATURE_UNNAMED_KERNELS=$<BOOL:${CELERITY_FEATURE_UNNAMED_KERNELS}>
   CELERITY_DETAIL_HAS_NAMED_THREADS=$<BOOL:${CELERITY_DETAIL_HAS_NAMED_THREADS}>
   CELERITY_ACCESSOR_BOUNDARY_CHECK=$<BOOL:${CELERITY_ACCESSOR_BOUNDARY_CHECK}>
-  CELERITY_DISABLE_CUDA_PEER_ACCESS=$<BOOL:${CELERITY_DISABLE_CUDA_PEER_ACCESS}>
   CELERITY_ACCESS_PATTERN_DIAGNOSTICS=$<BOOL:${CELERITY_ACCESS_PATTERN_DIAGNOSTICS}>
   CELERITY_ENABLE_TRACY=$<BOOL:${CELERITY_ENABLE_TRACY}>
 )

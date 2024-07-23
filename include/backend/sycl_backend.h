@@ -35,6 +35,8 @@ inline constexpr uint8_t uninitialized_memory_pattern = 0xff; // floats and doub
 namespace celerity::detail {
 
 /// Backend implementation which sources all allocations from SYCL and dispatches device kernels to SYCL in-order queues.
+///
+/// This abstract class implements all `backend` functions except copies, which not subject to platform-dependent specialization.
 class sycl_backend : public backend {
   public:
 	explicit sycl_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
@@ -79,6 +81,7 @@ class sycl_backend : public backend {
 	std::unique_ptr<impl> m_impl;
 };
 
+/// Generic implementation of `sycl_backend` providing a fallback implementation for device copies that might be inefficient in the 2D / 3D case.
 class sycl_generic_backend final : public sycl_backend {
   public:
 	sycl_generic_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
@@ -88,6 +91,7 @@ class sycl_generic_backend final : public sycl_backend {
 };
 
 #if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
+/// CUDA specialized implementation of `sycl_backend` that uses native CUDA operations for 2D / 3D copies.
 class sycl_cuda_backend final : public sycl_backend {
   public:
 	sycl_cuda_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
