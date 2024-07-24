@@ -141,7 +141,7 @@ class thread_queue {
 
 		void thread_main(const std::string& name) {
 			set_thread_name(get_current_thread_handle(), name);
-			CELERITY_DETAIL_TRACY_SET_THREAD_NAME(name.c_str());
+			CELERITY_DETAIL_TRACY_SET_THREAD_NAME(tracy_detail::make_thread_name("{}", name));
 
 			try {
 				loop();

@@ -50,7 +50,7 @@ struct tracy_async_lane {
 	out_of_order_engine::target target = out_of_order_engine::target::immediate;
 	std::optional<device_id> device;
 	size_t local_lane_id = 0;
-	std::string fiber_name;
+	const char* fiber_name = nullptr;
 	size_t next_submission_idx = 0;
 	std::optional<TracyCZoneCtx> active_zone;
 	std::queue<tracy_async_zone> queued_zones;
@@ -172,10 +172,12 @@ tracy_async_cursor executor_impl::tracy_get_async_lane_cursor(
 		auto& lane = **it;
 		lane.target = target, lane.device = device, lane.local_lane_id = real_local_lane_id;
 		switch(target) {
-		case out_of_order_engine::target::immediate: lane.fiber_name = fmt::format("Send/Receive Lane #{}", real_local_lane_id); break;
+		case out_of_order_engine::target::immediate: lane.fiber_name = tracy_detail::make_thread_name("Send/Receive Lane #{}", real_local_lane_id); break;
 		case out_of_order_engine::target::alloc_queue: lane.fiber_name = "Allocation Queue"; break;
-		case out_of_order_engine::target::host_queue: lane.fiber_name = fmt::format("Host Queue #{}", lane.local_lane_id); break;
-		case out_of_order_engine::target::device_queue: lane.fiber_name = fmt::format("Device {} Queue #{}", lane.device.value(), lane.local_lane_id); break;
+		case out_of_order_engine::target::host_queue: lane.fiber_name = tracy_detail::make_thread_name("Host Queue #{}", lane.local_lane_id); break;
+		case out_of_order_engine::target::device_queue:
+			lane.fiber_name = tracy_detail::make_thread_name("Device {} Queue #{}", lane.device.value(), lane.local_lane_id);
+			break;
 		default: utils::unreachable();
 		}
 	}
@@ -431,7 +433,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 #if CELERITY_ENABLE_TRACY
 	if(async.tracy_cursor.has_value()) {
 		auto& lane = *tracy_async_lanes.at(async.tracy_cursor->global_lane_id);
-		TracyFiberEnter(lane.fiber_name.c_str());
+		TracyFiberEnter(lane.fiber_name);
 		while(!lane.queued_zones.empty() && lane.queued_zones.front().submission_idx <= async.tracy_cursor->lane_submission_idx) {
 			{
 				tracy_end_async_zone(lane, lane.queued_zones.front());
@@ -493,7 +495,7 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	const auto cursor = tracy_get_async_lane_cursor(
 	    assignment.target, assignment.target == out_of_order_engine::target::device_queue ? assignment.device : std::nullopt, assignment.lane);
 	auto& lane = *tracy_async_lanes.at(cursor.global_lane_id);
-	TracyFiberEnter(lane.fiber_name.c_str());
+	TracyFiberEnter(lane.fiber_name);
 	bool start_immediately = lane.queued_zones.empty();
 	lane.queued_zones.push(tracy_async_zone{cursor.lane_submission_idx, &instr, {}});
 	if(start_immediately) {

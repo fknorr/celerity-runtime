@@ -2,14 +2,26 @@
 
 #if CELERITY_ENABLE_TRACY
 
-#include <chrono>
-#include <cstring>
-#include <optional>
+#include <cstdlib>
 
-#include "print_utils.h"
-
+#include <fmt/format.h>
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyC.h>
+
+
+namespace celerity::detail::tracy_detail {
+
+template <typename... FmtParams>
+const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
+	// Thread and fiber name pointers must remain valid for the duration of the program, so we intentionally leak them
+	const auto size = fmt::formatted_size(fmt_string, fmt_args...);
+	const auto name = static_cast<char*>(malloc(size + 1));
+	fmt::format_to(name, fmt_string, fmt_args...);
+	name[size] = 0;
+	return name;
+}
+
+} // namespace celerity::detail::tracy_detail
 
 #define CELERITY_DETAIL_TRACY_CAT_2(a, b) a##b
 #define CELERITY_DETAIL_TRACY_CAT(a, b) CELERITY_DETAIL_TRACY_CAT_2(a, b)
