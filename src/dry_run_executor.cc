@@ -13,16 +13,16 @@ dry_run_executor::dry_run_executor(delegate* const dlg) : m_thread(&dry_run_exec
 
 dry_run_executor::~dry_run_executor() { m_thread.join(); }
 
-void dry_run_executor::announce_user_allocation(const allocation_id aid, void* const ptr) {
+void dry_run_executor::track_user_allocation(const allocation_id aid, void* const ptr) {
 	(void)aid; // ignore
 	(void)ptr; // ignore (allocation is owned by user)
 }
 
-void dry_run_executor::announce_host_object_instance(const host_object_id hoid, std::unique_ptr<host_object_instance> instance) {
+void dry_run_executor::track_host_object_instance(const host_object_id hoid, std::unique_ptr<host_object_instance> instance) {
 	m_submission_queue.push(std::pair{hoid, std::move(instance)});
 }
 
-void dry_run_executor::announce_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) {
+void dry_run_executor::track_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) {
 	(void)rid;     // ignore
 	(void)reducer; // destroy immediately
 }
@@ -71,8 +71,8 @@ void dry_run_executor::thread_main(delegate* const dlg) {
 					    issue(instr);
 				    }
 			    },
-			    [&](host_object_instance_announcement& hoa) { //
-				    host_object_instances.insert(std::move(hoa));
+			    [&](host_object_transfer& hot) { //
+				    host_object_instances.insert(std::move(hot));
 			    });
 		}
 	}

@@ -323,16 +323,16 @@ class executor_test_context final : private executor::delegate {
 
 	~executor_test_context() { REQUIRE(m_executor == nullptr); }
 
-	void announce_reducer(const reduction_id rid, std::atomic<bool>* destroyed) {
-		m_executor->announce_reducer(rid, std::make_unique<mock_reducer>(destroyed, &m_log));
+	void track_reducer(const reduction_id rid, std::atomic<bool>* destroyed) {
+		m_executor->track_reducer(rid, std::make_unique<mock_reducer>(destroyed, &m_log));
 	}
 
-	void announce_host_object(const host_object_id hoid, std::atomic<bool>* destroyed) {
-		m_executor->announce_host_object_instance(hoid, std::make_unique<mock_host_object>(destroyed));
+	void track_host_object(const host_object_id hoid, std::atomic<bool>* destroyed) {
+		m_executor->track_host_object_instance(hoid, std::make_unique<mock_host_object>(destroyed));
 	}
 
-	void announce_user_allocation(const allocation_id aid, void* const ptr) { //
-		m_executor->announce_user_allocation(aid, ptr);
+	void track_user_allocation(const allocation_id aid, void* const ptr) { //
+		m_executor->track_user_allocation(aid, ptr);
 	}
 
 	/// Submit the init epoch instruction. Call before any other submission.
@@ -499,7 +499,7 @@ TEST_CASE("executors accept user allocations in garbage lists", "[executor]") {
 
 	const allocation_id aid(user_memory_id, raw_allocation_id(123));
 	const auto ptr = reinterpret_cast<void*>(0x1234);
-	ectx.announce_user_allocation(aid, ptr);
+	ectx.track_user_allocation(aid, ptr);
 
 	SECTION("on epochs") {
 		const auto epoch_tid = ectx.epoch(epoch_action::none, instruction_garbage{{}, {aid}});
@@ -525,7 +525,7 @@ TEST_CASE("executors free all reducers that appear in garbage lists  ", "[execut
 
 	const reduction_id rid(123);
 	std::atomic<bool> destroyed{false};
-	ectx.announce_reducer(rid, &destroyed);
+	ectx.track_reducer(rid, &destroyed);
 
 	SECTION("on epochs") {
 		const auto epoch_tid = ectx.epoch(epoch_action::none, instruction_garbage{{rid}, {}});
@@ -549,13 +549,13 @@ TEST_CASE("host object lifetime is controlled by destroy_host_object_instruction
 
 	const host_object_id hoid(42);
 	std::atomic<bool> destroyed{false};
-	ectx.announce_host_object(hoid, &destroyed);
+	ectx.track_host_object(hoid, &destroyed);
 	CHECK_FALSE(destroyed.load());
 
-	const auto after_announce_tid = ectx.horizon();
+	const auto after_track_tid = ectx.horizon();
 	CHECK_FALSE(destroyed.load());
 
-	ectx.await_horizon(after_announce_tid);
+	ectx.await_horizon(after_track_tid);
 	CHECK_FALSE(destroyed.load());
 
 	ectx.destroy_host_object(hoid);
@@ -635,7 +635,7 @@ TEST_CASE("live_executor passes correct allocations to reducers", "[executor]") 
 	ectx.alloc(dest_aid, sizeof(int), alignof(int));
 
 	const reduction_id rid(42);
-	ectx.announce_reducer(rid, nullptr);
+	ectx.track_reducer(rid, nullptr);
 	ectx.fill_identity(rid, source_aid, num_source_values);
 	ectx.reduce(rid, source_aid, num_source_values, dest_aid);
 

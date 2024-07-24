@@ -24,15 +24,15 @@ class dry_run_executor final : public executor {
 
 	~dry_run_executor() override;
 
-	void announce_user_allocation(allocation_id aid, void* ptr) override;
-	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
-	void announce_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) override;
+	void track_user_allocation(allocation_id aid, void* ptr) override;
+	void track_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
+	void track_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) override;
 
 	void submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) override;
 
   private:
-	using host_object_instance_announcement = std::pair<host_object_id, std::unique_ptr<host_object_instance>>;
-	using submission = std::variant<std::vector<const instruction*>, host_object_instance_announcement>;
+	using host_object_transfer = std::pair<host_object_id, std::unique_ptr<host_object_instance>>;
+	using submission = std::variant<std::vector<const instruction*>, host_object_transfer>;
 
 	double_buffered_queue<submission> m_submission_queue;
 	std::thread m_thread;

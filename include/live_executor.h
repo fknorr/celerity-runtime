@@ -14,19 +14,19 @@ struct instruction_pilot_batch {
 	std::vector<const instruction*> instructions;
 	std::vector<outbound_pilot> pilots;
 };
-struct user_allocation_announcement {
+struct user_allocation_transfer {
 	allocation_id aid;
 	void* ptr = nullptr;
 };
-struct host_object_instance_announcement {
+struct host_object_transfer {
 	host_object_id hoid = 0;
 	std::unique_ptr<host_object_instance> instance;
 };
-struct reducer_announcement {
+struct reducer_transfer {
 	reduction_id rid = 0;
 	std::unique_ptr<reducer> reduction;
 };
-using submission = std::variant<instruction_pilot_batch, user_allocation_announcement, host_object_instance_announcement, reducer_announcement>;
+using submission = std::variant<instruction_pilot_batch, user_allocation_transfer, host_object_transfer, reducer_transfer>;
 
 } // namespace celerity::detail::live_executor_detail
 
@@ -56,9 +56,9 @@ class live_executor final : public executor {
 
 	~live_executor() override;
 
-	void announce_user_allocation(allocation_id aid, void* ptr) override;
-	void announce_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
-	void announce_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) override;
+	void track_user_allocation(allocation_id aid, void* ptr) override;
+	void track_host_object_instance(host_object_id hoid, std::unique_ptr<host_object_instance> instance) override;
+	void track_reducer(reduction_id rid, std::unique_ptr<reducer> reducer) override;
 
 	void submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) override;
 

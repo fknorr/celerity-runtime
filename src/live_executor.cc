@@ -81,10 +81,10 @@ struct executor_impl {
 
 	bool expecting_more_submissions = true; ///< shutdown epoch has not been executed yet
 	std::vector<async_instruction_state> in_flight_async_instructions;
-	std::unordered_map<allocation_id, void*> allocations{{null_allocation_id, nullptr}}; ///< obtained from alloc_instruction or announce_user_allocation
-	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> host_object_instances; ///< passed in through announce_host_object_instance
+	std::unordered_map<allocation_id, void*> allocations{{null_allocation_id, nullptr}}; ///< obtained from alloc_instruction or track_user_allocation
+	std::unordered_map<host_object_id, std::unique_ptr<host_object_instance>> host_object_instances; ///< passed in through track_host_object_instance
 	std::unordered_map<collective_group_id, std::unique_ptr<communicator>> cloned_communicators;     ///< transitive clones of root_communicator
-	std::unordered_map<reduction_id, std::unique_ptr<reducer>> reducers; ///< passed in through announce_reducer, erased on epochs / horizons
+	std::unordered_map<reduction_id, std::unique_ptr<reducer>> reducers; ///< passed in through track_reducer, erased on epochs / horizons
 
 	std::optional<std::chrono::steady_clock::time_point> last_progress_timestamp; ///< last successful call to check_progress
 	bool made_progress = false;                                                   ///< progress was made since `last_progress_timestamp`
@@ -347,7 +347,7 @@ void executor_impl::run() {
 	// check that for each alloc_instruction, we executed a corresponding free_instruction
 	assert(std::all_of(allocations.begin(), allocations.end(),
 	    [](const std::pair<allocation_id, void*>& p) { return p.first == null_allocation_id || p.first.get_memory_id() == user_memory_id; }));
-	// check that for each announce_host_object_instance, we executed a destroy_host_object_instruction
+	// check that for each track_host_object_instance, we executed a destroy_host_object_instruction
 	assert(host_object_instances.empty());
 
 	closure_hydrator::teardown();
@@ -381,19 +381,19 @@ void executor_impl::poll_submission_queue() {
 				    root_communicator->send_outbound_pilot(pilot);
 			    }
 		    },
-		    [&](const user_allocation_announcement& ann) {
-			    assert(ann.aid != null_allocation_id);
-			    assert(ann.aid.get_memory_id() == user_memory_id);
-			    assert(allocations.count(ann.aid) == 0);
-			    allocations.emplace(ann.aid, ann.ptr);
+		    [&](const user_allocation_transfer& uat) {
+			    assert(uat.aid != null_allocation_id);
+			    assert(uat.aid.get_memory_id() == user_memory_id);
+			    assert(allocations.count(uat.aid) == 0);
+			    allocations.emplace(uat.aid, uat.ptr);
 		    },
-		    [&](host_object_instance_announcement& ann) {
-			    assert(host_object_instances.count(ann.hoid) == 0);
-			    host_object_instances.emplace(ann.hoid, std::move(ann.instance));
+		    [&](host_object_transfer& hot) {
+			    assert(host_object_instances.count(hot.hoid) == 0);
+			    host_object_instances.emplace(hot.hoid, std::move(hot.instance));
 		    },
-		    [&](reducer_announcement& ann) {
-			    assert(reducers.count(ann.rid) == 0);
-			    reducers.emplace(ann.rid, std::move(ann.reduction));
+		    [&](reducer_transfer& rt) {
+			    assert(reducers.count(rt.rid) == 0);
+			    reducers.emplace(rt.rid, std::move(rt.reduction));
 		    });
 	}
 }
@@ -839,18 +839,18 @@ live_executor::~live_executor() {
 	m_thread.join(); // thread_main will exit only after executing shutdown epoch
 }
 
-void live_executor::announce_user_allocation(const allocation_id aid, void* const ptr) {
-	m_submission_queue.push(live_executor_detail::user_allocation_announcement{aid, ptr});
+void live_executor::track_user_allocation(const allocation_id aid, void* const ptr) {
+	m_submission_queue.push(live_executor_detail::user_allocation_transfer{aid, ptr});
 }
 
-void live_executor::announce_host_object_instance(const host_object_id hoid, std::unique_ptr<host_object_instance> instance) {
+void live_executor::track_host_object_instance(const host_object_id hoid, std::unique_ptr<host_object_instance> instance) {
 	assert(instance != nullptr);
-	m_submission_queue.push(live_executor_detail::host_object_instance_announcement{hoid, std::move(instance)});
+	m_submission_queue.push(live_executor_detail::host_object_transfer{hoid, std::move(instance)});
 }
 
-void live_executor::announce_reducer(const reduction_id rid, std::unique_ptr<reducer> reducer) {
+void live_executor::track_reducer(const reduction_id rid, std::unique_ptr<reducer> reducer) {
 	assert(reducer != nullptr);
-	m_submission_queue.push(live_executor_detail::reducer_announcement{rid, std::move(reducer)});
+	m_submission_queue.push(live_executor_detail::reducer_transfer{rid, std::move(reducer)});
 }
 
 void live_executor::submit(std::vector<const instruction*> instructions, std::vector<outbound_pilot> pilots) {
