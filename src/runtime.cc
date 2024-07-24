@@ -368,7 +368,7 @@ namespace detail {
 	allocation_id runtime::create_user_allocation(void* const ptr) {
 		require_call_from_application_thread();
 		const auto aid = allocation_id(user_memory_id, m_next_user_allocation_id++);
-		m_exec->announce_user_allocation(aid, ptr);
+		m_exec->track_user_allocation(aid, ptr);
 		return aid;
 	}
 
@@ -406,7 +406,7 @@ namespace detail {
 		const auto hoid = m_next_host_object_id++;
 		m_live_host_objects.emplace(hoid);
 		const bool owns_instance = instance != nullptr;
-		if(owns_instance) { m_exec->announce_host_object_instance(hoid, std::move(instance)); }
+		if(owns_instance) { m_exec->track_host_object_instance(hoid, std::move(instance)); }
 		m_task_mngr->notify_host_object_created(hoid);
 		m_schdlr->notify_host_object_created(hoid, owns_instance);
 		return hoid;
@@ -427,7 +427,7 @@ namespace detail {
 		require_call_from_application_thread();
 
 		const auto rid = m_next_reduction_id++;
-		m_exec->announce_reducer(rid, std::move(reducer));
+		m_exec->track_reducer(rid, std::move(reducer));
 		return rid;
 	}
 
