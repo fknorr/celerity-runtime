@@ -199,7 +199,10 @@ TEST_CASE("host tasks in a single lane execute in-order", "[backend]") {
 	const auto first = backend->enqueue_host_task(lane, first_fn, {}, box_cast<3>(box<0>()), nullptr);
 
 	std::optional<std::thread::id> second_thread_id;
-	const auto second_fn = [&](const box<3>&, const communicator* /* collective_comm */) { second_thread_id = std::this_thread::get_id(); };
+	const auto second_fn = [&](const box<3>&, const communicator* /* collective_comm */) {
+		CHECK(first.is_complete());
+		second_thread_id = std::this_thread::get_id();
+	};
 	const auto second = backend->enqueue_host_task(lane, second_fn, {}, box_cast<3>(box<0>()), nullptr);
 
 	for(;;) {
