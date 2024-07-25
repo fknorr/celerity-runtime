@@ -444,6 +444,7 @@ namespace celerity::detail {
 out_of_order_engine::out_of_order_engine(const system_info& system) : m_impl(new out_of_order_engine_detail::engine_impl(system)) {}
 out_of_order_engine::~out_of_order_engine() = default;
 bool out_of_order_engine::is_idle() const { return m_impl->is_idle(); }
+size_t out_of_order_engine::get_assignment_queue_depth() const { return m_impl->assignment_queue.size(); }
 void out_of_order_engine::submit(const instruction* const instr) { m_impl->submit(instr); }
 void out_of_order_engine::complete_assigned(const instruction* instr) { m_impl->complete(instr); }
 std::optional<out_of_order_engine::assignment> out_of_order_engine::assign_one() { return m_impl->assign_one(); }

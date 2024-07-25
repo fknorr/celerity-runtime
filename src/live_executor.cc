@@ -18,43 +18,10 @@
 
 #include <matchbox.hh>
 
+
 namespace celerity::detail::live_executor_detail {
 
-#if CELERITY_ACCESSOR_BOUNDARY_CHECK
-struct boundary_check_info {
-	struct accessor_info {
-		detail::buffer_id buffer_id = 0;
-		std::string buffer_name;
-		box<3> accessible_box;
-	};
-
-	detail::task_type task_type;
-	detail::task_id task_id;
-	std::string task_name;
-
-	oob_bounding_box* illegal_access_bounding_boxes = nullptr;
-	std::vector<accessor_info> accessors;
-
-	boundary_check_info(detail::task_type tt, detail::task_id tid, const std::string& task_name) : task_type(tt), task_id(tid), task_name(task_name) {}
-};
-#endif
-
 #if CELERITY_ENABLE_TRACY
-struct tracy_async_zone {
-	size_t submission_idx = 0;
-	const instruction* instr = nullptr;
-	std::optional<std::chrono::steady_clock::time_point> approx_begin;
-};
-
-struct tracy_async_lane {
-	out_of_order_engine::target target = out_of_order_engine::target::immediate;
-	std::optional<device_id> device;
-	size_t local_lane_id = 0;
-	const char* fiber_name = nullptr;
-	size_t next_submission_idx = 0;
-	std::optional<TracyCZoneCtx> active_zone;
-	std::queue<tracy_async_zone> queued_zones;
-};
 
 struct tracy_async_cursor {
 	size_t global_lane_id = 0;
@@ -62,12 +29,33 @@ struct tracy_async_cursor {
 };
 
 struct tracy_state {
+	struct tracy_async_zone {
+		size_t submission_idx = 0;
+		const instruction* instr = nullptr;
+		std::optional<std::chrono::steady_clock::time_point> approx_begin;
+	};
+
+	struct tracy_async_lane {
+		out_of_order_engine::target target = out_of_order_engine::target::immediate;
+		std::optional<device_id> device;
+		size_t local_lane_id = 0;
+		const char* fiber_name = nullptr;
+		size_t next_submission_idx = 0;
+		std::optional<TracyCZoneCtx> active_zone;
+		std::queue<tracy_async_zone> queued_zones;
+	};
+
 	std::vector<tracy_async_lane> async_lanes;
 	std::vector<uint8_t /* bool occupied */> immediate_async_lanes;
+
 	tracy_async_cursor get_async_lane_cursor(
 	    out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id);
-	tracy_async_cursor issue_async(const instruction& instr, const out_of_order_engine::assignment& assignment);
-	void retire_async(const tracy_async_cursor& cursor);
+	TracyCZoneCtx begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted);
+	void end_instruction_zone(const TracyCZoneCtx& ctx);
+	void begin_async_instruction_zone(tracy_async_lane& lane, tracy_async_zone& zone, const bool eager);
+	void end_async_instruction_zone(tracy_async_lane& lane, const tracy_async_zone& zone);
+	tracy_async_cursor issue_async_instruction(const instruction& instr, const out_of_order_engine::assignment& assignment);
+	void retire_async_instruction(const tracy_async_cursor& cursor);
 };
 
 tracy_async_cursor tracy_state::get_async_lane_cursor(
@@ -105,7 +93,7 @@ tracy_async_cursor tracy_state::get_async_lane_cursor(
 	return tracy_async_cursor{global_lane_id, lane.next_submission_idx++};
 }
 
-TracyCZoneCtx tracy_begin_zone(const instruction& instr, const bool eager) {
+TracyCZoneCtx tracy_state::begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted) {
 	TracyCZoneCtx ctx;
 	std::string_view tag;
 
@@ -193,7 +181,7 @@ TracyCZoneCtx tracy_begin_zone(const instruction& instr, const bool eager) {
 			    }
 		    });
 
-		const auto label = fmt::format("{}I{} {}", eager ? "+" : "", instr.get_id(), tag);
+		const auto label = fmt::format("{}I{} {}", was_eagerly_submitted ? "+" : "", instr.get_id(), tag);
 		TracyCZoneName(ctx, label.data(), label.size());
 
 		for(size_t i = 0; i < instr.get_dependencies().size(); ++i) {
@@ -208,15 +196,15 @@ TracyCZoneCtx tracy_begin_zone(const instruction& instr, const bool eager) {
 	return ctx;
 }
 
-void tracy_end_zone(const TracyCZoneCtx& ctx) { TracyCZoneEnd(ctx); }
+void tracy_state::end_instruction_zone(const TracyCZoneCtx& ctx) { TracyCZoneEnd(ctx); }
 
-void tracy_begin_async_zone(tracy_async_lane& lane, tracy_async_zone& zone, const bool eager) {
+void tracy_state::begin_async_instruction_zone(tracy_async_lane& lane, tracy_async_zone& zone, const bool eager) {
 	assert(!lane.active_zone.has_value());
 	zone.approx_begin = std::chrono::steady_clock::now();
-	lane.active_zone = tracy_begin_zone(*zone.instr, eager);
+	lane.active_zone = begin_instruction_zone(*zone.instr, eager);
 }
 
-void tracy_end_async_zone(tracy_async_lane& lane, const tracy_async_zone& zone) {
+void tracy_state::end_async_instruction_zone(tracy_async_lane& lane, const tracy_async_zone& zone) {
 	assert(lane.active_zone.has_value());
 	assert(zone.approx_begin.has_value());
 	if(false) {
@@ -234,11 +222,11 @@ void tracy_end_async_zone(tracy_async_lane& lane, const tracy_async_zone& zone) 
 			TracyCZoneText(*lane.active_zone, text.data(), text.length());
 		}
 	}
-	TracyCZoneEnd(*lane.active_zone);
+	end_instruction_zone(*lane.active_zone);
 	lane.active_zone = std::nullopt;
 }
 
-tracy_async_cursor tracy_state::issue_async(const instruction& instr, const out_of_order_engine::assignment& assignment) {
+tracy_async_cursor tracy_state::issue_async_instruction(const instruction& instr, const out_of_order_engine::assignment& assignment) {
 	const auto cursor = get_async_lane_cursor(
 	    assignment.target, assignment.target == out_of_order_engine::target::device_queue ? assignment.device : std::nullopt, assignment.lane);
 	auto& lane = async_lanes.at(cursor.global_lane_id);
@@ -246,7 +234,7 @@ tracy_async_cursor tracy_state::issue_async(const instruction& instr, const out_
 	bool start_immediately = lane.queued_zones.empty();
 	lane.queued_zones.push(tracy_async_zone{cursor.lane_submission_idx, &instr, {}});
 	if(start_immediately) {
-		tracy_begin_async_zone(lane, lane.queued_zones.front(), false /* eager */);
+		begin_async_instruction_zone(lane, lane.queued_zones.front(), false /* eager */);
 	} else {
 		auto mark = fmt::format("I{} queued", instr.get_id());
 		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
@@ -255,24 +243,61 @@ tracy_async_cursor tracy_state::issue_async(const instruction& instr, const out_
 	return cursor;
 }
 
-void tracy_state::retire_async(const tracy_async_cursor& cursor) {
+void tracy_state::retire_async_instruction(const tracy_async_cursor& cursor) {
 	auto& lane = async_lanes.at(cursor.global_lane_id);
 	TracyFiberEnter(lane.fiber_name);
 	while(!lane.queued_zones.empty() && lane.queued_zones.front().submission_idx <= cursor.lane_submission_idx) {
 		{
-			tracy_end_async_zone(lane, lane.queued_zones.front());
+			end_async_instruction_zone(lane, lane.queued_zones.front());
 			lane.queued_zones.pop();
 		}
 		if(!lane.queued_zones.empty()) {
 			auto& next_zone = lane.queued_zones.front();
-			tracy_begin_async_zone(lane, next_zone, true /* eager */);
+			begin_async_instruction_zone(lane, next_zone, true /* eager */);
 		}
 	}
 	TracyFiberLeave;
 
 	if(lane.target == out_of_order_engine::target::immediate) { immediate_async_lanes.at(lane.local_lane_id) = 0 /* not occupied */; }
 }
-#endif
+
+void tracy_create_plot(const char* const identifier) {
+	TracyPlot(identifier, static_cast<int64_t>(0));
+	TracyPlotConfig(identifier, tracy::PlotFormatType::Number, true /* step */, true /* fill*/, 0);
+}
+
+template <typename Integer>
+void tracy_update_plot(const char* const identifier, const Integer value) {
+	TracyPlot(identifier, static_cast<int64_t>(value));
+}
+
+constexpr auto tracy_plot_active_instructions = "active instructions";
+constexpr auto tracy_plot_assignment_queue = "assignment queue depth";
+
+#endif // CELERITY_DETAIL_ENABLE_TRACY
+
+
+#if CELERITY_ACCESSOR_BOUNDARY_CHECK
+
+struct boundary_check_info {
+	struct accessor_info {
+		detail::buffer_id buffer_id = 0;
+		std::string buffer_name;
+		box<3> accessible_box;
+	};
+
+	detail::task_type task_type;
+	detail::task_id task_id;
+	std::string task_name;
+
+	oob_bounding_box* illegal_access_bounding_boxes = nullptr;
+	std::vector<accessor_info> accessors;
+
+	boundary_check_info(detail::task_type tt, detail::task_id tid, const std::string& task_name) : task_type(tt), task_id(tid), task_name(task_name) {}
+};
+
+#endif // CELERITY_ACCESSOR_BOUNDARY_CHECK
+
 
 struct async_instruction_state {
 	const instruction* instr = nullptr;
@@ -302,9 +327,7 @@ struct executor_impl {
 	bool made_progress = false;                                                   ///< progress was made since `last_progress_timestamp`
 	bool progress_warning_emitted = false;                                        ///< no progress was made since warning was emitted
 
-#if CELERITY_ENABLE_TRACY
-	tracy_state tracy;
-#endif
+	CELERITY_DETAIL_IF_TRACY(tracy_state tracy;)
 
 	executor_impl(std::unique_ptr<detail::backend> backend, communicator* root_comm, double_buffered_queue<submission>& submission_queue,
 	    live_executor::delegate* dlg, const live_executor::policy_set& policy);
@@ -364,11 +387,8 @@ executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communica
 void executor_impl::run() {
 	closure_hydrator::make_available();
 
-#if CELERITY_ENABLE_TRACY
-	// TODO have one of these per device as well?
-	TracyPlot("active instrs", static_cast<int64_t>(0));
-	TracyPlotConfig("active instrs", tracy::PlotFormatType::Number, true /* step */, true /* fill*/, 0);
-#endif
+	CELERITY_DETAIL_IF_TRACY(tracy_create_plot(tracy_plot_active_instructions));
+	CELERITY_DETAIL_IF_TRACY(tracy_create_plot(tracy_plot_assignment_queue));
 
 	for(;;) {
 		if(engine.is_idle()) {
@@ -405,7 +425,7 @@ void executor_impl::poll_in_flight_async_instructions() {
 	});
 
 #if CELERITY_ENABLE_TRACY
-	if(in_flight_async_instructions.size() != active_instrs_before) { TracyPlot("active instrs", static_cast<int64_t>(in_flight_async_instructions.size())); }
+	if(in_flight_async_instructions.size() != active_instrs_before) { tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size()); }
 #endif
 }
 
@@ -421,6 +441,7 @@ void executor_impl::poll_submission_queue() {
 			    for(const auto& pilot : batch.pilots) {
 				    root_communicator->send_outbound_pilot(pilot);
 			    }
+			    CELERITY_DETAIL_IF_TRACY(tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()));
 		    },
 		    [&](const user_allocation_transfer& uat) {
 			    assert(uat.aid != null_allocation_id);
@@ -470,7 +491,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	}
 
 #if CELERITY_ENABLE_TRACY
-	if(async.tracy_cursor.has_value()) { tracy.retire_async(*async.tracy_cursor); }
+	if(async.tracy_cursor.has_value()) { tracy.retire_async_instruction(*async.tracy_cursor); }
 #endif
 
 	if(utils::isa<alloc_instruction>(async.instr)) {
@@ -484,6 +505,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	}
 
 	engine.complete_assigned(async.instr);
+	CELERITY_DETAIL_IF_TRACY(tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()));
 }
 
 template <typename Instr>
@@ -493,15 +515,19 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 {
 	assert(assignment.target == out_of_order_engine::target::immediate);
 	assert(!assignment.lane.has_value());
+
 #if CELERITY_ENABLE_TRACY
-	const auto zone = tracy_begin_zone(instr, false /* eager */);
-	TracyPlot("active instrs", static_cast<int64_t>(in_flight_async_instructions.size() + 1));
+	const auto zone = tracy.begin_instruction_zone(instr, false /* eager */);
+	tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size() + 1);
 #endif
+
 	issue(instr); // completes immediately
 	engine.complete_assigned(&instr);
+
 #if CELERITY_ENABLE_TRACY
-	tracy_end_zone(zone);
-	TracyPlot("active instrs", static_cast<int64_t>(in_flight_async_instructions.size()));
+	tracy.end_instruction_zone(zone);
+	tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth());
+	tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
 #endif
 }
 
@@ -514,9 +540,9 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	async.instr = assignment.instruction;
 	issue_async(instr, assignment, async); // stores event in `async` and completes asynchronously
 
-	CELERITY_DETAIL_IF_TRACY(async.tracy_cursor = tracy.issue_async(instr, assignment));
 #if CELERITY_ENABLE_TRACY
-	TracyPlot("active instrs", static_cast<int64_t>(in_flight_async_instructions.size()));
+	async.tracy_cursor = tracy.issue_async_instruction(instr, assignment);
+	tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
 #endif
 }
 
@@ -527,6 +553,8 @@ void executor_impl::try_issue_one_instruction() {
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue", Blue, "issue");
 	matchbox::match(*assignment->instruction, [&](const auto& instr) { dispatch(instr, *assignment); });
 	made_progress = true;
+
+	CELERITY_DETAIL_IF_TRACY(tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()));
 }
 
 void executor_impl::check_progress() {
@@ -828,7 +856,7 @@ std::unique_ptr<boundary_check_info> executor_impl::attach_boundary_check_info(s
 {
 	if(amap.empty()) return nullptr;
 
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_init", Red, "bounds check init", iid);
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_init", Red, "bounds check init");
 	auto oob_info = std::make_unique<boundary_check_info>(tt, tid, task_name);
 
 	oob_info->illegal_access_bounding_boxes = static_cast<oob_bounding_box*>(backend->debug_alloc(amap.size() * sizeof(oob_bounding_box)));
