@@ -2,6 +2,7 @@
 #include "dense_map.h"
 #include "instruction_graph.h"
 #include "system_info.h"
+#include "tracy.h"
 #include "utils.h"
 
 #include <queue>
@@ -222,6 +223,8 @@ void engine_impl::try_mark_for_assignment(incomplete_instruction_state& node) {
 }
 
 void engine_impl::submit(const instruction* const instr) {
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("ooo::submit", Blue3, "ooo submit");
+
 	const auto iid = instr->get_id();
 	auto [node_it, inserted] = incomplete_instructions.emplace(iid, incomplete_instruction_state(instr));
 	assert(inserted);
@@ -304,6 +307,8 @@ void engine_impl::submit(const instruction* const instr) {
 }
 
 void engine_impl::complete(const instruction* const instr) {
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("ooo::complete", Orange2, "ooo complete");
+
 	const auto node_it = incomplete_instructions.find(instr->get_id());
 	assert(node_it != incomplete_instructions.end());
 	auto deleted_node = std::move(node_it->second); // move so we can access members / iterate successors after erasure

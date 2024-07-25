@@ -60,6 +60,218 @@ struct tracy_async_cursor {
 	size_t global_lane_id = 0;
 	size_t lane_submission_idx = 0;
 };
+
+struct tracy_state {
+	std::vector<tracy_async_lane> async_lanes;
+	std::vector<uint8_t /* bool occupied */> immediate_async_lanes;
+	tracy_async_cursor get_async_lane_cursor(
+	    out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id);
+	tracy_async_cursor issue_async(const instruction& instr, const out_of_order_engine::assignment& assignment);
+	void retire_async(const tracy_async_cursor& cursor);
+};
+
+tracy_async_cursor tracy_state::get_async_lane_cursor(
+    const out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id) //
+{
+	auto real_local_lane_id = local_lane_id.value_or(0);
+	if(target == out_of_order_engine::target::immediate) {
+		assert(!local_lane_id.has_value());
+		real_local_lane_id =
+		    static_cast<size_t>(std::find(immediate_async_lanes.begin(), immediate_async_lanes.end(), 0 /* not occupied */) - immediate_async_lanes.begin());
+		if(real_local_lane_id < immediate_async_lanes.size()) {
+			immediate_async_lanes.at(real_local_lane_id) = 1 /* occupied */;
+		} else {
+			immediate_async_lanes.push_back(0 /* occupied */);
+		}
+	}
+	auto it = std::find_if(async_lanes.begin(), async_lanes.end(),
+	    [&](const tracy_async_lane& lane) { return lane.target == target && lane.device == device && lane.local_lane_id == real_local_lane_id; });
+	if(it == async_lanes.end()) {
+		it = async_lanes.emplace(async_lanes.end());
+		auto& lane = *it;
+		lane.target = target, lane.device = device, lane.local_lane_id = real_local_lane_id;
+		switch(target) {
+		case out_of_order_engine::target::immediate: lane.fiber_name = tracy_detail::make_thread_name("Send/Receive Lane #{}", real_local_lane_id); break;
+		case out_of_order_engine::target::alloc_queue: lane.fiber_name = "Allocation Queue"; break;
+		case out_of_order_engine::target::host_queue: lane.fiber_name = tracy_detail::make_thread_name("Host Queue #{}", lane.local_lane_id); break;
+		case out_of_order_engine::target::device_queue:
+			lane.fiber_name = tracy_detail::make_thread_name("Device {} Queue #{}", lane.device.value(), lane.local_lane_id);
+			break;
+		default: utils::unreachable();
+		}
+	}
+	auto& lane = *it;
+	const auto global_lane_id = static_cast<size_t>(it - async_lanes.begin());
+	return tracy_async_cursor{global_lane_id, lane.next_submission_idx++};
+}
+
+TracyCZoneCtx tracy_begin_zone(const instruction& instr, const bool eager) {
+	TracyCZoneCtx ctx;
+	std::string_view tag;
+
+#define CELERITY_DETAIL_BEGIN_CTX(TAG, COLOR)                                                                                                                  \
+	TracyCZoneNC(scoped_ctx, "executor::" TAG, tracy::Color::COLOR, true);                                                                                     \
+	ctx = scoped_ctx, tag = TAG
+
+	matchbox::match(
+	    instr, //
+	    [&](const clone_collective_group_instruction& ccginstr) { CELERITY_DETAIL_BEGIN_CTX("clone_collective_group", Brown); },
+	    [&](const alloc_instruction& ainstr) { CELERITY_DETAIL_BEGIN_CTX("alloc", Turquoise); },
+	    [&](const free_instruction& finstr) { CELERITY_DETAIL_BEGIN_CTX("free", Turquoise); },
+	    [&](const copy_instruction& cinstr) { CELERITY_DETAIL_BEGIN_CTX("copy", Lime); },
+	    [&](const device_kernel_instruction& dkinstr) { CELERITY_DETAIL_BEGIN_CTX("device_kernel", Orange); },
+	    [&](const host_task_instruction& htinstr) { CELERITY_DETAIL_BEGIN_CTX("host_task", Orange); },
+	    [&](const send_instruction& sinstr) { CELERITY_DETAIL_BEGIN_CTX("send", Violet); },
+	    [&](const receive_instruction& rinstr) { CELERITY_DETAIL_BEGIN_CTX("receive", DarkViolet); },
+	    [&](const split_receive_instruction& srinstr) { CELERITY_DETAIL_BEGIN_CTX("split_receive", DarkViolet); },
+	    [&](const await_receive_instruction& arinstr) { CELERITY_DETAIL_BEGIN_CTX("await_receive", DarkViolet); },
+	    [&](const gather_receive_instruction& grinstr) { CELERITY_DETAIL_BEGIN_CTX("gather_receive", DarkViolet); },
+	    [&](const fill_identity_instruction& fiinstr) { CELERITY_DETAIL_BEGIN_CTX("fill_identity", Blue); },
+	    [&](const reduce_instruction& rinstr) { CELERITY_DETAIL_BEGIN_CTX("reduce", Blue); },
+	    [&](const fence_instruction& finstr) { CELERITY_DETAIL_BEGIN_CTX("fence", Blue); },
+	    [&](const destroy_host_object_instruction& dhoinstr) { CELERITY_DETAIL_BEGIN_CTX("destroy_host_object", Gray); },
+	    [&](const horizon_instruction& hinstr) { CELERITY_DETAIL_BEGIN_CTX("horizon", Gray); },
+	    [&](const epoch_instruction& einstr) { CELERITY_DETAIL_BEGIN_CTX("epoch", Gray); });
+
+#undef CELERITY_DETAIL_BEGIN_CTX
+
+	if(false) {
+		auto text = matchbox::match(
+		    instr,
+		    [&](const clone_collective_group_instruction& ccginstr) {
+			    return fmt::format("CG{} -> CG{}", ccginstr.get_original_collective_group_id(), ccginstr.get_new_collective_group_id());
+		    },
+		    [&](const alloc_instruction& ainstr) {
+			    return fmt::format("alloc {}, {} % {} bytes", ainstr.get_allocation_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
+		    },
+		    [&](const free_instruction& finstr) { return fmt::format("free {}", finstr.get_allocation_id()); },
+		    [&](const copy_instruction& cinstr) {
+			    return fmt::format("copy {} -> {}, {} x{} bytes\n{} bytes total", cinstr.get_source_allocation(), cinstr.get_dest_allocation(),
+			        cinstr.get_copy_region(), cinstr.get_element_size(), cinstr.get_copy_region().get_area() * cinstr.get_element_size());
+		    },
+		    [&](const device_kernel_instruction& dkinstr) { return fmt::format("on D{}", dkinstr.get_device_id()); },
+		    [&](const host_task_instruction& htinstr) { return std::string(); },
+		    [&](const send_instruction& sinstr) {
+			    return fmt::format("send {}+{}, {}x{} bytes to N{}\n{} bytes total", sinstr.get_source_allocation_id(),
+			        sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(),
+			        sinstr.get_send_range() * sinstr.get_element_size());
+		    },
+		    [&](const receive_instruction& rinstr) {
+			    return fmt::format("receive {} {} into {} ({}), x{} bytes", rinstr.get_transfer_id(), rinstr.get_requested_region(),
+			        rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(), rinstr.get_element_size());
+		    },
+		    [&](const split_receive_instruction& srinstr) {
+			    return fmt::format("split receive {} {} into {} ({}), x{} bytes", srinstr.get_transfer_id(), srinstr.get_requested_region(),
+			        srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(), srinstr.get_element_size());
+		    },
+		    [&](const await_receive_instruction& arinstr) {
+			    return fmt::format("await receive {} {}", arinstr.get_transfer_id(), arinstr.get_received_region());
+		    },
+		    [&](const gather_receive_instruction& grinstr) {
+			    return fmt::format(
+			        "gather receive {} into {}, {} bytes per node", grinstr.get_transfer_id(), grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
+		    },
+		    [&](const fill_identity_instruction& fiinstr) {
+			    return fmt::format("fill identity {} x{} for R{}", fiinstr.get_allocation_id(), fiinstr.get_num_values(), fiinstr.get_reduction_id());
+		    },
+		    [&](const reduce_instruction& rinstr) {
+			    return fmt::format("reduce {} x{} into {} as R{}", rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
+			        rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
+		    },
+		    [&](const fence_instruction& finstr) { //
+			    return std::string();
+		    },
+		    [&](const destroy_host_object_instruction& dhoinstr) { return fmt::format("destroy H{}", dhoinstr.get_host_object_id()); },
+		    [&](const horizon_instruction& hinstr) { //
+			    return std::string();
+		    },
+		    [&](const epoch_instruction& einstr) {
+			    switch(einstr.get_epoch_action()) {
+			    case epoch_action::barrier: return "barrier"; break;
+			    case epoch_action::shutdown: return "shutdown"; break;
+			    default: return "";
+			    }
+		    });
+
+		const auto label = fmt::format("{}I{} {}", eager ? "+" : "", instr.get_id(), tag);
+		TracyCZoneName(ctx, label.data(), label.size());
+
+		for(size_t i = 0; i < instr.get_dependencies().size(); ++i) {
+			text += i == 0 ? "\ndepends: " : ", ";
+			fmt::format_to(std::back_inserter(text), "I{}", instr.get_dependencies()[i]);
+		}
+
+		fmt::format_to(std::back_inserter(text), "\npriority: {}", instr.get_priority());
+		TracyCZoneText(ctx, text.data(), text.size());
+	}
+
+	return ctx;
+}
+
+void tracy_end_zone(const TracyCZoneCtx& ctx) { TracyCZoneEnd(ctx); }
+
+void tracy_begin_async_zone(tracy_async_lane& lane, tracy_async_zone& zone, const bool eager) {
+	assert(!lane.active_zone.has_value());
+	zone.approx_begin = std::chrono::steady_clock::now();
+	lane.active_zone = tracy_begin_zone(*zone.instr, eager);
+}
+
+void tracy_end_async_zone(tracy_async_lane& lane, const tracy_async_zone& zone) {
+	assert(lane.active_zone.has_value());
+	assert(zone.approx_begin.has_value());
+	if(false) {
+		const auto bytes_processed = matchbox::match(
+		    *zone.instr,                                                                                                    //
+		    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
+		    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
+		    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
+		    [](const auto& /* other */) { return 0; });
+
+		if(bytes_processed > 0) {
+			const auto approx_end = std::chrono::steady_clock::now();
+			const auto approx_secs = std::chrono::duration_cast<std::chrono::duration<double>>(approx_end - *zone.approx_begin).count();
+			const auto text = fmt::format("throughput: {:.2f} MB/s", static_cast<double>(bytes_processed) / (1024.0 * 1024.0 * approx_secs));
+			TracyCZoneText(*lane.active_zone, text.data(), text.length());
+		}
+	}
+	TracyCZoneEnd(*lane.active_zone);
+	lane.active_zone = std::nullopt;
+}
+
+tracy_async_cursor tracy_state::issue_async(const instruction& instr, const out_of_order_engine::assignment& assignment) {
+	const auto cursor = get_async_lane_cursor(
+	    assignment.target, assignment.target == out_of_order_engine::target::device_queue ? assignment.device : std::nullopt, assignment.lane);
+	auto& lane = async_lanes.at(cursor.global_lane_id);
+	TracyFiberEnter(lane.fiber_name);
+	bool start_immediately = lane.queued_zones.empty();
+	lane.queued_zones.push(tracy_async_zone{cursor.lane_submission_idx, &instr, {}});
+	if(start_immediately) {
+		tracy_begin_async_zone(lane, lane.queued_zones.front(), false /* eager */);
+	} else {
+		auto mark = fmt::format("I{} queued", instr.get_id());
+		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
+	}
+	TracyFiberLeave;
+	return cursor;
+}
+
+void tracy_state::retire_async(const tracy_async_cursor& cursor) {
+	auto& lane = async_lanes.at(cursor.global_lane_id);
+	TracyFiberEnter(lane.fiber_name);
+	while(!lane.queued_zones.empty() && lane.queued_zones.front().submission_idx <= cursor.lane_submission_idx) {
+		{
+			tracy_end_async_zone(lane, lane.queued_zones.front());
+			lane.queued_zones.pop();
+		}
+		if(!lane.queued_zones.empty()) {
+			auto& next_zone = lane.queued_zones.front();
+			tracy_begin_async_zone(lane, next_zone, true /* eager */);
+		}
+	}
+	TracyFiberLeave;
+
+	if(lane.target == out_of_order_engine::target::immediate) { immediate_async_lanes.at(lane.local_lane_id) = 0 /* not occupied */; }
+}
 #endif
 
 struct async_instruction_state {
@@ -91,11 +303,7 @@ struct executor_impl {
 	bool progress_warning_emitted = false;                                        ///< no progress was made since warning was emitted
 
 #if CELERITY_ENABLE_TRACY
-	std::vector<std::unique_ptr<tracy_async_lane>>
-	    tracy_async_lanes; // TODO instead of making this a unique_ptr we must leak the fiber name string (see tracy manual)
-	std::vector<uint8_t /* bool occupied */> tracy_immediate_async_lanes;
-	tracy_async_cursor tracy_get_async_lane_cursor(
-	    out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id);
+	tracy_state tracy;
 #endif
 
 	executor_impl(std::unique_ptr<detail::backend> backend, communicator* root_comm, double_buffered_queue<submission>& submission_queue,
@@ -149,175 +357,6 @@ struct executor_impl {
 	void collect(const instruction_garbage& garbage);
 };
 
-#if CELERITY_ENABLE_TRACY
-tracy_async_cursor executor_impl::tracy_get_async_lane_cursor(
-    const out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id) //
-{
-	auto real_local_lane_id = local_lane_id.value_or(0);
-	if(target == out_of_order_engine::target::immediate) {
-		assert(!local_lane_id.has_value());
-		real_local_lane_id = static_cast<size_t>(
-		    std::find(tracy_immediate_async_lanes.begin(), tracy_immediate_async_lanes.end(), 0 /* not occupied */) - tracy_immediate_async_lanes.begin());
-		if(real_local_lane_id < tracy_immediate_async_lanes.size()) {
-			tracy_immediate_async_lanes.at(real_local_lane_id) = 1 /* occupied */;
-		} else {
-			tracy_immediate_async_lanes.push_back(0 /* occupied */);
-		}
-	}
-	auto it = std::find_if(tracy_async_lanes.begin(), tracy_async_lanes.end(), [&](const std::unique_ptr<tracy_async_lane>& lane) {
-		return lane->target == target && lane->device == device && lane->local_lane_id == real_local_lane_id;
-	});
-	if(it == tracy_async_lanes.end()) {
-		it = tracy_async_lanes.emplace(tracy_async_lanes.end(), std::make_unique<tracy_async_lane>());
-		auto& lane = **it;
-		lane.target = target, lane.device = device, lane.local_lane_id = real_local_lane_id;
-		switch(target) {
-		case out_of_order_engine::target::immediate: lane.fiber_name = tracy_detail::make_thread_name("Send/Receive Lane #{}", real_local_lane_id); break;
-		case out_of_order_engine::target::alloc_queue: lane.fiber_name = "Allocation Queue"; break;
-		case out_of_order_engine::target::host_queue: lane.fiber_name = tracy_detail::make_thread_name("Host Queue #{}", lane.local_lane_id); break;
-		case out_of_order_engine::target::device_queue:
-			lane.fiber_name = tracy_detail::make_thread_name("Device {} Queue #{}", lane.device.value(), lane.local_lane_id);
-			break;
-		default: utils::unreachable();
-		}
-	}
-	auto& lane = **it;
-	const auto global_lane_id = static_cast<size_t>(it - tracy_async_lanes.begin());
-	return tracy_async_cursor{global_lane_id, lane.next_submission_idx++};
-}
-
-TracyCZoneCtx tracy_begin_zone(const instruction& instr, const bool eager) {
-	TracyCZoneCtx ctx;
-	std::string_view tag;
-	std::string text;
-
-#define CELERITY_DETAIL_BEGIN_CTX(TAG, COLOR)                                                                                                                  \
-	TracyCZoneNC(scoped_ctx, "executor::" TAG, tracy::Color::COLOR, true);                                                                                     \
-	ctx = scoped_ctx, tag = TAG
-
-	matchbox::match(
-	    instr,
-	    [&](const clone_collective_group_instruction& ccginstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("clone_collective_group", Brown);
-		    text = fmt::format("CG{} -> CG{}", ccginstr.get_original_collective_group_id(), ccginstr.get_new_collective_group_id());
-	    },
-	    [&](const alloc_instruction& ainstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("alloc", Turquoise);
-		    text = fmt::format("alloc {}, {} % {} bytes", ainstr.get_allocation_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
-	    },
-	    [&](const free_instruction& finstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("free", Turquoise);
-		    text = fmt::format("free {}", finstr.get_allocation_id());
-	    },
-	    [&](const copy_instruction& cinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("copy", Lime);
-		    text = fmt::format("copy {} -> {}, {} x{} bytes\n{} bytes total", cinstr.get_source_allocation(), cinstr.get_dest_allocation(),
-		        cinstr.get_copy_region(), cinstr.get_element_size(), cinstr.get_copy_region().get_area() * cinstr.get_element_size());
-	    },
-	    [&](const device_kernel_instruction& dkinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("device_kernel", Orange);
-		    text = fmt::format("on D{}", dkinstr.get_device_id());
-	    },
-	    [&](const host_task_instruction& htinstr) { //
-		    CELERITY_DETAIL_BEGIN_CTX("host_task", Orange);
-	    },
-	    [&](const send_instruction& sinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("send", Violet);
-		    text = fmt::format("send {}+{}, {}x{} bytes to N{}\n{} bytes total", sinstr.get_source_allocation_id(), sinstr.get_offset_in_source_allocation(),
-		        sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(), sinstr.get_send_range() * sinstr.get_element_size());
-	    },
-	    [&](const receive_instruction& rinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("receive", DarkViolet);
-		    text = fmt::format("receive {} {} into {} ({}), x{} bytes", rinstr.get_transfer_id(), rinstr.get_requested_region(),
-		        rinstr.get_dest_allocation_id(), rinstr.get_allocated_box(), rinstr.get_element_size());
-	    },
-	    [&](const split_receive_instruction& srinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("split_receive", DarkViolet);
-		    text = fmt::format("split receive {} {} into {} ({}), x{} bytes", srinstr.get_transfer_id(), srinstr.get_requested_region(),
-		        srinstr.get_dest_allocation_id(), srinstr.get_allocated_box(), srinstr.get_element_size());
-	    },
-	    [&](const await_receive_instruction& arinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("await_receive", DarkViolet);
-		    text = fmt::format("await receive {} {}", arinstr.get_transfer_id(), arinstr.get_received_region());
-	    },
-	    [&](const gather_receive_instruction& grinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("gather_receive", DarkViolet);
-		    text = fmt::format(
-		        "gather receive {} into {}, {} bytes per node", grinstr.get_transfer_id(), grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());
-	    },
-	    [&](const fill_identity_instruction& fiinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("fill_identity", Blue);
-		    text = fmt::format("fill identity {} x{} for R{}", fiinstr.get_allocation_id(), fiinstr.get_num_values(), fiinstr.get_reduction_id());
-	    },
-	    [&](const reduce_instruction& rinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("reduce", Blue);
-		    text = fmt::format("reduce {} x{} into {} as R{}", rinstr.get_source_allocation_id(), rinstr.get_num_source_values(),
-		        rinstr.get_dest_allocation_id(), rinstr.get_reduction_id());
-	    },
-	    [&](const fence_instruction& finstr) { //
-		    CELERITY_DETAIL_BEGIN_CTX("fence", Blue);
-	    },
-	    [&](const destroy_host_object_instruction& dhoinstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("destroy_host_object", Gray);
-		    text = fmt::format("destroy H{}", dhoinstr.get_host_object_id());
-	    },
-	    [&](const horizon_instruction& hinstr) { //
-		    CELERITY_DETAIL_BEGIN_CTX("horizon", Gray);
-	    },
-	    [&](const epoch_instruction& einstr) {
-		    CELERITY_DETAIL_BEGIN_CTX("epoch", Gray);
-		    switch(einstr.get_epoch_action()) {
-		    case epoch_action::barrier: text = "barrier"; break;
-		    case epoch_action::shutdown: text = "shutdown"; break;
-		    default:;
-		    }
-	    });
-
-#undef CELERITY_DETAIL_BEGIN_CTX
-
-	const auto label = fmt::format("{}I{} {}", eager ? "+" : "", instr.get_id(), tag);
-	TracyCZoneName(ctx, label.data(), label.size());
-
-	for(size_t i = 0; i < instr.get_dependencies().size(); ++i) {
-		text += i == 0 ? "\ndepends: " : ", ";
-		fmt::format_to(std::back_inserter(text), "I{}", instr.get_dependencies()[i]);
-	}
-
-	fmt::format_to(std::back_inserter(text), "\npriority: {}", instr.get_priority());
-	TracyCZoneText(ctx, text.data(), text.size());
-
-	return ctx;
-}
-
-void tracy_end_zone(const TracyCZoneCtx& ctx) { TracyCZoneEnd(ctx); }
-
-void tracy_begin_async_zone(tracy_async_lane& lane, tracy_async_zone& zone, const bool eager) {
-	assert(!lane.active_zone.has_value());
-	zone.approx_begin = std::chrono::steady_clock::now();
-	lane.active_zone = tracy_begin_zone(*zone.instr, eager);
-}
-
-void tracy_end_async_zone(tracy_async_lane& lane, const tracy_async_zone& zone) {
-	assert(lane.active_zone.has_value());
-	assert(zone.approx_begin.has_value());
-	const auto bytes_processed = matchbox::match(
-	    *zone.instr,                                                                                                    //
-	    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
-	    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
-	    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
-	    [](const auto& /* other */) { return 0; });
-
-	if(bytes_processed > 0) {
-		const auto approx_end = std::chrono::steady_clock::now();
-		const auto approx_secs = std::chrono::duration_cast<std::chrono::duration<double>>(approx_end - *zone.approx_begin).count();
-		const auto text = fmt::format("throughput: {:.2f} MB/s", static_cast<double>(bytes_processed) / (1024.0 * 1024.0 * approx_secs));
-		TracyCZoneText(*lane.active_zone, text.data(), text.length());
-	}
-	TracyCZoneEnd(*lane.active_zone);
-	lane.active_zone = std::nullopt;
-}
-#endif
-
 executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communicator* const root_comm, double_buffered_queue<submission>& submission_queue,
     live_executor::delegate* const dlg, const live_executor::policy_set& policy)
     : backend(std::move(backend)), root_communicator(root_comm), submission_queue(&submission_queue), delegate(dlg), policy(policy) {}
@@ -328,7 +367,7 @@ void executor_impl::run() {
 #if CELERITY_ENABLE_TRACY
 	// TODO have one of these per device as well?
 	TracyPlot("active instrs", static_cast<int64_t>(0));
-	TracyPlotConfig("active instrs", tracy::PlotFormatType::Number, true /* setp */, true /* fill*/, 0);
+	TracyPlotConfig("active instrs", tracy::PlotFormatType::Number, true /* step */, true /* fill*/, 0);
 #endif
 
 	for(;;) {
@@ -431,23 +470,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	}
 
 #if CELERITY_ENABLE_TRACY
-	if(async.tracy_cursor.has_value()) {
-		auto& lane = *tracy_async_lanes.at(async.tracy_cursor->global_lane_id);
-		TracyFiberEnter(lane.fiber_name);
-		while(!lane.queued_zones.empty() && lane.queued_zones.front().submission_idx <= async.tracy_cursor->lane_submission_idx) {
-			{
-				tracy_end_async_zone(lane, lane.queued_zones.front());
-				lane.queued_zones.pop();
-			}
-			if(!lane.queued_zones.empty()) {
-				auto& next_zone = lane.queued_zones.front();
-				tracy_begin_async_zone(lane, next_zone, true /* eager */);
-			}
-		}
-		TracyFiberLeave;
-
-		if(lane.target == out_of_order_engine::target::immediate) { tracy_immediate_async_lanes.at(lane.local_lane_id) = 0 /* not occupied */; }
-	}
+	if(async.tracy_cursor.has_value()) { tracy.retire_async(*async.tracy_cursor); }
 #endif
 
 	if(utils::isa<alloc_instruction>(async.instr)) {
@@ -491,21 +514,8 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	async.instr = assignment.instruction;
 	issue_async(instr, assignment, async); // stores event in `async` and completes asynchronously
 
+	CELERITY_DETAIL_IF_TRACY(async.tracy_cursor = tracy.issue_async(instr, assignment));
 #if CELERITY_ENABLE_TRACY
-	const auto cursor = tracy_get_async_lane_cursor(
-	    assignment.target, assignment.target == out_of_order_engine::target::device_queue ? assignment.device : std::nullopt, assignment.lane);
-	auto& lane = *tracy_async_lanes.at(cursor.global_lane_id);
-	TracyFiberEnter(lane.fiber_name);
-	bool start_immediately = lane.queued_zones.empty();
-	lane.queued_zones.push(tracy_async_zone{cursor.lane_submission_idx, &instr, {}});
-	if(start_immediately) {
-		tracy_begin_async_zone(lane, lane.queued_zones.front(), false /* eager */);
-	} else {
-		auto mark = fmt::format("I{} queued", instr.get_id());
-		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
-	}
-	async.tracy_cursor = cursor;
-	TracyFiberLeave;
 	TracyPlot("active instrs", static_cast<int64_t>(in_flight_async_instructions.size()));
 #endif
 }
@@ -658,6 +668,8 @@ void executor_impl::issue_async(const free_instruction& finstr, const out_of_ord
 }
 
 void executor_impl::issue_async(const copy_instruction& cinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue_copy", Green4, "issue copy");
+
 	assert(assignment.target == out_of_order_engine::target::host_queue || assignment.target == out_of_order_engine::target::device_queue);
 	assert((assignment.target == out_of_order_engine::target::device_queue) == assignment.device.has_value());
 	assert(assignment.lane.has_value());
@@ -689,6 +701,8 @@ std::string format_access_log(const buffer_access_allocation_map& map) {
 }
 
 void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue_device_kernel", Yellow2, "issue device kernel");
+
 	assert(assignment.target == out_of_order_engine::target::device_queue);
 	assert(assignment.device == dkinstr.get_device_id());
 	assert(assignment.lane.has_value());
@@ -798,6 +812,8 @@ void executor_impl::collect(const instruction_garbage& garbage) {
 }
 
 std::vector<closure_hydrator::accessor_info> executor_impl::make_accessor_infos(const buffer_access_allocation_map& amap) const {
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::make_acc_info", Magenta3, "make acc info");
+
 	std::vector<closure_hydrator::accessor_info> accessor_infos(amap.size());
 	for(size_t i = 0; i < amap.size(); ++i) {
 		const auto ptr = allocations.at(amap[i].allocation_id);
