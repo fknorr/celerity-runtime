@@ -15,6 +15,25 @@ inline tracy_mode g_tracy_mode = tracy_mode::off;
 inline bool is_on() { return g_tracy_mode != tracy_mode::off; }
 inline bool is_on_full() { return g_tracy_mode == tracy_mode::full; }
 
+template <typename Value>
+struct plot {
+	const char* identifier = nullptr;
+	Value last_value = 0;
+
+	explicit plot(const char* const identifier) : identifier(identifier) {
+		TracyPlot(identifier, static_cast<Value>(0));
+		TracyPlotConfig(identifier, tracy::PlotFormatType::Number, true /* step */, true /* fill*/, 0);
+	}
+
+	void update(const Value value_in) {
+		const auto value = static_cast<Value>(value_in);
+		if(value != last_value) {
+			TracyPlot(identifier, value);
+			last_value = value;
+		}
+	}
+};
+
 template <typename... FmtParams>
 const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
 	// Thread and fiber name pointers must remain valid for the duration of the program, so we intentionally leak them

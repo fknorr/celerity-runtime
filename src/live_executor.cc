@@ -65,6 +65,9 @@ struct tracy_state {
 
 	trace_log_collector current_instruction_trace;
 
+	tracy_detail::plot<int64_t> assigned_instructions_plot{"assigned instructions"};
+	tracy_detail::plot<int64_t> assignment_queue_length_plot{"assignment queue length"};
+
 	tracy_async_cursor get_async_lane_cursor(
 	    out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id);
 	TracyCZoneCtx begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted);
@@ -235,19 +238,6 @@ void tracy_state::retire_async_instruction(const tracy_async_cursor& cursor, std
 	if(lane.target == out_of_order_engine::target::immediate) { immediate_async_lanes.at(lane.local_lane_id) = 0 /* not occupied */; }
 }
 
-void tracy_create_plot(const char* const identifier) {
-	TracyPlot(identifier, static_cast<int64_t>(0));
-	TracyPlotConfig(identifier, tracy::PlotFormatType::Number, true /* step */, true /* fill*/, 0);
-}
-
-template <typename Integer>
-void tracy_update_plot(const char* const identifier, const Integer value) {
-	TracyPlot(identifier, static_cast<int64_t>(value));
-}
-
-constexpr auto tracy_plot_active_instructions = "active instructions";
-constexpr auto tracy_plot_assignment_queue = "assignment queue depth";
-
 #endif // CELERITY_DETAIL_ENABLE_TRACY
 
 
@@ -367,13 +357,6 @@ executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communica
 void executor_impl::run() {
 	closure_hydrator::make_available();
 
-#if CELERITY_ENABLE_TRACY
-	if(tracy_detail::is_on()) {
-		tracy_create_plot(tracy_plot_active_instructions);
-		tracy_create_plot(tracy_plot_assignment_queue);
-	}
-#endif
-
 	for(;;) {
 		if(engine.is_idle()) {
 			if(!expecting_more_submissions) break; // shutdown complete
@@ -399,8 +382,6 @@ void executor_impl::run() {
 }
 
 void executor_impl::poll_in_flight_async_instructions() {
-	CELERITY_DETAIL_IF_TRACY(const auto active_instrs_before = in_flight_async_instructions.size());
-
 	utils::erase_if(in_flight_async_instructions, [&](async_instruction_state& async) {
 		if(!async.event.is_complete()) return false;
 		retire_async_instruction(async);
@@ -408,11 +389,7 @@ void executor_impl::poll_in_flight_async_instructions() {
 		return true;
 	});
 
-#if CELERITY_ENABLE_TRACY
-	if(tracy_detail::is_on() && in_flight_async_instructions.size() != active_instrs_before) {
-		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
-	}
-#endif
+	CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) { tracy.assigned_instructions_plot.update(in_flight_async_instructions.size()); })
 }
 
 void executor_impl::poll_submission_queue() {
@@ -421,18 +398,13 @@ void executor_impl::poll_submission_queue() {
 		matchbox::match(
 		    submission,
 		    [&](const instruction_pilot_batch& batch) {
-			    CELERITY_DETAIL_IF_TRACY(const auto queue_depth_before = engine.get_assignment_queue_depth());
 			    for(const auto incoming_instr : batch.instructions) {
 				    engine.submit(incoming_instr);
 			    }
 			    for(const auto& pilot : batch.pilots) {
 				    root_communicator->send_outbound_pilot(pilot);
 			    }
-			    CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) {
-				    if(const auto depth = engine.get_assignment_queue_depth(); depth != queue_depth_before) {
-					    tracy_update_plot(tracy_plot_assignment_queue, depth);
-				    }
-			    });
+			    CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) { tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()); });
 		    },
 		    [&](const user_allocation_transfer& uat) {
 			    assert(uat.aid != null_allocation_id);
@@ -496,11 +468,8 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 		allocations.emplace(aid, ptr);
 	}
 
-	CELERITY_DETAIL_IF_TRACY(const auto queue_depth_before = engine.get_assignment_queue_depth());
 	engine.complete_assigned(async.instr);
-	CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) {
-		if(const auto depth = engine.get_assignment_queue_depth(); depth != queue_depth_before) { tracy_update_plot(tracy_plot_assignment_queue, depth); }
-	});
+	CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) { tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()); })
 }
 
 template <typename Instr>
@@ -515,7 +484,7 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	TracyCZoneCtx ctx;
 	if(tracy_detail::is_on()) {
 		ctx = tracy.begin_instruction_zone(instr, false /* eager */);
-		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size() + 1);
+		tracy.assigned_instructions_plot.update(in_flight_async_instructions.size() + 1);
 	}
 #endif
 
@@ -525,8 +494,8 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 #if CELERITY_ENABLE_TRACY
 	if(tracy_detail::is_on()) {
 		tracy.end_instruction_zone(instr, ctx);
-		tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth());
-		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
+		tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length());
+		tracy.assigned_instructions_plot.update(in_flight_async_instructions.size());
 	}
 #endif
 }
@@ -543,7 +512,7 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 #if CELERITY_ENABLE_TRACY
 	if(tracy_detail::is_on()) {
 		async.tracy_cursor = tracy.issue_async_instruction(instr, assignment);
-		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
+		tracy.assigned_instructions_plot.update(in_flight_async_instructions.size());
 	}
 #endif
 }
@@ -557,7 +526,7 @@ void executor_impl::try_issue_one_instruction() {
 	made_progress = true;
 
 #if CELERITY_ENABLE_TRACY
-	if(tracy_detail::is_on()) { tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()); }
+	if(tracy_detail::is_on()) { tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()); }
 #endif
 }
 
