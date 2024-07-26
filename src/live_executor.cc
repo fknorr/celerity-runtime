@@ -29,33 +29,48 @@ struct tracy_async_cursor {
 };
 
 struct tracy_state {
-	struct tracy_async_zone {
-		size_t submission_idx = 0;
+	struct async_zone_state {
+		size_t lane_submission_idx = 0;
 		const instruction* instr = nullptr;
 		std::string trace_log;
 	};
 
-	struct tracy_async_lane {
+	struct async_lane_state {
 		out_of_order_engine::target target = out_of_order_engine::target::immediate;
 		std::optional<device_id> device;
 		size_t local_lane_id = 0;
 		const char* fiber_name = nullptr;
 		size_t next_submission_idx = 0;
 		std::optional<TracyCZoneCtx> active_zone;
-		std::queue<tracy_async_zone> queued_zones;
+		std::queue<async_zone_state> queued_zones;
 	};
 
-	std::vector<tracy_async_lane> async_lanes;
+	struct trace_log_collector {
+		using value_type = char;
+
+		std::string log;
+
+		/// Like `log.push_back()`, but replace /; */ with '\n' and ignore leading spaces.
+		void push_back(const value_type c) {
+			if(c == ';') {
+				log.push_back('\n');
+			} else if(c != ' ' || (!log.empty() && log.back() != '\n')) {
+				log.push_back(c);
+			}
+		}
+	};
+
+	std::vector<async_lane_state> async_lanes;
 	std::vector<uint8_t /* bool occupied */> immediate_async_lanes;
 
-	std::string current_instruction_trace_log;
+	trace_log_collector current_instruction_trace;
 
 	tracy_async_cursor get_async_lane_cursor(
 	    out_of_order_engine::target target, const std::optional<device_id>& device, const std::optional<size_t>& local_lane_id);
 	TracyCZoneCtx begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted);
 	void end_instruction_zone(const instruction& instr, const TracyCZoneCtx& ctx);
-	void begin_async_instruction_zone(tracy_async_lane& lane, tracy_async_zone& zone, const bool eager);
-	void end_async_instruction_zone(tracy_async_lane& lane, tracy_async_zone& zone, std::optional<std::chrono::nanoseconds> native_execution_time);
+	void begin_async_instruction_zone(async_lane_state& lane, async_zone_state& zone, const bool eager);
+	void end_async_instruction_zone(async_lane_state& lane, async_zone_state& zone, std::optional<std::chrono::nanoseconds> native_execution_time);
 	tracy_async_cursor issue_async_instruction(const instruction& instr, const out_of_order_engine::assignment& assignment);
 	void retire_async_instruction(const tracy_async_cursor& cursor, std::optional<std::chrono::nanoseconds> native_execution_time);
 };
@@ -75,17 +90,18 @@ tracy_async_cursor tracy_state::get_async_lane_cursor(
 		}
 	}
 	auto it = std::find_if(async_lanes.begin(), async_lanes.end(),
-	    [&](const tracy_async_lane& lane) { return lane.target == target && lane.device == device && lane.local_lane_id == real_local_lane_id; });
+	    [&](const async_lane_state& lane) { return lane.target == target && lane.device == device && lane.local_lane_id == real_local_lane_id; });
 	if(it == async_lanes.end()) {
 		it = async_lanes.emplace(async_lanes.end());
 		auto& lane = *it;
 		lane.target = target, lane.device = device, lane.local_lane_id = real_local_lane_id;
 		switch(target) {
-		case out_of_order_engine::target::immediate: lane.fiber_name = tracy_detail::make_thread_name("Send/Receive Lane #{}", real_local_lane_id); break;
-		case out_of_order_engine::target::alloc_queue: lane.fiber_name = "Allocation Queue"; break;
-		case out_of_order_engine::target::host_queue: lane.fiber_name = tracy_detail::make_thread_name("Host Queue #{}", lane.local_lane_id); break;
+		case out_of_order_engine::target::immediate: lane.fiber_name = tracy_detail::make_thread_name("cy-async-comm #{}", real_local_lane_id); break;
+		// TODO trace host tasks in their actual thread_queue threads?
+		case out_of_order_engine::target::alloc_queue: lane.fiber_name = "cy-async-alloc"; break;
+		case out_of_order_engine::target::host_queue: lane.fiber_name = tracy_detail::make_thread_name("cy-async-host #{}", lane.local_lane_id); break;
 		case out_of_order_engine::target::device_queue:
-			lane.fiber_name = tracy_detail::make_thread_name("Device {} Queue #{}", lane.device.value(), lane.local_lane_id);
+			lane.fiber_name = tracy_detail::make_thread_name("cy-async-device D{} #{}", lane.device.value(), lane.local_lane_id);
 			break;
 		default: utils::unreachable();
 		}
@@ -94,10 +110,6 @@ tracy_async_cursor tracy_state::get_async_lane_cursor(
 	const auto global_lane_id = static_cast<size_t>(it - async_lanes.begin());
 	return tracy_async_cursor{global_lane_id, lane.next_submission_idx++};
 }
-
-#define CELERITY_DETAIL_TRACE_INSTRUCTION(INSTR, FMT_STRING, ...)                                                                                              \
-	CELERITY_TRACE("[executor] I{}: " FMT_STRING, INSTR.get_id(), __VA_ARGS__);                                                                                \
-	CELERITY_DETAIL_IF_TRACY(fmt::format_to(std::back_inserter(tracy.current_instruction_trace_log), FMT_STRING, __VA_ARGS__));
 
 TracyCZoneCtx tracy_state::begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted) {
 	TracyCZoneCtx ctx;
@@ -136,7 +148,7 @@ TracyCZoneCtx tracy_state::begin_instruction_zone(const instruction& instr, cons
 }
 
 void tracy_state::end_instruction_zone(const instruction& instr, const TracyCZoneCtx& ctx) {
-	auto& text = current_instruction_trace_log;
+	auto& text = current_instruction_trace.log;
 
 	size_t line_end = 0;
 	while(line_end = text.find("; ", line_end), line_end != std::string::npos) {
@@ -155,17 +167,17 @@ void tracy_state::end_instruction_zone(const instruction& instr, const TracyCZon
 	TracyCZoneEnd(ctx);
 }
 
-void tracy_state::begin_async_instruction_zone(tracy_async_lane& lane, tracy_async_zone& zone, const bool eager) {
+void tracy_state::begin_async_instruction_zone(async_lane_state& lane, async_zone_state& zone, const bool eager) {
 	assert(!lane.active_zone.has_value());
 	lane.active_zone = begin_instruction_zone(*zone.instr, eager);
 }
 
-void tracy_state::end_async_instruction_zone(tracy_async_lane& lane, tracy_async_zone& zone, std::optional<std::chrono::nanoseconds> native_execution_time) //
+void tracy_state::end_async_instruction_zone(async_lane_state& lane, async_zone_state& zone, std::optional<std::chrono::nanoseconds> native_execution_time) //
 {
 	assert(lane.active_zone.has_value());
-	current_instruction_trace_log = std::move(zone.trace_log);
+	current_instruction_trace.log = std::move(zone.trace_log);
 	if(native_execution_time.has_value()) {
-		fmt::format_to(std::back_inserter(current_instruction_trace_log), "; native time: {:.2f}", as_sub_second(*native_execution_time));
+		fmt::format_to(std::back_inserter(current_instruction_trace.log), "; native time: {:.2f}", as_sub_second(*native_execution_time));
 
 		const auto bytes_processed = matchbox::match(
 		    *zone.instr,                                                                                                    //
@@ -175,7 +187,7 @@ void tracy_state::end_async_instruction_zone(tracy_async_lane& lane, tracy_async
 		    [](const auto& /* other */) { return 0; });
 
 		if(bytes_processed > 0) {
-			fmt::format_to(std::back_inserter(current_instruction_trace_log), //
+			fmt::format_to(std::back_inserter(current_instruction_trace.log), //
 			    "; throughput: {:.2f}", as_binary_throughput(bytes_processed, *native_execution_time));
 		}
 	}
@@ -189,7 +201,7 @@ tracy_async_cursor tracy_state::issue_async_instruction(const instruction& instr
 	auto& lane = async_lanes.at(cursor.global_lane_id);
 	TracyFiberEnter(lane.fiber_name);
 	bool start_immediately = lane.queued_zones.empty();
-	lane.queued_zones.push(tracy_async_zone{cursor.lane_submission_idx, &instr, {}});
+	lane.queued_zones.push(async_zone_state{cursor.lane_submission_idx, &instr, {}});
 	if(start_immediately) {
 		begin_async_instruction_zone(lane, lane.queued_zones.back(), false /* eager */);
 	} else {
@@ -197,14 +209,14 @@ tracy_async_cursor tracy_state::issue_async_instruction(const instruction& instr
 		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
 	}
 	TracyFiberLeave;
-	lane.queued_zones.back().trace_log = std::move(current_instruction_trace_log);
+	lane.queued_zones.back().trace_log = std::move(current_instruction_trace.log);
 	return cursor;
 }
 
 void tracy_state::retire_async_instruction(const tracy_async_cursor& cursor, std::optional<std::chrono::nanoseconds> native_execution_time) {
 	auto& lane = async_lanes.at(cursor.global_lane_id);
 	TracyFiberEnter(lane.fiber_name);
-	while(!lane.queued_zones.empty() && lane.queued_zones.front().submission_idx <= cursor.lane_submission_idx) {
+	while(!lane.queued_zones.empty() && lane.queued_zones.front().lane_submission_idx <= cursor.lane_submission_idx) {
 		{
 			end_async_instruction_zone(lane, lane.queued_zones.front(), native_execution_time);
 			lane.queued_zones.pop();
@@ -233,6 +245,11 @@ constexpr auto tracy_plot_active_instructions = "active instructions";
 constexpr auto tracy_plot_assignment_queue = "assignment queue depth";
 
 #endif // CELERITY_DETAIL_ENABLE_TRACY
+
+
+#define CELERITY_DETAIL_TRACE_INSTRUCTION(INSTR, FMT_STRING, ...)                                                                                              \
+	CELERITY_TRACE("[executor] I{}: " FMT_STRING, INSTR.get_id(), __VA_ARGS__);                                                                                \
+	CELERITY_DETAIL_IF_TRACY(fmt::format_to(std::back_inserter(tracy.current_instruction_trace), FMT_STRING, __VA_ARGS__));
 
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
@@ -832,7 +849,6 @@ std::unique_ptr<boundary_check_info> executor_impl::attach_boundary_check_info(s
 } // namespace celerity::detail::live_executor_detail
 
 namespace celerity::detail {
-
 live_executor::live_executor(std::unique_ptr<backend> backend, std::unique_ptr<communicator> root_comm, delegate* const dlg, const policy_set& policy)
     : m_root_comm(std::move(root_comm)), m_thread(&live_executor::thread_main, this, std::move(backend), dlg, policy) //
 {
