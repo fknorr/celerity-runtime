@@ -11,11 +11,9 @@
 
 namespace celerity::detail::tracy_detail {
 
-inline std::atomic<int> g_tracy_mode = static_cast<int>(tracy_mode::off);
-inline void set_mode(const tracy_mode mode) { g_tracy_mode.store(static_cast<int>(mode), std::memory_order_relaxed); }
-inline tracy_mode get_mode() { return static_cast<tracy_mode>(g_tracy_mode.load(std::memory_order_relaxed)); }
-inline bool is_on() { return get_mode() != tracy_mode::off; }
-inline bool is_on_full() { return get_mode() == tracy_mode::full; }
+inline tracy_mode g_tracy_mode = tracy_mode::off;
+inline bool is_on() { return g_tracy_mode != tracy_mode::off; }
+inline bool is_on_full() { return g_tracy_mode == tracy_mode::full; }
 
 template <typename... FmtParams>
 const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {

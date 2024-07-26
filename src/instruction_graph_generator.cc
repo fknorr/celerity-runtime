@@ -1522,6 +1522,7 @@ instruction* generator_impl::launch_task_kernel(batch& command_batch, const exec
 
 	buffer_access_allocation_map allocation_map(bam.get_num_accesses());
 	buffer_access_allocation_map reduction_map(tsk.get_reductions().size());
+	size_t global_memory_access_estimate_bytes = 0;
 
 	std::vector<buffer_memory_record> buffer_memory_access_map;       // if is_recording()
 	std::vector<buffer_reduction_record> buffer_memory_reduction_map; // if is_recording()
@@ -1538,11 +1539,13 @@ instruction* generator_impl::launch_task_kernel(batch& command_batch, const exec
 		if(!accessed_box.empty()) {
 			const auto& alloc = buffer.memories[chunk.memory_id].get_contiguous_allocation(accessed_box);
 			allocation_map[i] = {alloc.aid, alloc.box, accessed_box CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, bid, buffer.debug_name)};
-			if(is_recording()) { buffer_memory_access_map[i] = buffer_memory_record{bid, buffer.debug_name}; }
 		} else {
 			allocation_map[i] = buffer_access_allocation{null_allocation_id, {}, {} CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, bid, buffer.debug_name)};
-			if(is_recording()) { buffer_memory_access_map[i] = buffer_memory_record{bid, buffer.debug_name}; }
 		}
+		global_memory_access_estimate_bytes +=
+		    (static_cast<size_t>(access::mode_traits::is_producer(mode)) + static_cast<size_t>(access::mode_traits::is_consumer(mode)))
+		    * accessed_box.get_area() * buffer.elem_size;
+		if(is_recording()) { buffer_memory_access_map[i] = buffer_memory_record{bid, buffer.debug_name}; }
 	}
 
 	// map reduction outputs to allocations in chunk-memory
@@ -1551,6 +1554,7 @@ instruction* generator_impl::launch_task_kernel(batch& command_batch, const exec
 		const auto& buffer = m_buffers.at(rinfo.bid);
 		const auto& alloc = buffer.memories[chunk.memory_id].get_contiguous_allocation(scalar_reduction_box);
 		reduction_map[i] = {alloc.aid, alloc.box, scalar_reduction_box CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, rinfo.bid, buffer.debug_name)};
+		global_memory_access_estimate_bytes += chunk.execution_range.get_area() * buffer.elem_size;
 		if(is_recording()) { buffer_memory_reduction_map[i] = buffer_reduction_record{rinfo.bid, buffer.debug_name, rinfo.rid}; }
 	}
 
@@ -1558,9 +1562,9 @@ instruction* generator_impl::launch_task_kernel(batch& command_batch, const exec
 		assert(chunk.execution_range.get_area() > 0);
 		assert(chunk.device_id.has_value());
 		return create<device_kernel_instruction>(command_batch, *chunk.device_id, tsk.get_launcher<device_kernel_launcher>(), chunk.execution_range,
-		    std::move(allocation_map),
-		    std::move(reduction_map) //
-		    CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_type(), tsk.get_id(), tsk.get_debug_name()),
+		    std::move(allocation_map), std::move(reduction_map),
+		    global_memory_access_estimate_bytes //
+		        CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(, tsk.get_type(), tsk.get_id(), tsk.get_debug_name()),
 		    [&](const auto& record_debug_info) {
 			    record_debug_info(ecmd.get_tid(), ecmd.get_cid(), tsk.get_debug_name(), buffer_memory_access_map, buffer_memory_reduction_map);
 		    });
@@ -1568,6 +1572,7 @@ instruction* generator_impl::launch_task_kernel(batch& command_batch, const exec
 		assert(tsk.get_execution_target() == execution_target::host);
 		assert(chunk.memory_id == host_memory_id);
 		assert(reduction_map.empty());
+		// We ignore global_memory_access_estimate_bytes for host tasks because they are typically limited by I/O instead
 		return create<host_task_instruction>(command_batch, tsk.get_launcher<host_task_launcher>(), chunk.execution_range, tsk.get_global_size(),
 		    std::move(allocation_map),
 		    tsk.get_collective_group_id() //

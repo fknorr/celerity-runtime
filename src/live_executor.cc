@@ -150,7 +150,7 @@ TracyCZoneCtx tracy_state::begin_instruction_zone(const instruction& instr, cons
 }
 
 void tracy_state::end_instruction_zone(const instruction& instr, const TracyCZoneCtx& ctx) {
-	if(tracy_detail::get_mode() == tracy_mode::full) {
+	if(tracy_detail::is_on_full()) {
 		auto& text = current_instruction_trace.log;
 
 		for(size_t i = 0; i < instr.get_dependencies().size(); ++i) {
@@ -175,7 +175,7 @@ void tracy_state::end_async_instruction_zone(async_lane_state& lane, async_zone_
 {
 	assert(lane.active_zone.has_value());
 
-	if(tracy_detail::get_mode() == tracy_mode::full) {
+	if(tracy_detail::is_on_full()) {
 		current_instruction_trace.log = std::move(zone.trace_log);
 		if(native_execution_time.has_value()) {
 			fmt::format_to(std::back_inserter(current_instruction_trace.log), "\nnative time: {:.2f}", as_sub_second(*native_execution_time));
@@ -185,6 +185,7 @@ void tracy_state::end_async_instruction_zone(async_lane_state& lane, async_zone_
 			    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
 			    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
 			    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
+			    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_global_memory_access_estimate_bytes(); },     //
 			    [](const auto& /* other */) { return 0; });
 
 			if(bytes_processed > 0) {
@@ -207,12 +208,12 @@ tracy_async_cursor tracy_state::issue_async_instruction(const instruction& instr
 	lane.queued_zones.push(async_zone_state{cursor.lane_submission_idx, &instr, {}});
 	if(start_immediately) {
 		begin_async_instruction_zone(lane, lane.queued_zones.back(), false /* eager */);
-	} else if(tracy_detail::get_mode() == tracy_mode::full) {
+	} else if(tracy_detail::is_on_full()) {
 		const std::string mark = fmt::format("I{} queued", instr.get_id());
 		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
 	}
 	TracyFiberLeave;
-	if(tracy_detail::get_mode() == tracy_mode::full) { lane.queued_zones.back().trace_log = std::move(current_instruction_trace.log); }
+	if(tracy_detail::is_on_full()) { lane.queued_zones.back().trace_log = std::move(current_instruction_trace.log); }
 	return cursor;
 }
 
@@ -475,6 +476,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	if(spdlog::should_log(spdlog::level::trace)) {
 		if(const auto native_time = async.event.get_native_execution_time(); native_time.has_value()) {
 			CELERITY_TRACE("[executor] retired I{} after {:.2f}", async.instr->get_id(), as_sub_second(*native_time));
+			// TODO throughput
 		} else {
 			CELERITY_TRACE("[executor] retired I{}", async.instr->get_id());
 		}
@@ -738,8 +740,8 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	assert(assignment.device == dkinstr.get_device_id());
 	assert(assignment.lane.has_value());
 
-	CELERITY_DETAIL_TRACE_INSTRUCTION(
-	    dkinstr, "device kernel on D{}, {}{}", dkinstr.get_device_id(), dkinstr.get_execution_range(), format_access_log(dkinstr.get_access_allocations()));
+	CELERITY_DETAIL_TRACE_INSTRUCTION(dkinstr, "device kernel on D{}, {}{}; global memory estimate: {:.2f}", dkinstr.get_device_id(),
+	    dkinstr.get_execution_range(), format_access_log(dkinstr.get_access_allocations()), as_binary_size(dkinstr.get_global_memory_access_estimate_bytes()));
 
 	auto accessor_infos = make_accessor_infos(dkinstr.get_access_allocations());
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
