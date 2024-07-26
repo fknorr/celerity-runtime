@@ -93,3 +93,6 @@ const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const 
 #define CELERITY_DETAIL_IF_TRACY(...)
 
 #endif
+
+#define CELERITY_DETAIL_IF_TRACY_IS_ON(...) CELERITY_DETAIL_IF_TRACY(if(::celerity::detail::tracy_detail::is_on()) { __VA_ARGS__; })
+#define CELERITY_DETAIL_IF_TRACY_IS_ON_FULL(...) CELERITY_DETAIL_IF_TRACY(if(::celerity::detail::tracy_detail::is_on_full()) { __VA_ARGS__; })

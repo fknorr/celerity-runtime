@@ -188,7 +188,7 @@ void tracy_state::end_async_instruction_zone(async_lane_state& lane, async_zone_
 			    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
 			    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
 			    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
-			    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_estimated_global_memory_traffic_bytes(); },     //
+			    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_estimated_global_memory_traffic_bytes(); },   //
 			    [](const auto& /* other */) { return 0; });
 
 			if(bytes_processed > 0) {
@@ -243,8 +243,7 @@ void tracy_state::retire_async_instruction(const tracy_async_cursor& cursor, std
 
 #define CELERITY_DETAIL_TRACE_INSTRUCTION(INSTR, FMT_STRING, ...)                                                                                              \
 	CELERITY_TRACE("[executor] I{}: " FMT_STRING, INSTR.get_id(), __VA_ARGS__);                                                                                \
-	CELERITY_DETAIL_IF_TRACY(                                                                                                                                  \
-	    if(celerity::detail::tracy_detail::is_on_full()) { fmt::format_to(std::back_inserter(tracy.current_instruction_trace), FMT_STRING, __VA_ARGS__); })
+	CELERITY_DETAIL_IF_TRACY_IS_ON_FULL(fmt::format_to(std::back_inserter(tracy.current_instruction_trace), FMT_STRING, __VA_ARGS__))
 
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
@@ -389,7 +388,7 @@ void executor_impl::poll_in_flight_async_instructions() {
 		return true;
 	});
 
-	CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) { tracy.assigned_instructions_plot.update(in_flight_async_instructions.size()); })
+	CELERITY_DETAIL_IF_TRACY_IS_ON(tracy.assigned_instructions_plot.update(in_flight_async_instructions.size()));
 }
 
 void executor_impl::poll_submission_queue() {
@@ -404,7 +403,7 @@ void executor_impl::poll_submission_queue() {
 			    for(const auto& pilot : batch.pilots) {
 				    root_communicator->send_outbound_pilot(pilot);
 			    }
-			    CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) { tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()); });
+			    CELERITY_DETAIL_IF_TRACY_IS_ON(tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()));
 		    },
 		    [&](const user_allocation_transfer& uat) {
 			    assert(uat.aid != null_allocation_id);
@@ -454,9 +453,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 		}
 	}
 
-#if CELERITY_ENABLE_TRACY
-	if(async.tracy_cursor.has_value()) { tracy.retire_async_instruction(*async.tracy_cursor, async.event.get_native_execution_time()); }
-#endif
+	CELERITY_DETAIL_IF_TRACY_IS_ON(tracy.retire_async_instruction(*async.tracy_cursor, async.event.get_native_execution_time()));
 
 	if(utils::isa<alloc_instruction>(async.instr)) {
 		const auto ainstr = utils::as<alloc_instruction>(async.instr);
@@ -469,7 +466,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	}
 
 	engine.complete_assigned(async.instr);
-	CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) { tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()); })
+	CELERITY_DETAIL_IF_TRACY_IS_ON(tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()));
 }
 
 template <typename Instr>
@@ -480,24 +477,20 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	assert(assignment.target == out_of_order_engine::target::immediate);
 	assert(!assignment.lane.has_value());
 
-#if CELERITY_ENABLE_TRACY
-	TracyCZoneCtx ctx;
-	if(tracy_detail::is_on()) {
+	CELERITY_DETAIL_IF_TRACY(TracyCZoneCtx ctx;)
+	CELERITY_DETAIL_IF_TRACY_IS_ON({
 		ctx = tracy.begin_instruction_zone(instr, false /* eager */);
 		tracy.assigned_instructions_plot.update(in_flight_async_instructions.size() + 1);
-	}
-#endif
+	})
 
 	issue(instr); // completes immediately
 	engine.complete_assigned(&instr);
 
-#if CELERITY_ENABLE_TRACY
-	if(tracy_detail::is_on()) {
+	CELERITY_DETAIL_IF_TRACY_IS_ON({
 		tracy.end_instruction_zone(instr, ctx);
 		tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length());
 		tracy.assigned_instructions_plot.update(in_flight_async_instructions.size());
-	}
-#endif
+	})
 }
 
 template <typename Instr>
@@ -509,12 +502,10 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	async.instr = assignment.instruction;
 	issue_async(instr, assignment, async); // stores event in `async` and completes asynchronously
 
-#if CELERITY_ENABLE_TRACY
-	if(tracy_detail::is_on()) {
+	CELERITY_DETAIL_IF_TRACY_IS_ON({
 		async.tracy_cursor = tracy.issue_async_instruction(instr, assignment);
 		tracy.assigned_instructions_plot.update(in_flight_async_instructions.size());
-	}
-#endif
+	})
 }
 
 void executor_impl::try_issue_one_instruction() {
@@ -525,9 +516,7 @@ void executor_impl::try_issue_one_instruction() {
 	matchbox::match(*assignment->instruction, [&](const auto& instr) { dispatch(instr, *assignment); });
 	made_progress = true;
 
-#if CELERITY_ENABLE_TRACY
-	if(tracy_detail::is_on()) { tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()); }
-#endif
+	CELERITY_DETAIL_IF_TRACY_IS_ON(tracy.assignment_queue_length_plot.update(engine.get_assignment_queue_length()));
 }
 
 void executor_impl::check_progress() {
@@ -710,7 +699,8 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	assert(assignment.lane.has_value());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(dkinstr, "device kernel on D{}, {}{}; estimated global memory traffic: {:.2f}", dkinstr.get_device_id(),
-	    dkinstr.get_execution_range(), format_access_log(dkinstr.get_access_allocations()), as_binary_size(dkinstr.get_estimated_global_memory_traffic_bytes()));
+	    dkinstr.get_execution_range(), format_access_log(dkinstr.get_access_allocations()),
+	    as_binary_size(dkinstr.get_estimated_global_memory_traffic_bytes()));
 
 	auto accessor_infos = make_accessor_infos(dkinstr.get_access_allocations());
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
