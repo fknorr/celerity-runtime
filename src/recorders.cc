@@ -167,7 +167,7 @@ device_kernel_instruction_record::device_kernel_instruction_record(const device_
     const command_id execution_cid, const std::string& debug_name, const std::vector<buffer_memory_record>& buffer_memory_allocation_map,
     const std::vector<buffer_reduction_record>& buffer_memory_reduction_map)
     : acceptor_base(dkinstr), device_id(dkinstr.get_device_id()), execution_range(dkinstr.get_execution_range()),
-      global_memory_access_estimate_bytes(dkinstr.get_global_memory_access_estimate_bytes()), command_group_task_id(cg_tid),
+      estimated_global_memory_traffic_bytes(dkinstr.get_estimated_global_memory_traffic_bytes()), command_group_task_id(cg_tid),
       execution_command_id(execution_cid), debug_name(debug_name) //
 {
 	assert(dkinstr.get_access_allocations().size() == buffer_memory_allocation_map.size());

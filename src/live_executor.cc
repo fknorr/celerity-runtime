@@ -181,14 +181,14 @@ void tracy_state::end_async_instruction_zone(async_lane_state& lane, async_zone_
 	if(tracy_detail::is_on_full()) {
 		current_instruction_trace.log = std::move(zone.trace_log);
 		if(native_execution_time.has_value()) {
-			fmt::format_to(std::back_inserter(current_instruction_trace.log), "\nnative time: {:.2f}", as_sub_second(*native_execution_time));
+			fmt::format_to(std::back_inserter(current_instruction_trace.log), "\nnative execution time: {:.2f}", as_sub_second(*native_execution_time));
 
 			const auto bytes_processed = matchbox::match(
 			    *zone.instr,                                                                                                    //
 			    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
 			    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
 			    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
-			    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_global_memory_access_estimate_bytes(); },     //
+			    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_estimated_global_memory_traffic_bytes(); },     //
 			    [](const auto& /* other */) { return 0; });
 
 			if(bytes_processed > 0) {
@@ -709,8 +709,8 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	assert(assignment.device == dkinstr.get_device_id());
 	assert(assignment.lane.has_value());
 
-	CELERITY_DETAIL_TRACE_INSTRUCTION(dkinstr, "device kernel on D{}, {}{}; global memory estimate: {:.2f}", dkinstr.get_device_id(),
-	    dkinstr.get_execution_range(), format_access_log(dkinstr.get_access_allocations()), as_binary_size(dkinstr.get_global_memory_access_estimate_bytes()));
+	CELERITY_DETAIL_TRACE_INSTRUCTION(dkinstr, "device kernel on D{}, {}{}; estimated global memory traffic: {:.2f}", dkinstr.get_device_id(),
+	    dkinstr.get_execution_range(), format_access_log(dkinstr.get_access_allocations()), as_binary_size(dkinstr.get_estimated_global_memory_traffic_bytes()));
 
 	auto accessor_infos = make_accessor_infos(dkinstr.get_access_allocations());
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK

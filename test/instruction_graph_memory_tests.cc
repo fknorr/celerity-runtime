@@ -636,7 +636,7 @@ TEST_CASE("overlapping accessors with read + discard_write modes are equivalent 
 	CHECK(consume_kernel.predecessors() == read_discard_write_kernel);
 }
 
-TEST_CASE("device kernels report a global memory access estimate based on range mappers", "[instruction_graph_generator][instruction-graph][memory]") {
+TEST_CASE("device kernels report global memory traffic estimate based on range mappers", "[instruction_graph_generator][instruction-graph][memory]") {
 	constexpr size_t num_devices = 2;
 	constexpr size_t buffer_size = 1024;
 
@@ -653,18 +653,18 @@ TEST_CASE("device kernels report a global memory access estimate based on range 
 	const auto all_instrs = ictx.query_instructions();
 
 	for(const auto& all_read : all_instrs.select_all<device_kernel_instruction_record>("all_read").iterate()) {
-		CHECK(all_read->global_memory_access_estimate_bytes == buffer_size * sizeof(float));
+		CHECK(all_read->estimated_global_memory_traffic_bytes == buffer_size * sizeof(float));
 	}
 	for(const auto& o2o_read : all_instrs.select_all<device_kernel_instruction_record>("1:1 read").iterate()) {
-		CHECK(o2o_read->global_memory_access_estimate_bytes == buffer_size / num_devices * sizeof(float));
+		CHECK(o2o_read->estimated_global_memory_traffic_bytes == buffer_size / num_devices * sizeof(float));
 	}
 	for(const auto& o2o_read_write : all_instrs.select_all<device_kernel_instruction_record>("1:1 read_write").iterate()) {
-		CHECK(o2o_read_write->global_memory_access_estimate_bytes == buffer_size / num_devices * 2 * sizeof(float));
+		CHECK(o2o_read_write->estimated_global_memory_traffic_bytes == buffer_size / num_devices * 2 * sizeof(float));
 	}
 	for(const auto& write_plus_read : all_instrs.select_all<device_kernel_instruction_record>("1:1 discard_write + all_read").iterate()) {
-		CHECK(write_plus_read->global_memory_access_estimate_bytes == (buffer_size / num_devices + buffer_size) * sizeof(float));
+		CHECK(write_plus_read->estimated_global_memory_traffic_bytes == (buffer_size / num_devices + buffer_size) * sizeof(float));
 	}
 	for(const auto& reduce : all_instrs.select_all<device_kernel_instruction_record>("reduce").iterate()) {
-		CHECK(reduce->global_memory_access_estimate_bytes == buffer_size / num_devices * sizeof(float));
+		CHECK(reduce->estimated_global_memory_traffic_bytes == buffer_size / num_devices * sizeof(float));
 	}
 }

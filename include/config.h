@@ -26,7 +26,7 @@ namespace detail {
 
 		const host_config& get_host_config() const { return m_host_cfg; }
 
-		std::optional<bool> get_enable_device_profiling() const { return m_enable_device_profiling; }
+		bool should_enable_device_profiling() const { return m_enable_device_profiling.value_or(m_tracy_mode == tracy_mode::full); }
 		bool is_dry_run() const { return m_dry_run_nodes > 0; }
 		bool should_print_graphs() const { return m_should_print_graphs; }
 		bool should_record() const {

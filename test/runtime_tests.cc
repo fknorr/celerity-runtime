@@ -1153,9 +1153,7 @@ namespace detail {
 		auto cfg = config(nullptr, nullptr);
 
 		CHECK(cfg.get_log_level() == spdlog::level::debug);
-		const auto has_prof = cfg.get_enable_device_profiling();
-		REQUIRE(has_prof.has_value());
-		CHECK((*has_prof) == true);
+		CHECK(cfg.should_enable_device_profiling());
 		CHECK(cfg.get_dry_run_nodes() == 4);
 		CHECK(cfg.should_print_graphs() == true);
 	}

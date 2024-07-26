@@ -181,8 +181,7 @@ namespace detail {
 			assert(!devices.empty());
 		}
 
-		const bool enable_profiling = m_cfg->get_enable_device_profiling().value_or(false);
-		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices, enable_profiling);
+		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices, m_cfg->should_enable_device_profiling());
 		const auto system = backend->get_system_info(); // backend is about to be moved
 
 		if(m_cfg->is_dry_run()) {
