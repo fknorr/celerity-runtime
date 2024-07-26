@@ -2,7 +2,7 @@
 
 #if CELERITY_ENABLE_TRACY
 
-#include <cstdlib>
+#include "config.h"
 
 #include <fmt/format.h>
 #include <tracy/Tracy.hpp>
@@ -10,6 +10,12 @@
 
 
 namespace celerity::detail::tracy_detail {
+
+inline std::atomic<int> g_tracy_mode = static_cast<int>(tracy_mode::off);
+inline void set_mode(const tracy_mode mode) { g_tracy_mode.store(static_cast<int>(mode), std::memory_order_relaxed); }
+inline tracy_mode get_mode() { return static_cast<tracy_mode>(g_tracy_mode.load(std::memory_order_relaxed)); }
+inline bool is_on() { return get_mode() != tracy_mode::off; }
+inline bool is_on_full() { return get_mode() == tracy_mode::full; }
 
 template <typename... FmtParams>
 const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
@@ -38,8 +44,8 @@ const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const 
 	}
 
 #define CELERITY_DETAIL_TRACY_ZONE_SCOPED_2(SCOPED_NAME, SCOPED_NAME_LENGTH, TAG, COLOR_NAME, ...)                                                             \
-	ZoneScopedNC(TAG, ::tracy::Color::COLOR_NAME);                                                                                                             \
-	{                                                                                                                                                          \
+	ZoneNamedNC(___tracy_scoped_zone, TAG, ::tracy::Color::COLOR_NAME, ::celerity::detail::tracy_detail::is_on());                                             \
+	if(::celerity::detail::tracy_detail::is_on_full()) {                                                                                                       \
 		CELERITY_DETAIL_TRACY_FORMAT(SCOPED_NAME, SCOPED_NAME_LENGTH, __VA_ARGS__)                                                                             \
 		ZoneName(SCOPED_NAME, SCOPED_NAME_LENGTH);                                                                                                             \
 	}
@@ -49,7 +55,7 @@ const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const 
 	    CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_zone_name_length_), TAG, COLOR_NAME, __VA_ARGS__)
 
 #define CELERITY_DETAIL_TRACY_ZONE_TEXT_2(SCOPED_NAME, SCOPED_NAME_LENGTH, ...)                                                                                \
-	{                                                                                                                                                          \
+	if(::celerity::detail::tracy_detail::is_on_full()) {                                                                                                       \
 		CELERITY_DETAIL_TRACY_FORMAT(SCOPED_NAME, SCOPED_NAME_LENGTH, __VA_ARGS__)                                                                             \
 		ZoneText(SCOPED_NAME, SCOPED_NAME_LENGTH);                                                                                                             \
 	}

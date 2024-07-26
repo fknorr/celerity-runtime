@@ -141,28 +141,27 @@ TracyCZoneCtx tracy_state::begin_instruction_zone(const instruction& instr, cons
 
 #undef CELERITY_DETAIL_BEGIN_CTX
 
-	const auto label = fmt::format("{}I{} {}", was_eagerly_submitted ? "+" : "", instr.get_id(), tag);
-	TracyCZoneName(ctx, label.data(), label.size());
+	if(tracy_detail::is_on_full()) {
+		const auto label = fmt::format("{}I{} {}", was_eagerly_submitted ? "+" : "", instr.get_id(), tag);
+		TracyCZoneName(ctx, label.data(), label.size());
+	}
 
 	return ctx;
 }
 
 void tracy_state::end_instruction_zone(const instruction& instr, const TracyCZoneCtx& ctx) {
-	auto& text = current_instruction_trace.log;
+	if(tracy_detail::get_mode() == tracy_mode::full) {
+		auto& text = current_instruction_trace.log;
 
-	size_t line_end = 0;
-	while(line_end = text.find("; ", line_end), line_end != std::string::npos) {
-		text.replace(line_end, 2, "\n");
+		for(size_t i = 0; i < instr.get_dependencies().size(); ++i) {
+			text += i == 0 ? "\ndepends: " : ", ";
+			fmt::format_to(std::back_inserter(text), "I{}", instr.get_dependencies()[i]);
+		}
+
+		fmt::format_to(std::back_inserter(text), "\npriority: {}", instr.get_priority());
+		TracyCZoneText(ctx, text.data(), text.size());
+		text.clear();
 	}
-
-	for(size_t i = 0; i < instr.get_dependencies().size(); ++i) {
-		text += i == 0 ? "\ndepends: " : ", ";
-		fmt::format_to(std::back_inserter(text), "I{}", instr.get_dependencies()[i]);
-	}
-
-	fmt::format_to(std::back_inserter(text), "\npriority: {}", instr.get_priority());
-	TracyCZoneText(ctx, text.data(), text.size());
-	text.clear();
 
 	TracyCZoneEnd(ctx);
 }
@@ -175,22 +174,26 @@ void tracy_state::begin_async_instruction_zone(async_lane_state& lane, async_zon
 void tracy_state::end_async_instruction_zone(async_lane_state& lane, async_zone_state& zone, std::optional<std::chrono::nanoseconds> native_execution_time) //
 {
 	assert(lane.active_zone.has_value());
-	current_instruction_trace.log = std::move(zone.trace_log);
-	if(native_execution_time.has_value()) {
-		fmt::format_to(std::back_inserter(current_instruction_trace.log), "; native time: {:.2f}", as_sub_second(*native_execution_time));
 
-		const auto bytes_processed = matchbox::match(
-		    *zone.instr,                                                                                                    //
-		    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
-		    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
-		    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
-		    [](const auto& /* other */) { return 0; });
+	if(tracy_detail::get_mode() == tracy_mode::full) {
+		current_instruction_trace.log = std::move(zone.trace_log);
+		if(native_execution_time.has_value()) {
+			fmt::format_to(std::back_inserter(current_instruction_trace.log), "\nnative time: {:.2f}", as_sub_second(*native_execution_time));
 
-		if(bytes_processed > 0) {
-			fmt::format_to(std::back_inserter(current_instruction_trace.log), //
-			    "; throughput: {:.2f}", as_binary_throughput(bytes_processed, *native_execution_time));
+			const auto bytes_processed = matchbox::match(
+			    *zone.instr,                                                                                                    //
+			    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
+			    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
+			    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
+			    [](const auto& /* other */) { return 0; });
+
+			if(bytes_processed > 0) {
+				fmt::format_to(std::back_inserter(current_instruction_trace.log), //
+				    "\nthroughput: {:.2f}", as_binary_throughput(bytes_processed, *native_execution_time));
+			}
 		}
 	}
+
 	end_instruction_zone(*zone.instr, *lane.active_zone);
 	lane.active_zone = std::nullopt;
 }
@@ -204,12 +207,12 @@ tracy_async_cursor tracy_state::issue_async_instruction(const instruction& instr
 	lane.queued_zones.push(async_zone_state{cursor.lane_submission_idx, &instr, {}});
 	if(start_immediately) {
 		begin_async_instruction_zone(lane, lane.queued_zones.back(), false /* eager */);
-	} else {
-		auto mark = fmt::format("I{} queued", instr.get_id());
+	} else if(tracy_detail::get_mode() == tracy_mode::full) {
+		const std::string mark = fmt::format("I{} queued", instr.get_id());
 		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
 	}
 	TracyFiberLeave;
-	lane.queued_zones.back().trace_log = std::move(current_instruction_trace.log);
+	if(tracy_detail::get_mode() == tracy_mode::full) { lane.queued_zones.back().trace_log = std::move(current_instruction_trace.log); }
 	return cursor;
 }
 
@@ -249,7 +252,8 @@ constexpr auto tracy_plot_assignment_queue = "assignment queue depth";
 
 #define CELERITY_DETAIL_TRACE_INSTRUCTION(INSTR, FMT_STRING, ...)                                                                                              \
 	CELERITY_TRACE("[executor] I{}: " FMT_STRING, INSTR.get_id(), __VA_ARGS__);                                                                                \
-	CELERITY_DETAIL_IF_TRACY(fmt::format_to(std::back_inserter(tracy.current_instruction_trace), FMT_STRING, __VA_ARGS__));
+	CELERITY_DETAIL_IF_TRACY(                                                                                                                                  \
+	    if(celerity::detail::tracy_detail::is_on_full()) { fmt::format_to(std::back_inserter(tracy.current_instruction_trace), FMT_STRING, __VA_ARGS__); })
 
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
@@ -362,8 +366,12 @@ executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communica
 void executor_impl::run() {
 	closure_hydrator::make_available();
 
-	CELERITY_DETAIL_IF_TRACY(tracy_create_plot(tracy_plot_active_instructions));
-	CELERITY_DETAIL_IF_TRACY(tracy_create_plot(tracy_plot_assignment_queue));
+#if CELERITY_ENABLE_TRACY
+	if(tracy_detail::is_on()) {
+		tracy_create_plot(tracy_plot_active_instructions);
+		tracy_create_plot(tracy_plot_assignment_queue);
+	}
+#endif
 
 	for(;;) {
 		if(engine.is_idle()) {
@@ -400,7 +408,9 @@ void executor_impl::poll_in_flight_async_instructions() {
 	});
 
 #if CELERITY_ENABLE_TRACY
-	if(in_flight_async_instructions.size() != active_instrs_before) { tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size()); }
+	if(tracy_detail::is_on() && in_flight_async_instructions.size() != active_instrs_before) {
+		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
+	}
 #endif
 }
 
@@ -410,13 +420,18 @@ void executor_impl::poll_submission_queue() {
 		matchbox::match(
 		    submission,
 		    [&](const instruction_pilot_batch& batch) {
+			    CELERITY_DETAIL_IF_TRACY(const auto queue_depth_before = engine.get_assignment_queue_depth());
 			    for(const auto incoming_instr : batch.instructions) {
 				    engine.submit(incoming_instr);
 			    }
 			    for(const auto& pilot : batch.pilots) {
 				    root_communicator->send_outbound_pilot(pilot);
 			    }
-			    CELERITY_DETAIL_IF_TRACY(tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()));
+			    CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) {
+				    if(const auto depth = engine.get_assignment_queue_depth(); depth != queue_depth_before) {
+					    tracy_update_plot(tracy_plot_assignment_queue, depth);
+				    }
+			    });
 		    },
 		    [&](const user_allocation_transfer& uat) {
 			    assert(uat.aid != null_allocation_id);
@@ -479,8 +494,11 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 		allocations.emplace(aid, ptr);
 	}
 
+	CELERITY_DETAIL_IF_TRACY(const auto queue_depth_before = engine.get_assignment_queue_depth());
 	engine.complete_assigned(async.instr);
-	CELERITY_DETAIL_IF_TRACY(tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()));
+	CELERITY_DETAIL_IF_TRACY(if(tracy_detail::is_on()) {
+		if(const auto depth = engine.get_assignment_queue_depth(); depth != queue_depth_before) { tracy_update_plot(tracy_plot_assignment_queue, depth); }
+	});
 }
 
 template <typename Instr>
@@ -492,17 +510,22 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	assert(!assignment.lane.has_value());
 
 #if CELERITY_ENABLE_TRACY
-	const auto zone = tracy.begin_instruction_zone(instr, false /* eager */);
-	tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size() + 1);
+	TracyCZoneCtx ctx;
+	if(tracy_detail::is_on()) {
+		ctx = tracy.begin_instruction_zone(instr, false /* eager */);
+		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size() + 1);
+	}
 #endif
 
 	issue(instr); // completes immediately
 	engine.complete_assigned(&instr);
 
 #if CELERITY_ENABLE_TRACY
-	tracy.end_instruction_zone(instr, zone);
-	tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth());
-	tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
+	if(tracy_detail::is_on()) {
+		tracy.end_instruction_zone(instr, ctx);
+		tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth());
+		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
+	}
 #endif
 }
 
@@ -516,8 +539,10 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	issue_async(instr, assignment, async); // stores event in `async` and completes asynchronously
 
 #if CELERITY_ENABLE_TRACY
-	async.tracy_cursor = tracy.issue_async_instruction(instr, assignment);
-	tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
+	if(tracy_detail::is_on()) {
+		async.tracy_cursor = tracy.issue_async_instruction(instr, assignment);
+		tracy_update_plot(tracy_plot_active_instructions, in_flight_async_instructions.size());
+	}
 #endif
 }
 
@@ -529,7 +554,9 @@ void executor_impl::try_issue_one_instruction() {
 	matchbox::match(*assignment->instruction, [&](const auto& instr) { dispatch(instr, *assignment); });
 	made_progress = true;
 
-	CELERITY_DETAIL_IF_TRACY(tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()));
+#if CELERITY_ENABLE_TRACY
+	if(tracy_detail::is_on()) { tracy_update_plot(tracy_plot_assignment_queue, engine.get_assignment_queue_depth()); }
+#endif
 }
 
 void executor_impl::check_progress() {

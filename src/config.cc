@@ -1,20 +1,19 @@
 #include "config.h"
 
 #include <cstdlib>
-#include <iterator>
-#include <sstream>
 #include <string_view>
-#include <thread>
 
 #include <mpi.h>
 
 #include "log.h"
+#include "tracy.h"
 
 #include <spdlog/sinks/sink.h>
 
 #include <libenvpp/env.hpp>
 
 namespace env {
+
 template <>
 struct default_parser<celerity::detail::log_level> {
 	celerity::detail::log_level operator()(const std::string_view str) const {
@@ -46,6 +45,22 @@ struct default_parser<celerity::detail::log_level> {
 		return lvl;
 	}
 };
+
+template <>
+struct default_parser<celerity::detail::tracy_mode> {
+	celerity::detail::tracy_mode operator()(const std::string_view str) const {
+		if(str == "off") {
+			return celerity::detail::tracy_mode::off;
+		} else if(str == "fast") {
+			return celerity::detail::tracy_mode::fast;
+		} else if(str == "full") {
+			return celerity::detail::tracy_mode::full;
+		} else {
+			throw parser_error{"Unable to parse '{}'. Possible values are: off, fast, full."};
+		}
+	}
+};
+
 } // namespace env
 
 namespace {
@@ -135,6 +150,7 @@ namespace detail {
 		    pref.register_variable<bool>("FORCE_WG", [](const std::string_view str) { return parse_validate_force_wg(str); });
 		[[maybe_unused]] const auto env_profile_ocl =
 		    pref.register_variable<bool>("PROFILE_OCL", [](const std::string_view str) { return parse_validate_profile_ocl(str); });
+		const auto env_tracy_mode = pref.register_option<tracy_mode>("TRACY", {tracy_mode::off, tracy_mode::fast, tracy_mode::full});
 
 		const auto parsed_and_validated_envs = pref.parse_and_validate();
 		if(parsed_and_validated_envs.ok()) {
@@ -159,7 +175,7 @@ namespace detail {
 			m_should_print_graphs = parsed_and_validated_envs.get_or(env_print_graphs, false);
 			m_horizon_step = parsed_and_validated_envs.get(env_horizon_step);
 			m_horizon_max_parallelism = parsed_and_validated_envs.get(env_horizon_max_para);
-
+			m_tracy_mode = parsed_and_validated_envs.get_or(env_tracy_mode, tracy_mode::off);
 		} else {
 			for(const auto& warn : parsed_and_validated_envs.warnings()) {
 				CELERITY_ERROR("{}", warn.what());
