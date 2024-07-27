@@ -8,7 +8,6 @@
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyC.h>
 
-
 namespace celerity::detail::tracy_detail {
 
 inline tracy_mode g_tracy_mode = tracy_mode::off;
@@ -63,6 +62,7 @@ void apply_string(const ApplyFn& apply, std::string_view string) {
 #define CELERITY_DETAIL_IF_TRACY_SUPPORTED(...)
 
 #endif
+
 
 #define CELERITY_DETAIL_IF_TRACY_ENABLED(...) CELERITY_DETAIL_IF_TRACY_SUPPORTED(if(::celerity::detail::tracy_detail::is_enabled()) { __VA_ARGS__; })
 #define CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(...) CELERITY_DETAIL_IF_TRACY_SUPPORTED(if(::celerity::detail::tracy_detail::is_enabled_full()) { __VA_ARGS__; })

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <typeinfo>
@@ -201,6 +202,20 @@ template <typename Container, typename Predicate>
 void erase_if(Container& container, const Predicate& predicate) {
 	using std::begin, std::end;
 	container.erase(std::remove_if(begin(container), end(container), predicate), end(container));
+}
+
+inline std::string replace_all(const std::string_view& in, const std::string_view& pattern, const std::string_view& with) {
+	std::string out;
+	out.reserve(in.size());
+	size_t last_pos = 0;
+	size_t pos = 0;
+	while((pos = in.find(pattern, last_pos)) != std::string::npos) {
+		out.append(in, last_pos, pos - last_pos);
+		out.append(with);
+		last_pos = pos + pattern.size();
+	}
+	out.append(in, last_pos);
+	return out;
 }
 
 } // namespace celerity::detail::utils
