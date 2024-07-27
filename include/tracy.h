@@ -10,8 +10,13 @@
 
 namespace celerity::detail::tracy_detail {
 
+// This is intentionally not an atomic, as parts of Celerity (= live_executor) expect it not to change after runtime startup
 inline tracy_mode g_tracy_mode = tracy_mode::off;
+
+/// Tracy is enabled via environment variable, either in fast or full mode.
 inline bool is_enabled() { return g_tracy_mode != tracy_mode::off; }
+
+/// Tracy is enabled via environment variable, in full mode.
 inline bool is_enabled_full() { return g_tracy_mode == tracy_mode::full; }
 
 template <typename Value>
@@ -43,6 +48,7 @@ const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const 
 	return name;
 }
 
+/// Helper to pass fmt::formatted strings to Tracy's (pointer, size) functions.
 template <typename ApplyFn, typename... FmtParams, std::enable_if_t<(sizeof...(FmtParams) > 0), int> = 0>
 void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
 	apply(fmt::format(fmt_string, fmt_args...));

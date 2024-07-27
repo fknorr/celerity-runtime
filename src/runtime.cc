@@ -159,13 +159,12 @@ namespace detail {
 			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set, but no profiler is connected. Ignoring."); }
 			real_tracy_mode = tracy_mode::off;
 		}
+		tracy_detail::g_tracy_mode = real_tracy_mode;
 #else
 		if(real_tracy_mode != tracy_mode::off) {
 			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set, but Celerity was compiled without Tracy support. Ignoring."); }
-			real_tracy_mode = tracy_mode::off;
 		}
 #endif
-		tracy_detail::g_tracy_mode = real_tracy_mode;
 
 		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, m_local_nid);
 
