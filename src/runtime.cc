@@ -154,19 +154,20 @@ namespace detail {
 #endif
 
 		auto real_tracy_mode = m_cfg->get_tracy_mode();
-		if(real_tracy_mode != tracy_mode::off && !CELERITY_ENABLE_TRACY) {
-			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set to a value != \"off\", but Celerity was compiled without Tracy support. Ignoring."); }
-			real_tracy_mode = tracy_mode::off;
-		}
-#if CELERITY_ENABLE_TRACY
+#if CELERITY_TRACY_SUPPORT
 		if(real_tracy_mode != tracy_mode::off && !(::tracy::ProfilerAvailable() && ::tracy::GetProfiler().IsConnected())) {
-			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set to a value != \"off\", but no Profiler is not connected. Ignoring."); }
+			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set, but no Profiler is not connected. Ignoring."); }
 			real_tracy_mode = tracy_mode::off;
 		}
 		if(real_tracy_mode != tracy_mode::off && !s_test_mode) {
-			CELERITY_WARN("Instrumentation for profiling with Tracy is enabled. Performance may be negatively impacted.");
+			CELERITY_WARN("Tracy Profiler instrumentation is active. Performance may be negatively impacted.");
 		}
 		tracy_detail::g_tracy_mode = real_tracy_mode;
+#else
+		if(real_tracy_mode != tracy_mode::off) {
+			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set, but Celerity was compiled without Tracy support. Ignoring."); }
+			real_tracy_mode = tracy_mode::off;
+		}
 #endif
 
 		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, m_local_nid);

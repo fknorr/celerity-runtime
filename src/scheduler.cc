@@ -40,7 +40,7 @@ namespace detail {
 					    std::vector<abstract_command*> commands;
 					    {
 						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::build_task", WebMaroon, "T{} build", tsk.get_id());
-						    CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", utils::make_task_debug_label(tsk.get_type(), tsk.get_id(), tsk.get_debug_name()));
+						    CELERITY_DETAIL_TRACY_ZONE_TEXT(utils::make_task_debug_label(tsk.get_type(), tsk.get_id(), tsk.get_debug_name()));
 
 						    commands = sort_topologically(m_dggen->build_task(tsk));
 					    }

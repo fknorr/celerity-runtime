@@ -14,6 +14,10 @@
 #include "types.h"
 
 
+#define CELERITY_DETAIL_UTILS_CAT_2(a, b) a##b
+#define CELERITY_DETAIL_UTILS_CAT(a, b) CELERITY_DETAIL_UTILS_CAT_2(a, b)
+
+
 namespace celerity::detail::utils {
 
 /// Like std::move, but move-constructs the result so it does not reference the argument after returning.

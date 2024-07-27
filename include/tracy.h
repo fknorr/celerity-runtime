@@ -1,6 +1,6 @@
 #pragma once
 
-#if CELERITY_ENABLE_TRACY
+#if CELERITY_TRACY_SUPPORT
 
 #include "config.h"
 
@@ -12,8 +12,8 @@
 namespace celerity::detail::tracy_detail {
 
 inline tracy_mode g_tracy_mode = tracy_mode::off;
-inline bool is_on() { return g_tracy_mode != tracy_mode::off; }
-inline bool is_on_full() { return g_tracy_mode == tracy_mode::full; }
+inline bool is_enabled() { return g_tracy_mode != tracy_mode::off; }
+inline bool is_enabled_full() { return g_tracy_mode == tracy_mode::full; }
 
 template <typename Value>
 struct plot {
@@ -44,55 +44,34 @@ const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const 
 	return name;
 }
 
+template <typename ApplyFn, typename... FmtParams, std::enable_if_t<(sizeof...(FmtParams) > 0), int> = 0>
+void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
+	apply(fmt::format(fmt_string, fmt_args...));
+}
+
+template <typename ApplyFn, typename... FmtParams>
+void apply_string(const ApplyFn& apply, std::string_view string) {
+	apply(string);
+}
+
 } // namespace celerity::detail::tracy_detail
 
-#define CELERITY_DETAIL_TRACY_CAT_2(a, b) a##b
-#define CELERITY_DETAIL_TRACY_CAT(a, b) CELERITY_DETAIL_TRACY_CAT_2(a, b)
-#define CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tag) CELERITY_DETAIL_TRACY_CAT(tag, __COUNTER__)
-
-#define CELERITY_DETAIL_TRACY_TEXT_BUFFER_SIZE 128
-
-#define CELERITY_DETAIL_TRACY_FORMAT(SCOPED_BUF, SCOPED_LENGTH, ...)                                                                                           \
-	char SCOPED_BUF[CELERITY_DETAIL_TRACY_TEXT_BUFFER_SIZE];                                                                                                   \
-	::size_t SCOPED_LENGTH = ::fmt::format_to_n(SCOPED_BUF, CELERITY_DETAIL_TRACY_TEXT_BUFFER_SIZE, __VA_ARGS__).size;                                         \
-	if(SCOPED_LENGTH > CELERITY_DETAIL_TRACY_TEXT_BUFFER_SIZE) {                                                                                               \
-		::memset(SCOPED_BUF + CELERITY_DETAIL_TRACY_TEXT_BUFFER_SIZE - 3, '.', 3);                                                                             \
-		SCOPED_LENGTH = CELERITY_DETAIL_TRACY_TEXT_BUFFER_SIZE;                                                                                                \
-	}
-
-#define CELERITY_DETAIL_TRACY_ZONE_SCOPED_2(SCOPED_NAME, SCOPED_NAME_LENGTH, TAG, COLOR_NAME, ...)                                                             \
-	ZoneNamedNC(___tracy_scoped_zone, TAG, ::tracy::Color::COLOR_NAME, ::celerity::detail::tracy_detail::is_on());                                             \
-	if(::celerity::detail::tracy_detail::is_on_full()) {                                                                                                       \
-		CELERITY_DETAIL_TRACY_FORMAT(SCOPED_NAME, SCOPED_NAME_LENGTH, __VA_ARGS__)                                                                             \
-		ZoneName(SCOPED_NAME, SCOPED_NAME_LENGTH);                                                                                                             \
-	}
-
-#define CELERITY_DETAIL_TRACY_ZONE_SCOPED(TAG, COLOR_NAME, ...)                                                                                                \
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED_2(CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_zone_name_),                                                        \
-	    CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_zone_name_length_), TAG, COLOR_NAME, __VA_ARGS__)
-
-#define CELERITY_DETAIL_TRACY_ZONE_TEXT_2(SCOPED_NAME, SCOPED_NAME_LENGTH, ...)                                                                                \
-	if(::celerity::detail::tracy_detail::is_on_full()) {                                                                                                       \
-		CELERITY_DETAIL_TRACY_FORMAT(SCOPED_NAME, SCOPED_NAME_LENGTH, __VA_ARGS__)                                                                             \
-		ZoneText(SCOPED_NAME, SCOPED_NAME_LENGTH);                                                                                                             \
-	}
-
-#define CELERITY_DETAIL_TRACY_ZONE_TEXT(...)                                                                                                                   \
-	CELERITY_DETAIL_TRACY_ZONE_TEXT_2(                                                                                                                         \
-	    CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_zone_text_), CELERITY_DETAIL_TRACY_MAKE_SCOPED_IDENTIFIER(tracy_zone_text_length_), __VA_ARGS__)
-
-#define CELERITY_DETAIL_TRACY_SET_THREAD_NAME(NAME) ::tracy::SetThreadName(NAME);
-
-#define CELERITY_DETAIL_IF_TRACY(...) __VA_ARGS__
+#define CELERITY_DETAIL_IF_TRACY_SUPPORTED(...) __VA_ARGS__
 
 #else
 
-#define CELERITY_DETAIL_TRACY_ZONE_SCOPED(...)
-#define CELERITY_DETAIL_TRACY_ZONE_TEXT(...)
-#define CELERITY_DETAIL_TRACY_SET_THREAD_NAME(...)
-#define CELERITY_DETAIL_IF_TRACY(...)
+#define CELERITY_DETAIL_IF_TRACY_SUPPORTED(...)
 
 #endif
 
-#define CELERITY_DETAIL_IF_TRACY_IS_ON(...) CELERITY_DETAIL_IF_TRACY(if(::celerity::detail::tracy_detail::is_on()) { __VA_ARGS__; })
-#define CELERITY_DETAIL_IF_TRACY_IS_ON_FULL(...) CELERITY_DETAIL_IF_TRACY(if(::celerity::detail::tracy_detail::is_on_full()) { __VA_ARGS__; })
+#define CELERITY_DETAIL_IF_TRACY_ENABLED(...) CELERITY_DETAIL_IF_TRACY_SUPPORTED(if(::celerity::detail::tracy_detail::is_enabled()) { __VA_ARGS__; })
+#define CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(...) CELERITY_DETAIL_IF_TRACY_SUPPORTED(if(::celerity::detail::tracy_detail::is_enabled_full()) { __VA_ARGS__; })
+
+#define CELERITY_DETAIL_TRACY_ZONE_SCOPED(TAG, COLOR_NAME, ...)                                                                                                \
+	CELERITY_DETAIL_IF_TRACY_SUPPORTED(ZoneNamedNC(___tracy_scoped_zone, TAG, ::tracy::Color::COLOR_NAME, ::celerity::detail::tracy_detail::is_enabled()));    \
+	CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(::celerity::detail::tracy_detail::apply_string([&](const auto& n) { ZoneName(n.data(), n.size()); }, __VA_ARGS__))
+
+#define CELERITY_DETAIL_TRACY_ZONE_TEXT(...)                                                                                                                   \
+	CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(::celerity::detail::tracy_detail::apply_string([&](const auto& t) { ZoneText(t.data(), t.size()); }, __VA_ARGS__))
+
+#define CELERITY_DETAIL_TRACY_SET_THREAD_NAME(NAME) CELERITY_DETAIL_IF_TRACY_ENABLED(::tracy::SetThreadName(NAME))
