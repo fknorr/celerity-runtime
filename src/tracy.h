@@ -4,6 +4,8 @@
 
 #include "config.h"
 
+#include <string_view>
+
 #include <fmt/format.h>
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyC.h>
@@ -48,6 +50,10 @@ const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const 
 	return name;
 }
 
+inline const char *make_thread_name(const std::string_view &string) {
+	return make_thread_name("{}", string);
+}
+
 /// Helper to pass fmt::formatted strings to Tracy's (pointer, size) functions.
 template <typename ApplyFn, typename... FmtParams, std::enable_if_t<(sizeof...(FmtParams) > 0), int> = 0>
 void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
@@ -55,7 +61,7 @@ void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_str
 }
 
 template <typename ApplyFn, typename... FmtParams>
-void apply_string(const ApplyFn& apply, std::string_view string) {
+void apply_string(const ApplyFn& apply, const std::string_view &string) {
 	apply(string);
 }
 

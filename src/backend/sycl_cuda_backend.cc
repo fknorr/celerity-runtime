@@ -97,7 +97,6 @@ class cuda_event final : public async_event_impl {
 	cuda_event(unique_cuda_native_event before, unique_cuda_native_event after) : m_before(std::move(before)), m_after(std::move(after)) {}
 
 	bool is_complete() override {
-		// CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::query_event", ForestGreen, "cudaEventQuery")
 		switch(const auto result = cudaEventQuery(m_after.get())) {
 		case cudaSuccess: return true;
 		case cudaErrorNotReady: return false;

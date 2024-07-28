@@ -115,43 +115,39 @@ tracy_integration::async_lane_cursor tracy_integration::get_async_lane_cursor(co
 	return async_lane_cursor{global_lane_id, lane_it->next_submission_idx++};
 }
 
-TracyCZoneCtx tracy_integration::begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted) {
-	const char* tag = nullptr;
-	std::string_view name;
-	tracy::Color::ColorType color = tracy::Color::White;
-
-#define CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(INSTR, COLOR)                                                                                                   \
-	[&](const INSTR##_instruction& instr) { tag = "executor::" #INSTR, name = #INSTR, color = tracy::Color::COLOR; }
-
-	matchbox::match(instr,                                                     //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(clone_collective_group, Brown), //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(alloc, Turquoise),              //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(free, Turquoise),               //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(copy, Lime),                    //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(device_kernel, Orange),         //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(host_task, Orange),             //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(send, Violet),                  //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(receive, DarkViolet),           //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(split_receive, DarkViolet),     //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(await_receive, DarkViolet),     //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(gather_receive, DarkViolet),    //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(fill_identity, Blue),           //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(reduce, Blue),                  //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(fence, Blue),                   //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(destroy_host_object, Gray),     //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(horizon, Gray),                 //
-	    CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR(epoch, Gray));
-
-#undef CELERITY_DETAIL_INSTRUCTION_ZONE_COLOR
-
-	TracyCZoneNC(ctx, tag, color, true);
-
-	if(tracy_detail::is_enabled_full()) {
-		const auto label = fmt::format("{}I{} {}", was_eagerly_submitted ? "+" : "", instr.get_id(), tag);
-		TracyCZoneName(ctx, label.data(), label.size());
+TracyCZoneCtx tracy_integration::begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted) //
+{
+	// Tracy stages zone tag and color in a static local, so we can't move TracyCZoneNC out of match statement
+#define CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(INSTR, COLOR)                                                                                                   \
+	[&](const INSTR##_instruction& instr) {                                                                                                                    \
+		TracyCZoneNC(ctx, "executor::" #INSTR, tracy::Color::COLOR, true /* active */);                                                                        \
+		if(tracy_detail::is_enabled_full()) {                                                                                                                  \
+			const auto name = fmt::format("{}I{} " #INSTR, was_eagerly_submitted ? "+" : "", instr.get_id());                                                  \
+			TracyCZoneName(ctx, name.data(), name.size());                                                                                                     \
+		}                                                                                                                                                      \
+		return ctx;                                                                                                                                            \
 	}
 
-	return ctx;
+	return matchbox::match(instr,                                              //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(clone_collective_group, Brown), //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(alloc, Turquoise),              //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(free, Turquoise),               //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(copy, Lime),                    //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(device_kernel, Orange),         //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(host_task, Orange),             //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(send, Violet),                  //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(receive, DarkViolet),           //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(split_receive, DarkViolet),     //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(await_receive, DarkViolet),     //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(gather_receive, DarkViolet),    //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(fill_identity, Blue),           //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(reduce, Blue),                  //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(fence, Blue),                   //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(destroy_host_object, Gray),     //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(horizon, Gray),                 //
+	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(epoch, Gray));
+
+#undef CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE
 }
 
 void tracy_integration::end_instruction_zone(
@@ -159,6 +155,7 @@ void tracy_integration::end_instruction_zone(
 {
 	if(tracy_detail::is_enabled_full()) {
 		std::string text;
+		text.reserve(512); // almost always enough
 
 		// Dump the trace, replacing /; */ with '\n' for better legibility
 		for(size_t trace_line_start = 0; trace_line_start < trace.size();) {
@@ -369,8 +366,10 @@ void executor_impl::run() {
 	for(;;) {
 		if(engine.is_idle()) {
 			if(!expecting_more_submissions) break; // shutdown complete
-			submission_queue->wait_while_empty();  // we are stalled on the scheduler, suspend thread
-			last_progress_timestamp.reset();       // do not treat suspension as being stuck
+
+			CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::starve", DarkGray, "starve");
+			submission_queue->wait_while_empty(); // we are stalled on the scheduler, suspend thread
+			last_progress_timestamp.reset();      // do not treat suspension as being stuck
 		}
 
 		recv_arbiter.poll_communicator();
