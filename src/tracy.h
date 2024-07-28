@@ -40,20 +40,6 @@ struct plot {
 	}
 };
 
-template <typename... FmtParams>
-const char* make_thread_name(fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
-	// Thread and fiber name pointers must remain valid for the duration of the program, so we intentionally leak them
-	const auto size = fmt::formatted_size(fmt_string, fmt_args...);
-	const auto name = static_cast<char*>(malloc(size + 1));
-	fmt::format_to(name, fmt_string, fmt_args...);
-	name[size] = 0;
-	return name;
-}
-
-inline const char *make_thread_name(const std::string_view &string) {
-	return make_thread_name("{}", string);
-}
-
 /// Helper to pass fmt::formatted strings to Tracy's (pointer, size) functions.
 template <typename ApplyFn, typename... FmtParams, std::enable_if_t<(sizeof...(FmtParams) > 0), int> = 0>
 void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
@@ -61,7 +47,7 @@ void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_str
 }
 
 template <typename ApplyFn, typename... FmtParams>
-void apply_string(const ApplyFn& apply, const std::string_view &string) {
+void apply_string(const ApplyFn& apply, const std::string_view& string) {
 	apply(string);
 }
 
@@ -79,11 +65,16 @@ void apply_string(const ApplyFn& apply, const std::string_view &string) {
 #define CELERITY_DETAIL_IF_TRACY_ENABLED(...) CELERITY_DETAIL_IF_TRACY_SUPPORTED(if(::celerity::detail::tracy_detail::is_enabled()) { __VA_ARGS__; })
 #define CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(...) CELERITY_DETAIL_IF_TRACY_SUPPORTED(if(::celerity::detail::tracy_detail::is_enabled_full()) { __VA_ARGS__; })
 
-#define CELERITY_DETAIL_TRACY_ZONE_SCOPED(TAG, COLOR_NAME, ...)                                                                                                \
-	CELERITY_DETAIL_IF_TRACY_SUPPORTED(ZoneNamedNC(___tracy_scoped_zone, TAG, ::tracy::Color::COLOR_NAME, ::celerity::detail::tracy_detail::is_enabled()));    \
-	CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(::celerity::detail::tracy_detail::apply_string([&](const auto& n) { ZoneName(n.data(), n.size()); }, __VA_ARGS__))
+#define CELERITY_DETAIL_TRACY_ZONE_SCOPED(TAG, COLOR_NAME)                                                                                                     \
+	CELERITY_DETAIL_IF_TRACY_SUPPORTED(ZoneNamedNC(___tracy_scoped_zone, TAG, ::tracy::Color::COLOR_NAME, ::celerity::detail::tracy_detail::is_enabled()))
 
+#define CELERITY_DETAIL_TRACY_ZONE_NAME(...)                                                                                                                   \
+	CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(::celerity::detail::tracy_detail::apply_string([&](const auto& n) { ZoneName(n.data(), n.size()); }, __VA_ARGS__))
 #define CELERITY_DETAIL_TRACY_ZONE_TEXT(...)                                                                                                                   \
 	CELERITY_DETAIL_IF_TRACY_ENABLED_FULL(::celerity::detail::tracy_detail::apply_string([&](const auto& t) { ZoneText(t.data(), t.size()); }, __VA_ARGS__))
+
+#define CELERITY_DETAIL_TRACY_ZONE_SCOPED_V(TAG, COLOR_NAME, ...)                                                                                              \
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED(TAG, COLOR_NAME);                                                                                                        \
+	CELERITY_DETAIL_TRACY_ZONE_NAME(__VA_ARGS__);
 
 #define CELERITY_DETAIL_TRACY_SET_THREAD_NAME(NAME) CELERITY_DETAIL_IF_TRACY_ENABLED(::tracy::SetThreadName(NAME))

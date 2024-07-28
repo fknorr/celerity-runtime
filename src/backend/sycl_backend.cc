@@ -195,7 +195,7 @@ async_event sycl_backend::enqueue_device_kernel(const device_id device, const si
     std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
 {
 	auto& queue = m_impl->get_device_queue(device, lane);
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2, "SYCL submit")
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2);
 	auto event = queue.submit([&](sycl::handler& sycl_cgh) {
 		auto& hydrator = closure_hydrator::get_instance();
 		hydrator.arm(target::device, std::move(accessor_infos));

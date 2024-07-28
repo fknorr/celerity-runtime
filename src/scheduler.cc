@@ -39,7 +39,7 @@ namespace detail {
 
 					    std::vector<abstract_command*> commands;
 					    {
-						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::build_task", WebMaroon, "T{} build", tsk.get_id());
+						    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::build_task", WebMaroon, "T{} build", tsk.get_id());
 						    CELERITY_DETAIL_TRACY_ZONE_TEXT(utils::make_task_debug_label(tsk.get_type(), tsk.get_id(), tsk.get_debug_name()));
 
 						    commands = sort_topologically(m_dggen->build_task(tsk));
@@ -50,7 +50,7 @@ namespace detail {
 						    // the corresponding instruction, as runtime will begin destroying the executor after it has observed the epoch to be reached.
 						    assert(!shutdown_epoch_emitted);
 
-						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::compile_command", MidnightBlue, "C{} compile", cmd->get_cid());
+						    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::compile_command", MidnightBlue, "C{} compile", cmd->get_cid());
 						    CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", cmd->get_type());
 
 						    m_iggen->compile(*cmd);
@@ -62,31 +62,31 @@ namespace detail {
 				    },
 				    [&](const event_buffer_created& e) {
 					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
-					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::create_buffer", DarkGreen, "B{} create", e.bid);
+					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::create_buffer", DarkGreen, "B{} create", e.bid);
 					    m_dggen->notify_buffer_created(e.bid, e.range, e.user_allocation_id != null_allocation_id);
 					    m_iggen->notify_buffer_created(e.bid, e.range, e.elem_size, e.elem_align, e.user_allocation_id);
 				    },
 				    [&](const event_buffer_debug_name_changed& e) {
 					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
-					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::set_buffer_name", DarkGreen, "B{} set name", e.bid);
+					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::set_buffer_name", DarkGreen, "B{} set name", e.bid);
 					    m_dggen->notify_buffer_debug_name_changed(e.bid, e.debug_name);
 					    m_iggen->notify_buffer_debug_name_changed(e.bid, e.debug_name);
 				    },
 				    [&](const event_buffer_destroyed& e) {
 					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
-					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::destroy_buffer", DarkGreen, "B{} destroy", e.bid);
+					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::destroy_buffer", DarkGreen, "B{} destroy", e.bid);
 					    m_dggen->notify_buffer_destroyed(e.bid);
 					    m_iggen->notify_buffer_destroyed(e.bid);
 				    },
 				    [&](const event_host_object_created& e) {
 					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
-					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::create_host_object", DarkGreen, "H{} create", e.hoid);
+					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::create_host_object", DarkGreen, "H{} create", e.hoid);
 					    m_dggen->notify_host_object_created(e.hoid);
 					    m_iggen->notify_host_object_created(e.hoid, e.owns_instance);
 				    },
 				    [&](const event_host_object_destroyed& e) {
 					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
-					    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::destroy_host_object", DarkGreen, "H{} destroy", e.hoid);
+					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::destroy_host_object", DarkGreen, "H{} destroy", e.hoid);
 					    m_dggen->notify_host_object_destroyed(e.hoid);
 					    m_iggen->notify_host_object_destroyed(e.hoid);
 				    },
@@ -95,7 +95,7 @@ namespace detail {
 					    {
 						    // The dggen automatically prunes the CDAG on generation, which is safe because commands are not shared across threads.
 						    // We might want to refactor this to match the IDAG behavior in the future.
-						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::prune_idag", Gray, "prune");
+						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::prune_idag", Gray);
 						    m_idag->prune_before_epoch(e.tid);
 					    }
 

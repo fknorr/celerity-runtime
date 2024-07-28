@@ -223,7 +223,7 @@ void engine_impl::try_mark_for_assignment(incomplete_instruction_state& node) {
 }
 
 void engine_impl::submit(const instruction* const instr) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("out_of_order_engine::submit", Blue3, "submit");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("out_of_order_engine::submit", Blue3);
 
 	const auto iid = instr->get_id();
 	auto [node_it, inserted] = incomplete_instructions.emplace(iid, incomplete_instruction_state(instr));
@@ -307,7 +307,7 @@ void engine_impl::submit(const instruction* const instr) {
 }
 
 void engine_impl::complete(const instruction* const instr) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("out_of_order_engine::complete", Blue3, "complete");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("out_of_order_engine::complete", Blue3);
 
 	const auto node_it = incomplete_instructions.find(instr->get_id());
 	assert(node_it != incomplete_instructions.end());
@@ -391,7 +391,7 @@ incomplete_instruction_state* engine_impl::pop_assignable() {
 
 std::optional<assignment> engine_impl::assign_one() {
 	if(assignment_queue.empty()) return std::nullopt; // Don't begin a Tracy zone if there is nothing to assign
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("out_of_order_engine::assign", Blue3, "assign");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("out_of_order_engine::assign", Blue3);
 
 	const auto node_ptr = pop_assignable();
 	if(node_ptr == nullptr) return std::nullopt;

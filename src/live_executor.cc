@@ -84,11 +84,11 @@ struct tracy_integration {
 const char* tracy_integration::async_lane_state::make_fiber_name(const async_lane_id& lane_id) {
 	const auto& [target, device, local_lane_id] = lane_id;
 	switch(target) {
-	case out_of_order_engine::target::immediate: return tracy_detail::make_thread_name("cy-async-comm #{}", local_lane_id);
+	case out_of_order_engine::target::immediate: return utils::leak(fmt::format("cy-async-comm #{}", local_lane_id))->c_str();
 	// TODO trace host tasks in their actual thread_queue threads?
 	case out_of_order_engine::target::alloc_queue: return "cy-async-alloc"; break;
-	case out_of_order_engine::target::host_queue: return tracy_detail::make_thread_name("cy-async-host #{}", local_lane_id);
-	case out_of_order_engine::target::device_queue: return tracy_detail::make_thread_name("cy-async-device D{} #{}", device.value(), local_lane_id);
+	case out_of_order_engine::target::host_queue: return utils::leak(fmt::format("cy-async-host #{}", local_lane_id))->c_str();
+	case out_of_order_engine::target::device_queue: return utils::leak(fmt::format("cy-async-device D{} #{}", device.value(), local_lane_id))->c_str();
 	default: utils::unreachable();
 	}
 }
@@ -367,7 +367,7 @@ void executor_impl::run() {
 		if(engine.is_idle()) {
 			if(!expecting_more_submissions) break; // shutdown complete
 
-			CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::starve", DarkGray, "starve");
+			CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::starve", DarkGray);
 			submission_queue->wait_while_empty(); // we are stalled on the scheduler, suspend thread
 			last_progress_timestamp.reset();      // do not treat suspension as being stuck
 		}
@@ -402,7 +402,7 @@ void executor_impl::poll_in_flight_async_instructions() {
 
 void executor_impl::poll_submission_queue() {
 	for(auto& submission : submission_queue->pop_all()) {
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::dequeue", Gray, "dequeue");
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::dequeue", Gray);
 		matchbox::match(
 		    submission,
 		    [&](const instruction_pilot_batch& batch) {
@@ -432,11 +432,11 @@ void executor_impl::poll_submission_queue() {
 }
 
 void executor_impl::retire_async_instruction(async_instruction_state& async) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::retire", Brown, "retire");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::retire", Brown);
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 	if(async.oob_info != nullptr) {
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_check", Red, "I{} bounds check", async.instr->get_id());
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("executor::oob_check", Red, "I{} bounds check", async.instr->get_id());
 		const auto& oob_info = *async.oob_info;
 		for(size_t i = 0; i < oob_info.accessors.size(); ++i) {
 			if(const auto oob_box = oob_info.illegal_access_bounding_boxes[i].into_box(); !oob_box.empty()) {
@@ -529,7 +529,7 @@ void executor_impl::try_issue_one_instruction() {
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED(tracy->assignment_queue_length_plot.update(engine.get_assignment_queue_length()));
 
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue", Blue, "issue");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue", Blue);
 	matchbox::match(*assignment->instruction, [&](const auto& instr) { dispatch(instr, *assignment); });
 	made_progress = true;
 }
@@ -673,7 +673,7 @@ void executor_impl::issue_async(const free_instruction& finstr, const out_of_ord
 }
 
 void executor_impl::issue_async(const copy_instruction& cinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue_copy", Green4, "issue copy");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue_copy", Green4);
 
 	assert(assignment.target == out_of_order_engine::target::host_queue || assignment.target == out_of_order_engine::target::device_queue);
 	assert((assignment.target == out_of_order_engine::target::device_queue) == assignment.device.has_value());
@@ -707,7 +707,7 @@ std::string format_access_log(const buffer_access_allocation_map& map) {
 }
 
 void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue_device_kernel", Yellow2, "issue device kernel");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue_device_kernel", Yellow2);
 
 	assert(assignment.target == out_of_order_engine::target::device_queue);
 	assert(assignment.device == dkinstr.get_device_id());
@@ -818,7 +818,7 @@ void executor_impl::collect(const instruction_garbage& garbage) {
 }
 
 std::vector<closure_hydrator::accessor_info> executor_impl::make_accessor_infos(const buffer_access_allocation_map& amap) const {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::make_acc_info", Magenta3, "make acc info");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::make_accessor_info", Magenta3);
 
 	std::vector<closure_hydrator::accessor_info> accessor_infos(amap.size());
 	for(size_t i = 0; i < amap.size(); ++i) {
@@ -834,7 +834,7 @@ std::unique_ptr<boundary_check_info> executor_impl::attach_boundary_check_info(s
 {
 	if(amap.empty()) return nullptr;
 
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_init", Red, "bounds check init");
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::oob_init", Red);
 	auto oob_info = std::make_unique<boundary_check_info>(tt, tid, task_name);
 
 	oob_info->illegal_access_bounding_boxes = static_cast<oob_bounding_box*>(backend->debug_alloc(amap.size() * sizeof(oob_bounding_box)));
