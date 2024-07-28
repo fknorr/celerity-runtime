@@ -69,8 +69,7 @@ struct tracy_integration {
 	static TracyCZoneCtx begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted);
 
 	/// Close a Tracy zone - after emitting the instruction trace and generic instruction info if full tracing is enabled.
-	static void end_instruction_zone(
-	    const TracyCZoneCtx& ctx, const instruction& instr, const std::string& trace, const std::optional<std::chrono::nanoseconds>& native_execution_time);
+	static void end_instruction_zone(const TracyCZoneCtx& ctx, const instruction& instr, const std::string& trace, const async_event* opt_event = nullptr);
 
 	/// Picks the (optionally) pre-existing lane for an in-order queue submission, or an arbitrary free lane for async unordered send/receive instructions.
 	async_lane_cursor get_async_lane_cursor(const out_of_order_engine::assignment& assignment);
@@ -79,7 +78,7 @@ struct tracy_integration {
 	async_lane_cursor issue_async_instruction(const instruction& instr, const out_of_order_engine::assignment& assignment, std::string&& trace);
 
 	/// Closes the tracy zone for an active async instruction; beginning the next queued zone in the same lane, if any.
-	void retire_async_instruction(const async_lane_cursor& cursor, std::optional<std::chrono::nanoseconds> native_execution_time);
+	void retire_async_instruction(const async_lane_cursor& cursor, const async_event& event);
 };
 
 const char* tracy_integration::async_lane_state::make_fiber_name(const async_lane_id& lane_id) {
@@ -150,9 +149,7 @@ TracyCZoneCtx tracy_integration::begin_instruction_zone(const instruction& instr
 #undef CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE
 }
 
-void tracy_integration::end_instruction_zone(
-    const TracyCZoneCtx& ctx, const instruction& instr, const std::string& trace, const std::optional<std::chrono::nanoseconds>& native_execution_time) //
-{
+void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const instruction& instr, const std::string& trace, const async_event* opt_event) {
 	if(tracy_detail::is_enabled_full()) {
 		std::string text;
 		text.reserve(512); // almost always enough
@@ -166,20 +163,23 @@ void tracy_integration::end_instruction_zone(
 			trace_line_start = trace.find_first_not_of(' ', trace_line_end + 1);
 		}
 
-		// Dump time and throughput measures
-		if(native_execution_time.has_value()) {
-			fmt::format_to(std::back_inserter(text), "\nnative execution time: {:.2f}", as_sub_second(*native_execution_time));
+		// Dump time and throughput measures if available. We pass an `async_event*` instead of a `optional<time>` because querying execution time of SYCL
+		// events is comparatively costly (~1µs) and can be skipped when CELERITY_TRACE=fast.
+		if(opt_event != nullptr) {
+			if(const auto native_execution_time = opt_event->get_native_execution_time(); native_execution_time.has_value()) {
+				fmt::format_to(std::back_inserter(text), "\nnative execution time: {:.2f}", as_sub_second(*native_execution_time));
 
-			const auto bytes_processed = matchbox::match<std::optional<size_t>>(
-			    instr,                                                                                                          //
-			    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
-			    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
-			    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
-			    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_estimated_global_memory_traffic_bytes(); },   //
-			    [](const auto& /* other */) { return std::nullopt; });
+				const auto bytes_processed = matchbox::match<std::optional<size_t>>(
+				    instr,                                                                                                          //
+				    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
+				    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
+				    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
+				    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_estimated_global_memory_traffic_bytes(); },   //
+				    [](const auto& /* other */) { return std::nullopt; });
 
-			if(bytes_processed.has_value()) {
-				fmt::format_to(std::back_inserter(text), "\nthroughput: {:.2f}", as_binary_throughput(*bytes_processed, *native_execution_time));
+				if(bytes_processed.has_value()) {
+					fmt::format_to(std::back_inserter(text), "\nthroughput: {:.2f}", as_binary_throughput(*bytes_processed, *native_execution_time));
+				}
 			}
 		}
 
@@ -219,7 +219,7 @@ tracy_integration::async_lane_cursor tracy_integration::issue_async_instruction(
 	return cursor;
 }
 
-void tracy_integration::retire_async_instruction(const async_lane_cursor& cursor, std::optional<std::chrono::nanoseconds> native_execution_time) {
+void tracy_integration::retire_async_instruction(const async_lane_cursor& cursor, const async_event& event) {
 	auto& lane = async_lanes.at(cursor.global_lane_id);
 
 	TracyFiberEnter(lane.fiber_name);
@@ -228,7 +228,7 @@ void tracy_integration::retire_async_instruction(const async_lane_cursor& cursor
 		{
 			auto& completed_zone = lane.zone_queue.front();
 			assert(lane.active_zone_ctx.has_value());
-			end_instruction_zone(*lane.active_zone_ctx, *completed_zone.instr, completed_zone.trace, native_execution_time);
+			end_instruction_zone(*lane.active_zone_ctx, *completed_zone.instr, completed_zone.trace, &event);
 			lane.active_zone_ctx.reset();
 			lane.zone_queue.pop_front();
 		}
@@ -456,13 +456,12 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 	if(spdlog::should_log(spdlog::level::trace)) {
 		if(const auto native_time = async.event.get_native_execution_time(); native_time.has_value()) {
 			CELERITY_TRACE("[executor] retired I{} after {:.2f}", async.instr->get_id(), as_sub_second(*native_time));
-			// TODO throughput
 		} else {
 			CELERITY_TRACE("[executor] retired I{}", async.instr->get_id());
 		}
 	}
 
-	CELERITY_DETAIL_IF_TRACY_ENABLED(tracy->retire_async_instruction(*async.tracy_lane_cursor, async.event.get_native_execution_time()));
+	CELERITY_DETAIL_IF_TRACY_ENABLED(tracy->retire_async_instruction(*async.tracy_lane_cursor, async.event));
 
 	if(utils::isa<alloc_instruction>(async.instr)) {
 		const auto ainstr = utils::as<alloc_instruction>(async.instr);
@@ -497,7 +496,7 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	issue(instr); // completes immediately
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED({
-		tracy->end_instruction_zone(ctx, instr, tracy->last_instruction_trace, std::nullopt);
+		tracy->end_instruction_zone(ctx, instr, tracy->last_instruction_trace);
 		TracyFiberLeave;
 	})
 
