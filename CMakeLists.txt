@@ -187,7 +187,7 @@ endif()
 configure_file(include/version.h.in include/version.h @ONLY)
 
 # Add includes to library so they show up in IDEs
-file(GLOB_RECURSE INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
+file(GLOB_RECURSE INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 list(APPEND INCLUDES "${CMAKE_CURRENT_BINARY_DIR}/include/version.h")
 
 if(CMAKE_GENERATOR STREQUAL "Ninja")
@@ -245,6 +245,7 @@ set_property(TARGET celerity_runtime PROPERTY CXX_STANDARD "${CELERITY_CXX_STAND
 target_include_directories(celerity_runtime PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
   $<INSTALL_INTERFACE:include/celerity>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/matchbox/include>
