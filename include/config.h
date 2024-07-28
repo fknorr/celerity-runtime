@@ -9,8 +9,8 @@ namespace celerity {
 namespace detail {
 
 	struct host_config {
-		size_t node_count;
-		size_t local_rank;
+		size_t node_count = 0;
+		size_t local_rank = -1;
 	};
 
 	enum class tracy_mode { off, fast, full };
@@ -23,8 +23,6 @@ namespace detail {
 		config(int* argc, char** argv[]);
 
 		log_level get_log_level() const { return m_log_lvl; }
-
-		const host_config& get_host_config() const { return m_host_cfg; }
 
 		bool should_enable_device_profiling() const { return m_enable_device_profiling.value_or(m_tracy_mode == tracy_mode::full); }
 		bool is_dry_run() const { return m_dry_run_nodes > 0; }
@@ -40,7 +38,6 @@ namespace detail {
 
 	  private:
 		log_level m_log_lvl;
-		host_config m_host_cfg;
 		std::optional<bool> m_enable_device_profiling;
 		size_t m_dry_run_nodes = 0;
 		bool m_should_print_graphs = false;

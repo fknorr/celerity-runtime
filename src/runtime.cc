@@ -109,41 +109,50 @@ namespace detail {
 #endif
 	}
 
-	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::startup", Gray);
+	static host_config get_mpi_host_config() {
+		// Determine the "host config", i.e., how many nodes are spawned on this host,
+		// and what this node's local rank is. We do this by finding all world-ranks
+		// that can use a shared-memory transport (if running on OpenMPI, use the
+		// per-host split instead).
+#ifdef OPEN_MPI
+#define SPLIT_TYPE OMPI_COMM_TYPE_HOST
+#else
+		// TODO: Assert that shared memory is available (i.e. not explicitly disabled)
+#define SPLIT_TYPE MPI_COMM_TYPE_SHARED
+#endif
+		MPI_Comm host_comm = nullptr;
+		MPI_Comm_split_type(MPI_COMM_WORLD, SPLIT_TYPE, 0, MPI_INFO_NULL, &host_comm);
 
+		int local_rank = 0;
+		MPI_Comm_rank(host_comm, &local_rank);
+
+		int node_count = 0;
+		MPI_Comm_size(host_comm, &node_count);
+
+		host_config host_cfg;
+		host_cfg.local_rank = local_rank;
+		host_cfg.node_count = node_count;
+
+		MPI_Comm_free(&host_comm);
+
+		return host_cfg;
+	}
+
+	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
 		m_application_thread = std::this_thread::get_id();
 
-		if(s_test_mode) {
-			assert(s_test_active && "initializing the runtime from a test without a runtime_fixture");
-			s_test_runtime_was_instantiated = true;
-		} else {
-			mpi_initialize_once(argc, argv);
+		// Do not touch logger settings in tests, where the full (trace) logs are captured
+		if(!s_test_mode) {
+			spdlog::set_level(spdlog::level::warn);                    // Start with at a level where config parser errors are visible
+			spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v"); // We don't know the cluster configuration yet
 		}
 
 		m_cfg = std::make_unique<config>(argc, argv);
 
-		if(m_cfg->is_dry_run()) {
-			m_num_nodes = static_cast<size_t>(m_cfg->get_dry_run_nodes());
-			m_local_nid = 0;
-		} else {
-			int world_size = -1;
-			MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-			m_num_nodes = static_cast<size_t>(world_size);
-
-			int world_rank = -1;
-			MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-			m_local_nid = static_cast<node_id>(world_rank);
-		}
-
-		if(!s_test_mode) { // do not touch logger settings in tests, where the full (trace) logs are captured
+		if(!s_test_mode) {
+			// The user's log level preference is now known, update
 			spdlog::set_level(m_cfg->get_log_level());
-			// TODO is the runtime ctor really the right place to set these globals?
-			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", m_local_nid, int(ceil(log10(double(m_num_nodes))))));
 		}
-
-		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
-		    get_build_type(), get_mimalloc_string());
 
 #ifndef __APPLE__
 		if(const uint32_t cores = affinity_cores_available(); cores < min_cores_needed) {
@@ -153,18 +162,51 @@ namespace detail {
 		}
 #endif
 
-		auto real_tracy_mode = m_cfg->get_tracy_mode();
+		if(m_cfg->get_tracy_mode() != tracy_mode::off) {
 #if CELERITY_TRACY_SUPPORT
-		if(real_tracy_mode != tracy_mode::off && !(::tracy::ProfilerAvailable() && ::tracy::GetProfiler().IsConnected())) {
-			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set, but no profiler is connected. Ignoring."); }
-			real_tracy_mode = tracy_mode::off;
-		}
-		tracy_detail::g_tracy_mode = real_tracy_mode;
+			if(!s_test_mode) { CELERITY_WARN("Profiling with Tracy is enabled. Performance may be negatively impacted."); }
+			tracy_detail::g_tracy_mode = m_cfg->get_tracy_mode();
 #else
-		if(real_tracy_mode != tracy_mode::off) {
 			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set, but Celerity was compiled without Tracy support. Ignoring."); }
-		}
 #endif
+		}
+
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::startup", Gray);
+
+		if(s_test_mode) {
+			assert(s_test_active && "initializing the runtime from a test without a runtime_fixture");
+			s_test_runtime_was_instantiated = true;
+		} else {
+			mpi_initialize_once(argc, argv);
+		}
+
+		int world_size = -1;
+		int world_rank = -1;
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+
+		host_config host_cfg;
+
+		if(m_cfg->is_dry_run()) {
+			if(world_size != 1) throw std::runtime_error("In order to run with CELERITY_DRY_RUN_NODES a single MPI process/rank must be used.");
+			m_num_nodes = static_cast<size_t>(m_cfg->get_dry_run_nodes());
+			m_local_nid = 0;
+			host_cfg.node_count = 1;
+			host_cfg.local_rank = 0;
+		} else {
+			m_num_nodes = static_cast<size_t>(world_size);
+			m_local_nid = static_cast<node_id>(world_rank);
+			host_cfg = get_mpi_host_config();
+		}
+
+		if(!s_test_mode) {
+			// The cluster configuration is now known, update the log pattern
+			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", m_local_nid, int(ceil(log10(double(m_num_nodes))))));
+		}
+
+		// With the local node id now part of the log pattern, the startup message provides a node_id <-> PID mapping
+		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
+		    get_build_type(), get_mimalloc_string());
 
 		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, m_local_nid);
 
@@ -173,8 +215,7 @@ namespace detail {
 		std::vector<sycl::device> devices;
 		{
 			CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::pick_devices", PaleVioletRed);
-			devices = std::visit(
-			    [&](const auto& value) { return pick_devices(m_cfg->get_host_config(), value, sycl::platform::get_platforms()); }, user_devices_or_selector);
+			devices = std::visit([&](const auto& value) { return pick_devices(host_cfg, value, sycl::platform::get_platforms()); }, user_devices_or_selector);
 			assert(!devices.empty());
 		}
 
@@ -195,8 +236,8 @@ namespace detail {
 		}
 
 		task_manager::policy_set task_mngr_policy;
-		// Merely _declaring_ an uninitialized read is legitimate as long as the kernel does not actually perform the read at runtime - this might happen in the
-		// first iteration of a submit-loop. We could get rid of this case by making access-modes a runtime property of accessors (cf
+		// Merely _declaring_ an uninitialized read is legitimate as long as the kernel does not actually perform the read at runtime - this might happen in
+		// the first iteration of a submit-loop. We could get rid of this case by making access-modes a runtime property of accessors (cf
 		// https://github.com/celerity/meta/issues/74).
 		task_mngr_policy.uninitialized_read_error = CELERITY_ACCESS_PATTERN_DIAGNOSTICS ? error_policy::log_warning : error_policy::ignore;
 

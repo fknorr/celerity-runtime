@@ -1140,7 +1140,7 @@ namespace detail {
 		CHECK(latest_hor.has_value());
 	}
 
-	TEST_CASE_METHOD(test_utils::mpi_fixture, "Config reads environment variables correctly", "[env-vars][config]") {
+	TEST_CASE("Config reads environment variables correctly", "[env-vars][config]") {
 		test_utils::allow_max_log_level(detail::log_level::warn); // setting CELERITY_DRY_RUN_NODES unconditionally warns
 
 		const std::unordered_map<std::string, std::string> env_map{
