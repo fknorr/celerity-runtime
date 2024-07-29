@@ -141,36 +141,9 @@ namespace detail {
 	runtime::runtime(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
 		m_application_thread = std::this_thread::get_id();
 
-		// Do not touch logger settings in tests, where the full (trace) logs are captured
-		if(!s_test_mode) {
-			spdlog::set_level(spdlog::level::warn);                    // Start with at a level where config parser errors are visible
-			spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v"); // We don't know the cluster configuration yet
-		}
-
 		m_cfg = std::make_unique<config>(argc, argv);
 
-		if(!s_test_mode) {
-			// The user's log level preference is now known, update
-			spdlog::set_level(m_cfg->get_log_level());
-		}
-
-#ifndef __APPLE__
-		if(const uint32_t cores = affinity_cores_available(); cores < min_cores_needed) {
-			CELERITY_WARN("Celerity has detected that only {} logical cores are available to this process. It is recommended to assign at least {} "
-			              "logical cores. Performance may be negatively impacted.",
-			    cores, min_cores_needed);
-		}
-#endif
-
-		if(m_cfg->get_tracy_mode() != tracy_mode::off) {
-#if CELERITY_TRACY_SUPPORT
-			if(!s_test_mode) { CELERITY_WARN("Profiling with Tracy is enabled. Performance may be negatively impacted."); }
-			tracy_detail::g_tracy_mode = m_cfg->get_tracy_mode();
-#else
-			if(!s_test_mode) { CELERITY_WARN("CELERITY_TRACY is set, but Celerity was compiled without Tracy support. Ignoring."); }
-#endif
-		}
-
+		CELERITY_DETAIL_IF_TRACY_SUPPORTED(tracy_detail::g_tracy_mode = m_cfg->get_tracy_mode());
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::startup", Gray);
 
 		if(s_test_mode) {
@@ -186,7 +159,6 @@ namespace detail {
 		MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 
 		host_config host_cfg;
-
 		if(m_cfg->is_dry_run()) {
 			if(world_size != 1) throw std::runtime_error("In order to run with CELERITY_DRY_RUN_NODES a single MPI process/rank must be used.");
 			m_num_nodes = static_cast<size_t>(m_cfg->get_dry_run_nodes());
@@ -199,14 +171,31 @@ namespace detail {
 			host_cfg = get_mpi_host_config();
 		}
 
+		// Do not touch logger settings in tests, where the full (trace) logs are captured
 		if(!s_test_mode) {
-			// The cluster configuration is now known, update the log pattern
+			spdlog::set_level(m_cfg->get_log_level());
 			spdlog::set_pattern(fmt::format("[%Y-%m-%d %H:%M:%S.%e] [{:0{}}] [%^%l%$] %v", m_local_nid, int(ceil(log10(double(m_num_nodes))))));
 		}
 
 		// With the local node id now part of the log pattern, the startup message provides a node_id <-> PID mapping
 		CELERITY_INFO("Celerity runtime version {} running on {}. PID = {}, build type = {}, {}", get_version_string(), get_sycl_version(), get_pid(),
 		    get_build_type(), get_mimalloc_string());
+
+#ifndef __APPLE__
+		if(const uint32_t cores = affinity_cores_available(); cores < min_cores_needed) {
+			CELERITY_WARN("Celerity has detected that only {} logical cores are available to this process. It is recommended to assign at least {} "
+			              "logical cores. Performance may be negatively impacted.",
+			    cores, min_cores_needed);
+		}
+#endif
+
+		if(!s_test_mode && m_cfg->get_tracy_mode() != tracy_mode::off) {
+			if constexpr(CELERITY_TRACY_SUPPORT) {
+				CELERITY_WARN("Profiling with Tracy is enabled. Performance may be negatively impacted.");
+			} else {
+				CELERITY_WARN("CELERITY_TRACY is set, but Celerity was compiled without Tracy support. Ignoring.");
+			}
+		}
 
 		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, m_local_nid);
 
