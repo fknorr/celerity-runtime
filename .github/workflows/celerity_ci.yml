@@ -231,12 +231,6 @@ jobs:
         run: |
           "${{ env.container-workspace }}/ci/capture-coverage.sh" "${{ env.container-workspace }}" "${{ env.build-dir }}" -o lcov.info
           coveralls report lcov.info
-      - name: Upload coverage
-        if: matrix.build-type == 'Debug' && matrix.sycl == 'simsycl' # celerity-build/simsycl image enables --coverage for Debug builds
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ env.build-name }}-coverage
-          path: lcov.info
 
   # Tag "HEAD" images that built and tested successfully as "latest".
   # This is only done for nightly builds (or when specifying the "tag-latest" option on manually triggered runs).
