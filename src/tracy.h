@@ -42,8 +42,8 @@ struct plot {
 
 /// Helper to pass fmt::formatted strings to Tracy's (pointer, size) functions.
 template <typename ApplyFn, typename... FmtParams, std::enable_if_t<(sizeof...(FmtParams) > 0), int> = 0>
-void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_string, const FmtParams&... fmt_args) {
-	apply(fmt::format(fmt_string, fmt_args...));
+void apply_string(const ApplyFn& apply, fmt::format_string<FmtParams...> fmt_string, FmtParams&&... fmt_args) {
+	apply(fmt::format(fmt_string, std::forward<FmtParams>(fmt_args)...));
 }
 
 template <typename ApplyFn, typename... FmtParams>

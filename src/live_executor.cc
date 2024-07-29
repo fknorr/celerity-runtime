@@ -105,7 +105,7 @@ tracy_integration::async_lane_cursor tracy_integration::get_async_lane_cursor(co
 	auto lane_it = std::find_if(async_lanes.begin(), async_lanes.end(), [&](const async_lane_state& lane) {
 		if(lane.id.target != target || lane.id.device != device) return false;
 		++next_local_lane_id; // if lambda never returns true, this will identify an unused local lane id for insertion below
-		return local_lane_id.has_value() ? lane.id.local_lane_id == *local_lane_id /* exact match */ : lane.zone_queue.empty() /* arbitrary empty lane*/;
+		return local_lane_id.has_value() ? lane.id.local_lane_id == *local_lane_id /* exact match */ : lane.zone_queue.empty() /* arbitrary empty lane */;
 	});
 	if(lane_it == async_lanes.end()) {
 		lane_it = async_lanes.emplace(async_lanes.end(), async_lane_id{target, device, local_lane_id.value_or(next_local_lane_id)});
@@ -152,9 +152,9 @@ TracyCZoneCtx tracy_integration::begin_instruction_zone(const instruction& instr
 void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const instruction& instr, const std::string& trace, const async_event* opt_event) {
 	if(tracy_detail::is_enabled_full()) {
 		std::string text;
-		text.reserve(512); // almost always enough
+		text.reserve(512); // Observation: typical size for kernel instructions is 200 - 300 characters
 
-		// Dump the trace, replacing /; */ with '\n' for better legibility
+		// Dump the trace collected from CELERITY_DETAIL_TRACE_INSTRUCTION, replacing /; */ with '\n' for better legibility
 		for(size_t trace_line_start = 0; trace_line_start < trace.size();) {
 			const auto trace_line_end = trace.find(';', trace_line_start);
 			text.append(trace, trace_line_start, trace_line_end - trace_line_start);
@@ -163,8 +163,8 @@ void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const ins
 			trace_line_start = trace.find_first_not_of(' ', trace_line_end + 1);
 		}
 
-		// Dump time and throughput measures if available. We pass an `async_event*` instead of a `optional<time>` because querying execution time of SYCL
-		// events is comparatively costly (~1µs) and can be skipped when CELERITY_TRACE=fast.
+		// Dump time and throughput measures if available. We pass an `async_event*` instead of a `optional<duration>` to this function because querying
+		// execution time of SYCL events is comparatively costly (~1µs) and can be skipped when CELERITY_TRACE=fast.
 		if(opt_event != nullptr) {
 			if(const auto native_execution_time = opt_event->get_native_execution_time(); native_execution_time.has_value()) {
 				fmt::format_to(std::back_inserter(text), "\nnative execution time: {:.2f}", as_sub_second(*native_execution_time));
@@ -204,17 +204,19 @@ tracy_integration::async_lane_cursor tracy_integration::issue_async_instruction(
 	auto& lane = async_lanes[cursor.global_lane_id];
 	lane.zone_queue.emplace_back(cursor.submission_idx_on_lane, instr, std::move(trace));
 
-	TracyFiberEnter(lane.fiber_name);
 	if(lane.zone_queue.size() == 1) {
 		// zone_queue.back() == zone_queue.front(): The instruction starts immediately
 		assert(!lane.active_zone_ctx.has_value());
+		TracyFiberEnter(lane.fiber_name);
 		lane.active_zone_ctx = begin_instruction_zone(instr, false /* eager */);
+		TracyFiberLeave;
 	} else if(tracy_detail::is_enabled_full()) {
-		// The instruction zone will be started as soon as its predecessor is retired - show when it was issued
+		// The instruction zone will be started as soon as its predecessor is retired - indicate when it was issued
 		const auto mark = fmt::format("I{} issued", instr.get_id());
+		TracyFiberEnter(lane.fiber_name);
 		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
+		TracyFiberLeave;
 	}
-	TracyFiberLeave;
 
 	return cursor;
 }
@@ -402,7 +404,7 @@ void executor_impl::poll_in_flight_async_instructions() {
 
 void executor_impl::poll_submission_queue() {
 	for(auto& submission : submission_queue->pop_all()) {
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::dequeue", Gray);
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::fetch", Gray);
 		matchbox::match(
 		    submission,
 		    [&](const instruction_pilot_batch& batch) {
