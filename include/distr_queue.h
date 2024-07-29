@@ -5,6 +5,7 @@
 
 #include "runtime.h"
 #include "task_manager.h"
+#include "tracy.h"
 
 namespace celerity::experimental {
 
@@ -70,7 +71,9 @@ class distr_queue {
 	template <typename CGF>
 	void submit(CGF cgf) { // NOLINT(readability-convert-member-functions-to-static)
 		// (Note while this function could be made static, it must not be! Otherwise we can't be sure the runtime has been initialized.)
-		detail::runtime::get_instance().get_task_manager().submit_command_group(std::move(cgf));
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("distr_queue::submit", Orange3);
+		[[maybe_unused]] const auto tid = detail::runtime::get_instance().get_task_manager().submit_command_group(std::move(cgf));
+		CELERITY_DETAIL_TRACY_ZONE_NAME("T{} submit", tid);
 	}
 
 	/**
@@ -80,7 +83,11 @@ class distr_queue {
 	 * In production, it should only be used at very coarse granularity (second scale).
 	 * @warning { This is very slow, as it drains all queues and synchronizes across the entire cluster. }
 	 */
-	void slow_full_sync() { detail::runtime::get_instance().sync(detail::epoch_action::barrier); } // NOLINT(readability-convert-member-functions-to-static)
+	void slow_full_sync() { // NOLINT(readability-convert-member-functions-to-static)
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("distr_queue::slow_full_sync", Red2);
+		[[maybe_unused]] const auto tid = detail::runtime::get_instance().sync(detail::epoch_action::barrier);
+		CELERITY_DETAIL_TRACY_ZONE_NAME("T{} slow_full_sync", tid);
+	}
 
 	/**
 	 * Asynchronously captures the value of a host object by copy, introducing the same dependencies as a side-effect would.

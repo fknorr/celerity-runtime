@@ -369,7 +369,7 @@ void executor_impl::run() {
 		if(engine.is_idle()) {
 			if(!expecting_more_submissions) break; // shutdown complete
 
-			CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::starve", DarkGray);
+			CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::starve", DarkSlateGray);
 			submission_queue->wait_while_empty(); // we are stalled on the scheduler, suspend thread
 			last_progress_timestamp.reset();      // do not treat suspension as being stuck
 		}

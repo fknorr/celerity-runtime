@@ -187,7 +187,7 @@ endif()
 configure_file(include/version.h.in include/version.h @ONLY)
 
 # Add includes to library so they show up in IDEs
-file(GLOB_RECURSE INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
+file(GLOB_RECURSE INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
 list(APPEND INCLUDES "${CMAKE_CURRENT_BINARY_DIR}/include/version.h")
 
 if(CMAKE_GENERATOR STREQUAL "Ninja")
