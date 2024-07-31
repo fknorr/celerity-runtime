@@ -12,8 +12,10 @@
 
 namespace celerity::detail::tracy_detail {
 
-// This is intentionally not an atomic, as parts of Celerity (= live_executor) expect it not to change after runtime startup
-inline tracy_mode g_tracy_mode = tracy_mode::off;
+// This is intentionally not an atomic, as parts of Celerity (= live_executor) expect it not to change after runtime startup.
+// We start with `full` tracing to see the runtime startup trigger (i.e. buffer / queue construction), and adjust the setting in runtime::runtime() immediately
+// after parsing the config.
+inline tracy_mode g_tracy_mode = tracy_mode::full;
 
 /// Tracy is enabled via environment variable, either in fast or full mode.
 inline bool is_enabled() { return g_tracy_mode != tracy_mode::off; }
