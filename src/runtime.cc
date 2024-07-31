@@ -59,7 +59,6 @@ namespace detail {
 
 	void runtime::init(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector) {
 		assert(!s_instance);
-		// if (!s_test_mode && s_initialized_before) { throw std::runtime_error("Cannot re-initialize the runtime"); }
 		s_instance = std::unique_ptr<runtime>(new runtime(argc, argv, user_devices_or_selector));
 	}
 

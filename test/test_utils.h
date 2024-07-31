@@ -168,12 +168,11 @@ namespace test_utils {
 	/// are expected. The property is re-set at the beginning of each test-case run (even when it is re-entered due to a generator or section).
 	void allow_max_log_level(detail::log_level level);
 
-	/// Like allow_max_log_level(), but only applies to messages that match a regex. This is used in test fixtures to allow common system-dependent
-	/// messages.
+	/// Like allow_max_log_level(), but only applies to messages that match a regex. This is used in test fixtures to allow common system-dependent messages.
 	void allow_higher_level_log_messages(detail::log_level level, const std::string& text_regex);
 
-	/// Returns whether the log of the current test so far contains a message that exactly equals the given log level and message. Time stamps and the log
-	/// level are not part of the text, but any active log_context is.
+	/// Returns whether the log of the current test so far contains a message that exactly equals the given log level and message. Time stamps and the log level
+	/// are not part of the text, but any active log_context is.
 	bool log_contains_exact(detail::log_level level, const std::string& text);
 
 	/// Returns whether the log of the current test so far contains a message with exactly the given log level and a message that contains `substring`.
