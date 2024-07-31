@@ -205,6 +205,12 @@ sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, c
 			}
 		}
 	}
+
+	for(device_id i = 0; i < devices.size(); ++i) {
+		const int id_i = sycl::get_native<sycl_backend_detail::sycl_cuda_backend>(devices[i]);
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda device init", Green);
+		cudaSetDevice(id_i);
+	}
 }
 
 async_event sycl_cuda_backend::enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base,
