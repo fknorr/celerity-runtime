@@ -83,7 +83,7 @@ struct cuda_native_event_deleter {
 using unique_cuda_native_event = std::unique_ptr<std::remove_pointer_t<cudaEvent_t>, cuda_native_event_deleter>;
 
 unique_cuda_native_event record_native_event(const cudaStream_t stream, bool enable_profiling) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda::record_event", ForestGreen, "cudaEventRecord")
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("cuda::record_event", ForestGreen, "cudaEventRecord")
 	cudaEvent_t event;
 	CELERITY_CUDA_CHECK(cudaEventCreateWithFlags, &event, enable_profiling ? cudaEventDefault : cudaEventDisableTiming);
 	CELERITY_CUDA_CHECK(cudaEventRecord, event, stream);
