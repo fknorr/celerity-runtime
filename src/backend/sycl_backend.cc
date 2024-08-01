@@ -141,6 +141,14 @@ sycl_backend::~sycl_backend() = default;
 
 const system_info& sycl_backend::get_system_info() const { return m_impl->system; }
 
+void sycl_backend::init() {
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::init", Orange2);
+	// Instantiate the first in-order queue on each device. At least for CUDA systems this will perform device initialization, which can take > 100 ms / device.
+	for(device_id did = 0; did < m_impl->system.devices.size(); ++did) {
+		(void)m_impl->get_device_queue(did, 0 /* lane */);
+	}
+}
+
 void* sycl_backend::debug_alloc(const size_t size) {
 	const auto ptr = sycl::malloc_host(size, m_impl->host.sycl_context);
 #if CELERITY_DETAIL_ENABLE_DEBUG

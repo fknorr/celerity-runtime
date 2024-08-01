@@ -364,6 +364,7 @@ executor_impl::executor_impl(std::unique_ptr<detail::backend> backend, communica
 
 void executor_impl::run() {
 	closure_hydrator::make_available();
+	backend->init();
 
 	for(;;) {
 		if(engine.is_idle()) {

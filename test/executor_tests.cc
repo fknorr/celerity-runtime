@@ -189,6 +189,8 @@ class mock_backend final : public backend {
 
 	const system_info& get_system_info() const override { return m_system; }
 
+	void init() override {}
+
 	void* debug_alloc(size_t size) override { return malloc(size); }
 	void debug_free(void* ptr) override { free(ptr); }
 

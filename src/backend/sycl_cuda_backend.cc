@@ -8,7 +8,6 @@
 #include "system_info.h"
 #include "tracy.h"
 #include "utils.h"
-#include "workaround.h"
 
 
 #define CELERITY_STRINGIFY2(f) #f
@@ -204,12 +203,6 @@ sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, c
 				CELERITY_DEBUG("CUDA does not provide peer access between D{} and D{}, device-to-device copies will be staged in host memory", i, j);
 			}
 		}
-	}
-
-	for(device_id i = 0; i < devices.size(); ++i) {
-		const int id_i = sycl::get_native<sycl_backend_detail::sycl_cuda_backend>(devices[i]);
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("cuda device init", Green);
-		cudaSetDevice(id_i);
 	}
 }
 
