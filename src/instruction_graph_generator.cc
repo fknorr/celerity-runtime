@@ -1082,7 +1082,7 @@ void generator_impl::commit_pending_region_receive_to_host_memory(
 void generator_impl::establish_coherence_between_buffer_memories(
     batch& current_batch, const buffer_id bid, const memory_id dest_mid, const std::vector<region<3>>& concurrent_reads) //
 {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::coherence", Red2);
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::establish_coherence", Red2);
 
 	auto& buffer = m_buffers.at(bid);
 
@@ -1261,7 +1261,7 @@ void generator_impl::report_task_overlapping_writes(const task& tsk, const std::
 void generator_impl::satisfy_task_buffer_requirements(batch& current_batch, const buffer_id bid, const task& tsk, const subrange<3>& local_execution_range,
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_chunks_after_split) //
 {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::satisfy_requirements", ForestGreen);
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::satisfy_buffer_requirements", ForestGreen);
 
 	assert(!concurrent_chunks_after_split.empty());
 
@@ -1516,7 +1516,7 @@ void generator_impl::finish_task_local_reduction(batch& command_batch, const loc
 }
 
 instruction* generator_impl::launch_task_kernel(batch& command_batch, const execution_command& ecmd, const task& tsk, const localized_chunk& chunk) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::launch", Blue2);
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::launch_kernel", Blue2);
 
 	const auto& bam = tsk.get_buffer_access_map();
 
@@ -1584,7 +1584,7 @@ instruction* generator_impl::launch_task_kernel(batch& command_batch, const exec
 void generator_impl::perform_task_buffer_accesses(
     const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions) //
 {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::buffer_access", Red3);
+	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::perform_buffer_access", Red3);
 
 	const auto& bam = tsk.get_buffer_access_map();
 	if(bam.get_num_accesses() == 0 && tsk.get_reductions().empty()) return;
