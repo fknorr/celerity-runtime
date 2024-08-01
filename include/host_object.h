@@ -27,7 +27,8 @@ struct host_object_instance {
 	virtual ~host_object_instance() = default;
 };
 
-/// Kept as a std::shared_ptr within host_objects, this notifies the runtime when the last reference to a host object goes out of scope.
+/// A `tacker` instance is shared by all copies of any `host_object` via a `std::shared_ptr` to implement (SYCL) reference semantics.
+/// It notifies the runtime of host object creation and destruction.
 struct host_object_tracker {
 	detail::host_object_id id{};
 

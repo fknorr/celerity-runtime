@@ -96,8 +96,8 @@ class buffer {
 	}
 
   private:
-	/// Shared across all shallow copies of a celerity::buffer, the tracker notifies the runtime of buffer creation and destruction and also persists changes of
-	/// the buffer debug name.
+	/// A `tacker` instance is shared by all shallow copies of this `buffer` via a `std::shared_ptr` to implement (SYCL) reference semantics.
+	/// It notifies the runtime of buffer creation and destruction and also persists changes of the buffer debug name.
 	struct tracker {
 		tracker(const celerity::range<Dims>& range, const void* const host_init_ptr) : range(range) {
 			CELERITY_DETAIL_TRACY_ZONE_SCOPED("buffer::buffer", DarkSlateBlue);

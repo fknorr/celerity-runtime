@@ -204,7 +204,7 @@ namespace detail {
 		{
 			CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::pick_devices", PaleVioletRed);
 			devices = std::visit([&](const auto& value) { return pick_devices(host_cfg, value, sycl::platform::get_platforms()); }, user_devices_or_selector);
-			assert(!devices.empty());
+			assert(!devices.empty()); // postcondition of pick_devices
 		}
 
 		auto backend = make_sycl_backend(select_backend(sycl_backend_enumerator{}, devices), devices, m_cfg->should_enable_device_profiling());
@@ -334,7 +334,7 @@ namespace detail {
 
 	std::string gather_command_graph(const std::string& graph_str, const size_t num_nodes, const node_id local_nid) {
 		const auto comm = MPI_COMM_WORLD;
-		const int tag = 0xCDA6; // Celerity does not perform any other peer-to-peer communication over MPI_COMM_WORLD
+		const int tag = 0xCDA6; // aka 'CDAG' - Celerity does not perform any other peer-to-peer communication over MPI_COMM_WORLD
 
 		// Send local graph to rank 0 on all other nodes
 		if(local_nid != 0) {

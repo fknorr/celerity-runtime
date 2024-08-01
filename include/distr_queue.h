@@ -111,6 +111,8 @@ class distr_queue {
 	}
 
   private:
+	/// A `tacker` instance is shared by all copies of this `distr_queue` via a `std::shared_ptr` to implement (SYCL) reference semantics.
+	/// It notifies the runtime of queue creation and destruction, which might trigger startup or shutdown if it is the only object.
 	struct tracker {
 		tracker(const detail::devices_or_selector& devices_or_selector) {
 			CELERITY_DETAIL_TRACY_ZONE_SCOPED("distr_queue::distr_queue", DarkSlateBlue);
