@@ -126,7 +126,7 @@ class buffer {
 		std::string debug_name;
 	};
 
-	std::shared_ptr<tracker> m_tracker = nullptr;
+	std::shared_ptr<tracker> m_tracker;
 
 	template <typename T, int D>
 	friend detail::buffer_id detail::get_buffer_id(const buffer<T, D>& buff);

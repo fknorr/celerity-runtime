@@ -28,7 +28,7 @@ inline constexpr allow_by_ref_t allow_by_ref{};
 
 class distr_queue {
   public:
-	distr_queue() { init(detail::auto_select_devices{}); }
+	distr_queue() : distr_queue(ctor_internal_tag{}, detail::auto_select_devices{}) {}
 
 	/**
 	 * @brief Creates a distr_queue and instructs it to use a particular set of devices.
@@ -36,10 +36,7 @@ class distr_queue {
 	 * @param devices The devices to be used on the current node. This can vary between nodes.
 	 *                If there are multiple nodes running on the same host, the list of devices must be the same across nodes on the same host.
 	 */
-	distr_queue(const std::vector<sycl::device>& devices) {
-		if(detail::runtime::has_instance()) { throw std::runtime_error("Passing explicit device list not possible, runtime has already been initialized."); }
-		init(devices);
-	}
+	distr_queue(const std::vector<sycl::device>& devices) : distr_queue(ctor_internal_tag{}, devices) {}
 
 	/**
 	 * @brief Creates a distr_queue and instructs it to use a particular set of devices.
@@ -48,12 +45,7 @@ class distr_queue {
 	 *                        If there are multiple nodes running on the same host, the selector must be the same across nodes on the same host.
 	 */
 	template <typename DeviceSelector>
-	distr_queue(const DeviceSelector& device_selector) {
-		if(detail::runtime::has_instance()) {
-			throw std::runtime_error("Passing explicit device selector not possible, runtime has already been initialized.");
-		}
-		init(device_selector);
-	}
+	distr_queue(const DeviceSelector& device_selector) : distr_queue(ctor_internal_tag{}, device_selector) {}
 
 	/**
 	 * Submits a command group to the queue.
@@ -120,7 +112,18 @@ class distr_queue {
 
   private:
 	struct tracker {
-		tracker() { detail::runtime::get_instance().create_queue(); }
+		tracker(const detail::devices_or_selector& devices_or_selector) {
+			CELERITY_DETAIL_TRACY_ZONE_SCOPED("distr_queue::distr_queue", DarkSlateBlue);
+
+			if(!detail::runtime::has_instance()) {
+				detail::runtime::init(nullptr, nullptr, devices_or_selector);
+			} else if(!std::holds_alternative<detail::auto_select_devices>(devices_or_selector)) {
+				throw std::runtime_error(fmt::format("Passing explicit device {} not possible, runtime has already been initialized.",
+				    std::holds_alternative<detail::device_selector>(devices_or_selector) ? "selector" : "list"));
+			}
+
+			detail::runtime::get_instance().create_queue(); // never throws if this was also the call to runtime::init, so we're not leaking the runtime
+		}
 
 		tracker(const tracker&) = delete;
 		tracker(tracker&&) = delete;
@@ -142,18 +145,12 @@ class distr_queue {
 		}
 	};
 
+	struct ctor_internal_tag {};
+
 	std::shared_ptr<tracker> m_tracker;
 
-	void init(const detail::devices_or_selector& devices_or_selector) {
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("distr_queue::distr_queue", DarkSlateBlue); // TRACY TODO
-
-		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr, devices_or_selector); }
-
-		// If this call initialized the runtime, we need to shut it down in case tracker construction throws (because then, ~tracker() is never executed) so we
-		// don't leak the runtime instance. We currently assume that the following call never throws if we were the ones to initialize the runtime, so no
-		// special handling is done. Might need to change in the future.
-		m_tracker = std::make_shared<tracker>();
-	}
+	distr_queue(const ctor_internal_tag /* tag */, const detail::devices_or_selector& devices_or_selector)
+	    : m_tracker(std::make_shared<tracker>(devices_or_selector)) {}
 };
 
 } // namespace celerity
