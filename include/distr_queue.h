@@ -19,7 +19,7 @@ namespace celerity {
 template <typename T, int Dims>
 class buffer_snapshot;
 
-struct [[deprecated("This tag type is no longer required to capture by reference")]] allow_by_ref_t{};
+struct [[deprecated("This tag type is no longer required to capture by reference")]] allow_by_ref_t {};
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -128,6 +128,8 @@ class distr_queue {
 		tracker& operator=(tracker&&) = delete;
 
 		~tracker() {
+			CELERITY_DETAIL_TRACY_ZONE_SCOPED("distr_queue::~distr_queue", DarkCyan);
+
 			// The destructor of the last queue handle must wait for all submitted work to finish to guarantee implicit synchronization e.g. around host_task
 			// ref-captures. Notifying the runtime of queue destruction might destroy the runtime instance itself, which will issue and wait on the shutdown
 			// epoch, guaranteeing that all previously submitted work has completed.
@@ -143,6 +145,8 @@ class distr_queue {
 	std::shared_ptr<tracker> m_tracker;
 
 	void init(const detail::devices_or_selector& devices_or_selector) {
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("distr_queue::distr_queue", DarkSlateBlue); // TRACY TODO
+
 		if(!detail::runtime::has_instance()) { detail::runtime::init(nullptr, nullptr, devices_or_selector); }
 
 		// If this call initialized the runtime, we need to shut it down in case tracker construction throws (because then, ~tracker() is never executed) so we

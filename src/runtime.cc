@@ -267,7 +267,7 @@ namespace detail {
 
 		require_call_from_application_thread();
 
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::shutdown", DarkGray);
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::shutdown", DimGray);
 
 		// Create and await the shutdown epoch
 		sync(epoch_action::shutdown);
@@ -392,7 +392,6 @@ namespace detail {
 
 	void runtime::create_queue() {
 		require_call_from_application_thread();
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::create_queue", Brown3);
 
 		if(m_has_live_queue) { throw std::runtime_error("Only one celerity::distr_queue can be created per process (but it can be copied!)"); }
 		m_has_live_queue = true;
@@ -400,7 +399,6 @@ namespace detail {
 
 	void runtime::destroy_queue() {
 		require_call_from_application_thread();
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::destroy_queue", Brown4);
 
 		assert(m_has_live_queue);
 		m_has_live_queue = false;
@@ -416,20 +414,16 @@ namespace detail {
 
 	buffer_id runtime::create_buffer(const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_aid) {
 		require_call_from_application_thread();
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::create_buffer", Blue1);
 
 		const auto bid = m_next_buffer_id++;
 		m_live_buffers.emplace(bid);
 		m_task_mngr->notify_buffer_created(bid, range, user_aid != null_allocation_id);
 		m_schdlr->notify_buffer_created(bid, range, elem_size, elem_align, user_aid);
-
-		CELERITY_DETAIL_TRACY_ZONE_NAME("B{} create", bid);
 		return bid;
 	}
 
 	void runtime::set_buffer_debug_name(const buffer_id bid, const std::string& debug_name) {
 		require_call_from_application_thread();
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("runtime::set_buffer_debug_name", VioletRed2, "B{} set debug name", bid);
 
 		assert(utils::contains(m_live_buffers, bid));
 		m_task_mngr->notify_buffer_debug_name_changed(bid, debug_name);
@@ -438,7 +432,6 @@ namespace detail {
 
 	void runtime::destroy_buffer(const buffer_id bid) {
 		require_call_from_application_thread();
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("runtime::destroy_buffer", Blue2, "B{} destroy", bid);
 
 		assert(utils::contains(m_live_buffers, bid));
 		m_schdlr->notify_buffer_destroyed(bid);
@@ -449,7 +442,6 @@ namespace detail {
 
 	host_object_id runtime::create_host_object(std::unique_ptr<host_object_instance> instance) {
 		require_call_from_application_thread();
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::create_host_object", Green1);
 
 		const auto hoid = m_next_host_object_id++;
 		m_live_host_objects.emplace(hoid);
@@ -457,14 +449,11 @@ namespace detail {
 		if(owns_instance) { m_exec->track_host_object_instance(hoid, std::move(instance)); }
 		m_task_mngr->notify_host_object_created(hoid);
 		m_schdlr->notify_host_object_created(hoid, owns_instance);
-
-		CELERITY_DETAIL_TRACY_ZONE_NAME("H{} create", hoid);
 		return hoid;
 	}
 
 	void runtime::destroy_host_object(const host_object_id hoid) {
 		require_call_from_application_thread();
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("runtime::destroy_host_object", Green2, "H{} desroy", hoid);
 
 		assert(utils::contains(m_live_host_objects, hoid));
 		m_schdlr->notify_host_object_destroyed(hoid);
