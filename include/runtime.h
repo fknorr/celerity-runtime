@@ -30,7 +30,7 @@ namespace detail {
 		/**
 		 * @param user_device_or_selector This optional device (overriding any other device selection strategy) or device selector can be provided by the user.
 		 */
-		static void init(int* argc, char** argv[], const devices_or_selector& user_device_or_selector = auto_select_devices{});
+		static void init(int* argc, char** argv[], const devices_or_selector& user_devices_or_selector = auto_select_devices{});
 
 		static bool has_instance() { return s_instance != nullptr; }
 

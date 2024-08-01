@@ -109,7 +109,7 @@ namespace detail {
 		}
 	}
 
-	void abstract_scheduler::notify(event&& event) { m_event_queue.push(std::move(event)); }
+	void abstract_scheduler::notify(event&& evt) { m_event_queue.push(std::move(evt)); }
 
 	scheduler::scheduler(const size_t num_nodes, const node_id local_node_id, const system_info& system, const task_manager& tm, delegate* const delegate,
 	    command_recorder* const crec, instruction_recorder* const irec, const policy_set& policy)
