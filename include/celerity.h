@@ -1,5 +1,4 @@
-#ifndef RUNTIME_INCLUDE_ENTRY_CELERITY
-#define RUNTIME_INCLUDE_ENTRY_CELERITY
+#pragma once
 
 #include "runtime.h"
 
@@ -41,5 +40,3 @@ namespace runtime {
 // Celerity includes <CL/sycl.hpp> internally, but we want to expose the SYCL 2020 ::sycl namespace to Celerity users.
 // TODO: Remove this once Celerity includes <sycl/sycl.hpp> internally.
 #include <sycl/sycl.hpp>
-
-#endif
