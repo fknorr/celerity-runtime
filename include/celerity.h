@@ -28,7 +28,7 @@ namespace runtime {
 	inline void init(int* argc, char** argv[], const std::vector<sycl::device>& devices) { detail::runtime::init(argc, argv, devices); }
 
 	/**
-	 * @brief Initializes the Celerity runtime and instructs it to use a a particular set of devices.
+	 * @brief Initializes the Celerity runtime and instructs it to use a particular set of devices.
 	 *
 	 * @param device_selector The device selector to be used on the current node. This can vary between nodes.
 	 *                        If there are multiple nodes running on the same host, the selector must be the same across nodes on the same host.

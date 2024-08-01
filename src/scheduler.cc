@@ -7,6 +7,8 @@
 #include "recorders.h"
 #include "tracy.h"
 
+#include <matchbox.hh>
+
 
 namespace celerity {
 namespace detail {

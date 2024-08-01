@@ -233,7 +233,6 @@ namespace celerity::test_utils_detail {
 
 // These error and warning messages will appear depending on the system the (runtime) tests are executed on, so we must not fail tests because of them.
 
-// NOCOMMIT why are these separate definitions? Can we inline them into runtime_fixture()?
 const char* const expected_runtime_init_warnings_regex = "Celerity has detected that only .* logical cores are available to this process.*|"
                                                          "Celerity detected more than one node \\(MPI rank\\) on this host, which is not recommended.*|"
                                                          "Instrumentation for profiling with Tracy is enabled\\. Performance may be negatively impacted\\.|"
