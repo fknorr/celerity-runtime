@@ -33,7 +33,6 @@
 #include "system_info.h"
 #include "task_manager.h"
 #include "tracy.h"
-#include "user_bench.h"
 #include "version.h"
 
 namespace celerity {
@@ -196,8 +195,6 @@ namespace detail {
 			}
 		}
 
-		m_user_bench = std::make_unique<experimental::bench::detail::user_benchmarker>(*m_cfg, m_local_nid);
-
 		cgf_diagnostics::make_available();
 
 		std::vector<sycl::device> devices;
@@ -314,8 +311,6 @@ namespace detail {
 		m_task_recorder.reset();
 
 		cgf_diagnostics::teardown();
-
-		m_user_bench.reset();
 
 		if(!s_test_mode) { mpi_finalize_once(); }
 	}
