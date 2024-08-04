@@ -125,7 +125,7 @@ namespace detail {
 	}
 
 	void scheduler::thread_main() {
-		CELERITY_DETAIL_TRACY_SET_THREAD_NAME("cy-scheduler")
+		CELERITY_DETAIL_TRACY_SET_THREAD_NAME_AND_ORDER("cy-scheduler", tracy_detail::thread_order::scheduler)
 		try {
 			schedule();
 		}

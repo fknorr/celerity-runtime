@@ -4,6 +4,7 @@
 
 #include "config.h"
 
+#include <cstdint>
 #include <string_view>
 
 #include <fmt/format.h>
@@ -53,6 +54,18 @@ void apply_string(const ApplyFn& apply, const std::string_view& string) {
 	apply(string);
 }
 
+enum thread_order : int32_t {
+	scheduler = 0x10000,
+	executor = 0x10001,
+	thread_queue = 0x10002,
+	immediate_lane = 0x10003,
+	alloc_lane = 0x10004,
+	host_first_lane = 0x10100,
+	first_device_first_lane = 0x10200,
+	num_lanes_per_device = 0x100,
+	send_receive_first_lane = 0x21000,
+};
+
 } // namespace celerity::detail::tracy_detail
 
 #define CELERITY_DETAIL_IF_TRACY_SUPPORTED(...) __VA_ARGS__
@@ -79,4 +92,4 @@ void apply_string(const ApplyFn& apply, const std::string_view& string) {
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED(TAG, COLOR_NAME);                                                                                                        \
 	CELERITY_DETAIL_TRACY_ZONE_NAME(__VA_ARGS__);
 
-#define CELERITY_DETAIL_TRACY_SET_THREAD_NAME(NAME) CELERITY_DETAIL_IF_TRACY_ENABLED(::tracy::SetThreadName(NAME))
+#define CELERITY_DETAIL_TRACY_SET_THREAD_NAME_AND_ORDER(NAME, ORDER) CELERITY_DETAIL_IF_TRACY_ENABLED(::tracy::SetThreadNameWithHint(NAME, ORDER))

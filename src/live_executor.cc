@@ -49,13 +49,13 @@ struct tracy_integration {
 	/// State for an async (fiber) lane. Keeps the active (suspended) zone as well as the queue of eagerly submitted but not yet begun zones.
 	struct async_lane_state {
 		async_lane_id id;
-		const char* fiber_name = make_fiber_name(id);
+		const char* fiber_name = nullptr;
+		int32_t fiber_order = 0;
 		size_t next_submission_idx = 0;
 		std::optional<TracyCZoneCtx> active_zone_ctx;
 		std::deque<async_zone> zone_queue; ///< front(): currently active zone, front() + 1: zone to start immediately after front() has ended
 
-		static const char* make_fiber_name(const async_lane_id& lane_id);
-		explicit async_lane_state(const async_lane_id& id) : id(id) {}
+		explicit async_lane_state(const async_lane_id& id);
 	};
 
 	std::vector<async_lane_state> async_lanes; // vector instead of map, because elements need to be referenced to by global lane id
@@ -81,14 +81,28 @@ struct tracy_integration {
 	void retire_async_instruction(const async_lane_cursor& cursor, const async_event& event);
 };
 
-const char* tracy_integration::async_lane_state::make_fiber_name(const async_lane_id& lane_id) {
-	const auto& [target, device, local_lane_id] = lane_id;
-	switch(target) {
-	case out_of_order_engine::target::immediate: return utils::leak(fmt::format("cy-async-comm #{}", local_lane_id))->c_str();
-	// TODO trace host tasks in their actual thread_queue threads?
-	case out_of_order_engine::target::alloc_queue: return "cy-async-alloc"; break;
-	case out_of_order_engine::target::host_queue: return utils::leak(fmt::format("cy-async-host #{}", local_lane_id))->c_str();
-	case out_of_order_engine::target::device_queue: return utils::leak(fmt::format("cy-async-device D{} #{}", device.value(), local_lane_id))->c_str();
+
+tracy_integration::async_lane_state::async_lane_state(const async_lane_id& id) : id(id) {
+	using tracy_detail::thread_order;
+	switch(id.target) {
+	case out_of_order_engine::target::immediate: {
+		fiber_name = utils::leak(fmt::format("cy-async-comm #{}", id.local_lane_id))->c_str();
+		fiber_order = thread_order::send_receive_first_lane + static_cast<int32_t>(id.local_lane_id);
+		break;
+	}
+	case out_of_order_engine::target::alloc_queue:
+		fiber_name = "cy-async-alloc";
+		fiber_order = thread_order::alloc_lane;
+		break;
+	case out_of_order_engine::target::host_queue:
+		fiber_name = utils::leak(fmt::format("cy-async-host #{}", id.local_lane_id))->c_str();
+		fiber_order = thread_order::host_first_lane + static_cast<int32_t>(id.local_lane_id);
+		break;
+	case out_of_order_engine::target::device_queue:
+		fiber_name = utils::leak(fmt::format("cy-async-device D{} #{}", id.device.value(), id.local_lane_id))->c_str();
+		fiber_order = thread_order::first_device_first_lane + static_cast<int32_t>(id.device.value()) * thread_order::num_lanes_per_device
+		              + static_cast<int32_t>(id.local_lane_id);
+		break;
 	default: utils::unreachable();
 	}
 }
@@ -207,13 +221,13 @@ tracy_integration::async_lane_cursor tracy_integration::issue_async_instruction(
 	if(lane.zone_queue.size() == 1) {
 		// zone_queue.back() == zone_queue.front(): The instruction starts immediately
 		assert(!lane.active_zone_ctx.has_value());
-		TracyFiberEnter(lane.fiber_name);
+		TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
 		lane.active_zone_ctx = begin_instruction_zone(instr, false /* eager */);
 		TracyFiberLeave;
 	} else if(tracy_detail::is_enabled_full()) {
 		// The instruction zone will be started as soon as its predecessor is retired - indicate when it was issued
 		const auto mark = fmt::format("I{} issued", instr.get_id());
-		TracyFiberEnter(lane.fiber_name);
+		TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
 		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
 		TracyFiberLeave;
 	}
@@ -224,7 +238,7 @@ tracy_integration::async_lane_cursor tracy_integration::issue_async_instruction(
 void tracy_integration::retire_async_instruction(const async_lane_cursor& cursor, const async_event& event) {
 	auto& lane = async_lanes.at(cursor.global_lane_id);
 
-	TracyFiberEnter(lane.fiber_name);
+	TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
 	while(!lane.zone_queue.empty() && lane.zone_queue.front().submission_idx_on_lane <= cursor.submission_idx_on_lane) {
 		// Complete the front() == active zone in the lane.
 		{
@@ -496,7 +510,7 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 
 	CELERITY_DETAIL_IF_TRACY_SUPPORTED(TracyCZoneCtx ctx;)
 	CELERITY_DETAIL_IF_TRACY_ENABLED({
-		TracyFiberEnter("cy-immediate");
+		TracyFiberEnterHint("cy-immediate", tracy_detail::thread_order::immediate_lane);
 		ctx = tracy->begin_instruction_zone(instr, false /* eager */);
 		tracy->assigned_instructions_plot.update(in_flight_async_instructions.size() + 1);
 	})
@@ -889,7 +903,7 @@ void live_executor::submit(std::vector<const instruction*> instructions, std::ve
 }
 
 void live_executor::thread_main(std::unique_ptr<backend> backend, delegate* const dlg, const policy_set& policy) {
-	CELERITY_DETAIL_TRACY_SET_THREAD_NAME("cy-executor");
+	CELERITY_DETAIL_TRACY_SET_THREAD_NAME_AND_ORDER("cy-executor", tracy_detail::thread_order::executor);
 	try {
 		live_executor_detail::executor_impl(std::move(backend), m_root_comm.get(), m_submission_queue, dlg, policy).run();
 	}
