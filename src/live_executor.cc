@@ -640,6 +640,8 @@ void executor_impl::issue(const horizon_instruction& hinstr) {
 
 	if(delegate != nullptr) { delegate->horizon_reached(hinstr.get_horizon_task_id()); }
 	collect(hinstr.get_garbage());
+
+	CELERITY_DETAIL_IF_TRACY_ENABLED(FrameMarkNamed("Horizon"));
 }
 
 void executor_impl::issue(const epoch_instruction& einstr) {
@@ -660,6 +662,9 @@ void executor_impl::issue(const epoch_instruction& einstr) {
 		delegate->epoch_reached(einstr.get_epoch_task_id());
 	}
 	collect(einstr.get_garbage());
+
+	CELERITY_DETAIL_IF_TRACY_ENABLED(FrameMarkNamed("Horizon"));
+	CELERITY_DETAIL_IF_TRACY_ENABLED(FrameMark); // top-level "Frame"
 }
 
 void executor_impl::issue_async(const alloc_instruction& ainstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
