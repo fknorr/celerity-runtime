@@ -204,27 +204,7 @@ void erase_if(Container& container, const Predicate& predicate) {
 	container.erase(std::remove_if(begin(container), end(container), predicate), end(container));
 }
 
-/// Wrapper type inhibiting automatic RAII constructor and destructor invocation.
-template <typename T>
-union leak {
-	T value;
-
-	leak() {} // leave value uninitialized: unions don't initialize their members
-	leak(T&& v) : value(std::move(v)) {}
-
-	leak(const leak&) = delete;
-	leak(leak&&) = delete;
-	leak& operator=(const leak&) = delete;
-	leak& operator=(leak&&) = delete;
-
-	~leak() {} // leak value: unions don't destroy their members
-
-	const T* operator->() const { return &value; }
-	T* operator->() { return &value; }
-	const T& operator*() const { return value; }
-	T& operator*() { return value; }
-};
-
-std::string replace_all(const std::string_view& in, const std::string_view& pattern, const std::string_view& with);
+/// Replaces all occurrences of `pattern` in `in` with `with`. If `pattern` is empty, returns the input string unchanged.
+std::string replace_all(const std::string_view& input, const std::string_view& pattern, const std::string_view& replacement);
 
 } // namespace celerity::detail::utils

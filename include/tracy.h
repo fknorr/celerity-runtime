@@ -5,6 +5,8 @@
 #include "config.h"
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <string_view>
 
 #include <fmt/format.h>
@@ -54,17 +56,25 @@ void apply_string(const ApplyFn& apply, const std::string_view& string) {
 	apply(string);
 }
 
+/// Base for sorting keys for the visual order of threads in Tracy. Higher = further down. Order between duplicate keys is automatic per Tracy terms.
 enum thread_order : int32_t {
-	scheduler = 0x10000,
-	executor = 0x10001,
-	thread_queue = 0x10002,
-	immediate_lane = 0x10003,
-	alloc_lane = 0x10004,
-	host_first_lane = 0x10100,
-	first_device_first_lane = 0x10200,
+	scheduler = 0x10000,               // scheduler thread (1)
+	executor = 0x10001,                // executor thread (1)
+	thread_queue = 0x10002,            // thread_queue instance (any number, no internal order)
+	immediate_lane = 0x10003,          // immediate pseudo-lane (1)
+	alloc_lane = 0x10004,              // alloc fiber (1)
+	host_first_lane = 0x10100,         // host lane (0..256)
+	first_device_first_lane = 0x10200, // first lane (0.256) of first device (0..256)
 	num_lanes_per_device = 0x100,
-	send_receive_first_lane = 0x21000,
+	send_receive_first_lane = 0x21000, // first send/receive pseudo-lane (any number)
 };
+
+/// Tracy requires thread and fiber names to be live for the duration of the program, so if they are formatted dynamically, we need to leak them.
+inline const char* leak_name(const std::string& name) {
+	auto* leaked = malloc(name.size() + 1);
+	memcpy(leaked, name.data(), name.size() + 1);
+	return static_cast<const char*>(leaked);
+}
 
 } // namespace celerity::detail::tracy_detail
 

@@ -83,25 +83,24 @@ struct tracy_integration {
 
 
 tracy_integration::async_lane_state::async_lane_state(const async_lane_id& id) : id(id) {
-	using tracy_detail::thread_order;
 	switch(id.target) {
 	case out_of_order_engine::target::immediate: {
-		fiber_name = utils::leak(fmt::format("cy-async-comm #{}", id.local_lane_id))->c_str();
-		fiber_order = thread_order::send_receive_first_lane + static_cast<int32_t>(id.local_lane_id);
+		fiber_name = tracy_detail::leak_name(fmt::format("cy-async-p2p #{}", id.local_lane_id));
+		fiber_order = tracy_detail::thread_order::send_receive_first_lane + static_cast<int32_t>(id.local_lane_id);
 		break;
 	}
 	case out_of_order_engine::target::alloc_queue:
 		fiber_name = "cy-async-alloc";
-		fiber_order = thread_order::alloc_lane;
+		fiber_order = tracy_detail::thread_order::alloc_lane;
 		break;
 	case out_of_order_engine::target::host_queue:
-		fiber_name = utils::leak(fmt::format("cy-async-host #{}", id.local_lane_id))->c_str();
-		fiber_order = thread_order::host_first_lane + static_cast<int32_t>(id.local_lane_id);
+		fiber_name = tracy_detail::leak_name(fmt::format("cy-async-host #{}", id.local_lane_id));
+		fiber_order = tracy_detail::thread_order::host_first_lane + static_cast<int32_t>(id.local_lane_id);
 		break;
 	case out_of_order_engine::target::device_queue:
-		fiber_name = utils::leak(fmt::format("cy-async-device D{} #{}", id.device.value(), id.local_lane_id))->c_str();
-		fiber_order = thread_order::first_device_first_lane + static_cast<int32_t>(id.device.value()) * thread_order::num_lanes_per_device
-		              + static_cast<int32_t>(id.local_lane_id);
+		fiber_name = tracy_detail::leak_name(fmt::format("cy-async-device D{} #{}", id.device.value(), id.local_lane_id));
+		fiber_order = tracy_detail::thread_order::first_device_first_lane
+		              + static_cast<int32_t>(id.device.value()) * tracy_detail::thread_order::num_lanes_per_device + static_cast<int32_t>(id.local_lane_id);
 		break;
 	default: utils::unreachable();
 	}
