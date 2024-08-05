@@ -228,7 +228,7 @@ bool sycl_backend::is_profiling_enabled() const { return m_impl->enable_profilin
 
 std::vector<sycl_backend_type> sycl_backend_enumerator::compatible_backends(const sycl::device& device) const {
 	std::vector<backend_type> backends{backend_type::generic};
-#if CELERITY_WORKAROUND(HIPSYCL) && defined(SYCL_EXT_HIPSYCL_BACKEND_CUDA)
+#if CELERITY_WORKAROUND(ACPP) && defined(SYCL_EXT_HIPSYCL_BACKEND_CUDA)
 	if(device.get_backend() == sycl::backend::cuda) { backends.push_back(sycl_backend_type::cuda); }
 #elif CELERITY_WORKAROUND(DPCPP)
 	if(device.get_backend() == sycl::backend::ext_oneapi_cuda) { backends.push_back(sycl_backend_type::cuda); }
