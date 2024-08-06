@@ -127,6 +127,8 @@ else()
 endif()
 option(CELERITY_USE_MIMALLOC "Use the mimalloc memory allocator" ${CELERITY_USE_MIMALLOC_DEFAULT})
 
+option(CELERITY_TRACY_SUPPORT "Enable Tracy profiler integration" OFF)
+
 # 3rdparty dependencies
 include(FetchContent)
 
