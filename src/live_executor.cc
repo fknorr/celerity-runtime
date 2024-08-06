@@ -191,7 +191,7 @@ void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const ins
 				    [](const auto& /* other */) { return std::nullopt; });
 
 				if(bytes_processed.has_value()) {
-					fmt::format_to(std::back_inserter(text), "\nthroughput: {:.2f}", as_binary_throughput(*bytes_processed, *native_execution_time));
+					fmt::format_to(std::back_inserter(text), "\nthroughput: {:.2f}", as_decimal_throughput(*bytes_processed, *native_execution_time));
 				}
 			}
 		}
@@ -741,7 +741,7 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(dkinstr, "device kernel on D{}, {}{}; estimated global memory traffic: {:.2f}", dkinstr.get_device_id(),
 	    dkinstr.get_execution_range(), format_access_log(dkinstr.get_access_allocations()),
-	    as_binary_size(dkinstr.get_estimated_global_memory_traffic_bytes()));
+	    as_decimal_size(dkinstr.get_estimated_global_memory_traffic_bytes()));
 
 	auto accessor_infos = make_accessor_infos(dkinstr.get_access_allocations());
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK

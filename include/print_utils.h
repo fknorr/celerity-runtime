@@ -8,6 +8,7 @@
 #include "types.h"
 
 #include <chrono>
+#include <type_traits>
 
 #include <fmt/format.h>
 
@@ -213,17 +214,17 @@ struct as_sub_second {
 	std::chrono::duration<double> seconds;
 };
 
-/// Wrap a byte count in this to auto-format it as KiB / MiB / etc.
-struct as_binary_size {
-	as_binary_size(double bytes) : bytes(bytes) {}
-	as_binary_size(size_t bytes) : bytes(static_cast<double>(bytes)) {}
+/// Wrap a byte count in this to auto-format it as KB / MB / etc.
+struct as_decimal_size {
+	template <typename Number, std::enable_if_t<std::is_arithmetic_v<Number>, int> = 0>
+	as_decimal_size(const Number bytes) : bytes(static_cast<double>(bytes)) {}
 	double bytes;
 };
 
-/// Wrap a byte-per-second ratio in this to auto-format it as KiB/s, MiB/s, ...
-struct as_binary_throughput {
+/// Wrap a byte-per-second ratio in this to auto-format it as KB/s, MB/s, ...
+struct as_decimal_throughput {
 	template <typename Rep, typename Period>
-	as_binary_throughput(size_t bytes, const std::chrono::duration<Rep, Period>& duration)
+	as_decimal_throughput(size_t bytes, const std::chrono::duration<Rep, Period>& duration)
 	    : bytes_per_sec(static_cast<double>(bytes) / std::chrono::duration_cast<std::chrono::duration<double>>(duration).count()) {}
 	double bytes_per_sec;
 };
@@ -246,23 +247,23 @@ struct fmt::formatter<celerity::detail::as_sub_second> : fmt::formatter<double> 
 };
 
 template <>
-struct fmt::formatter<celerity::detail::as_binary_size> : fmt::formatter<double> {
-	format_context::iterator format(const celerity::detail::as_binary_size bs, format_context& ctx) const {
+struct fmt::formatter<celerity::detail::as_decimal_size> : fmt::formatter<double> {
+	format_context::iterator format(const celerity::detail::as_decimal_size bs, format_context& ctx) const {
 		std::string_view unit = " bytes";
 		double unit_size = static_cast<double>(bs.bytes);
-		if(unit_size > 1024) { unit_size /= 1024, unit = " KiB"; }
-		if(unit_size > 1024) { unit_size /= 1024, unit = " MiB"; }
-		if(unit_size > 1024) { unit_size /= 1024, unit = " GiB"; }
-		if(unit_size > 1024) { unit_size /= 1024, unit = " TiB"; }
+		if(unit_size >= 1000) { unit_size /= 1000, unit = " kB"; }
+		if(unit_size >= 1000) { unit_size /= 1000, unit = " MB"; }
+		if(unit_size >= 1000) { unit_size /= 1000, unit = " GB"; }
+		if(unit_size >= 1000) { unit_size /= 1000, unit = " TB"; }
 		auto out = fmt::formatter<double>::format(unit_size, ctx);
 		return std::copy(unit.begin(), unit.end(), out);
 	}
 };
 
 template <>
-struct fmt::formatter<celerity::detail::as_binary_throughput> : fmt::formatter<celerity::detail::as_binary_size> {
-	format_context::iterator format(const celerity::detail::as_binary_throughput bt, format_context& ctx) const {
-		auto out = fmt::formatter<celerity::detail::as_binary_size>::format(celerity::detail::as_binary_size(bt.bytes_per_sec), ctx);
+struct fmt::formatter<celerity::detail::as_decimal_throughput> : fmt::formatter<celerity::detail::as_decimal_size> {
+	format_context::iterator format(const celerity::detail::as_decimal_throughput bt, format_context& ctx) const {
+		auto out = fmt::formatter<celerity::detail::as_decimal_size>::format(celerity::detail::as_decimal_size(bt.bytes_per_sec), ctx);
 		const std::string_view unit = "/s";
 		return std::copy(unit.begin(), unit.end(), out);
 	}
