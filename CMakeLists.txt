@@ -35,6 +35,10 @@ find_package(Threads REQUIRED)
 
 set(CELERITY_SYCL_IMPL "OFF" CACHE STRING "AdaptiveCpp|DPC++|SimSYCL")
 
+if(CELERITY_SYCL_IMPL STREQUAL "hipSYCL")
+  set(CELERITY_SYCL_IMPL "AdaptiveCpp" CACHE STRING "" FORCE)
+endif()
+
 include("${CELERITY_CMAKE_DIR}/TestDPCXX.cmake")
 test_cxx_compiler_is_dpcpp(CXX_COMPILER_IS_DPCPP)
 if(CXX_COMPILER_IS_DPCPP)
@@ -42,7 +46,7 @@ if(CXX_COMPILER_IS_DPCPP)
 endif()
 
 # Find SYCL implementation.
-if(CELERITY_SYCL_IMPL STREQUAL "AdaptiveCpp" OR CELERITY_SYCL_IMPL STREQUAL "hipSYCL")
+if(CELERITY_SYCL_IMPL STREQUAL "AdaptiveCpp")
   find_package(AdaptiveCpp CONFIG REQUIRED)
 elseif(CELERITY_SYCL_IMPL STREQUAL "DPC++")
   if(NOT CXX_COMPILER_IS_DPCPP)
@@ -105,6 +109,10 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release" CACHE STRING "CMake Build Type" FORCE)
 endif()
 
+if(CELERITY_SYCL_IMPL STREQUAL "AdaptiveCpp")
+  list(APPEND CELERITY_CXX_FLAGS -DACPP_ALLOW_INSTANT_SUBMISSION=1)
+endif()
+
 if(CELERITY_SYCL_IMPL STREQUAL "DPC++")
   # See https://github.com/oneapi-src/unified-runtime/issues/803
   message(STATUS "Not enabling mimalloc by default because it breaks with oneAPI plugin loading")
@@ -114,14 +122,10 @@ elseif(CELERITY_SYCL_IMPL STREQUAL "SimSYCL" AND SIMSYCL_ENABLE_ASAN)
   set(CELERITY_USE_MIMALLOC_DEFAULT OFF)
   list(APPEND CELERITY_CXX_FLAGS -fsanitize=address)
   list(APPEND CELERITY_LINK_FLAGS -fsanitize=address)
-elseif(CELERITY_SYCL_IMPL STREQUAL "AdaptiveCpp")
-  list(APPEND CELERITY_CXX_FLAGS -DACPP_ALLOW_INSTANT_SUBMISSION=1 -DACPP_FORCE_INSTANT_SUBMISSION=1)
 else()
   set(CELERITY_USE_MIMALLOC_DEFAULT ON)
 endif()
 option(CELERITY_USE_MIMALLOC "Use the mimalloc memory allocator" ${CELERITY_USE_MIMALLOC_DEFAULT})
-
-option(CELERITY_TRACY_SUPPORT "Enable Tracy profiler integration" OFF)
 
 # 3rdparty dependencies
 include(FetchContent)
@@ -174,14 +178,6 @@ if(CELERITY_USE_MIMALLOC)
   set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
   set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   fetch_content_from_submodule(mimalloc vendor/mimalloc)
-endif()
-
-if(CELERITY_TRACY_SUPPORT)
-  set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
-  set(TRACY_STATIC OFF CACHE BOOL "" FORCE)
-  set(TRACY_NO_SAMPLING ON CACHE BOOL "" FORCE)
-  set(TRACY_NO_SYSTEM_TRACING ON CACHE BOOL "" FORCE)
-  fetch_content_from_submodule(Tracy vendor/tracy)
 endif()
 
 configure_file(include/version.h.in include/version.h @ONLY)
@@ -244,7 +240,6 @@ set_property(TARGET celerity_runtime PROPERTY CXX_STANDARD "${CELERITY_CXX_STAND
 target_include_directories(celerity_runtime PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
   $<INSTALL_INTERFACE:include/celerity>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/matchbox/include>
@@ -264,10 +259,6 @@ endif()
 
 if(CELERITY_USE_MIMALLOC)
   target_link_libraries(celerity_runtime PUBLIC mimalloc)
-endif()
-
-if(CELERITY_TRACY_SUPPORT)
-  target_link_libraries(celerity_runtime PUBLIC Tracy::TracyClient)
 endif()
 
 target_link_libraries(celerity_runtime PUBLIC
@@ -313,7 +304,6 @@ target_compile_definitions(celerity_runtime PUBLIC
   CELERITY_DETAIL_HAS_NAMED_THREADS=$<BOOL:${CELERITY_DETAIL_HAS_NAMED_THREADS}>
   CELERITY_ACCESSOR_BOUNDARY_CHECK=$<BOOL:${CELERITY_ACCESSOR_BOUNDARY_CHECK}>
   CELERITY_ACCESS_PATTERN_DIAGNOSTICS=$<BOOL:${CELERITY_ACCESS_PATTERN_DIAGNOSTICS}>
-  CELERITY_TRACY_SUPPORT=$<BOOL:${CELERITY_TRACY_SUPPORT}>
 )
 
 # Collect version information from git in src/version.cc. This target is always out of date, but the timestamp
