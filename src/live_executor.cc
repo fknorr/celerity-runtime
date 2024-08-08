@@ -24,13 +24,18 @@ namespace celerity::detail::live_executor_detail {
 #if CELERITY_TRACY_SUPPORT
 
 struct tracy_integration {
+	struct instruction_info {
+		instruction_id iid = -1;
+		gch::small_vector<instruction_id> dependencies;
+		int priority = -1;
+		std::optional<size_t> bytes_processed;
+		TracyCZoneCtx (*begin_zone)(const instruction_info& info, bool was_eagerly_submitted) = nullptr;
+	};
+
 	struct async_zone {
 		size_t submission_idx_on_lane;
-		const instruction* instr; ///< non-null
+		instruction_info info;
 		std::string trace;
-
-		async_zone(const size_t submission_idx_on_lane, const instruction& instr, std::string&& trace)
-		    : submission_idx_on_lane(submission_idx_on_lane), instr(&instr), trace(std::move(trace)) {}
 	};
 
 	/// References a position in an `async_lane_state::zone_queue` from within `executor_impl::async_instruction_state`
@@ -65,17 +70,19 @@ struct tracy_integration {
 	tracy_detail::plot<int64_t> assigned_instructions_plot{"assigned instructions"};
 	tracy_detail::plot<int64_t> assignment_queue_length_plot{"assignment queue length"};
 
+	static instruction_info make_instruction_info(const instruction& instr);
+
 	/// Open a Tracy zone, setting tag, color - and name, if full tracing is enabled.
-	static TracyCZoneCtx begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted);
+	static TracyCZoneCtx begin_instruction_zone(const instruction_info& info, bool was_eagerly_submitted);
 
 	/// Close a Tracy zone - after emitting the instruction trace and generic instruction info if full tracing is enabled.
-	static void end_instruction_zone(const TracyCZoneCtx& ctx, const instruction& instr, const std::string& trace, const async_event* opt_event = nullptr);
+	static void end_instruction_zone(const TracyCZoneCtx& ctx, const instruction_info& info, const std::string& trace, const async_event* opt_event = nullptr);
 
 	/// Picks the (optionally) pre-existing lane for an in-order queue submission, or an arbitrary free lane for async unordered send/receive instructions.
 	async_lane_cursor get_async_lane_cursor(const out_of_order_engine::assignment& assignment);
 
 	/// Adds an async instruction to its designated lane queue; beginning a Tracy zone immediately if it is the only instruction in the queue
-	async_lane_cursor issue_async_instruction(const instruction& instr, const out_of_order_engine::assignment& assignment, std::string&& trace);
+	async_lane_cursor issue_async_instruction(instruction_info&& info, const out_of_order_engine::assignment& assignment, std::string&& trace);
 
 	/// Closes the tracy zone for an active async instruction; beginning the next queued zone in the same lane, if any.
 	void retire_async_instruction(const async_lane_cursor& cursor, const async_event& event);
@@ -127,20 +134,24 @@ tracy_integration::async_lane_cursor tracy_integration::get_async_lane_cursor(co
 	return async_lane_cursor{global_lane_id, lane_it->next_submission_idx++};
 }
 
-TracyCZoneCtx tracy_integration::begin_instruction_zone(const instruction& instr, const bool was_eagerly_submitted) //
-{
+tracy_integration::instruction_info tracy_integration::make_instruction_info(const instruction& instr) {
+	tracy_integration::instruction_info info;
+	info.iid = instr.get_id();
+
 	// Tracy stages zone tag and color in a static local, so we can't move TracyCZoneNC out of match statement
 #define CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(INSTR, COLOR)                                                                                                   \
-	[&](const INSTR##_instruction& instr) {                                                                                                                    \
-		TracyCZoneNC(ctx, "executor::" #INSTR, tracy::Color::COLOR, true /* active */);                                                                        \
-		if(tracy_detail::is_enabled_full()) {                                                                                                                  \
-			const auto name = fmt::format("{}I{} " #INSTR, was_eagerly_submitted ? "+" : "", instr.get_id());                                                  \
-			TracyCZoneName(ctx, name.data(), name.size());                                                                                                     \
-		}                                                                                                                                                      \
-		return ctx;                                                                                                                                            \
+	[&](const INSTR##_instruction& /* instr */) {                                                                                                              \
+		return [](const instruction_info& info, bool was_eagerly_submitted) {                                                                                  \
+			TracyCZoneNC(ctx, "executor::" #INSTR, tracy::Color::COLOR, true /* active */);                                                                    \
+			if(tracy_detail::is_enabled_full()) {                                                                                                              \
+				const auto name = fmt::format("{}I{} " #INSTR, was_eagerly_submitted ? "+" : "", info.iid);                                                    \
+				TracyCZoneName(ctx, name.data(), name.size());                                                                                                 \
+			}                                                                                                                                                  \
+			return ctx;                                                                                                                                        \
+		};                                                                                                                                                     \
 	}
 
-	return matchbox::match(instr,                                              //
+	info.begin_zone = matchbox::match(instr,                                   //
 	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(clone_collective_group, Brown), //
 	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(alloc, Turquoise),              //
 	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(free, Turquoise),               //
@@ -160,9 +171,28 @@ TracyCZoneCtx tracy_integration::begin_instruction_zone(const instruction& instr
 	    CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE(epoch, Gray));
 
 #undef CELERITY_DETAIL_BEGIN_INSTRUCTION_ZONE
+
+	CELERITY_DETAIL_IF_TRACY_ENABLED_FULL({
+		info.dependencies = instr.get_dependencies();
+		info.priority = instr.get_priority();
+		info.bytes_processed = matchbox::match<std::optional<size_t>>(
+		    instr,                                                                                                          //
+		    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
+		    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
+		    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
+		    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_estimated_global_memory_traffic_bytes(); },   //
+		    [](const auto& /* other */) { return std::nullopt; });
+	})
+
+	return info;
 }
 
-void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const instruction& instr, const std::string& trace, const async_event* opt_event) {
+TracyCZoneCtx tracy_integration::begin_instruction_zone(const instruction_info& info, bool was_eagerly_submitted) {
+	assert(info.begin_zone != nullptr);
+	return info.begin_zone(info, was_eagerly_submitted);
+}
+
+void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const instruction_info& info, const std::string& trace, const async_event* opt_event) {
 	if(tracy_detail::is_enabled_full()) {
 		std::string text;
 		text.reserve(512); // Observation: typical size for kernel instructions is 200 - 300 characters
@@ -181,27 +211,17 @@ void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const ins
 		if(opt_event != nullptr) {
 			if(const auto native_execution_time = opt_event->get_native_execution_time(); native_execution_time.has_value()) {
 				fmt::format_to(std::back_inserter(text), "\nnative execution time: {:.2f}", as_sub_second(*native_execution_time));
-
-				const auto bytes_processed = matchbox::match<std::optional<size_t>>(
-				    instr,                                                                                                          //
-				    [](const alloc_instruction& ainstr) { return ainstr.get_size_bytes(); },                                        //
-				    [](const copy_instruction& cinstr) { return cinstr.get_copy_region().get_area() * cinstr.get_element_size(); }, //
-				    [](const send_instruction& sinstr) { return sinstr.get_send_range().size() * sinstr.get_element_size(); },      //
-				    [](const device_kernel_instruction& dkinstr) { return dkinstr.get_estimated_global_memory_traffic_bytes(); },   //
-				    [](const auto& /* other */) { return std::nullopt; });
-
-				if(bytes_processed.has_value()) {
-					fmt::format_to(std::back_inserter(text), "\nthroughput: {:.2f}", as_decimal_throughput(*bytes_processed, *native_execution_time));
+				if(info.bytes_processed.has_value()) {
+					fmt::format_to(std::back_inserter(text), "\nthroughput: {:.2f}", as_decimal_throughput(*info.bytes_processed, *native_execution_time));
 				}
 			}
 		}
 
-		// Dump generic instruction info
-		for(size_t i = 0; i < instr.get_dependencies().size(); ++i) {
+		for(size_t i = 0; i < info.dependencies.size(); ++i) {
 			text += i == 0 ? "\ndepends: " : ", ";
-			fmt::format_to(std::back_inserter(text), "I{}", instr.get_dependencies()[i]);
+			fmt::format_to(std::back_inserter(text), "I{}", info.dependencies[i]);
 		}
-		fmt::format_to(std::back_inserter(text), "\npriority: {}", instr.get_priority());
+		fmt::format_to(std::back_inserter(text), "\npriority: {}", info.priority);
 
 		TracyCZoneText(ctx, text.data(), text.size());
 	}
@@ -210,22 +230,23 @@ void tracy_integration::end_instruction_zone(const TracyCZoneCtx& ctx, const ins
 }
 
 tracy_integration::async_lane_cursor tracy_integration::issue_async_instruction(
-    const instruction& instr, const out_of_order_engine::assignment& assignment, std::string&& trace) //
+    instruction_info&& info, const out_of_order_engine::assignment& assignment, std::string&& trace) //
 {
 	const auto cursor = get_async_lane_cursor(assignment);
 
 	auto& lane = async_lanes[cursor.global_lane_id];
-	lane.zone_queue.emplace_back(cursor.submission_idx_on_lane, instr, std::move(trace));
+	lane.zone_queue.push_back({cursor.submission_idx_on_lane, std::move(info), std::move(trace)});
+	auto& info_enqueued = lane.zone_queue.back().info;
 
 	if(lane.zone_queue.size() == 1) {
 		// zone_queue.back() == zone_queue.front(): The instruction starts immediately
 		assert(!lane.active_zone_ctx.has_value());
 		TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
-		lane.active_zone_ctx = begin_instruction_zone(instr, false /* eager */);
+		lane.active_zone_ctx = begin_instruction_zone(info_enqueued, false /* eager */);
 		TracyFiberLeave;
 	} else if(tracy_detail::is_enabled_full()) {
 		// The instruction zone will be started as soon as its predecessor is retired - indicate when it was issued
-		const auto mark = fmt::format("I{} issued", instr.get_id());
+		const auto mark = fmt::format("I{} issued", info_enqueued.iid);
 		TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
 		TracyMessageC(mark.data(), mark.size(), tracy::Color::DarkGray);
 		TracyFiberLeave;
@@ -243,7 +264,7 @@ void tracy_integration::retire_async_instruction(const async_lane_cursor& cursor
 		{
 			auto& completed_zone = lane.zone_queue.front();
 			assert(lane.active_zone_ctx.has_value());
-			end_instruction_zone(*lane.active_zone_ctx, *completed_zone.instr, completed_zone.trace, &event);
+			end_instruction_zone(*lane.active_zone_ctx, completed_zone.info, completed_zone.trace, &event);
 			lane.active_zone_ctx.reset();
 			lane.zone_queue.pop_front();
 		}
@@ -251,7 +272,7 @@ void tracy_integration::retire_async_instruction(const async_lane_cursor& cursor
 		if(!lane.zone_queue.empty()) {
 			auto& eagerly_following_zone = lane.zone_queue.front();
 			assert(!lane.active_zone_ctx.has_value());
-			lane.active_zone_ctx = begin_instruction_zone(*eagerly_following_zone.instr, true /* eager */);
+			lane.active_zone_ctx = begin_instruction_zone(eagerly_following_zone.info, true /* eager */);
 		}
 	}
 	TracyFiberLeave;
@@ -288,7 +309,8 @@ struct boundary_check_info {
 
 
 struct async_instruction_state {
-	const instruction* instr = nullptr;
+	instruction_id iid = -1;
+	allocation_id alloc_aid = null_allocation_id; ///< non-null iff instruction is an alloc_instruction
 	async_event event;
 	CELERITY_DETAIL_IF_ACCESSOR_BOUNDARY_CHECK(std::unique_ptr<boundary_check_info> oob_info;) // unique_ptr: oob_info is optional and rather large
 	CELERITY_DETAIL_IF_TRACY_SUPPORTED(std::optional<tracy_integration::async_lane_cursor> tracy_lane_cursor;)
@@ -457,7 +479,7 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 
 #if CELERITY_ACCESSOR_BOUNDARY_CHECK
 	if(async.oob_info != nullptr) {
-		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("executor::oob_check", Red, "I{} bounds check", async.instr->get_id());
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("executor::oob_check", Red, "I{} bounds check", async.iid);
 		const auto& oob_info = *async.oob_info;
 		for(size_t i = 0; i < oob_info.accessors.size(); ++i) {
 			if(const auto oob_box = oob_info.illegal_access_bounding_boxes[i].into_box(); !oob_box.empty()) {
@@ -476,25 +498,23 @@ void executor_impl::retire_async_instruction(async_instruction_state& async) {
 
 	if(spdlog::should_log(spdlog::level::trace)) {
 		if(const auto native_time = async.event.get_native_execution_time(); native_time.has_value()) {
-			CELERITY_TRACE("[executor] retired I{} after {:.2f}", async.instr->get_id(), as_sub_second(*native_time));
+			CELERITY_TRACE("[executor] retired I{} after {:.2f}", async.iid, as_sub_second(*native_time));
 		} else {
-			CELERITY_TRACE("[executor] retired I{}", async.instr->get_id());
+			CELERITY_TRACE("[executor] retired I{}", async.iid);
 		}
 	}
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED(tracy->retire_async_instruction(*async.tracy_lane_cursor, async.event));
 
-	if(utils::isa<alloc_instruction>(async.instr)) {
-		const auto ainstr = utils::as<alloc_instruction>(async.instr);
+	if(async.alloc_aid != null_allocation_id) {
 		const auto ptr = async.event.get_result();
 		assert(ptr != nullptr && "backend allocation returned nullptr");
-		const auto aid = ainstr->get_allocation_id();
-		CELERITY_TRACE("[executor] {} allocated as {}", aid, ptr);
-		assert(allocations.count(aid) == 0);
-		allocations.emplace(aid, ptr);
+		CELERITY_TRACE("[executor] {} allocated as {}", async.alloc_aid, ptr);
+		assert(allocations.count(async.alloc_aid) == 0);
+		allocations.emplace(async.alloc_aid, ptr);
 	}
 
-	engine.complete_assigned(async.instr);
+	engine.complete_assigned(async.iid);
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED(tracy->assignment_queue_length_plot.update(engine.get_assignment_queue_length()));
 }
@@ -507,21 +527,25 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
 	assert(assignment.target == out_of_order_engine::target::immediate);
 	assert(!assignment.lane.has_value());
 
+	const auto iid = instr.get_id(); // instr may dangle after issue()
+
 	CELERITY_DETAIL_IF_TRACY_SUPPORTED(TracyCZoneCtx ctx;)
+	CELERITY_DETAIL_IF_TRACY_SUPPORTED(tracy_integration::instruction_info info);
 	CELERITY_DETAIL_IF_TRACY_ENABLED({
+		info = tracy_integration::make_instruction_info(instr);
 		TracyFiberEnterHint("cy-immediate", tracy_detail::thread_order::immediate_lane);
-		ctx = tracy->begin_instruction_zone(instr, false /* eager */);
+		ctx = tracy->begin_instruction_zone(info, false /* eager */);
 		tracy->assigned_instructions_plot.update(in_flight_async_instructions.size() + 1);
 	})
 
-	issue(instr); // completes immediately
+	issue(instr); // completes immediately - instr may now dangle
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED({
-		tracy->end_instruction_zone(ctx, instr, tracy->last_instruction_trace);
+		tracy->end_instruction_zone(ctx, info, tracy->last_instruction_trace);
 		TracyFiberLeave;
 	})
 
-	engine.complete_assigned(&instr);
+	engine.complete_assigned(iid);
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED({
 		tracy->assigned_instructions_plot.update(in_flight_async_instructions.size());
@@ -534,12 +558,16 @@ auto executor_impl::dispatch(const Instr& instr, const out_of_order_engine::assi
     // SFINAE: there is an `issue_async` overload above for the concrete Instr type
     -> decltype(issue_async(instr, assignment, std::declval<async_instruction_state&>())) //
 {
+	CELERITY_DETAIL_IF_TRACY_SUPPORTED(tracy_integration::instruction_info info);
+	CELERITY_DETAIL_IF_TRACY_ENABLED(info = tracy_integration::make_instruction_info(instr));
+
 	auto& async = in_flight_async_instructions.emplace_back();
-	async.instr = assignment.instruction;
+	async.iid = assignment.instruction->get_id();
 	issue_async(instr, assignment, async); // stores event in `async` and completes asynchronously
+	// instr may now dangle
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED({
-		async.tracy_lane_cursor = tracy->issue_async_instruction(instr, assignment, std::move(tracy->last_instruction_trace));
+		async.tracy_lane_cursor = tracy->issue_async_instruction(std::move(info), assignment, std::move(tracy->last_instruction_trace));
 		tracy->assigned_instructions_plot.update(in_flight_async_instructions.size());
 	})
 }
@@ -569,7 +597,7 @@ void executor_impl::check_progress() {
 			std::string instr_list;
 			for(auto& in_flight : in_flight_async_instructions) {
 				if(!instr_list.empty()) instr_list += ", ";
-				fmt::format_to(std::back_inserter(instr_list), "I{}", in_flight.instr->get_id());
+				fmt::format_to(std::back_inserter(instr_list), "I{}", in_flight.iid);
 			}
 			CELERITY_WARN("[executor] no progress for {:.2f}, might be stuck. Active instructions: {}", as_sub_second(elapsed_since_last_progress),
 			    in_flight_async_instructions.empty() ? "none" : instr_list);
@@ -622,7 +650,7 @@ void executor_impl::issue(const reduce_instruction& rinstr) {
 	reduction.reduce(dest_allocation, gather_allocation, rinstr.get_num_source_values());
 }
 
-void executor_impl::issue(const fence_instruction& finstr) { // NOLINT(readability-convert-member-functions-to-static)
+void executor_impl::issue(const fence_instruction& finstr) { // NOLINT(readability-make-member-function-const, readability-convert-member-functions-to-static)
 	CELERITY_DETAIL_TRACE_INSTRUCTION(finstr, "fence");
 
 	finstr.get_promise()->fulfill();
@@ -681,6 +709,7 @@ void executor_impl::issue_async(const alloc_instruction& ainstr, const out_of_or
 	} else {
 		async.event = backend->enqueue_host_alloc(ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 	}
+	async.alloc_aid = ainstr.get_allocation_id(); // setting alloc_aid != null will make `retire_async_instruction` insert the result into `allocations`
 }
 
 void executor_impl::issue_async(const free_instruction& finstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
