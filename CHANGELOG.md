@@ -23,6 +23,7 @@ Versioning](http://semver.org/spec/v2.0.0.html).
   to execute in the same process (#283)
 - Celerity warns when on excessive calls to `queue::wait()` or `distr_queue::slow_full_sync()` in a long running program.
   This operation has a much more pronounced performance penalty than its SYCL counterpart (#283)
+- On systems that do not support device-to-device copies, data is now staged in linearized buffers for better performance (#287)
 
 ### Fixed
 
