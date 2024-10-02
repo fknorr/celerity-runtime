@@ -859,6 +859,76 @@ TEST_CASE("narrow strided data columns are device-linearized before and after ho
 	}
 }
 
+TEST_CASE("instruction_graph_generator device-linearization heuristic behaves as expected", "[instruction_graph_generator]") {
+	using instruction_graph_generator_detail::should_linearize_copy_region;
+
+	const box<3> alloc_box(id(0, 0, 0), id(65536, 65536, 1));
+	const box<3> single_row(id(64, 0, 0), id(65, 65536, 1));
+	const box<3> single_row_2(id(128, 0, 0), id(129, 65536, 1));
+	const box<3> single_column(id(0, 64, 0), id(65536, 65, 1));
+	const box<3> single_column_2(id(0, 128, 0), id(65536, 129, 1));
+	const box<3> multi_rows_small(id(0, 0, 0), id(4, 65536, 1));
+	const box<3> multi_rows_large(id(0, 0, 0), id(16, 65536, 1));
+	const box<3> multi_columns_small(id(0, 0, 0), id(65536, 4, 1));
+	const box<3> multi_columns_large(id(0, 0, 0), id(65536, 16, 1));
+
+	box_vector<3> horizontal_stripe_boxes;
+	box_vector<3> vertical_stripe_boxes;
+	for(size_t i = 0; i < 65536; i += 16) {
+		horizontal_stripe_boxes.push_back(box(id(i, 0, 0), id(i + 4, 65536, 1)));
+		vertical_stripe_boxes.push_back(box(id(0, i, 0), id(65536, i + 4, 1)));
+	}
+	const region horizontal_stripes(std::move(horizontal_stripe_boxes));
+	const region vertical_stripes(std::move(vertical_stripe_boxes));
+
+	const size_t elem_size = sizeof(int);
+
+	SECTION("copies from or to host / user buffer allocations are never linearized") {
+		CHECK_FALSE(should_linearize_copy_region(user_memory_id, alloc_box, single_row, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(user_memory_id, alloc_box, single_column, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(host_memory_id, alloc_box, single_row, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(host_memory_id, alloc_box, single_column, elem_size));
+	}
+
+	SECTION("single columns are linearized on device") {
+		CHECK(should_linearize_copy_region(first_device_memory_id, alloc_box, single_column, elem_size));
+		CHECK(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, single_column, elem_size));
+	}
+
+	SECTION("multiple columns are linearized if their contiguous size fits threshold") {
+		// multi_columns spans 16 columns of 4 bytes each = 64 bytes, which is large enough to not experience slowdown from 2d copies
+		CHECK(should_linearize_copy_region(first_device_memory_id, alloc_box, multi_columns_small, elem_size));
+		CHECK(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, multi_columns_small, elem_size));
+	}
+
+	SECTION("multiple columns are not linearized if their contiguous size exceeds threshold") {
+		// multi_columns spans 16 columns of 4 bytes each = 64 bytes, which is large enough to not experience slowdown from 2d copies
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id, alloc_box, multi_columns_large, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, multi_columns_large, elem_size));
+	}
+
+	SECTION("rows and sets of rows are not linearized on device") {
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id, alloc_box, single_row, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, single_row, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id, alloc_box, region_union(single_row, single_row_2), elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, region_union(single_row, single_row_2), elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id, alloc_box, multi_rows_small, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, multi_rows_small, elem_size));
+	}
+
+	SECTION("unions of single rows and columns are linearized") {
+		CHECK(should_linearize_copy_region(first_device_memory_id, alloc_box, region_union(single_row, single_column), elem_size));
+		CHECK(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, region_union(single_row, single_column), elem_size));
+	}
+
+	SECTION("regions are not linearized if their total area is too large") {
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id, alloc_box, horizontal_stripes, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, horizontal_stripes, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id, alloc_box, vertical_stripes, elem_size));
+		CHECK_FALSE(should_linearize_copy_region(first_device_memory_id + 1, alloc_box, vertical_stripes, elem_size));
+	}
+}
+
 TEST_CASE("oddly-shaped coherence copies generate a single region-copy instruction", "[instruction_graph_generator][instruction-graph][memory]") {
 	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 2 /* num devices */);
 	auto buf = ictx.create_buffer(range<2>(256, 256));
