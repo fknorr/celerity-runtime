@@ -459,11 +459,15 @@ struct collective_group_state {
 	}
 };
 
+/// Staging allocations are kept around in a pool, so size and last-use information needs to be maintained for them.
 struct staging_allocation {
-	allocation_id aid = null_allocation_id;
-	size_t size_bytes = 0;
-	size_t align_bytes = 1;
-	access_front last_accesses;
+	allocation_id aid;
+	size_t size_bytes;
+	size_t align_bytes;
+	access_front last_accesses; // once the access front has been collapsed to an effective epoch, we consider the allocation for re-use
+
+	staging_allocation(const allocation_id aid, const size_t size_bytes, const size_t align_bytes, alloc_instruction* const alloc_instr)
+	    : aid(aid), size_bytes(size_bytes), align_bytes(align_bytes), last_accesses(alloc_instr, access_front::allocate) {}
 
 	void apply_epoch(instruction* const epoch) { last_accesses = last_accesses.apply_epoch(epoch); }
 };
@@ -951,7 +955,7 @@ staging_allocation& generator_impl::acquire_staging_allocation(batch& current_ba
 	const auto alloc_instr = create<alloc_instruction>(current_batch, aid, size_bytes, align_bytes, //
 	    [&](const auto& record_debug_info) { record_debug_info(alloc_instruction_record::alloc_origin::staging, std::nullopt, std::nullopt); });
 	add_dependency(alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
-	memory.staging_allocation_pool.push_back({aid, size_bytes, align_bytes, access_front(alloc_instr, access_front::allocate)});
+	memory.staging_allocation_pool.emplace_back(aid, size_bytes, align_bytes, alloc_instr);
 	return memory.staging_allocation_pool.back();
 }
 

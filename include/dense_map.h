@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <iterator>
 #include <vector>
 
 namespace celerity::detail {
