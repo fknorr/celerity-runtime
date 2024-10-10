@@ -4,9 +4,6 @@
 
 #include <celerity.h>
 
-int g_split = 0;
-int g_oversub = 0;
-
 void setup_wave(celerity::queue& queue, celerity::buffer<float, 2> u, sycl::float2 center, float amplitude, sycl::float2 sigma) {
 	queue.submit([&](celerity::handler& cgh) {
 		celerity::accessor dw_u{u, cgh, celerity::access::one_to_one{}, celerity::write_only, celerity::no_init};
@@ -142,7 +139,6 @@ int main(int argc, char* argv[]) {
 	}
 
 	celerity::queue queue;
-	celerity::detail::runtime::get_instance().get_task_manager().set_horizon_step(1);
 
 	celerity::buffer<float, 2> up{celerity::range<2>(cfg.N, cfg.N)}; // next
 	celerity::buffer<float, 2> u{celerity::range<2>(cfg.N, cfg.N)};  // current
@@ -161,22 +157,12 @@ int main(int argc, char* argv[]) {
 	size_t i = 0;
 	while(t < cfg.T) {
 		update(queue, up, u, cfg.dt, {cfg.dx, cfg.dy});
-		if(i == 4) {
-			queue.wait(celerity::experimental::barrier);
-			start = std::chrono::steady_clock::now();
-		}
 		if(cfg.output_sample_rate > 0) {
 			if(++i % cfg.output_sample_rate == 0) { stream_append(queue, u, os); }
 		}
 		std::swap(u, up);
 		t += cfg.dt;
 	}
-
-	queue.wait(celerity::experimental::barrier);
-	const auto end = std::chrono::steady_clock::now();
-
-	fmt::print("{:.2f} GigaCells/s\n",
-	    (static_cast<double>(i - 4) * cfg.N * cfg.N * 1e-9) / std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count());
 
 	if(cfg.output_sample_rate > 0) { stream_close(queue, os); }
 
