@@ -14,6 +14,7 @@ Versioning](http://semver.org/spec/v2.0.0.html).
 - Add `celerity::once` tag type for host tasks (equivalent to `range<0>{}`) as a replacement for `on_master_node` (#282)
 - Replaces `celerity::distr_queue` with `celerity::queue`, which permits multiple instances and aligns closer with SYCL (#283)
 - The runtime can be explicitly shut down using `celerity::shutdown()`, complementing `celerity::init()` (#283)
+- `celerity::access::direct_neighborhood` range mapper for reads in 3/5/7-point stencil codes (#??)
 
 ### Changed
 
