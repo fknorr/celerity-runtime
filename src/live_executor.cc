@@ -90,6 +90,8 @@ struct tracy_integration {
 
 	/// Closes the tracy zone for an active async instruction; beginning the next queued zone in the same lane, if any.
 	void retire_async_instruction(const async_lane_cursor& cursor, const async_event& event);
+
+	void start_queued_zones_on_completion_front(const std::unordered_set<instruction_id>& completion_front);
 };
 
 
@@ -242,13 +244,7 @@ tracy_integration::async_lane_cursor tracy_integration::issue_async_instruction(
 	lane.zone_queue.push_back({cursor.submission_idx_on_lane, std::move(info), std::move(trace)});
 	auto& info_enqueued = lane.zone_queue.back().info;
 
-	if(lane.zone_queue.size() == 1) {
-		// zone_queue.back() == zone_queue.front(): The instruction starts immediately
-		assert(!lane.active_zone_ctx.has_value());
-		TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
-		lane.active_zone_ctx = begin_instruction_zone(info_enqueued, false /* eager */);
-		TracyFiberLeave;
-	} else if(tracy_detail::is_enabled_full()) {
+	if(tracy_detail::is_enabled_full()) {
 		// The instruction zone will be started as soon as its predecessor is retired - indicate when it was issued
 		const auto mark = fmt::format("I{} issued", info_enqueued.iid);
 		TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
@@ -262,24 +258,28 @@ tracy_integration::async_lane_cursor tracy_integration::issue_async_instruction(
 void tracy_integration::retire_async_instruction(const async_lane_cursor& cursor, const async_event& event) {
 	auto& lane = async_lanes.at(cursor.global_lane_id);
 
-	TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
-	while(!lane.zone_queue.empty() && lane.zone_queue.front().submission_idx_on_lane <= cursor.submission_idx_on_lane) {
+	if(lane.active_zone_ctx.has_value() && !lane.zone_queue.empty() && lane.zone_queue.front().submission_idx_on_lane <= cursor.submission_idx_on_lane) {
+		TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
 		// Complete the front() == active zone in the lane.
-		{
-			auto& completed_zone = lane.zone_queue.front();
-			assert(lane.active_zone_ctx.has_value());
-			end_instruction_zone(*lane.active_zone_ctx, completed_zone.info, completed_zone.trace, &event);
-			lane.active_zone_ctx.reset();
-			lane.zone_queue.pop_front();
-		}
+		auto& completed_zone = lane.zone_queue.front();
+		end_instruction_zone(*lane.active_zone_ctx, completed_zone.info, completed_zone.trace, &event);
+		lane.active_zone_ctx.reset();
+		lane.zone_queue.pop_front();
+		TracyFiberLeave;
+	}
+}
+
+void tracy_integration::start_queued_zones_on_completion_front(const std::unordered_set<instruction_id>& completion_front) {
+	for(auto& lane : async_lanes) {
 		// If there remains another (eagerly issued) instruction in the queue after popping the active one, show it as having started immediately.
-		if(!lane.zone_queue.empty()) {
+		if(!lane.active_zone_ctx.has_value() && !lane.zone_queue.empty() && completion_front.contains(lane.zone_queue.front().info.iid)) {
 			auto& eagerly_following_zone = lane.zone_queue.front();
 			assert(!lane.active_zone_ctx.has_value());
+			TracyFiberEnterHint(lane.fiber_name, lane.fiber_order);
 			lane.active_zone_ctx = begin_instruction_zone(eagerly_following_zone.info, true /* eager */);
+			TracyFiberLeave;
 		}
 	}
-	TracyFiberLeave;
 }
 
 #endif // CELERITY_DETAIL_ENABLE_TRACY
@@ -440,7 +440,7 @@ void executor_impl::poll_in_flight_async_instructions() {
 
 	std::vector<instruction_id> completed_now;
 	for(const auto iid : engine.get_completion_front()) {
-	CELERITY_DETAIL_TRACY_ZONE_SCOPED("event::is_complete", DarkOrange2);
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED("event::is_complete", DarkOrange2);
 		if(in_flight_async_instructions.at(iid).event.is_complete()) { completed_now.push_back(iid); }
 	}
 	for(const auto iid : completed_now) {
@@ -449,7 +449,10 @@ void executor_impl::poll_in_flight_async_instructions() {
 		made_progress = true;
 	}
 
-	CELERITY_DETAIL_IF_TRACY_ENABLED(tracy->assigned_instructions_plot.update(in_flight_async_instructions.size()));
+	CELERITY_DETAIL_IF_TRACY_ENABLED(if(!completed_now.empty()) {
+		tracy->assigned_instructions_plot.update(in_flight_async_instructions.size());
+		tracy->start_queued_zones_on_completion_front(engine.get_completion_front());
+	});
 }
 
 void executor_impl::poll_submission_queue() {
@@ -588,7 +591,10 @@ void executor_impl::try_issue_one_instruction() {
 
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue", Blue);
 	matchbox::match(*assignment->instruction, [&](const auto& instr) { dispatch(instr, *assignment); });
+
 	made_progress = true;
+
+	CELERITY_DETAIL_IF_TRACY_ENABLED(tracy->start_queued_zones_on_completion_front(engine.get_completion_front()));
 }
 
 void executor_impl::check_progress() {
