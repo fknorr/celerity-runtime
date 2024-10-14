@@ -65,6 +65,8 @@ class [[nodiscard]] async_event {
 		return m_impl->get_native_execution_time();
 	}
 
+	const async_event_impl* get() const { return m_impl.get(); }
+
   private:
 	std::unique_ptr<async_event_impl> m_impl;
 };

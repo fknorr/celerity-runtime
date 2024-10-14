@@ -48,10 +48,11 @@ class out_of_order_engine {
 		out_of_order_engine::target target = out_of_order_engine::target::immediate;
 		std::optional<device_id> device; ///< Identifies the device to submit to (if target == device_queue) or to allocate on (if target == alloc_queue).
 		std::optional<lane_id> lane; ///< Identifies the thread queue (target == host_queue) or the in-order queue for the given device (target == alloc_queue).
+		std::vector<instruction_id> wait_on;
 
 		assignment(const detail::instruction* instruction, const out_of_order_engine::target target, const std::optional<device_id> device = std::nullopt,
-		    const std::optional<lane_id> lane = std::nullopt)
-		    : instruction(instruction), target(target), device(device), lane(lane) {}
+		    const std::optional<lane_id> lane = std::nullopt, std::vector<instruction_id> &&wait_on = {})
+		    : instruction(instruction), target(target), device(device), lane(lane), wait_on(std::move(wait_on)) {}
 	};
 
 	/// Constructor requires a `system_info` to enumerate devices and perform `memory_id -> device_id` mapping.

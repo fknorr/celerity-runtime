@@ -3,6 +3,8 @@
 #include "dense_map.h"
 #include "types.h"
 
+#include <bit>
+#include <cassert>
 #include <bitset>
 
 namespace celerity::detail {
@@ -27,12 +29,18 @@ inline constexpr memory_id first_device_memory_id = 2;
 static constexpr size_t max_num_memories = 64;
 using memory_mask = std::bitset<max_num_memories>;
 
+static constexpr size_t max_num_devices = 64;
+using device_mask = std::bitset<max_num_devices>;
+
 /// Information about a single device in the local system.
 struct device_info {
 	/// Before accessing any memory on a device, instruction_graph_generator will prepare a corresponding allocation on its `native_memory`. Multiple
 	/// devices can share the same native memory. No attempts at reading from peer or shared memory to elide copies are currently made, but could be in the
 	/// future.
 	memory_id native_memory = -1;
+
+	/// If `can_wait_on[did]` is set, kernels and device copies submitted to this device can receive events from `did` in their `wait_on` parameter.
+	device_mask can_wait_on;
 };
 
 /// Information about a single memory in the local system.
@@ -49,5 +57,10 @@ struct system_info {
 	dense_map<device_id, device_info> devices;
 	dense_map<memory_id, memory_info> memories;
 };
+
+inline device_id find_first_device(const device_mask &mask) {
+	assert(mask.any());
+	return std::countl_zero(mask.to_ullong());
+}
 
 } // namespace celerity::detail

@@ -704,6 +704,7 @@ void executor_impl::issue_async(const alloc_instruction& ainstr, const out_of_or
 	assert(assignment.target == out_of_order_engine::target::alloc_queue);
 	assert(!assignment.lane.has_value());
 	assert(assignment.device.has_value() == (ainstr.get_allocation_id().get_memory_id() > host_memory_id));
+	assert(assignment.wait_on.empty());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(ainstr, "alloc {}, {} % {} bytes", ainstr.get_allocation_id(), ainstr.get_size_bytes(), ainstr.get_alignment_bytes());
 
@@ -716,6 +717,8 @@ void executor_impl::issue_async(const alloc_instruction& ainstr, const out_of_or
 }
 
 void executor_impl::issue_async(const free_instruction& finstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
+	assert(assignment.wait_on.empty());
+
 	const auto it = allocations.find(finstr.get_allocation_id());
 	assert(it != allocations.end());
 	const auto ptr = it->second;
@@ -745,9 +748,13 @@ void executor_impl::issue_async(const copy_instruction& cinstr, const out_of_ord
 	const auto dest_base = allocations.at(cinstr.get_dest_allocation_id());
 
 	if(assignment.device.has_value()) {
+		std::vector<const async_event_impl*> wait_on(assignment.wait_on.size());
+		std::transform(assignment.wait_on.begin(), assignment.wait_on.end(), wait_on.begin(),
+		    [&](const instruction_id iid) { return in_flight_async_instructions.at(iid).event.get(); });
 		async.event = backend->enqueue_device_copy(*assignment.device, *assignment.lane, source_base, dest_base, cinstr.get_source_layout(),
-		    cinstr.get_dest_layout(), cinstr.get_copy_region(), cinstr.get_element_size());
+		    cinstr.get_dest_layout(), cinstr.get_copy_region(), cinstr.get_element_size(), wait_on);
 	} else {
+		assert(assignment.wait_on.empty());
 		async.event = backend->enqueue_host_copy(*assignment.lane, source_base, dest_base, cinstr.get_source_layout(), cinstr.get_dest_layout(),
 		    cinstr.get_copy_region(), cinstr.get_element_size());
 	}
@@ -787,14 +794,18 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 		reduction_ptrs[i] = allocations.at(reduction_allocs[i].allocation_id);
 	}
 
+	std::vector<const async_event_impl*> wait_on(assignment.wait_on.size());
+	std::transform(assignment.wait_on.begin(), assignment.wait_on.end(), wait_on.begin(),
+	    [&](const instruction_id iid) { return in_flight_async_instructions.at(iid).event.get(); });
 	async.event = backend->enqueue_device_kernel(
-	    dkinstr.get_device_id(), *assignment.lane, dkinstr.get_launcher(), std::move(accessor_infos), dkinstr.get_execution_range(), reduction_ptrs);
+	    dkinstr.get_device_id(), *assignment.lane, dkinstr.get_launcher(), std::move(accessor_infos), dkinstr.get_execution_range(), reduction_ptrs, wait_on);
 }
 
 void executor_impl::issue_async(const host_task_instruction& htinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	assert(assignment.target == out_of_order_engine::target::host_queue);
 	assert(!assignment.device.has_value());
 	assert(assignment.lane.has_value());
+	assert(assignment.wait_on.empty());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(htinstr, "host task, {}{}", htinstr.get_execution_range(), format_access_log(htinstr.get_access_allocations()));
 
@@ -815,6 +826,7 @@ void executor_impl::issue_async(
     const send_instruction& sinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
 {
 	assert(assignment.target == out_of_order_engine::target::immediate);
+	assert(assignment.wait_on.empty());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(sinstr, "send {}+{}, {}x{} bytes to N{} (MSG{})", sinstr.get_source_allocation_id(),
 	    sinstr.get_offset_in_source_allocation(), sinstr.get_send_range(), sinstr.get_element_size(), sinstr.get_dest_node_id(), sinstr.get_message_id());
@@ -832,6 +844,7 @@ void executor_impl::issue_async(
     const receive_instruction& rinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
 {
 	assert(assignment.target == out_of_order_engine::target::immediate);
+	assert(assignment.wait_on.empty());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(rinstr, "receive {} {}x{} bytes into {} ({})", rinstr.get_transfer_id(), rinstr.get_requested_region(),
 	    rinstr.get_element_size(), rinstr.get_dest_allocation_id(), rinstr.get_allocated_box());
@@ -845,6 +858,7 @@ void executor_impl::issue_async(
     const await_receive_instruction& arinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
 {
 	assert(assignment.target == out_of_order_engine::target::immediate);
+	assert(assignment.wait_on.empty());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(arinstr, "await receive {} {}", arinstr.get_transfer_id(), arinstr.get_received_region());
 
@@ -855,6 +869,7 @@ void executor_impl::issue_async(
     const gather_receive_instruction& grinstr, [[maybe_unused]] const out_of_order_engine::assignment& assignment, async_instruction_state& async) //
 {
 	assert(assignment.target == out_of_order_engine::target::immediate);
+	assert(assignment.wait_on.empty());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(
 	    grinstr, "gather receive {} into {}, {} bytes / node", grinstr.get_transfer_id(), grinstr.get_dest_allocation_id(), grinstr.get_node_chunk_size());

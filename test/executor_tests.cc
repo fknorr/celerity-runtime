@@ -230,7 +230,8 @@ class mock_backend final : public backend {
 	}
 
 	async_event enqueue_device_kernel(const device_id device, const size_t device_lane, const device_kernel_launcher& launcher,
-	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) override //
+	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs,
+	    const std::vector<const async_event_impl*>& wait_on) override //
 	{
 		m_log->push_back(ops::device_kernel{device, device_lane, std::move(accessor_infos), execution_range, reduction_ptrs});
 		return make_complete_event();
@@ -244,7 +245,8 @@ class mock_backend final : public backend {
 	}
 
 	async_event enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
-	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override //
+	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size,
+	    const std::vector<const async_event_impl*>& wait_on) override //
 	{
 		m_log->push_back(ops::device_copy{{source_base, dest_base, source_layout, dest_layout, copy_region, elem_size}, device, device_lane});
 		return make_complete_event();

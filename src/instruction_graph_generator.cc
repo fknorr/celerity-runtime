@@ -720,6 +720,7 @@ generator_impl::generator_impl(const task_manager& tm, const size_t num_nodes, c
       m_memories(m_system.memories.size()) //
 {
 #ifndef NDEBUG
+	assert(m_system.devices.size() <= max_num_devices);
 	assert(m_system.memories.size() <= max_num_memories);
 	assert(std::all_of(
 	    m_system.devices.begin(), m_system.devices.end(), [&](const device_info& device) { return device.native_memory < m_system.memories.size(); }));
@@ -2107,10 +2108,11 @@ void generator_impl::compile_reduction_command(batch& command_batch, const reduc
 
 	const auto gather_aid = new_allocation_id(host_memory_id);
 	const auto node_chunk_size = gather->gather_box.get_area() * buffer.elem_size;
-	const auto gather_alloc_instr = create<
-	    alloc_instruction>(command_batch, gather_aid, m_num_nodes * node_chunk_size, buffer.elem_align, [&](const auto& record_debug_info) {
-		record_debug_info(alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, buffer.debug_name, gather->gather_box}, m_num_nodes);
-	});
+	const auto gather_alloc_instr =
+	    create<alloc_instruction>(command_batch, gather_aid, m_num_nodes * node_chunk_size, buffer.elem_align, [&](const auto& record_debug_info) {
+		    record_debug_info(
+		        alloc_instruction_record::alloc_origin::gather, buffer_allocation_record{bid, buffer.debug_name, gather->gather_box}, m_num_nodes);
+	    });
 	add_dependency(gather_alloc_instr, m_last_epoch, instruction_dependency_origin::last_epoch);
 
 	// 2. Fill the gather space with the reduction identity, so that the gather_receive_command can simply ignore empty boxes sent by peers that do not

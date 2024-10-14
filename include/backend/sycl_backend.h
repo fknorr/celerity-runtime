@@ -18,6 +18,8 @@ class sycl_event final : public async_event_impl {
 
 	std::optional<std::chrono::nanoseconds> get_native_execution_time() override;
 
+	const sycl::event& get_last() const { return m_last; }
+
   private:
 	std::optional<sycl::event> m_first; // set iff profiling is enabled - can be a copy of m_last.
 	sycl::event m_last;
@@ -66,7 +68,7 @@ class sycl_backend : public backend {
 	    const box<3>& execution_range, const communicator* collective_comm) override;
 
 	async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher,
-	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) override;
+	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs, const std::vector<const async_event_impl*>& wait_on) override;
 
 	async_event enqueue_host_copy(size_t host_lane, const void* const source_base, void* const dest_base, const region_layout& source_layout,
 	    const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override;
@@ -91,7 +93,7 @@ class sycl_generic_backend final : public sycl_backend {
 	sycl_generic_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
 
 	async_event enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base,
-	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override;
+	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size, const std::vector<const async_event_impl*>& wait_on) override;
 };
 
 #if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
@@ -101,7 +103,7 @@ class sycl_cuda_backend final : public sycl_backend {
 	sycl_cuda_backend(const std::vector<sycl::device>& devices, bool enable_profiling);
 
 	async_event enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base,
-	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override;
+	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size, const std::vector<const async_event_impl*>& wait_on) override;
 };
 #endif
 

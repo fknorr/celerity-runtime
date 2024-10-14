@@ -154,17 +154,25 @@ void enable_peer_access(const int id_device, const int id_peer) {
 namespace celerity::detail::sycl_backend_detail {
 
 async_event nd_copy_device_cuda(sycl::queue& queue, const void* const source_base, void* const dest_base, const region_layout& source_layout,
-    const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size, bool enable_profiling) //
+    const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size, bool enable_profiling,
+    const std::vector<const async_event_impl*>& wait_on) //
 {
 #if CELERITY_SYCL_IS_ACPP
-	// AdaptiveCpp provides first-class custom backend op submission without a host round-trip like sycl::queue::host_task would require.
-	auto event = queue.AdaptiveCpp_enqueue_custom_operation([=](sycl::interop_handle handle) {
-		const auto stream = handle.get_native_queue<sycl::backend::cuda>();
-		cuda_backend_detail::nd_copy_device_async(stream, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size);
+	auto event = queue.submit([&](sycl::handler& cgh) {
+		std::vector<sycl::event> wait_on_events(wait_on.size());
+		std::transform(wait_on.begin(), wait_on.end(), wait_on_events.begin(), [](const async_event_impl* e) { return utils::as<sycl_event>(e)->get_last(); });
+		cgh.depends_on(wait_on_events);
+
+		// AdaptiveCpp provides first-class custom backend op submission without a host round-trip like sycl::queue::host_task would require.
+		cgh.AdaptiveCpp_enqueue_custom_operation([=](sycl::interop_handle handle) {
+			const auto stream = handle.get_native_queue<sycl::backend::cuda>();
+			cuda_backend_detail::nd_copy_device_async(stream, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size);
+		});
 	});
 	sycl_backend_detail::flush(queue);
 	return make_async_event<sycl_event>(std::move(event), enable_profiling);
 #elif CELERITY_SYCL_IS_DPCPP
+	// TODO is it possible to wait on a SYCL event without submitting a CGF in DPC++? Might have to somehow downcast the SYCL events into CUDA events?
 	// With DPC++, we must submit from the executor thread - see the comment on cuda_native_event above.
 	const auto stream = sycl::get_native<sycl::backend::ext_oneapi_cuda>(queue);
 	auto before = enable_profiling ? cuda_backend_detail::record_native_event(stream, enable_profiling) : nullptr;
@@ -213,10 +221,11 @@ sycl_cuda_backend::sycl_cuda_backend(const std::vector<sycl::device>& devices, c
 }
 
 async_event sycl_cuda_backend::enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base,
-    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) //
+    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size,
+    const std::vector<const async_event_impl*>& wait_on) //
 {
 	return sycl_backend_detail::nd_copy_device_cuda(
-	    get_device_queue(device, device_lane), source_base, dest_base, source_layout, dest_layout, copy_region, elem_size, is_profiling_enabled());
+	    get_device_queue(device, device_lane), source_base, dest_base, source_layout, dest_layout, copy_region, elem_size, is_profiling_enabled(), wait_on);
 }
 
 } // namespace celerity::detail

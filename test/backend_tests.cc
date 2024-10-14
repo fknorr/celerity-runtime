@@ -26,7 +26,7 @@ void backend_copy(backend& backend, const std::optional<device_id>& source_devic
     void* const dest_base, const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) {
 	if(source_device.has_value() || dest_device.has_value()) {
 		auto device = source_device.has_value() ? *source_device : *dest_device;
-		test_utils::await(backend.enqueue_device_copy(device, 0, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size));
+		test_utils::await(backend.enqueue_device_copy(device, 0, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size, {}));
 	} else {
 		test_utils::await(backend.enqueue_host_copy(0, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size));
 	}
@@ -248,7 +248,7 @@ TEST_CASE("device kernel command groups are hydrated and invoked with the correc
 			    CHECK(r == reduction_ptrs);
 			    cgh.single_task([=] { *value_ptr += 1; });
 		    },
-		    {}, execution_range, reduction_ptrs));
+		    {}, execution_range, reduction_ptrs, {}));
 
 		// yes accessors
 		test_utils::await(backend->enqueue_device_kernel(
@@ -262,7 +262,7 @@ TEST_CASE("device kernel command groups are hydrated and invoked with the correc
 			    CHECK(r == reduction_ptrs);
 			    cgh.single_task([=] { *value_ptr += 1; });
 		    },
-		    accessor_infos, execution_range, reduction_ptrs));
+		    accessor_infos, execution_range, reduction_ptrs, {}));
 
 		CHECK(*value_ptr == 3);
 	}
@@ -290,10 +290,10 @@ TEST_CASE("device kernels in a single lane execute in-order", "[backend]") {
 			    }
 		    });
 	    },
-	    {}, box_cast<3>(box<0>()), {});
+	    {}, box_cast<3>(box<0>()), {}, {});
 
 	const auto second = backend->enqueue_device_kernel(
-	    device_id(0), lane, [=](sycl::handler& cgh, const box<3>&, const std::vector<void*>&) { cgh.single_task([=] {}); }, {}, box_cast<3>(box<0>()), {});
+	    device_id(0), lane, [=](sycl::handler& cgh, const box<3>&, const std::vector<void*>&) { cgh.single_task([=] {}); }, {}, box_cast<3>(box<0>()), {}, {});
 
 	for(;;) {
 		if(second.is_complete()) {
@@ -411,7 +411,7 @@ TEST_CASE("backends report execution time iff profiling is enabled", "[backend]"
 				    }
 			    });
 		    },
-		    {}, box_cast<3>(box<0>()), {});
+		    {}, box_cast<3>(box<0>()), {}, {});
 	}
 
 	SECTION("on host tasks") {
@@ -429,7 +429,7 @@ TEST_CASE("backends report execution time iff profiling is enabled", "[backend]"
 
 	SECTION("on device copies") {
 		event = backend->enqueue_device_copy(
-		    device_id(0), /* lane */ 0, host_ptr, device_ptr, linearized_layout(0), linearized_layout(0), unit_box, host_device_alloc_size);
+		    device_id(0), /* lane */ 0, host_ptr, device_ptr, linearized_layout(0), linearized_layout(0), unit_box, host_device_alloc_size, {});
 	}
 
 	test_utils::await(event);

@@ -54,8 +54,8 @@ struct assigned_state {
 struct incomplete_instruction_state {
 	const instruction* instr = nullptr;
 	out_of_order_engine::target target = out_of_order_engine::target::immediate;
-	gch::small_vector<device_id, 2> eligible_devices; ///< device-to-device copies can be submitted to host or destination device.
-	gch::small_vector<instruction_id> successors;     ///< we collect successors as they are submitted
+	device_mask eligible_devices;                 ///< device-to-device copies can be submitted to host or destination device.
+	gch::small_vector<instruction_id> successors; ///< we collect successors as they are submitted
 
 	/// An instruction with no incomplete predecessors is ready for immediate assignment.
 	size_t num_incomplete_predecessors = 0;
@@ -195,9 +195,8 @@ void engine_impl::try_mark_for_assignment(incomplete_instruction_state& node) {
 
 		if(dep.target != node.target) return; // incompatible targets
 
-		assert(dep_assigned.device.has_value() != dep.eligible_devices.empty());
-		if(dep_assigned.device.has_value()
-		    && std::find(node.eligible_devices.begin(), node.eligible_devices.end(), *dep_assigned.device) == node.eligible_devices.end()) {
+		assert(dep_assigned.device.has_value() == dep.eligible_devices.any());
+		if(dep_assigned.device.has_value() && !node.eligible_devices.test(dep_assigned.device.value())) {
 			return; // dependency's device is not eligible for this instruction
 		}
 
@@ -235,7 +234,7 @@ void engine_impl::submit(const instruction* const instr) {
 		/// We assume that there's either a 1:1 device <-> memory mapping for device-accessible memory, or when it's not, it's irrelevant which device we
 		/// dispatch alloc / free instructions to.
 		for(device_id did = 0; did < system.devices.size(); ++did) {
-			if(system.devices[did].native_memory == mid) { node.eligible_devices.push_back(did); }
+			if(system.devices[did].native_memory == mid) { node.eligible_devices.set(did); }
 		}
 	};
 
@@ -261,7 +260,7 @@ void engine_impl::submit(const instruction* const instr) {
 		    add_eligible_devices_by_memory_id(dest_mid);
 		    add_eligible_devices_by_memory_id(source_mid);
 
-		    if(!node.eligible_devices.empty()) {
+		    if(node.eligible_devices.any()) {
 			    node.target = target::device_queue;
 		    } else {
 			    assert(source_mid <= host_memory_id && dest_mid <= host_memory_id);
@@ -270,7 +269,7 @@ void engine_impl::submit(const instruction* const instr) {
 	    },
 	    [&](const device_kernel_instruction& dkinstr) {
 		    node.target = target::device_queue;
-		    node.eligible_devices.push_back(dkinstr.get_device_id());
+		    node.eligible_devices.set(dkinstr.get_device_id());
 	    },
 	    [&](const host_task_instruction& htinstr) { //
 		    node.target = target::host_queue;
@@ -409,10 +408,10 @@ std::optional<assignment> engine_impl::assign_one() {
 		    assigned.lane.has_value() && eagerly_assignable->expected_last_submission_on_lane.has_value()
 		    && get_lane_state(node.target, assigned.device, *assigned.lane).last_incomplete_submission == eagerly_assignable->expected_last_submission_on_lane);
 	} else {
-		if(!node.eligible_devices.empty()) {
+		if(node.eligible_devices.any()) {
 			// "Heuristically" pick a device
 			assert(node.target == target::alloc_queue || node.target == target::device_queue);
-			assigned.device = node.eligible_devices.front();
+			assigned.device = node.eligible_devices._Find_first();
 		}
 		if(node.target == target::host_queue || node.target == target::device_queue) { //
 			// Select a free existing lane or create a new one. This might cause excessive numbers of threads or in-order queues to be constructed in the

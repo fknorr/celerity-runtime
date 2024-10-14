@@ -62,7 +62,8 @@ class backend {
 	/// Enqueues the asynchronous execution of a kernel in an in-order device queue identified by `device` and `device_lane`. The operation will complete
 	/// in-order with respect to any other asynchronous device operation on `device` and `device_lane`.
 	virtual async_event enqueue_device_kernel(device_id device, size_t device_lane, const device_kernel_launcher& launcher,
-	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) = 0;
+	    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs,
+	    const std::vector<const async_event_impl*>& wait_on) = 0;
 
 	/// Enqueues an n-dimensional copy between two host allocations (both either device-accessible or user-allocated). The operation will complete
 	/// in-order with respect to any other asynchronous host operation on `host_lane`.
@@ -72,7 +73,7 @@ class backend {
 	/// Enqueues an n-dimensional copy between two device-accessible allocations (at least one device-native). The operation will complete in-order with respect
 	/// to any other asynchronous device operation on `device` and `device_lane`.
 	virtual async_event enqueue_device_copy(device_id device, size_t device_lane, const void* source_base, void* dest_base, const region_layout& source_layout,
-	    const region_layout& dest_layout, const region<3>& copy_region, size_t elem_size) = 0;
+	    const region_layout& dest_layout, const region<3>& copy_region, size_t elem_size, const std::vector<const async_event_impl*>& wait_on) = 0;
 
 	/// Check internal queues and panic if any asynchronous errors occurred.
 	virtual void check_async_errors() = 0;

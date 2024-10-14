@@ -91,8 +91,16 @@ struct sycl_backend::impl {
 	impl(const std::vector<sycl::device>& devices, const bool enable_profiling)
 	    : devices(devices.begin(), devices.end()), host(devices, enable_profiling), enable_profiling(enable_profiling) //
 	{
-		// For now, we assume distinct memories per device. TODO some targets, (OpenMP emulated devices), might deviate from that.
 		system.devices.resize(devices.size());
+#if !CELERITY_WORKAROUND(DPCPP)
+		for(device_id did = 0; did < devices.size(); ++did) {
+			for(device_id other_did = 0; other_did < devices.size(); ++other_did) {
+				system.devices[did].can_wait_on.set(other_did);
+			}
+		}
+#endif
+
+		// For now, we assume distinct memories per device. TODO some targets, (OpenMP emulated devices), might deviate from that.
 		system.memories.resize(2 + devices.size()); //  user + host + device memories
 		system.memories[user_memory_id].copy_peers.set(user_memory_id);
 		system.memories[host_memory_id].copy_peers.set(host_memory_id);
@@ -205,11 +213,15 @@ async_event sycl_backend::enqueue_host_task(size_t host_lane, const host_task_la
 }
 
 async_event sycl_backend::enqueue_device_kernel(const device_id device, const size_t lane, const device_kernel_launcher& launch,
-    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs) //
+    std::vector<closure_hydrator::accessor_info> accessor_infos, const box<3>& execution_range, const std::vector<void*>& reduction_ptrs,
+    const std::vector<const async_event_impl*>& wait_on) //
 {
 	auto& queue = m_impl->get_device_queue(device, lane);
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2);
 	auto event = queue.submit([&](sycl::handler& sycl_cgh) {
+		for(auto& wait : wait_on) {
+			sycl_cgh.depends_on(utils::as<const sycl_backend_detail::sycl_event>(wait)->get_last());
+		}
 		auto& hydrator = closure_hydrator::get_instance();
 		hydrator.arm(target::device, std::move(accessor_infos));
 		const auto launch_hydrated = hydrator.hydrate<target::device>(sycl_cgh, launch);

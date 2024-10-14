@@ -9,7 +9,8 @@
 namespace celerity::detail::sycl_backend_detail {
 
 void nd_copy_device_generic_async(sycl::queue& queue, const void* const source_base, void* const dest_base, const box<3>& source_box, const box<3>& dest_box,
-    const box<3>& copy_box, const size_t elem_size, bool enable_profiling, std::optional<sycl::event>& first, sycl::event& last) //
+    const box<3>& copy_box, const size_t elem_size, bool enable_profiling, std::optional<sycl::event>& first, sycl::event& last,
+    std::vector<sycl::event>& first_wait_on) //
 {
 	assert(source_box.covers(copy_box));
 	assert(dest_box.covers(copy_box));
@@ -18,28 +19,34 @@ void nd_copy_device_generic_async(sycl::queue& queue, const void* const source_b
 	for_each_contiguous_chunk(layout, [&](const size_t chunk_offset_in_source, const size_t chunk_offset_in_dest, const size_t chunk_size) {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2);
 		// first, last: We remember the first and last submission event to report completion time spanning the entire region copy
-		last = queue.memcpy(
-		    static_cast<std::byte*>(dest_base) + chunk_offset_in_dest, static_cast<const std::byte*>(source_base) + chunk_offset_in_source, chunk_size);
+		last = queue.memcpy(static_cast<std::byte*>(dest_base) + chunk_offset_in_dest, static_cast<const std::byte*>(source_base) + chunk_offset_in_source,
+		    chunk_size, first_wait_on);
+		first_wait_on.clear();
 		if(enable_profiling && !first.has_value()) { first = last; }
 	});
 }
 
 async_event nd_copy_device_generic(sycl::queue& queue, const void* const source_base, void* const dest_base, const region_layout& source_layout,
-    const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size, const bool enable_profiling) //
+    const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size, const bool enable_profiling,
+    const std::vector<const async_event_impl*>& wait_on) //
 {
 	// We remember the first and last submission event to report completion time spanning the entire region copy.
 	std::optional<sycl::event> first; // set only if profiling is enabled
 	sycl::event last;
 
+	std::vector<sycl::event> first_wait_on(wait_on.size());
+	std::transform(wait_on.begin(), wait_on.end(), first_wait_on.begin(), [](const async_event_impl* e) { return utils::as<sycl_event>(e)->get_last(); });
+
 	dispatch_nd_region_copy(
 	    source_base, dest_base, source_layout, dest_layout, copy_region, elem_size,
-	    [&queue, elem_size, enable_profiling, &first, &last](
+	    [&queue, elem_size, enable_profiling, &first, &last, &first_wait_on](
 	        const void* const source, void* const dest, const box<3>& source_box, const box<3>& dest_box, const box<3>& copy_box) {
-		    nd_copy_device_generic_async(queue, source, dest, source_box, dest_box, copy_box, elem_size, enable_profiling, first, last);
+		    nd_copy_device_generic_async(queue, source, dest, source_box, dest_box, copy_box, elem_size, enable_profiling, first, last, first_wait_on);
 	    },
-	    [&queue, enable_profiling, &first, &last](const void* const source, void* const dest, size_t size_bytes) {
+	    [&queue, enable_profiling, &first, &last, &first_wait_on](const void* const source, void* const dest, size_t size_bytes) {
 		    CELERITY_DETAIL_TRACY_ZONE_SCOPED("sycl::submit", Orange2);
-		    last = queue.memcpy(dest, source, size_bytes);
+		    last = queue.memcpy(dest, source, size_bytes, first_wait_on);
+		    first_wait_on.clear();
 		    if(enable_profiling) { first = last; }
 	    });
 
@@ -56,11 +63,12 @@ sycl_generic_backend::sycl_generic_backend(const std::vector<sycl::device>& devi
 }
 
 async_event sycl_generic_backend::enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
-    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) //
+    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size,
+    const std::vector<const async_event_impl*>& wait_on) //
 {
 	auto& queue = get_device_queue(device, device_lane);
 	return sycl_backend_detail::nd_copy_device_generic(
-	    queue, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size, is_profiling_enabled());
+	    queue, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size, is_profiling_enabled(), wait_on);
 }
 
 } // namespace celerity::detail
