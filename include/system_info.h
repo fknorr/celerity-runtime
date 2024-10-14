@@ -60,7 +60,7 @@ struct system_info {
 
 inline device_id find_first_device(const device_mask &mask) {
 	assert(mask.any());
-	return std::countl_zero(mask.to_ullong());
+	return std::countr_zero(mask.to_ullong());
 }
 
 } // namespace celerity::detail

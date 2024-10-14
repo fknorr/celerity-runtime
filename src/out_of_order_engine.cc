@@ -184,8 +184,9 @@ void engine_impl::try_mark_for_assignment(incomplete_instruction_state& node) {
 	// (1) all its dependencies are on the same device and lane and (2) one of the dependencies is the last submitted instruction within that lane. We still
 	// require it to go through `assignment_queue` first for priority ordering, so condition (2) can change if another, higher-priority instruction is
 	// popped and assigned before this instruction - in that case, we revert back to `unassigned_state` (see pop_assignable).
-	std::optional<conditional_eagerly_assignable_state>
-	    eagerly_assignable_now; // accumulator for verifying that _all_ incomplete dependencies are on the same lane
+	bool unconditionally_assignable_by_waiting = node.target == target::device_queue;
+	bool eagerly_assignable_now = true;
+	std::optional<conditional_eagerly_assignable_state> eager_state; // accumulator for verifying that _all_ incomplete dependencies are on the same lane
 	for(auto dep_iid : node.instr->get_dependencies()) {
 		const auto dep_it = incomplete_instructions.find(dep_iid);
 		if(dep_it == incomplete_instructions.end()) continue; // dependency has completed before
@@ -195,31 +196,45 @@ void engine_impl::try_mark_for_assignment(incomplete_instruction_state& node) {
 
 		if(dep.target != node.target) return; // incompatible targets
 
+		if(node.target == target::device_queue) {
+			auto test_devices = node.eligible_devices;
+			while(test_devices.any()) {
+				auto test_did = find_first_device(test_devices);
+				if(!system.devices[test_did].can_wait_on[dep_assigned.device.value()]) unconditionally_assignable_by_waiting = false;
+				test_devices.reset(test_did);
+			}
+		}
+
 		assert(dep_assigned.device.has_value() == dep.eligible_devices.any());
 		if(dep_assigned.device.has_value() && !node.eligible_devices.test(dep_assigned.device.value())) {
-			return; // dependency's device is not eligible for this instruction
+			eagerly_assignable_now = false; // dependency's device is not eligible for this instruction
 		}
 
-		if(eagerly_assignable_now.has_value()) {
-			if(eagerly_assignable_now->device != dep_assigned.device) return; // there are dependencies on more than one device
-			if(eagerly_assignable_now->lane != dep_assigned.lane) return;     // there are dependencies on multiple lanes
+		if(eager_state.has_value()) {
+			if(eager_state->device != dep_assigned.device) eagerly_assignable_now = false; // there are dependencies on more than one device
+			if(eager_state->lane != dep_assigned.lane) eagerly_assignable_now = false;     // there are dependencies on multiple lanes
 		} else {
 			assert(dep_assigned.lane.has_value());
-			eagerly_assignable_now = conditional_eagerly_assignable_state{dep_assigned.device, *dep_assigned.lane, std::nullopt};
+			eager_state = conditional_eagerly_assignable_state{dep_assigned.device, *dep_assigned.lane, std::nullopt};
 		}
 
-		auto& lane = get_lane_state(node.target, eagerly_assignable_now->device, eagerly_assignable_now->lane);
-		if(lane.last_incomplete_submission == dep_iid) { eagerly_assignable_now->expected_last_submission_on_lane = dep_iid; }
+		auto& lane = get_lane_state(node.target, eager_state->device, eager_state->lane);
+		if(lane.last_incomplete_submission == dep_iid) { eager_state->expected_last_submission_on_lane = dep_iid; }
 	}
 
-	// If we didn't return early so far (1) all incomplete dependencies are on the same lane
-	assert(eagerly_assignable_now.has_value()); // otherwise num_incomplete_predecessors would have been == 0 above
+	if(unconditionally_assignable_by_waiting) {
+		node.assignment = unconditional_assignable_state{};
+		assignment_queue.push(node.instr);
+	} else if(eagerly_assignable_now) {
+		// If we didn't return early so far (1) all incomplete dependencies are on the same lane
+		assert(eager_state.has_value()); // otherwise num_incomplete_predecessors would have been == 0 above
 
-	// Only if (2) one of the incomplete dependencies was last in the target lane will this be non-null
-	if(!eagerly_assignable_now->expected_last_submission_on_lane.has_value()) return;
-
-	node.assignment = *eagerly_assignable_now;
-	assignment_queue.push(node.instr);
+		// Only if (2) one of the incomplete dependencies was last in the target lane will this be non-null
+		if(eager_state->expected_last_submission_on_lane.has_value()) {
+			node.assignment = *eager_state;
+			assignment_queue.push(node.instr);
+		}
+	}
 }
 
 void engine_impl::submit(const instruction* const instr) {
@@ -381,7 +396,7 @@ incomplete_instruction_state* engine_impl::pop_assignable() {
 			}
 		} else {
 			assert(std::holds_alternative<unconditional_assignable_state>(node.assignment));
-			assert(node.num_incomplete_predecessors == 0);
+			// assert(node.num_incomplete_predecessors == 0);
 			return &node;
 		}
 	}
@@ -399,6 +414,7 @@ std::optional<assignment> engine_impl::assign_one() {
 	auto& node = *node_ptr;
 
 	assigned_state assigned;
+	std::vector<instruction_id> wait_on;
 	if(const auto& eagerly_assignable = std::get_if<conditional_eagerly_assignable_state>(&node.assignment)) {
 		// After an instruction is popped from the assignment queue, "eager-assignability" is unconditional. Force-assign to the same lane to implicitly fulfill
 		// all remaining dependencies through queue ordering.
@@ -411,9 +427,29 @@ std::optional<assignment> engine_impl::assign_one() {
 		if(node.eligible_devices.any()) {
 			// "Heuristically" pick a device
 			assert(node.target == target::alloc_queue || node.target == target::device_queue);
-			assigned.device = node.eligible_devices._Find_first();
+			assigned.device = find_first_device(node.eligible_devices);
 		}
-		if(node.target == target::host_queue || node.target == target::device_queue) { //
+		if(node.num_incomplete_predecessors > 0) {
+			assert(node.target == target::device_queue);
+			assert(assigned.device.has_value());
+			for(auto dep_iid : node.instr->get_dependencies()) {
+				const auto dep_it = incomplete_instructions.find(dep_iid);
+				if(dep_it == incomplete_instructions.end()) continue; // dependency has completed before
+
+				auto& [_, dep] = *dep_it;
+				auto& dep_assigned = std::get<assigned_state>(dep.assignment); // otherwise num_unassigned_predecessors would have been > 0 above
+				assert(dep.target == target::device_queue);
+				assert(dep_assigned.lane.has_value());
+				if(dep_assigned.device == assigned.device && !assigned.lane.has_value()
+				    && get_lane_state(dep.target, dep_assigned.device, *dep_assigned.lane).last_incomplete_submission == dep_iid) {
+					assigned.lane = dep_assigned.lane;
+				} else {
+					assert(system.devices[assigned.device.value()].can_wait_on[dep_assigned.device.value()]);
+					wait_on.push_back(dep_iid);
+				}
+			}
+		}
+		if((node.target == target::host_queue || node.target == target::device_queue) && !assigned.lane.has_value()) { //
 			// Select a free existing lane or create a new one. This might cause excessive numbers of threads or in-order queues to be constructed in the
 			// backend (even though this number is indirectly bounded by breadth horizons). TODO in the future consider limiting the number of lanes while
 			// avoiding potential deadlocks that can then arise from stalling / temporally re-ordering collective host tasks between nodes.
@@ -437,7 +473,7 @@ std::optional<assignment> engine_impl::assign_one() {
 		}
 	}
 
-	return assignment{node.instr, node.target, assigned.device, assigned.lane};
+	return assignment(node.instr, node.target, assigned.device, assigned.lane, std::move(wait_on));
 }
 
 } // namespace celerity::detail::out_of_order_engine_detail

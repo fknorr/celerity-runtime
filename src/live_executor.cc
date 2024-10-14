@@ -749,8 +749,12 @@ void executor_impl::issue_async(const copy_instruction& cinstr, const out_of_ord
 
 	if(assignment.device.has_value()) {
 		std::vector<const async_event_impl*> wait_on(assignment.wait_on.size());
-		std::transform(assignment.wait_on.begin(), assignment.wait_on.end(), wait_on.begin(),
-		    [&](const instruction_id iid) { return in_flight_async_instructions.at(iid).event.get(); });
+		std::transform(assignment.wait_on.begin(), assignment.wait_on.end(), wait_on.begin(), [&](const instruction_id iid) {
+			const auto it = std::find_if(
+			    in_flight_async_instructions.begin(), in_flight_async_instructions.end(), [&](const async_instruction_state& ais) { return ais.iid == iid; });
+			assert(it != in_flight_async_instructions.end());
+			return it->event.get();
+		});
 		async.event = backend->enqueue_device_copy(*assignment.device, *assignment.lane, source_base, dest_base, cinstr.get_source_layout(),
 		    cinstr.get_dest_layout(), cinstr.get_copy_region(), cinstr.get_element_size(), wait_on);
 	} else {
@@ -795,8 +799,12 @@ void executor_impl::issue_async(const device_kernel_instruction& dkinstr, const 
 	}
 
 	std::vector<const async_event_impl*> wait_on(assignment.wait_on.size());
-	std::transform(assignment.wait_on.begin(), assignment.wait_on.end(), wait_on.begin(),
-	    [&](const instruction_id iid) { return in_flight_async_instructions.at(iid).event.get(); });
+		std::transform(assignment.wait_on.begin(), assignment.wait_on.end(), wait_on.begin(), [&](const instruction_id iid) {
+			const auto it = std::find_if(
+			    in_flight_async_instructions.begin(), in_flight_async_instructions.end(), [&](const async_instruction_state& ais) { return ais.iid == iid; });
+			assert(it != in_flight_async_instructions.end());
+			return it->event.get();
+		});
 	async.event = backend->enqueue_device_kernel(
 	    dkinstr.get_device_id(), *assignment.lane, dkinstr.get_launcher(), std::move(accessor_infos), dkinstr.get_execution_range(), reduction_ptrs, wait_on);
 }
@@ -956,14 +964,14 @@ void live_executor::submit(std::vector<const instruction*> instructions, std::ve
 
 void live_executor::thread_main(std::unique_ptr<backend> backend, delegate* const dlg, const policy_set& policy) {
 	CELERITY_DETAIL_TRACY_SET_THREAD_NAME_AND_ORDER("cy-executor", tracy_detail::thread_order::executor);
-	try {
+	//try {
 		live_executor_detail::executor_impl(std::move(backend), m_root_comm.get(), m_submission_queue, dlg, policy).run();
-	}
+	//}
 	// LCOV_EXCL_START
-	catch(const std::exception& e) {
-		CELERITY_CRITICAL("[executor] {}", e.what());
-		std::abort();
-	}
+	//catch(const std::exception& e) {
+	//	CELERITY_CRITICAL("[executor] {}", e.what());
+		//throw;
+	//}
 	// LCOV_EXCL_STOP
 }
 
