@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include <unordered_set>
 
 namespace celerity::detail::out_of_order_engine_detail {
 struct engine_impl;
@@ -67,6 +68,8 @@ class out_of_order_engine {
 
 	/// True when all submitted instructions have completed.
 	bool is_idle() const;
+
+	const std::unordered_set<instruction_id> &get_completion_front() const;
 
 	/// Returns the number of instructions currently awaiting normal or eager assignment (diagnostic use only).
 	size_t get_assignment_queue_length() const;

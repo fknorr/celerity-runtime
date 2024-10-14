@@ -160,7 +160,6 @@ int main(int argc, char* argv[]) {
 	}
 
 	celerity::queue queue;
-	celerity::detail::runtime::get_instance().get_task_manager().set_horizon_step(1);
 
 	celerity::buffer<float, 2> up{celerity::range<2>(cfg.N, cfg.N)}; // next
 	celerity::buffer<float, 2> u{celerity::range<2>(cfg.N, cfg.N)};  // current
