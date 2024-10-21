@@ -112,6 +112,8 @@ class instruction_graph_generator {
 	/// End tracking the host object with id `hoid`. Emits `destroy_host_object_instruction` if `create_host_object` was called with `owns_instance == true`.
 	void notify_host_object_destroyed(host_object_id hoid);
 
+	void anticipate(const abstract_command& cmd);
+
 	/// Compiles a command-graph node into a set of instructions, which are inserted into the shared instruction graph, and updates tracking structures.
 	void compile(const abstract_command& cmd);
 

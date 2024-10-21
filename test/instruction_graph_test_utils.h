@@ -210,6 +210,8 @@ class idag_test_context {
 	void finish() {
 		if(m_finished) return;
 
+		flush();
+
 		for(auto iter = m_managed_objects.rbegin(); iter != m_managed_objects.rend(); ++iter) {
 			matchbox::match(
 			    *iter,
@@ -347,6 +349,7 @@ class idag_test_context {
 	instruction_graph m_idag;
 	instruction_recorder m_instr_recorder;
 	instruction_graph_generator m_iggen;
+	std::queue<const abstract_command *> m_cmd_queue;
 	bool m_finished = false;
 
 	allocation_id create_user_allocation() { return detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++); }
@@ -362,11 +365,19 @@ class idag_test_context {
 		return m_tm.submit_command_group(cgf, hints...);
 	}
 
+	void flush() {
+		while (!m_cmd_queue.empty()) {
+			m_iggen.compile(*m_cmd_queue.front());
+			m_cmd_queue.pop();
+		}
+	}
+
 	void build_task(const task_id tid) {
 		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		for(const auto cmd : m_cggen.build_task(*m_tm.get_task(tid))) {
-			m_iggen.compile(*cmd);
+			m_iggen.anticipate(*cmd);
+			m_cmd_queue.push(cmd);
 		}
 	}
 

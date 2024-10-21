@@ -1059,3 +1059,16 @@ TEST_CASE("device kernels report global memory traffic estimate based on range m
 		CHECK(reduce->estimated_global_memory_traffic_bytes == buffer_size / num_devices * sizeof(float));
 	}
 }
+
+// TODO just to verify "anticipating allocations" works
+TEST_CASE("wave_sim") {
+	test_utils::idag_test_context ictx(1 /* num nodes */, 0 /* my nid */, 2 /* num devices */);
+	auto buf_a = ictx.create_buffer<float, 2>(range(4096, 4096));
+	auto buf_b = ictx.create_buffer<float, 2>(range(4096, 4096));
+	ictx.device_compute(buf_a.get_range()).name("alloc").discard_write(buf_a, acc::one_to_one()).submit();
+	for(int i = 0; i < 2; ++i) {
+		ictx.device_compute(buf_a.get_range()).name("iter").read(buf_a, acc::neighborhood(1, 1)).discard_write(buf_b, acc::one_to_one()).submit();
+		std::swap(buf_a, buf_b);
+	}
+	ictx.finish();
+}

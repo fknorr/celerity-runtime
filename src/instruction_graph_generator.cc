@@ -322,6 +322,8 @@ struct buffer_memory_state {
 	// TODO evaluate if it ever makes sense to use a region_map here, or if we're better off expecting very few allocations and sticking to a vector here
 	std::vector<buffer_allocation_state> allocations; // disjoint
 
+	region<3> future_allocation_bound;
+
 	const buffer_allocation_state& get_allocation(const allocation_id aid) const {
 		const auto it = std::find_if(allocations.begin(), allocations.end(), [=](const buffer_allocation_state& a) { return a.aid == aid; });
 		assert(it != allocations.end());
@@ -561,6 +563,7 @@ class generator_impl {
 	void notify_buffer_destroyed(buffer_id bid);
 	void notify_host_object_created(host_object_id hoid, bool owns_instance);
 	void notify_host_object_destroyed(host_object_id hoid);
+	void anticipate(const abstract_command& cmd);
 	void compile(const abstract_command& cmd);
 
   private:
@@ -698,6 +701,8 @@ class generator_impl {
 	/// If a task is part of a collective group, serialize it with respect to the last host task in that group.
 	void perform_task_collective_operations(
 	    const task& tsk, const std::vector<localized_chunk>& concurrent_chunks, const std::vector<instruction*>& command_instructions);
+
+	void anticipate_execution_command(const execution_command& ecmd);
 
 	void compile_execution_command(batch& batch, const execution_command& ecmd);
 	void compile_push_command(batch& batch, const push_command& pcmd);
@@ -995,19 +1000,30 @@ void generator_impl::allocate_contiguously(batch& current_batch, const buffer_id
 	}
 	merge_overlapping_bounding_boxes(contiguous_boxes_after_realloc);
 
-	// Allocations that are now fully contained in (but not equal to) one of the newly contiguous bounding boxes will be freed at the end of the reallocation
-	// step, because we currently disallow overlapping allocations for simplicity. These will function as sources for resize-copies below.
-	const auto resize_from_begin = std::partition(memory.allocations.begin(), memory.allocations.end(), [&](const buffer_allocation_state& allocation) {
-		return std::find(contiguous_boxes_after_realloc.begin(), contiguous_boxes_after_realloc.end(), allocation.box) != contiguous_boxes_after_realloc.end();
-	});
-	const auto resize_from_end = memory.allocations.end();
-
 	// Derive the set of new boxes to allocate by removing all existing boxes from the set of contiguous boxes.
 	auto&& new_alloc_boxes = std::move(contiguous_boxes_after_realloc);
 	const auto last_new_allocation = std::remove_if(new_alloc_boxes.begin(), new_alloc_boxes.end(),
 	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
 	new_alloc_boxes.erase(last_new_allocation, new_alloc_boxes.end());
 	assert(!new_alloc_boxes.empty()); // otherwise we would have returned early
+
+	// TODO ugly, can this be integrated into / rewritten like merge_overlapping_bounding_boxes?
+restart_merge_future:
+	for(const auto& future_box : memory.future_allocation_bound.get_boxes()) {
+		if(std::any_of(new_alloc_boxes.begin(), new_alloc_boxes.end(),
+		       [&](const auto& box) { return box != future_box && !box_intersection(box, future_box).empty(); })) {
+			new_alloc_boxes.push_back(future_box);
+			merge_overlapping_bounding_boxes(new_alloc_boxes);
+			goto restart_merge_future;
+		}
+	}
+
+	// Allocations that are now fully contained in (but not equal to) one of the newly contiguous bounding boxes will be freed at the end of the reallocation
+	// step, because we currently disallow overlapping allocations for simplicity. These will function as sources for resize-copies below.
+	const auto resize_from_begin = std::partition(memory.allocations.begin(), memory.allocations.end(), [&](const buffer_allocation_state& allocation) {
+		return std::find(contiguous_boxes_after_realloc.begin(), contiguous_boxes_after_realloc.end(), allocation.box) != contiguous_boxes_after_realloc.end();
+	});
+	const auto resize_from_end = memory.allocations.end();
 
 	// Opportunistically merge connected boxes to keep the number of allocations and the tracking overhead low. This will not introduce artificial
 	// synchronization points because resize-copies are still rooted on the original last-writers.
@@ -1945,6 +1961,33 @@ void generator_impl::perform_task_collective_operations(
 	group.last_collective_operation = command_instructions[0];
 }
 
+void generator_impl::anticipate_execution_command(const execution_command& ecmd) {
+	const auto& tsk = *m_tm->get_task(ecmd.get_tid());
+	const auto concurrent_chunks = split_task_execution_range(ecmd, tsk);
+
+	const auto& bam = tsk.get_buffer_access_map();
+	for(const auto bid : bam.get_accessed_buffers()) {
+		auto& buffer = m_buffers.at(bid);
+		for(const auto& chunk : concurrent_chunks) {
+			auto boxes = tsk.get_buffer_access_map().get_required_contiguous_boxes(bid, tsk.get_dimensions(), chunk.execution_range, tsk.get_global_size());
+			auto& bound = buffer.memories[chunk.memory_id].future_allocation_bound;
+			bound = region_union(bound, region(std::move(boxes)));
+		}
+	}
+
+	for(const auto& rinfo : tsk.get_reductions()) {
+		auto& buffer = m_buffers.at(rinfo.bid);
+		{
+			auto& bound = buffer.memories[host_memory_id].future_allocation_bound;
+			bound = region_union(bound, scalar_reduction_box);
+		}
+		for(const auto& chunk : concurrent_chunks) {
+			auto& bound = buffer.memories[chunk.memory_id].future_allocation_bound;
+			bound = region_union(bound, scalar_reduction_box);
+		}
+	}
+}
+
 void generator_impl::compile_execution_command(batch& command_batch, const execution_command& ecmd) {
 	const auto& tsk = *m_tm->get_task(ecmd.get_tid());
 
@@ -2286,6 +2329,11 @@ void generator_impl::flush_batch(batch&& batch) { // NOLINT(cppcoreguidelines-rv
 #endif
 }
 
+void generator_impl::anticipate(const abstract_command& cmd) {
+	// TODO I don't care for push/await because those will be moved to staging allocations eventually
+	if(utils::isa<execution_command>(&cmd)) { anticipate_execution_command(*utils::as<execution_command>(&cmd)); }
+}
+
 void generator_impl::compile(const abstract_command& cmd) {
 	batch command_batch;
 	matchbox::match(
@@ -2329,6 +2377,8 @@ void instruction_graph_generator::notify_host_object_created(const host_object_i
 }
 
 void instruction_graph_generator::notify_host_object_destroyed(const host_object_id hoid) { m_impl->notify_host_object_destroyed(hoid); }
+
+void instruction_graph_generator::anticipate(const abstract_command& cmd) { m_impl->anticipate(cmd); }
 
 void instruction_graph_generator::compile(const abstract_command& cmd) { m_impl->compile(cmd); }
 
