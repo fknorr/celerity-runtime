@@ -181,3 +181,22 @@ enum class epoch_action {
 };
 
 } // namespace celerity::detail
+
+namespace celerity::experimental {
+
+/// Controls how many command groups the runtime can queue up until starting execution of the first one.
+enum class lookahead {
+	/// Command groups begin executing as soon as possible, minimizing latency. This is the right choice when asynchronous command groups must overlap with user
+	/// code in the application thread. Depending on the application, this might trigger frequent and expensive buffer resizes which can limit the maximum
+	/// buffer allocation (and thus problem size) per device.
+	none,
+
+	/// Queue up a small number of command groups at the runtime's discretion. This is the default.
+	automatic,
+
+	/// Queue up all command groups until the first call to `queue::fence`, `queue::wait` or runtime shutdown. This maximizes throughput at the expense of
+	/// up-front scheduling latency, but reliably avoids expensive buffer resizes.
+	infinite,
+};
+
+} // namespace celerity::experimental

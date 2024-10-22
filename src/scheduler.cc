@@ -103,6 +103,9 @@ namespace detail {
 					    // The scheduler will receive the shutdown-epoch completion event via the runtime even if executor destruction has already begun.
 					    if(shutdown_epoch_emitted && e.tid == *shutdown_epoch_emitted) { shutdown_epoch_reached = true; }
 				    },
+				    [&](const event_set_lookahead& e) { //
+					    (void)e.lookahead;              // TODO
+				    },
 				    [&](const event_test_inspect& e) { //
 					    e.inspect();
 				    });

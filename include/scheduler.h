@@ -64,6 +64,8 @@ namespace detail {
 
 		void notify_epoch_reached(const task_id tid) { notify(event_epoch_reached{tid}); }
 
+		void set_lookahead(const experimental::lookahead lookahead) { notify(event_set_lookahead{lookahead}); }
+
 	  protected:
 		/**
 		 * This is called by the worker thread.
@@ -98,11 +100,14 @@ namespace detail {
 		struct event_epoch_reached {
 			task_id tid;
 		};
+		struct event_set_lookahead {
+			experimental::lookahead lookahead;
+		};
 		struct event_test_inspect {        // only used by scheduler_testspy
 			std::function<void()> inspect; // executed inside scheduler thread, making it safe to access scheduler members
 		};
 		using event = std::variant<event_task_available, event_buffer_created, event_buffer_debug_name_changed, event_buffer_destroyed,
-		    event_host_object_created, event_host_object_destroyed, event_epoch_reached, event_test_inspect>;
+		    event_host_object_created, event_host_object_destroyed, event_epoch_reached, event_set_lookahead, event_test_inspect>;
 
 		std::unique_ptr<command_graph> m_cdag;
 		command_recorder* m_crec;

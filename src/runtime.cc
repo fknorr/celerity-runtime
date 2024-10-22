@@ -492,13 +492,17 @@ namespace detail {
 		m_live_host_objects.erase(hoid);
 	}
 
-
 	reduction_id runtime::create_reduction(std::unique_ptr<reducer> reducer) {
 		require_call_from_application_thread();
 
 		const auto rid = m_next_reduction_id++;
 		m_exec->track_reducer(rid, std::move(reducer));
 		return rid;
+	}
+
+	void runtime::set_scheduler_lookahead(const experimental::lookahead lookahead) {
+		require_call_from_application_thread();
+		m_schdlr.set_lookahead(lookahead);
 	}
 
 	bool runtime::is_unreferenced() const { return m_num_live_queues == 0 && m_live_buffers.empty() && m_live_host_objects.empty(); }

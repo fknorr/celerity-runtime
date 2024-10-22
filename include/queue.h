@@ -112,3 +112,13 @@ class queue {
 };
 
 } // namespace celerity
+
+namespace celerity::experimental {
+
+// Attached to the queue to signal that semantics are in-order with other submissions. Still applies to all queues.
+// Experimental: This is only applicable to fully static work assignment, which might not remain the default forever.
+inline void set_lookahead(celerity::queue& /* queue */, const experimental::lookahead lookahead) {
+	detail::runtime::get_instance().set_scheduler_lookahead(lookahead);
+}
+
+} // namespace celerity::experimental

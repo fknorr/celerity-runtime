@@ -65,6 +65,8 @@ namespace detail {
 
 		bool is_dry_run() const { return m_cfg->is_dry_run(); }
 
+		void set_scheduler_lookahead(experimental::lookahead lookahead);
+
 	  private:
 		inline static bool s_mpi_initialized = false;
 		inline static bool s_mpi_finalized = false;

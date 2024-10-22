@@ -349,7 +349,7 @@ class idag_test_context {
 	instruction_graph m_idag;
 	instruction_recorder m_instr_recorder;
 	instruction_graph_generator m_iggen;
-	std::queue<const abstract_command *> m_cmd_queue;
+	std::queue<const abstract_command*> m_cmd_queue;
 	bool m_finished = false;
 
 	allocation_id create_user_allocation() { return detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++); }
@@ -366,7 +366,7 @@ class idag_test_context {
 	}
 
 	void flush() {
-		while (!m_cmd_queue.empty()) {
+		while(!m_cmd_queue.empty()) {
 			m_iggen.compile(*m_cmd_queue.front());
 			m_cmd_queue.pop();
 		}
