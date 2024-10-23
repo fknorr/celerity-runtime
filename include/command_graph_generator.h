@@ -106,7 +106,7 @@ class command_graph_generator {
 	/// This includes resolving local data dependencies, generating await push commands for local reads of remote data,
 	/// as well as push commands for remote reads of local data.
 	/// Commands are returned in topologically sorted order, i.e., sequential execution would satisfy all internal dependencies.
-	std::vector<abstract_command*> build_task(const task& tsk);
+	std::vector<const abstract_command*> build_task(const task& tsk);
 
 	command_graph& get_command_graph() { return m_cdag; }
 
@@ -268,7 +268,7 @@ class command_graph_generator {
 	size_t m_test_chunk_multiplier = 1;
 
 	// Batch of commands currently being generated. Returned (and thereby emptied) by build_task().
-	std::vector<abstract_command*> m_current_cmd_batch;
+	std::vector<const abstract_command*> m_current_cmd_batch;
 
 	// List of reductions that have either completed globally or whose result has been discarded. This list will be appended to the next horizon to eventually
 	// inform the instruction executor that it can safely garbage-collect runtime info on the reduction operation.

@@ -64,7 +64,7 @@ bool is_topologically_sorted(Iterator begin, Iterator end) {
 	return true;
 }
 
-std::vector<abstract_command*> command_graph_generator::build_task(const task& tsk) {
+std::vector<const abstract_command*> command_graph_generator::build_task(const task& tsk) {
 	assert(m_current_cmd_batch.empty());
 	[[maybe_unused]] const auto cmd_count_before = m_cdag.command_count();
 
