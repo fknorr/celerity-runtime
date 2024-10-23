@@ -23,6 +23,18 @@ namespace detail {
 
 	abstract_scheduler::~abstract_scheduler() = default;
 
+	std::vector<abstract_command*> abstract_scheduler::build_task(const task& tsk) {
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::build_task", WebMaroon, "T{} build", tsk.get_id());
+		CELERITY_DETAIL_TRACY_ZONE_TEXT(utils::make_task_debug_label(tsk.get_type(), tsk.get_id(), tsk.get_debug_name()));
+		return m_cggen->build_task(tsk);
+	}
+
+	void abstract_scheduler::compile_command(const abstract_command& cmd) {
+		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::compile_command", MidnightBlue, "C{} compile", cmd.get_cid());
+		CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", cmd.get_type());
+		m_iggen->compile(cmd);
+	}
+
 	void abstract_scheduler::schedule() {
 		std::optional<task_id> shutdown_epoch_emitted = std::nullopt;
 		bool shutdown_epoch_reached = false;
@@ -39,22 +51,14 @@ namespace detail {
 					    assert(e.tsk != nullptr);
 					    auto& tsk = *e.tsk;
 
-					    std::vector<abstract_command*> commands;
-					    {
-						    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::build_task", WebMaroon, "T{} build", tsk.get_id());
-						    CELERITY_DETAIL_TRACY_ZONE_TEXT(utils::make_task_debug_label(tsk.get_type(), tsk.get_id(), tsk.get_debug_name()));
-						    commands = m_cggen->build_task(tsk);
-					    }
+					    const auto commands = build_task(tsk);
 
 					    for(const auto cmd : commands) {
 						    // If there are multiple commands, the shutdown epoch must come last. m_iggen.delegate must be considered dangling after receiving
 						    // the corresponding instruction, as runtime will begin destroying the executor after it has observed the epoch to be reached.
 						    assert(!shutdown_epoch_emitted);
 
-						    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::compile_command", MidnightBlue, "C{} compile", cmd->get_cid());
-						    CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", cmd->get_type());
-
-						    m_iggen->compile(*cmd);
+						    compile_command(*cmd);
 
 						    if(tsk.get_type() == task_type::epoch && tsk.get_epoch_action() == epoch_action::shutdown) {
 							    shutdown_epoch_emitted = tsk.get_id();

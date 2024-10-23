@@ -118,6 +118,9 @@ namespace detail {
 
 		double_buffered_queue<event> m_event_queue;
 
+		std::vector<abstract_command*> build_task(const task& tsk);
+		void compile_command(const abstract_command& cmd);
+
 		void notify(event&& evt);
 	};
 

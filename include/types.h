@@ -195,7 +195,7 @@ enum class lookahead {
 	automatic,
 
 	/// Queue up all command groups until the first call to `queue::fence`, `queue::wait` or runtime shutdown. This maximizes throughput at the expense of
-	/// up-front scheduling latency, but reliably avoids expensive buffer resizes.
+	/// up-front scheduling latency, but reliably avoids buffer resizes.
 	infinite,
 };
 

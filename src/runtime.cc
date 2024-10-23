@@ -502,7 +502,7 @@ namespace detail {
 
 	void runtime::set_scheduler_lookahead(const experimental::lookahead lookahead) {
 		require_call_from_application_thread();
-		m_schdlr.set_lookahead(lookahead);
+		m_schdlr->set_lookahead(lookahead);
 	}
 
 	bool runtime::is_unreferenced() const { return m_num_live_queues == 0 && m_live_buffers.empty() && m_live_host_objects.empty(); }
