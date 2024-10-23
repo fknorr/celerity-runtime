@@ -112,6 +112,7 @@ namespace detail {
 		std::unique_ptr<command_graph> m_cdag;
 		command_recorder* m_crec;
 		std::unique_ptr<command_graph_generator> m_cggen;
+		experimental::lookahead m_lookahead = experimental::lookahead::automatic;
 		std::unique_ptr<instruction_graph> m_idag;
 		instruction_recorder* m_irec;
 		std::unique_ptr<instruction_graph_generator> m_iggen;
@@ -119,6 +120,7 @@ namespace detail {
 		double_buffered_queue<event> m_event_queue;
 
 		std::vector<abstract_command*> build_task(const task& tsk);
+		bool should_compile_commands(const task &tsk) const;
 		void compile_command(const abstract_command& cmd);
 
 		void notify(event&& evt);

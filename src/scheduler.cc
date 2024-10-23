@@ -29,14 +29,33 @@ namespace detail {
 		return m_cggen->build_task(tsk);
 	}
 
+	bool abstract_scheduler::should_compile_commands(const task &tsk) const {
+		switch (m_lookahead) {
+		case experimental::lookahead::none:
+		case experimental::lookahead::automatic:
+			return true;
+		case experimental::lookahead::infinite: 
+		return false;
+		default: utils::unreachable();
+		}
+	}
+
 	void abstract_scheduler::compile_command(const abstract_command& cmd) {
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::compile_command", MidnightBlue, "C{} compile", cmd.get_cid());
 		CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", cmd.get_type());
 		m_iggen->compile(cmd);
 	}
 
+	// TODO split CDAG / IDAG schedulers to simplify queueing?
+
 	void abstract_scheduler::schedule() {
-		std::optional<task_id> shutdown_epoch_emitted = std::nullopt;
+		struct compile_queue_entry {
+			const task *tsk = nullptr;
+			std::vector<abstract_command *> cmds;
+		};
+		std::queue<compile_queue_entry> compile_queue;
+
+		std::optional<task_id> shutdown_epoch_built = std::nullopt;
 		bool shutdown_epoch_reached = false;
 
 		while(!shutdown_epoch_reached) {
@@ -47,50 +66,53 @@ namespace detail {
 				matchbox::match(
 				    event,
 				    [&](const event_task_available& e) {
-					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
+					    assert(!shutdown_epoch_built && !shutdown_epoch_reached);
 					    assert(e.tsk != nullptr);
 					    auto& tsk = *e.tsk;
 
+						compile_queue.emplace(e.tsk, build_task(tsk));
 					    const auto commands = build_task(tsk);
 
 					    for(const auto cmd : commands) {
 						    // If there are multiple commands, the shutdown epoch must come last. m_iggen.delegate must be considered dangling after receiving
 						    // the corresponding instruction, as runtime will begin destroying the executor after it has observed the epoch to be reached.
-						    assert(!shutdown_epoch_emitted);
+						    assert(!shutdown_epoch_built);
 
-						    compile_command(*cmd);
+							if (should_compile_commands(tsk)) {
+								compile_command(*cmd);
+							}
 
 						    if(tsk.get_type() == task_type::epoch && tsk.get_epoch_action() == epoch_action::shutdown) {
-							    shutdown_epoch_emitted = tsk.get_id();
+							    shutdown_epoch_built = tsk.get_id();
 						    }
 					    }
 				    },
 				    [&](const event_buffer_created& e) {
-					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
+					    assert(!shutdown_epoch_built && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::buffer_created", DarkGreen, "B{} create", e.bid);
 					    m_cggen->notify_buffer_created(e.bid, e.range, e.user_allocation_id != null_allocation_id);
 					    m_iggen->notify_buffer_created(e.bid, e.range, e.elem_size, e.elem_align, e.user_allocation_id);
 				    },
 				    [&](const event_buffer_debug_name_changed& e) {
-					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
+					    assert(!shutdown_epoch_built && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::buffer_name_changed", DarkGreen, "B{} set name", e.bid);
 					    m_cggen->notify_buffer_debug_name_changed(e.bid, e.debug_name);
 					    m_iggen->notify_buffer_debug_name_changed(e.bid, e.debug_name);
 				    },
 				    [&](const event_buffer_destroyed& e) {
-					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
+					    assert(!shutdown_epoch_built && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::buffer_destroyed", DarkGreen, "B{} destroy", e.bid);
 					    m_cggen->notify_buffer_destroyed(e.bid);
 					    m_iggen->notify_buffer_destroyed(e.bid);
 				    },
 				    [&](const event_host_object_created& e) {
-					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
+					    assert(!shutdown_epoch_built && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::host_object_created", DarkGreen, "H{} create", e.hoid);
 					    m_cggen->notify_host_object_created(e.hoid);
 					    m_iggen->notify_host_object_created(e.hoid, e.owns_instance);
 				    },
 				    [&](const event_host_object_destroyed& e) {
-					    assert(!shutdown_epoch_emitted && !shutdown_epoch_reached);
+					    assert(!shutdown_epoch_built && !shutdown_epoch_reached);
 					    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::host_object_destroyed", DarkGreen, "H{} destroy", e.hoid);
 					    m_cggen->notify_host_object_destroyed(e.hoid);
 					    m_iggen->notify_host_object_destroyed(e.hoid);
@@ -105,14 +127,30 @@ namespace detail {
 					    }
 
 					    // The scheduler will receive the shutdown-epoch completion event via the runtime even if executor destruction has already begun.
-					    if(shutdown_epoch_emitted && e.tid == *shutdown_epoch_emitted) { shutdown_epoch_reached = true; }
+					    if(shutdown_epoch_built && e.tid == *shutdown_epoch_built) { shutdown_epoch_reached = true; }
 				    },
 				    [&](const event_set_lookahead& e) { //
-					    (void)e.lookahead;              // TODO
+						m_lookahead = e.lookahead;
 				    },
 				    [&](const event_test_inspect& e) { //
 					    e.inspect();
 				    });
+
+				// TODO: How do we figure out should_compile_command()?
+				// - Just use the task id? Might be better to base this on DAG edges?
+				// - If it's about dependency chains, walking the DAG is fine (but this would be the only application of DAG dependencies!)
+				// - If lookahead cares about resizes and nothing else, we could collect chains by accessed buffers
+				// - But must never cause commands to be compiled out of order! A queue is correct, its just about figuring out what to do with epochs / fences/ etc
+				//
+				// Idea: Keep a queue and some counters: num_horizons_in_queue and num_epochs_and_fences_in_queue alongside.
+				// - Unconditionally compile while num_epochs_and_fences > 0
+				// - Conditionally compile while num_horizons_in_queue > N
+				while (!compile_queue.empty() && should_compile_commands(*compile_queue.front().tsk)) {
+					for (const auto cmd: compile_queue.front().cmds) {
+						compile_command(*cmd);
+					}
+					compile_queue.pop();
+				}
 			}
 		}
 	}
