@@ -58,7 +58,7 @@ namespace detail {
 		static auto inspect_thread(scheduler& schdlr, F&& f) {
 			using return_t = decltype(f());
 			std::promise<return_t> channel;
-			schdlr.push_task_event(scheduler::event_test_inspect{[&] { channel.set_value(f()); }});
+			schdlr.test_inspect([&] { channel.set_value(f()); });
 			return channel.get_future().get();
 		}
 

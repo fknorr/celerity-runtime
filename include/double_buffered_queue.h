@@ -46,6 +46,8 @@ class double_buffered_queue {
 		}
 	}
 
+	bool nonempty() const { return m_write.queue_nonempty.load(std::memory_order_relaxed); }
+
   private:
 	/// Aligned group 1: The write-queue and its associated synchronization primitives will move between threads on push, pop, and wait.
 	struct alignas(hardware_destructive_interference_size) write_end {

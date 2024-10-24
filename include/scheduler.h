@@ -47,24 +47,26 @@ namespace detail {
 		/**
 		 * @brief Notifies the scheduler that a new task has been created and is ready for scheduling.
 		 */
-		void notify_task_created(const task* const tsk) { push_task_event(event_task_available{tsk}); }
+		void notify_task_created(const task* const tsk) { m_task_queue.push(event_task_available{tsk}); }
 
 		void notify_buffer_created(
 		    const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
-			push_task_event(event_buffer_created{bid, range, elem_size, elem_align, user_allocation_id});
+			m_task_queue.push(event_buffer_created{bid, range, elem_size, elem_align, user_allocation_id});
 		}
 
-		void notify_buffer_debug_name_changed(const buffer_id bid, const std::string& name) { push_task_event(event_buffer_debug_name_changed{bid, name}); }
+		void notify_buffer_debug_name_changed(const buffer_id bid, const std::string& name) { m_task_queue.push(event_buffer_debug_name_changed{bid, name}); }
 
-		void notify_buffer_destroyed(const buffer_id bid) { push_task_event(event_buffer_destroyed{bid}); }
+		void notify_buffer_destroyed(const buffer_id bid) { m_task_queue.push(event_buffer_destroyed{bid}); }
 
-		void notify_host_object_created(const host_object_id hoid, const bool owns_instance) { push_task_event(event_host_object_created{hoid, owns_instance}); }
+		void notify_host_object_created(const host_object_id hoid, const bool owns_instance) {
+			m_task_queue.push(event_host_object_created{hoid, owns_instance});
+		}
 
-		void notify_host_object_destroyed(const host_object_id hoid) { push_task_event(event_host_object_destroyed{hoid}); }
+		void notify_host_object_destroyed(const host_object_id hoid) { m_task_queue.push(event_host_object_destroyed{hoid}); }
 
-		void notify_epoch_reached(const task_id tid) { push_task_event(event_epoch_reached{tid}); }
+		void notify_epoch_reached(const task_id tid) { m_task_queue.push(event_epoch_reached{tid}); }
 
-		void set_lookahead(const experimental::lookahead lookahead) { push_task_event(event_set_lookahead{lookahead}); }
+		void set_lookahead(const experimental::lookahead lookahead) { m_task_queue.push(event_set_lookahead{lookahead}); }
 
 	  protected:
 		/**
@@ -77,7 +79,7 @@ namespace detail {
 			const task* tsk;
 		};
 		struct event_command_available {
-			const abstract_command * cmd;
+			const abstract_command* cmd;
 		};
 		struct event_buffer_created {
 			buffer_id bid;
@@ -109,10 +111,32 @@ namespace detail {
 		struct event_test_inspect {        // only used by scheduler_testspy
 			std::function<void()> inspect; // executed inside scheduler thread, making it safe to access scheduler members
 		};
-		using task_queue_event = std::variant<event_task_available, event_buffer_created, event_buffer_debug_name_changed, event_buffer_destroyed,
-		    event_host_object_created, event_host_object_destroyed, event_epoch_reached, event_set_lookahead, event_test_inspect>;
-		using command_queue_event = std::variant<event_command_available, event_buffer_created, event_buffer_debug_name_changed, event_buffer_destroyed,
-		    event_host_object_created, event_host_object_destroyed, event_set_lookahead>;
+
+		struct task_queue {
+			using event = std::variant<event_task_available, event_buffer_created, event_buffer_debug_name_changed, event_buffer_destroyed,
+			    event_host_object_created, event_host_object_destroyed, event_epoch_reached, event_set_lookahead, event_test_inspect>;
+
+			double_buffered_queue<event> global_queue;
+			std::deque<event> local_queue;
+
+			bool empty() const { return !global_queue.nonempty() && local_queue.empty(); }
+			void push(event&& evt);
+			event pop();
+		};
+
+		struct command_queue {
+			using event = std::variant<event_command_available, event_buffer_created, event_buffer_debug_name_changed, event_buffer_destroyed,
+			    event_host_object_created, event_host_object_destroyed, event_set_lookahead>;
+
+			std::deque<event> queue;
+			int num_queued_fences_and_epochs = 0;
+			int num_queued_horizons = 0;
+
+			bool empty() const { return queue.empty(); }
+			bool next_is_command() const { return !queue.empty() && std::holds_alternative<event_command_available>(queue.front()); }
+			void push(event&& evt);
+			event pop();
+		};
 
 		std::unique_ptr<command_graph> m_cdag;
 		command_recorder* m_crec;
@@ -122,27 +146,20 @@ namespace detail {
 		instruction_recorder* m_irec;
 		std::unique_ptr<instruction_graph_generator> m_iggen;
 
-		double_buffered_queue<task_queue_event> m_task_queue;
+		task_queue m_task_queue;
+		command_queue m_command_queue;
 
 		std::optional<task_id> m_shutdown_epoch_created = std::nullopt;
 		bool m_shutdown_epoch_reached = false;
 
-		std::deque<task_queue_event> m_local_task_queue;
-
-		std::deque<command_queue_event> m_command_queue;
-		int m_num_queued_fence_and_epoch_cmds = 0;
-		int m_num_queued_horizon_cmds = 0;
-
 		std::vector<const abstract_command*> build_task(const task& tsk);
-		bool should_compile_commands(const task &tsk) const;
 		void compile_command(const abstract_command& cmd);
 
-		void push_task_event(task_queue_event&& evt);
-		void push_command_event(command_queue_event&& evt);
-
-		void process_task_queue_event(const task_queue_event& evt);
-		void process_command_queue_event(const command_queue_event& evt);
+		void process_task_queue_event(const task_queue::event& evt);
+		void process_command_queue_event(const command_queue::event& evt);
 		bool should_dequeue_more_command_events() const;
+
+		void test_inspect(std::function<void()> inspector) { m_task_queue.push(event_test_inspect{std::move(inspector)}); }
 	};
 
 	class scheduler final : public abstract_scheduler {

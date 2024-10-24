@@ -818,6 +818,7 @@ namespace detail {
 		constexpr int horizon_step_size = 2;
 
 		queue q;
+		experimental::set_lookahead(q, experimental::lookahead::none); // commands must be flushed immediately so `cv` is guaranteed to be notified
 		auto& tm = runtime::get_instance().get_task_manager();
 		tm.set_horizon_step(horizon_step_size);
 
@@ -1054,6 +1055,7 @@ namespace detail {
 		env::scoped_test_environment ste(std::unordered_map<std::string, std::string>{{dryrun_envvar_name, "1"}});
 
 		queue q;
+		experimental::set_lookahead(q, experimental::lookahead::none);
 
 		auto& rt = runtime::get_instance();
 		auto& tm = rt.get_task_manager();
