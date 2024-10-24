@@ -7,6 +7,7 @@
 #include "double_buffered_queue.h"
 #include "instruction_graph_generator.h"
 #include "ranges.h"
+#include "task_manager.h"
 #include "types.h"
 
 
@@ -22,7 +23,7 @@ namespace detail {
 	class task;
 
 	// Abstract base class to allow different threading implementation in tests
-	class abstract_scheduler {
+	class abstract_scheduler : public task_manager::delegate {
 	  protected:
 		friend struct scheduler_testspy;
 
@@ -34,8 +35,8 @@ namespace detail {
 			detail::instruction_graph_generator::policy_set instruction_graph_generator;
 		};
 
-		abstract_scheduler(size_t num_nodes, node_id local_node_id, const system_info& system_info, const task_manager& tm, delegate* delegate,
-		    command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
+		abstract_scheduler(size_t num_nodes, node_id local_node_id, const system_info& system_info, delegate* delegate, command_recorder* crec,
+		    instruction_recorder* irec, const policy_set& policy = {});
 
 		abstract_scheduler(const abstract_scheduler&) = delete;
 		abstract_scheduler(abstract_scheduler&&) = delete;
@@ -47,7 +48,7 @@ namespace detail {
 		/**
 		 * @brief Notifies the scheduler that a new task has been created and is ready for scheduling.
 		 */
-		void notify_task_created(const task* const tsk) { notify(event_task_available{tsk}); }
+		void notify_task_created(const task* const tsk) override { notify(event_task_available{tsk}); }
 
 		void notify_buffer_created(
 		    const buffer_id bid, const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_allocation_id) {
@@ -120,8 +121,8 @@ namespace detail {
 		friend struct scheduler_testspy;
 
 	  public:
-		scheduler(size_t num_nodes, node_id local_node_id, const system_info& system, const task_manager& tm, delegate* delegate, command_recorder* crec,
-		    instruction_recorder* irec, const policy_set& policy = {});
+		scheduler(size_t num_nodes, node_id local_node_id, const system_info& system, delegate* delegate, command_recorder* crec, instruction_recorder* irec,
+		    const policy_set& policy = {});
 
 		scheduler(const scheduler&) = delete;
 		scheduler(scheduler&&) = delete;

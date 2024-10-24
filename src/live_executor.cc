@@ -683,6 +683,9 @@ void executor_impl::issue(const epoch_instruction& einstr) {
 	case epoch_action::none: //
 		CELERITY_DETAIL_TRACE_INSTRUCTION(einstr, "epoch");
 		break;
+	case epoch_action::init: //
+		CELERITY_DETAIL_TRACE_INSTRUCTION(einstr, "epoch (init)");
+		break;
 	case epoch_action::barrier: //
 		CELERITY_DETAIL_TRACE_INSTRUCTION(einstr, "epoch (barrier)");
 		root_communicator->collective_barrier();
@@ -692,9 +695,7 @@ void executor_impl::issue(const epoch_instruction& einstr) {
 		expecting_more_submissions = false;
 		break;
 	}
-	if(delegate != nullptr && einstr.get_epoch_task_id() != 0 /* TODO task_manager doesn't expect us to actually execute the init epoch */) {
-		delegate->epoch_reached(einstr.get_epoch_task_id());
-	}
+	if(delegate != nullptr) { delegate->epoch_reached(einstr.get_epoch_task_id()); }
 	collect(einstr.get_garbage());
 
 	CELERITY_DETAIL_IF_TRACY_ENABLED(FrameMarkNamed("Horizon"));

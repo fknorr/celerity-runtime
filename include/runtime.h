@@ -11,12 +11,10 @@
 #include "types.h"
 
 namespace celerity {
-
 namespace detail {
 
 	class host_queue;
 	class reducer;
-	class task_manager;
 	struct host_object_instance;
 
 	class runtime final : private abstract_scheduler::delegate, private executor::delegate {

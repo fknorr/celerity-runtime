@@ -176,6 +176,7 @@ enum class execution_target {
 
 enum class epoch_action {
 	none,
+	init,
 	barrier,
 	shutdown,
 };
