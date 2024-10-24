@@ -63,11 +63,11 @@ namespace detail {
 				    // the corresponding instruction, as runtime will begin destroying the executor after it has observed the epoch to be reached.
 				    assert(!m_shutdown_epoch_created);
 
-				    command_notify(event_command_available{cmd});
+				    push_command_event(event_command_available{cmd});
 				    switch(cmd->get_type()) {
-				    case command_type::epoch: m_num_queued_epoch_cmds += 1; break;
+				    case command_type::fence:
+				    case command_type::epoch: m_num_queued_fence_and_epoch_cmds += 1; break;
 				    case command_type::horizon: m_num_queued_horizon_cmds += 1; break;
-				    case command_type::fence: m_num_queued_fence_cmds += 1; break;
 				    default: break;
 				    }
 
@@ -78,31 +78,31 @@ namespace detail {
 			    assert(!m_shutdown_epoch_created && !m_shutdown_epoch_reached);
 			    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::buffer_created", DarkGreen, "B{} create", e.bid);
 			    m_cggen->notify_buffer_created(e.bid, e.range, e.user_allocation_id != null_allocation_id);
-			    command_notify(e);
+			    push_command_event(e);
 		    },
 		    [&](const event_buffer_debug_name_changed& e) {
 			    assert(!m_shutdown_epoch_created && !m_shutdown_epoch_reached);
 			    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::buffer_name_changed", DarkGreen, "B{} set name", e.bid);
 			    m_cggen->notify_buffer_debug_name_changed(e.bid, e.debug_name);
-			    command_notify(e);
+			    push_command_event(e);
 		    },
 		    [&](const event_buffer_destroyed& e) {
 			    assert(!m_shutdown_epoch_created && !m_shutdown_epoch_reached);
 			    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::buffer_destroyed", DarkGreen, "B{} destroy", e.bid);
 			    m_cggen->notify_buffer_destroyed(e.bid);
-			    command_notify(e);
+			    push_command_event(e);
 		    },
 		    [&](const event_host_object_created& e) {
 			    assert(!m_shutdown_epoch_created && !m_shutdown_epoch_reached);
 			    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::host_object_created", DarkGreen, "H{} create", e.hoid);
 			    m_cggen->notify_host_object_created(e.hoid);
-			    command_notify(e);
+			    push_command_event(e);
 		    },
 		    [&](const event_host_object_destroyed& e) {
 			    assert(!m_shutdown_epoch_created && !m_shutdown_epoch_reached);
 			    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::host_object_destroyed", DarkGreen, "H{} destroy", e.hoid);
 			    m_cggen->notify_host_object_destroyed(e.hoid);
-			    command_notify(e);
+			    push_command_event(e);
 		    },
 		    [&](const event_epoch_reached& e) { //
 			    assert(!m_shutdown_epoch_reached);
@@ -117,12 +117,21 @@ namespace detail {
 			    if(m_shutdown_epoch_created && e.tid == *m_shutdown_epoch_created) { m_shutdown_epoch_reached = true; }
 		    },
 		    [&](const event_set_lookahead& e) { //
-			    command_notify(e);
+			    push_command_event(e);
 		    },
 		    [&](const event_test_inspect& e) { //
 			    e.inspect();
 		    });
+	}
 
+	bool abstract_scheduler::should_dequeue_more_command_events() const {
+		if(m_command_queue.empty()) return false;
+		if(m_num_queued_fence_and_epoch_cmds > 0) return true;
+		switch(m_lookahead) {
+		case experimental::lookahead::none: return true;
+		case experimental::lookahead::automatic: return m_num_queued_horizon_cmds > 1;
+		case experimental::lookahead::infinite: return false;
+		}
 	}
 
 	void abstract_scheduler::process_command_queue_event(const command_queue_event& evt) {
@@ -132,17 +141,14 @@ namespace detail {
 			    compile_command(*e.cmd);
 
 			    switch(e.cmd->get_type()) {
+			    case command_type::fence:
 			    case command_type::epoch:
-				    assert(m_num_queued_epoch_cmds > 0);
-				    m_num_queued_epoch_cmds -= 1;
+				    assert(m_num_queued_fence_and_epoch_cmds > 0);
+				    m_num_queued_fence_and_epoch_cmds -= 1;
 				    break;
 			    case command_type::horizon:
 				    assert(m_num_queued_horizon_cmds > 0);
 				    m_num_queued_horizon_cmds -= 1;
-				    break;
-			    case command_type::fence:
-				    assert(m_num_queued_fence_cmds > 0);
-				    m_num_queued_fence_cmds -= 1;
 				    break;
 			    default: break;
 			    }
@@ -158,7 +164,7 @@ namespace detail {
 	void abstract_scheduler::schedule() {
 		while(!m_shutdown_epoch_reached) {
 			if(m_local_task_queue.empty()) {
-				// We can frequently suspend / resume the scheduler thread without adding latency as long as the executor is busy
+				// We can frequently suspend / resume the scheduler thread without adding latency as long as the executor remains busy
 				m_task_queue.wait_while_empty();
 				const auto& batch = m_task_queue.pop_all();
 				m_local_task_queue.insert(m_local_task_queue.end(), batch.begin(), batch.end());
@@ -168,12 +174,7 @@ namespace detail {
 			process_task_queue_event(m_local_task_queue.front());
 			m_local_task_queue.pop_front();
 
-			while(!m_command_queue.empty()) {
-				if(m_num_queued_epoch_cmds == 0 && m_num_queued_fence_cmds == 0
-				    && (m_lookahead == experimental::lookahead::infinite || m_num_queued_horizon_cmds > 1)) {
-					break;
-				}
-
+			while(should_dequeue_more_command_events()) {
 				process_command_queue_event(m_command_queue.front());
 				m_command_queue.pop_front();
 			}
@@ -183,9 +184,9 @@ namespace detail {
 		assert(m_command_queue.empty());
 	}
 
-	void abstract_scheduler::task_notify(task_queue_event&& evt) { m_task_queue.push(std::move(evt)); }
+	void abstract_scheduler::push_task_event(task_queue_event&& evt) { m_task_queue.push(std::move(evt)); }
 
-	void abstract_scheduler::command_notify(command_queue_event&& evt) { m_command_queue.push_back(std::move(evt)); }
+	void abstract_scheduler::push_command_event(command_queue_event&& evt) { m_command_queue.push_back(std::move(evt)); }
 
 	scheduler::scheduler(const size_t num_nodes, const node_id local_node_id, const system_info& system, const task_manager& tm, delegate* const delegate,
 	    command_recorder* const crec, instruction_recorder* const irec, const policy_set& policy)
