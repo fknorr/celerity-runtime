@@ -124,12 +124,25 @@ namespace detail {
 
 		double_buffered_queue<task_queue_event> m_task_queue;
 
+		std::optional<task_id> m_shutdown_epoch_created = std::nullopt;
+		bool m_shutdown_epoch_reached = false;
+
+		std::deque<task_queue_event> m_local_task_queue;
+
+		std::deque<command_queue_event> m_command_queue;
+		int m_num_queued_epoch_cmds = 0;
+		int m_num_queued_horizon_cmds = 0;
+		int m_num_queued_fence_cmds = 0;
+
 		std::vector<const abstract_command*> build_task(const task& tsk);
 		bool should_compile_commands(const task &tsk) const;
 		void compile_command(const abstract_command& cmd);
 
 		void task_notify(task_queue_event&& evt);
 		void command_notify(command_queue_event&& evt);
+
+		void process_task_queue_event(const task_queue_event& evt);
+		void process_command_queue_event(const command_queue_event& evt);
 	};
 
 	class scheduler final : public abstract_scheduler {

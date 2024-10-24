@@ -1000,30 +1000,19 @@ void generator_impl::allocate_contiguously(batch& current_batch, const buffer_id
 	}
 	merge_overlapping_bounding_boxes(contiguous_boxes_after_realloc);
 
-	// Derive the set of new boxes to allocate by removing all existing boxes from the set of contiguous boxes.
-	auto&& new_alloc_boxes = std::move(contiguous_boxes_after_realloc);
-	const auto last_new_allocation = std::remove_if(new_alloc_boxes.begin(), new_alloc_boxes.end(),
-	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
-	new_alloc_boxes.erase(last_new_allocation, new_alloc_boxes.end());
-	assert(!new_alloc_boxes.empty()); // otherwise we would have returned early
-
-	// TODO ugly, can this be integrated into / rewritten like merge_overlapping_bounding_boxes?
-restart_merge_future:
-	for(const auto& future_box : memory.future_allocation_bound.get_boxes()) {
-		if(std::any_of(new_alloc_boxes.begin(), new_alloc_boxes.end(),
-		       [&](const auto& box) { return box != future_box && !box_intersection(box, future_box).empty(); })) {
-			new_alloc_boxes.push_back(future_box);
-			merge_overlapping_bounding_boxes(new_alloc_boxes);
-			goto restart_merge_future;
-		}
-	}
-
 	// Allocations that are now fully contained in (but not equal to) one of the newly contiguous bounding boxes will be freed at the end of the reallocation
 	// step, because we currently disallow overlapping allocations for simplicity. These will function as sources for resize-copies below.
 	const auto resize_from_begin = std::partition(memory.allocations.begin(), memory.allocations.end(), [&](const buffer_allocation_state& allocation) {
 		return std::find(contiguous_boxes_after_realloc.begin(), contiguous_boxes_after_realloc.end(), allocation.box) != contiguous_boxes_after_realloc.end();
 	});
 	const auto resize_from_end = memory.allocations.end();
+
+	// Derive the set of new boxes to allocate by removing all existing boxes from the set of contiguous boxes.
+	auto&& new_alloc_boxes = std::move(contiguous_boxes_after_realloc);
+	const auto last_new_allocation = std::remove_if(new_alloc_boxes.begin(), new_alloc_boxes.end(),
+	    [&](auto& box) { return std::any_of(memory.allocations.begin(), memory.allocations.end(), [&](auto& alloc) { return alloc.box == box; }); });
+	new_alloc_boxes.erase(last_new_allocation, new_alloc_boxes.end());
+	assert(!new_alloc_boxes.empty()); // otherwise we would have returned early
 
 	// Opportunistically merge connected boxes to keep the number of allocations and the tracking overhead low. This will not introduce artificial
 	// synchronization points because resize-copies are still rooted on the original last-writers.

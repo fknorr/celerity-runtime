@@ -376,8 +376,9 @@ class idag_test_context {
 		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		for(const auto cmd : m_cggen.build_task(*m_tm.get_task(tid))) {
-			m_iggen.anticipate(*cmd);
-			m_cmd_queue.push(cmd);
+			// m_iggen.anticipate(*cmd);
+			// m_cmd_queue.push(cmd);
+			m_iggen.compile(*cmd);
 		}
 	}
 
