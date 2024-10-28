@@ -170,7 +170,6 @@ class WriteCommandStatePrinter:
         self.cmd = gdb.Value(bits & ~0b11).cast(command_ptr_type)
         self.fresh = (bits & 0b01) == 0
         self.replicated = (bits & 0b10) != 0
-        self.bits=bits
 
     def to_string(self) -> str:
         return '{} ({}{})'.format(self.cmd.dereference()['m_cid'],
