@@ -69,6 +69,7 @@ TEST_CASE("benchmark task handling", "[benchmark][group:task-graph]") {
 		// we use this trick to force horizon creation without introducing dependency overhead in this microbenchmark
 		tm.set_horizon_step(0);
 
+		tm.generate_epoch_task(epoch_action::init);
 		for(int i = 0; i < N; ++i) {
 			// create simplest possible host task
 			const auto highest_tid = tm.submit_command_group([](handler& cgh) { cgh.host_task(on_master_node, [] {}); });
@@ -262,19 +263,21 @@ class benchmark_scheduler final : public abstract_scheduler {
 	benchmark_scheduler& operator=(const benchmark_scheduler&) = delete;
 	benchmark_scheduler& operator=(benchmark_scheduler&&) = delete;
 
-	~benchmark_scheduler() override {
+	void join() {
 		// schedule() will exit as soon as it has acknowledged the shutdown epoch
 		m_thread->join();
 	}
+
+	~benchmark_scheduler() override { join(); }
 
   private:
 	restartable_thread* m_thread;
 };
 
-struct scheduler_benchmark_context : private task_manager::delegate {
+struct scheduler_benchmark_context {
 	const size_t num_nodes;
 	benchmark_scheduler schdlr;
-	task_manager tm{num_nodes, nullptr, this, benchmark_task_manager_policy};
+	task_manager tm{num_nodes, nullptr, &schdlr, benchmark_task_manager_policy};
 	test_utils::mock_buffer_factory mbf;
 
 	explicit scheduler_benchmark_context(restartable_thread& thrd, const size_t num_nodes, const size_t num_devices_per_node)
@@ -294,9 +297,8 @@ struct scheduler_benchmark_context : private task_manager::delegate {
 		const auto tid = tm.generate_epoch_task(celerity::detail::epoch_action::shutdown);
 		// There is no executor thread and notifications are processed in-order, so we can immediately notify the scheduler about shutdown-epoch completion
 		schdlr.notify_epoch_reached(tid);
+		schdlr.join(); // must join explicitly, since `tm` is destroyed before `schdlr` and `schdlr` references task ids kept alive by `tm`
 	}
-
-	void notify_task_created(const task* tsk) override { schdlr.notify_task_created(tsk); }
 
 	template <int KernelDims, typename CGF>
 	void create_task(range<KernelDims> global_range, CGF cgf) {

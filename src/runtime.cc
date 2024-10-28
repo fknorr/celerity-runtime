@@ -307,13 +307,14 @@ namespace detail {
 		// traffic will occur, and `runtime` can stop functioning as a scheduler_delegate (which would require m_exec to be live).
 		m_exec.reset();
 
-		// Since the executor thread is gone, task_manager::epoch_monitor will not be accessed by horizon_reached / epoch_reached across threads anymore.
-		// m_task_mngr refers to m_schdlr as its delegate, so we destroy it first.
-		m_task_mngr.reset();
-
 		// ~executor() joins its thread after notifying the scheduler that the shutdown epoch has been reached, which means that this notification is
 		// sequenced-before the destructor return, and `runtime` can now stop functioning as an executor_delegate (which would require m_schdlr to be live).
+		// m_schdlr references the task instances managed m_task_mngr, so we destroy it first. m_task_mngr uses m_schdlr as a delegate, but does not call to the
+		// delegate from its destructor.
 		m_schdlr.reset();
+
+		// Since the executor thread is gone, task_manager::epoch_monitor will not be accessed by horizon_reached / epoch_reached across threads anymore.
+		m_task_mngr.reset();
 
 		// With scheduler and executor threads gone, all recorders can be safely accessed from the runtime / application thread
 		if(spdlog::should_log(log_level::info) && m_cfg->should_print_graphs()) {
