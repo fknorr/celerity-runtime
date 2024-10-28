@@ -81,10 +81,8 @@ TEST_CASE("horizons prevent tracking data structures from growing indefinitely",
 			REQUIRE_LOOP(command_graph_generator_testspy::get_command_buffer_reads_size(ggen) == expected_reads);
 		}
 
-		size_t horizon_count = 0;
-		for(const auto* cmd : cctx.get_graph_generator(0).get_command_graph().all_commands()) {
-			if(cmd->get_type() == command_type::horizon) { ++horizon_count; }
-		}
+		const auto horizon_count =
+		    graph_testspy::count_nodes_if(cctx.get_command_graph(0), [](const command& cmd) { return utils::isa<horizon_command>(&cmd); });
 		REQUIRE_LOOP(horizon_count <= 3);
 	}
 }
@@ -164,8 +162,8 @@ TEST_CASE("previous horizons are used as last writers for host-initialized buffe
 	}
 
 	// Check that initial last writers have been deleted
-	CHECK_FALSE(cctx.get_graph_generator(0).get_command_graph().has(initial_last_writer_ids[0]));
-	CHECK_FALSE(cctx.get_graph_generator(1).get_command_graph().has(initial_last_writer_ids[1]));
+	CHECK(graph_testspy::find_node_if(cctx.get_command_graph(0), [&](const command& cmd) { return cmd.get_id() == initial_last_writer_ids[0]; }) == nullptr);
+	CHECK(graph_testspy::find_node_if(cctx.get_command_graph(1), [&](const command& cmd) { return cmd.get_id() == initial_last_writer_ids[1]; }) == nullptr);
 
 	auto buf = cctx.create_buffer(buf_range, true /* mark_as_host_initialized */);
 	cctx.device_compute(buf_range).name("access_host_init_buf").read_write(buf, acc::one_to_one{}).submit();
