@@ -85,16 +85,8 @@ namespace detail {
 			auto unique_tsk = invoke_command_group_function(tid, m_num_collective_nodes, std::forward<CGF>(cgf));
 			auto& tsk = register_task_internal(std::move(unique_tsk));
 			compute_dependencies(tsk);
-
-			// the following deletion is intentionally redundant with the one happening when waiting for free task slots
-			// we want to free tasks earlier than just when running out of slots,
-			// so that we can potentially reclaim additional resources such as buffers earlier
-			m_task_graph.prune_before_epoch(m_latest_epoch_reached.get());
-
 			invoke_callbacks(&tsk);
-
 			if(need_new_horizon()) { generate_horizon_task(); }
-
 			++m_num_user_command_groups_submitted;
 			return tid;
 		}
@@ -168,13 +160,15 @@ namespace detail {
 			task* last_side_effect = nullptr;
 		};
 
+		static constexpr task_id initial_epoch_task = 0;
+
 		delegate* m_delegate;
 
 		const size_t m_num_collective_nodes;
 		policy_set m_policy;
 
 		task_graph m_task_graph;
-		task_id m_next_tid = 0;
+		task_id m_next_tid = initial_epoch_task;
 
 		// The active epoch is used as the last writer for host-initialized buffers.
 		// This is useful so we can correctly generate anti-dependencies onto tasks that read host-initialized buffers.
@@ -212,7 +206,7 @@ namespace detail {
 		std::optional<task_id> m_latest_horizon_reached;
 
 		// The last epoch task that has been processed by the executor. Behind a monitor to allow awaiting this change from the main thread.
-		epoch_monitor m_latest_epoch_reached{0};
+		epoch_monitor m_latest_epoch_reached{initial_epoch_task};
 
 		// Track the number of user-generated task and epochs to heuristically detect programs that lose performance by frequently calling `queue::wait()`.
 		size_t m_num_user_command_groups_submitted = 0;

@@ -97,7 +97,7 @@ namespace detail {
 						    // The cggen automatically prunes the CDAG on generation, which is safe because commands are not shared across threads.
 						    // We might want to refactor this to match the IDAG behavior in the future.
 						    CELERITY_DETAIL_TRACY_ZONE_SCOPED("scheduler::prune_idag", Gray);
-						    m_idag->prune_before_epoch(e.tid);
+						    m_idag->delete_before_epoch(e.tid);
 					    }
 
 					    // The scheduler will receive the shutdown-epoch completion event via the runtime even if executor destruction has already begun.

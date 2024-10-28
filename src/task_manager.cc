@@ -45,7 +45,7 @@ namespace detail {
 		// m_latest_horizon_reached does not need synchronization (see definition), all other accesses are implicitly synchronized.
 
 		assert(!m_latest_horizon_reached || *m_latest_horizon_reached < epoch_tid);
-		assert(epoch_tid == 0 || m_latest_epoch_reached.get() < epoch_tid);
+		assert(epoch_tid == initial_epoch_task || m_latest_epoch_reached.get() < epoch_tid);
 
 		m_latest_epoch_reached.set(epoch_tid);
 		m_latest_horizon_reached = std::nullopt; // Any non-applied horizon is now behind the epoch and will therefore never become an epoch itself
@@ -177,7 +177,7 @@ namespace detail {
 
 		// Tasks without any other true-dependency must depend on the last epoch to ensure they cannot be re-ordered before the epoch
 		// Exception is the initial epoch, which is the only TDAG node without a predecessor.
-		assert(m_epoch_for_new_tasks != nullptr || tsk.get_type() == task_type::epoch);
+		assert(m_epoch_for_new_tasks != nullptr || (tsk.get_type() == task_type::epoch && tsk.get_epoch_action() == epoch_action::init));
 		if(m_epoch_for_new_tasks != nullptr) {
 			if(const auto deps = tsk.get_dependencies();
 			    std::none_of(deps.begin(), deps.end(), [](const task::dependency d) { return d.kind == dependency_kind::true_dep; })) {
@@ -188,11 +188,12 @@ namespace detail {
 
 	task& task_manager::register_task_internal(std::unique_ptr<task> task) {
 		// register_task_internal() is called for all task types, so we use this location to assert that the init epoch is submitted first and exactly once
-		assert((task->get_id() == 0) == (task->get_type() == task_type::epoch && task->get_epoch_action() == epoch_action::init)
+		assert((task->get_id() == initial_epoch_task) == (task->get_type() == task_type::epoch && task->get_epoch_action() == epoch_action::init)
 		       && "first task submitted is not an init epoch, or init epoch is not the first task submitted");
 
 		auto& task_ref = *task;
 		assert(task != nullptr);
+		m_task_graph.delete_before_epoch(m_latest_epoch_reached.get());
 		m_task_graph.append(std::move(task));
 		m_execution_front.insert(&task_ref);
 		return task_ref;
@@ -234,8 +235,8 @@ namespace detail {
 	void task_manager::set_epoch_for_new_tasks(task* const epoch) {
 		// apply the new epoch to buffers_last_writers and last_collective_tasks data structs
 		for(auto& [_, buffer] : m_buffers) {
-			buffer.last_writers.apply_to_values([epoch](task* const tsk) {
-				if(tsk == nullptr) return tsk;
+			buffer.last_writers.apply_to_values([epoch](task* const tsk) -> task* {
+				if(tsk == nullptr) return nullptr;
 				return tsk->get_id() < epoch->get_id() ? epoch : tsk;
 			});
 		}

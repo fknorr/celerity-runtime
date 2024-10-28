@@ -2,12 +2,14 @@
 
 #include "types.h"
 
+#include <algorithm>
+#include <deque>
 #include <memory>
 #include <vector>
 
 namespace celerity::detail {
 
-/// A `graph` keeps ownership of all graph nodes that have not been pruned by epoch or horizon application.
+/// An `epoch_partitioned_graph` keeps ownership of all graph nodes that have not been pruned by epoch or horizon application.
 template <typename Node, typename NodeIdLess>
 class epoch_partitioned_graph {
 	friend struct graph_testspy;
@@ -28,8 +30,8 @@ class epoch_partitioned_graph {
 	}
 
 	// Free all graph nodes that were pushed before begin_epoch(tid) was called.
-	void prune_before_epoch(const task_id tid) {
-		const auto first_retained = std::partition_point(m_epochs.begin(), m_epochs.end(), [=](const graph_epoch& epoch) { return epoch.epoch_tid < tid; });
+	void delete_before_epoch(const task_id tid) {
+		const auto first_retained = std::find_if(m_epochs.begin(), m_epochs.end(), [=](const graph_epoch& epoch) { return epoch.epoch_tid >= tid; });
 		assert(first_retained != m_epochs.end() && first_retained->epoch_tid == tid);
 		m_epochs.erase(m_epochs.begin(), first_retained);
 	}
@@ -40,7 +42,7 @@ class epoch_partitioned_graph {
 		std::vector<std::unique_ptr<Node>> nodes; // graph node pointers are stable, so it is safe to hand them to another thread
 	};
 
-	std::vector<graph_epoch> m_epochs;
+	std::deque<graph_epoch> m_epochs;
 };
 
 } // namespace celerity::detail
