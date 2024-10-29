@@ -193,7 +193,6 @@ namespace detail {
 
 		auto& task_ref = *task;
 		assert(task != nullptr);
-		m_task_graph.delete_before_epoch(m_latest_epoch_reached.get());
 		m_task_graph.append(std::move(task));
 		m_execution_front.insert(&task_ref);
 		return task_ref;
@@ -251,6 +250,10 @@ namespace detail {
 	}
 
 	task_id task_manager::generate_horizon_task() {
+		// This needs to be invoked eventually to avoid the task graph growing indefinitely, but the operation is not for free - so we trigger it every few
+		// tasks by arbitrarily attaching the call to horizon generation.
+		m_task_graph.delete_before_epoch(m_latest_epoch_reached.get());
+
 		const auto tid = m_next_tid++;
 		m_task_graph.begin_epoch(tid);
 		auto unique_horizon = task::make_horizon(tid);
@@ -267,6 +270,9 @@ namespace detail {
 	}
 
 	task_id task_manager::generate_epoch_task(epoch_action action) {
+		// A degenerate program wait()ing in a loop would never generate horizons, so we need to prune the task graph on epochs as well.
+		m_task_graph.delete_before_epoch(m_latest_epoch_reached.get());
+
 		const auto tid = m_next_tid++;
 		m_task_graph.begin_epoch(tid);
 
