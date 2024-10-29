@@ -30,6 +30,7 @@ class queue {
 	void submit(CGF cgf) { // NOLINT(readability-convert-member-functions-to-static)
 		// (Note while this function could be made static, it must not be! Otherwise we can't be sure the runtime has been initialized.)
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("queue::submit", Orange3);
+		detail::runtime::get_instance().maybe_prune_tdag_TODO();
 		[[maybe_unused]] const auto tid = detail::runtime::get_instance().get_task_manager().submit_command_group(std::move(cgf));
 		CELERITY_DETAIL_TRACY_ZONE_NAME("T{} submit", tid);
 	}
@@ -42,6 +43,7 @@ class queue {
 	/// start time measurements. Use `wait(experimental::barrier)` instead for benchmarking purposes.
 	void wait() { // NOLINT(readability-convert-member-functions-to-static)
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("queue::wait", Red2);
+		detail::runtime::get_instance().maybe_prune_tdag_TODO();
 		[[maybe_unused]] const auto tid = detail::runtime::get_instance().sync(detail::epoch_action::none);
 		CELERITY_DETAIL_TRACY_ZONE_NAME("T{} wait", tid);
 	}
@@ -51,6 +53,7 @@ class queue {
 	/// This has an even higher latency than `wait()`, but may be useful for user-side performance measurements.
 	void wait(detail::barrier_tag /* barrier */) { // NOLINT(readability-convert-member-functions-to-static)
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("queue::wait", Red2);
+		detail::runtime::get_instance().maybe_prune_tdag_TODO();
 		[[maybe_unused]] const auto tid = detail::runtime::get_instance().sync(detail::epoch_action::barrier);
 		CELERITY_DETAIL_TRACY_ZONE_NAME("T{} wait (barrier)", tid);
 	}

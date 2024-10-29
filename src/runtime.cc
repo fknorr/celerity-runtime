@@ -354,8 +354,10 @@ namespace detail {
 	task_id runtime::sync(epoch_action action) {
 		require_call_from_application_thread();
 
-		const auto epoch = m_task_mngr->generate_epoch_task(action);
-		m_task_mngr->await_epoch(epoch);
+		auto promise = std::make_unique<epoch_promise>();
+		const auto future = promise->get_future();
+		const auto epoch = m_task_mngr->generate_epoch_task(action, std::move(promise));
+		future.wait();
 		return epoch;
 	}
 
@@ -363,6 +365,8 @@ namespace detail {
 		require_call_from_application_thread();
 		return *m_task_mngr;
 	}
+
+	void runtime::maybe_prune_tdag_TODO() { m_task_mngr->notify_epoch_reached(m_latest_epoch_reached.load(std::memory_order_relaxed)); }
 
 	std::string gather_command_graph(const std::string& graph_str, const size_t num_nodes, const node_id local_nid) {
 #if CELERITY_ENABLE_MPI
@@ -409,20 +413,22 @@ namespace detail {
 	// executor::delegate
 
 	void runtime::horizon_reached(const task_id horizon_tid) {
-		assert(m_task_mngr != nullptr);
-		m_task_mngr->notify_horizon_reached(horizon_tid); // thread-safe
+		assert(!m_latest_horizon_reached || *m_latest_horizon_reached < horizon_tid);
+		assert(m_latest_epoch_reached.load(std::memory_order::relaxed) < horizon_tid); // relaxed: written only by this thread
 
-		// The two-horizon logic is duplicated from task_manager::notify_horizon_reached. TODO move epoch_monitor from task_manager to runtime.
-		assert(m_schdlr != nullptr);
-		if(m_latest_horizon_reached.has_value()) { m_schdlr->notify_epoch_reached(*m_latest_horizon_reached); }
+		if(m_latest_horizon_reached.has_value()) {
+			m_latest_epoch_reached.store(*m_latest_horizon_reached, std::memory_order_relaxed);
+			m_schdlr->notify_epoch_reached(*m_latest_horizon_reached);
+		}
 		m_latest_horizon_reached = horizon_tid;
 	}
 
 	void runtime::epoch_reached(const task_id epoch_tid) {
-		assert(m_task_mngr != nullptr);
-		m_task_mngr->notify_epoch_reached(epoch_tid); // thread-safe
+		// m_latest_horizon_reached does not need synchronization (see definition), all other accesses are implicitly synchronized.
+		assert(!m_latest_horizon_reached || *m_latest_horizon_reached < epoch_tid);
+		assert(epoch_tid == 0 || m_latest_epoch_reached.load(std::memory_order_relaxed) < epoch_tid);
 
-		assert(m_schdlr != nullptr);
+		m_latest_epoch_reached.store(epoch_tid, std::memory_order_relaxed);
 		m_schdlr->notify_epoch_reached(epoch_tid);
 		m_latest_horizon_reached = std::nullopt; // Any non-applied horizon is now behind the epoch and will therefore never become an epoch itself
 	}

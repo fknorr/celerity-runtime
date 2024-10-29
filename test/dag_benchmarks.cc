@@ -74,9 +74,9 @@ TEST_CASE("benchmark task handling", "[benchmark][group:task-graph]") {
 			// create simplest possible host task
 			const auto highest_tid = tm.submit_command_group([](handler& cgh) { cgh.host_task(on_master_node, [] {}); });
 			// start notifying once we've built some tasks
-			if(i % report_interval == 0 && i / report_interval > 1) {
+			if(i % report_interval == 0 && i / report_interval > 2) {
 				// every other generated task is always a horizon (step size 0)
-				tm.notify_horizon_reached(highest_tid + 1);
+				tm.notify_epoch_reached(highest_tid - 1);
 			}
 		}
 	};

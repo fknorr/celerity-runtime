@@ -110,6 +110,8 @@ namespace detail {
 		static scheduler& get_schdlr(runtime& rt) { return *rt.m_schdlr; }
 		static executor& get_exec(runtime& rt) { return *rt.m_exec; }
 
+		static task_id get_latest_epoch_reached(const runtime& rt) { return rt.m_latest_epoch_reached.load(std::memory_order_relaxed); }
+
 		static std::string print_task_graph(runtime& rt) {
 			return detail::print_task_graph(*rt.m_task_recorder); // task recorder is mutated by task manager (application / test thread)
 		}
@@ -133,8 +135,6 @@ namespace detail {
 		static const task* get_epoch_for_new_tasks(const task_manager& tm) { return tm.m_epoch_for_new_tasks; }
 
 		static const task* get_current_horizon(const task_manager& tm) { return tm.m_current_horizon; }
-
-		static std::optional<task_id> get_latest_horizon_reached(const task_manager& tm) { return tm.m_latest_horizon_reached; }
 
 		static const region_map<task*>& get_last_writer(const task_manager& tm, const buffer_id bid) { return tm.m_buffers.at(bid).last_writers; }
 

@@ -128,7 +128,7 @@ class pilot_query {
 	std::vector<outbound_pilot> m_result;
 };
 
-class mock_host_object_fence_promise : public fence_promise {
+class mock_host_object_fence_promise : public task_promise {
   public:
 	void fulfill() override { FAIL("unimplemented"); }
 	allocation_id get_user_allocation_id() override {
@@ -137,7 +137,7 @@ class mock_host_object_fence_promise : public fence_promise {
 	}
 };
 
-class mock_buffer_fence_promise : public fence_promise {
+class mock_buffer_fence_promise : public task_promise {
   public:
 	mock_buffer_fence_promise() = default;
 	explicit mock_buffer_fence_promise(allocation_id user_allocation_id) : m_user_aid(user_allocation_id) {}
@@ -378,7 +378,7 @@ class idag_test_context final : private task_manager::delegate {
 		}
 	}
 
-	task_id fence(buffer_access_map access_map, side_effect_map side_effects, std::unique_ptr<fence_promise> promise) {
+	task_id fence(buffer_access_map access_map, side_effect_map side_effects, std::unique_ptr<task_promise> promise) {
 		if(m_finished) { FAIL("idag_test_context already finish()ed"); }
 		const uncaught_exception_guard guard(this);
 		return m_tm.generate_fence_task(std::move(access_map), std::move(side_effects), std::move(promise));

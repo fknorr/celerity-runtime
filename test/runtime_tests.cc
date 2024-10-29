@@ -1051,12 +1051,12 @@ namespace detail {
 
 		auto& rt = runtime::get_instance();
 		auto& tm = rt.get_task_manager();
-		tm.set_horizon_step(1); // horizon step 1 to make testing easy and reproducable with config changes
+		tm.set_horizon_step(1); // horizon step 1 to make testing easy and reproducible with config changes
 
 		REQUIRE(rt.is_dry_run());
 
-		auto latest_hor = task_manager_testspy::get_latest_horizon_reached(tm);
-		CHECK_FALSE(latest_hor.has_value());
+		auto latest_epoch = runtime_testspy::get_latest_epoch_reached(runtime::get_instance());
+		CHECK(latest_epoch == 0);
 
 		q.submit([&](handler& cgh) { cgh.host_task(on_master_node, [=] {}); });
 
@@ -1064,11 +1064,11 @@ namespace detail {
 		// 100*10ms is one second in total; if the horizon hasn't happened at that point, it's not happening
 		constexpr int max_num_tries = 100;
 		for(int i = 0; i < max_num_tries; ++i) {
-			latest_hor = task_manager_testspy::get_latest_horizon_reached(tm);
-			if(latest_hor.has_value()) break;
+			latest_epoch = runtime_testspy::get_latest_epoch_reached(runtime::get_instance());
+			if(latest_epoch > 0) break;
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
-		CHECK(latest_hor.has_value());
+		CHECK(latest_epoch > 0);
 	}
 
 	TEST_CASE("Config reads environment variables correctly", "[env-vars][config]") {

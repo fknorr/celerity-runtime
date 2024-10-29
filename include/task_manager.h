@@ -1,9 +1,6 @@
 #pragma once
 
-#include <condition_variable>
 #include <memory>
-#include <mutex>
-#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -16,36 +13,16 @@ namespace detail {
 
 	class task_recorder;
 
-	// Allows other threads to await an epoch change in the task manager.
-	// This is worth a separate class to encapsulate the synchronization behavior.
-	class epoch_monitor {
+	class epoch_promise final : public task_promise {
 	  public:
-		explicit epoch_monitor(const task_id epoch) : m_this_epoch(epoch) {}
+		std::future<void> get_future() { return m_promise.get_future(); }
 
-		task_id get() const {
-			std::lock_guard lock{m_mutex};
-			return m_this_epoch;
-		}
+		void fulfill() override { m_promise.set_value(); }
 
-		task_id await(const task_id min_tid_reached) const {
-			std::unique_lock lock{m_mutex};
-			m_epoch_changed.wait(lock, [&] { return m_this_epoch >= min_tid_reached; });
-			return m_this_epoch;
-		}
-
-		void set(const task_id epoch) {
-			{
-				std::lock_guard lock{m_mutex};
-				assert(epoch >= m_this_epoch);
-				m_this_epoch = epoch;
-			}
-			m_epoch_changed.notify_all();
-		}
+		allocation_id get_user_allocation_id() override { utils::panic("epoch_promise::get_user_allocation_id"); }
 
 	  private:
-		task_id m_this_epoch = 0;
-		mutable std::mutex m_mutex;
-		mutable std::condition_variable m_epoch_changed;
+		std::promise<void> m_promise;
 	};
 
 	// definition is in handler.h to avoid circular dependency
@@ -94,9 +71,9 @@ namespace detail {
 		 * Inserts an epoch task that depends on the entire execution front and that immediately becomes the current epoch_for_new_tasks and the last writer
 		 * for all buffers.
 		 */
-		task_id generate_epoch_task(epoch_action action);
+		task_id generate_epoch_task(epoch_action action, std::unique_ptr<task_promise> promise = nullptr);
 
-		task_id generate_fence_task(buffer_access_map access_map, side_effect_map side_effects, std::unique_ptr<fence_promise> fence_promise);
+		task_id generate_fence_task(buffer_access_map access_map, side_effect_map side_effects, std::unique_ptr<task_promise> fence_promise);
 
 		/**
 		 * @brief Adds a new buffer for dependency tracking
@@ -112,11 +89,6 @@ namespace detail {
 
 		void notify_host_object_destroyed(host_object_id hoid);
 
-		/**
-		 * Blocks until an epoch task has executed on this node (or all nodes, if the epoch_for_new_tasks was created with `epoch_action::barrier`).
-		 */
-		void await_epoch(task_id epoch);
-
 		void set_horizon_step(const int step) {
 			assert(step >= 0);
 			m_task_horizon_step_size = step;
@@ -127,20 +99,6 @@ namespace detail {
 			m_task_horizon_max_parallelism = para;
 		}
 
-		/**
-		 * @brief Notifies the task manager that the given horizon has been executed (used for task deletion).
-		 *
-		 * notify_horizon_reached and notify_epoch_reached must only ever be called from a single thread, but that thread does not have to be the main
-		 * thread.
-		 */
-		void notify_horizon_reached(task_id horizon_tid);
-
-		/**
-		 * @brief Notifies the task manager that the given epoch has been executed on this node.
-		 *
-		 * notify_horizon_reached and notify_epoch_reached must only ever be called from a single thread, but that thread does not have to be the main
-		 * thread.
-		 */
 		void notify_epoch_reached(task_id epoch_tid);
 
 	  private:
@@ -199,13 +157,6 @@ namespace detail {
 
 		// The latest horizon task created. Will be applied as the epoch for new tasks once the next horizon is created.
 		task* m_current_horizon = nullptr;
-
-		// The last horizon processed by the executor will become the latest_epoch_reached once the next horizon is completed as well.
-		// Only accessed in task_manager::notify_*, which are always called from the executor thread - no locking needed.
-		std::optional<task_id> m_latest_horizon_reached;
-
-		// The last epoch task that has been processed by the executor. Behind a monitor to allow awaiting this change from the main thread.
-		epoch_monitor m_latest_epoch_reached{initial_epoch_task};
 
 		// Track the number of user-generated task and epochs to heuristically detect programs that lose performance by frequently calling `queue::wait()`.
 		size_t m_num_user_command_groups_submitted = 0;

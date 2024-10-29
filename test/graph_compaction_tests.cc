@@ -162,8 +162,8 @@ TEST_CASE("previous horizons are used as last writers for host-initialized buffe
 			cctx.device_compute<class UKN(generate_horizon)>(buf_range).discard_write(buf, acc::one_to_one{}).submit();
 			const auto current_horizon = task_manager_testspy::get_current_horizon(cctx.get_task_manager());
 			if(current_horizon != nullptr && current_horizon->get_id() > last_horizon_reached) {
+				cctx.get_task_manager().notify_epoch_reached(last_horizon_reached);
 				last_horizon_reached = current_horizon->get_id();
-				cctx.get_task_manager().notify_horizon_reached(last_horizon_reached);
 			}
 		}
 	}

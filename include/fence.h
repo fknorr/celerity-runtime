@@ -69,7 +69,7 @@ class buffer_snapshot {
 namespace celerity::detail {
 
 template <typename T>
-class host_object_fence_promise final : public detail::fence_promise {
+class host_object_fence_promise final : public detail::task_promise {
   public:
 	explicit host_object_fence_promise(const T* instance) : m_instance(instance) {}
 
@@ -85,7 +85,7 @@ class host_object_fence_promise final : public detail::fence_promise {
 };
 
 template <typename DataT, int Dims>
-class buffer_fence_promise final : public detail::fence_promise {
+class buffer_fence_promise final : public detail::task_promise {
   public:
 	explicit buffer_fence_promise(const subrange<Dims>& sr)
 	    : m_subrange(sr), m_data(std::make_unique<DataT[]>(sr.range.size())), m_aid(runtime::get_instance().create_user_allocation(m_data.get())) {}
@@ -108,6 +108,8 @@ std::future<T> fence(const experimental::host_object<T>& obj) {
 	static_assert(std::is_object_v<T>, "host_object<T&> and host_object<void> are not allowed as parameters to fence()");
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("queue::fence", Green2);
 
+	detail::runtime::get_instance().maybe_prune_tdag_TODO();
+
 	detail::side_effect_map side_effects;
 	side_effects.add_side_effect(detail::get_host_object_id(obj), experimental::side_effect_order::sequential);
 	auto promise = std::make_unique<detail::host_object_fence_promise<T>>(detail::get_host_object_instance(obj));
@@ -121,6 +123,8 @@ std::future<T> fence(const experimental::host_object<T>& obj) {
 template <typename DataT, int Dims>
 std::future<buffer_snapshot<DataT, Dims>> fence(const buffer<DataT, Dims>& buf, const subrange<Dims>& sr) {
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("queue::fence", Green2);
+
+	detail::runtime::get_instance().maybe_prune_tdag_TODO();
 
 	detail::buffer_access_map access_map;
 	access_map.add_access(detail::get_buffer_id(buf),

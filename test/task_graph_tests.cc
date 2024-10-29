@@ -484,8 +484,8 @@ namespace detail {
 				test_utils::add_host_task(tt.tm, on_master_node, [&](handler& cgh) { buf.get_access<access_mode::discard_write>(cgh, all{}); });
 				const auto current_horizon = task_manager_testspy::get_current_horizon(tt.tm);
 				if(current_horizon != nullptr && (last_executed_horizon == nullptr || current_horizon->get_id() > last_executed_horizon->get_id())) {
+					tt.tm.notify_epoch_reached(last_executed_horizon->get_id());
 					last_executed_horizon = current_horizon;
-					tt.tm.notify_horizon_reached(last_executed_horizon->get_id());
 				}
 			}
 		}

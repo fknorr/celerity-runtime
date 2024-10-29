@@ -61,6 +61,8 @@ namespace detail {
 
 		reduction_id create_reduction(std::unique_ptr<reducer> reducer);
 
+		void maybe_prune_tdag_TODO();
+
 		bool is_dry_run() const { return m_cfg->is_dry_run(); }
 
 	  private:
@@ -100,6 +102,7 @@ namespace detail {
 		std::unique_ptr<executor> m_exec;
 
 		std::optional<task_id> m_latest_horizon_reached; // only accessed by executor thread
+		std::atomic<size_t> m_latest_epoch_reached;      // task_id, but cast to size_t to work with std::atomic
 
 		std::unique_ptr<detail::task_recorder> m_task_recorder;               // accessed by task manager (application thread)
 		std::unique_ptr<detail::command_recorder> m_command_recorder;         // accessed only by scheduler thread (until shutdown)
