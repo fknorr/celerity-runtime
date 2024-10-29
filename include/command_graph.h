@@ -122,10 +122,6 @@ class fence_command final : public matchbox::implement_acceptor<task_command, fe
 	explicit fence_command(const command_id cid, const task* const tsk) : acceptor_base(cid, tsk) {}
 };
 
-struct command_id_less {
-	constexpr bool operator()(const command* lhs, const command* rhs) const { return lhs->get_id() < rhs->get_id(); }
-};
-
 /// Hash function for `unordered_sets/maps` of `command *` that is deterministic even as allocation addresses change between application runs.
 struct command_hash_by_id {
 	template <typename Pointer>
@@ -136,6 +132,9 @@ struct command_hash_by_id {
 
 using command_set = std::unordered_set<command*, command_hash_by_id>;
 
-class command_graph : public epoch_partitioned_graph<command, command_id_less> {};
+/// The command graph (CDAG) provides a static schedule of commands executed on individual nodes, including kernel execution and peer-to-peer data transfers via
+/// push- and await-push commands. It is generated in a distributed fashion, where each cluster node only maintains the subset of commands it will execute
+/// itself.
+class command_graph : public graph<command> {}; // inheritance instead of type alias so we can forward declare task_graph
 
 } // namespace celerity::detail
