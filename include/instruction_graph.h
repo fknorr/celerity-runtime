@@ -442,6 +442,6 @@ class epoch_instruction final : public matchbox::implement_acceptor<instruction,
 /// uses) can back sub-regions of the (virtual) global buffer.
 ///
 /// The `instruction_graph` struct keeps ownership of all instructions that have not yet been pruned by epoch or horizon application.
-class instruction_graph : public epoch_partitioned_graph<instruction, instruction_id_less> {};
+class instruction_graph : public graph<instruction> {}; // inheritance instead of type alias so we can forward declare instruction_graph
 
 } // namespace celerity::detail

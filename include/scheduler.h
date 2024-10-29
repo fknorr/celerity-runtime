@@ -35,8 +35,8 @@ namespace detail {
 			detail::instruction_graph_generator::policy_set instruction_graph_generator;
 		};
 
-		abstract_scheduler(size_t num_nodes, node_id local_node_id, const system_info& system_info, delegate* delegate, command_recorder* crec,
-		    instruction_recorder* irec, const policy_set& policy = {});
+		abstract_scheduler(size_t num_nodes, node_id local_node_id, const system_info& system_info, abstract_scheduler::delegate* delegate,
+		    command_recorder* crec, instruction_recorder* irec, const policy_set& policy = {});
 
 		abstract_scheduler(const abstract_scheduler&) = delete;
 		abstract_scheduler(abstract_scheduler&&) = delete;
@@ -121,8 +121,8 @@ namespace detail {
 		friend struct scheduler_testspy;
 
 	  public:
-		scheduler(size_t num_nodes, node_id local_node_id, const system_info& system, delegate* delegate, command_recorder* crec, instruction_recorder* irec,
-		    const policy_set& policy = {});
+		scheduler(size_t num_nodes, node_id local_node_id, const system_info& system, scheduler::delegate* delegate, command_recorder* crec,
+		    instruction_recorder* irec, const policy_set& policy = {});
 
 		scheduler(const scheduler&) = delete;
 		scheduler(scheduler&&) = delete;

@@ -281,6 +281,8 @@ TEST_CASE("reaching an epoch will prune all nodes of the preceding task graph", 
 	    },
 	    node_range);
 
+	tt.tm.generate_epoch_task(epoch_action::none); // trigger TDAG pruning
+
 	CHECK(!test_utils::has_task(tt.tm, init_tid));
 	CHECK(!test_utils::has_task(tt.tm, writer_tid));
 	REQUIRE(test_utils::has_task(tt.tm, epoch_tid));

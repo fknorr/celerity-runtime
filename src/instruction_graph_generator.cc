@@ -554,7 +554,7 @@ using record_type_for_t = utils::type_switch_t<Instruction, clone_collective_gro
 
 class generator_impl {
   public:
-	generator_impl(size_t num_nodes, node_id local_nid, const system_info& system, instruction_graph& idag, instruction_graph_generator::delegate* dlg,
+	generator_impl(size_t num_nodes, node_id local_nid, const system_info& system, instruction_graph& idag, instruction_graph_generator::delegate* const dlg,
 	    instruction_recorder* recorder, const instruction_graph_generator::policy_set& policy);
 
 	void notify_buffer_created(buffer_id bid, const range<3>& range, size_t elem_size, size_t elem_align, allocation_id user_aid = null_allocation_id);
@@ -2305,7 +2305,7 @@ std::string generator_impl::print_buffer_debug_label(const buffer_id bid) const 
 namespace celerity::detail {
 
 instruction_graph_generator::instruction_graph_generator(const size_t num_nodes, const node_id local_nid, const system_info& system, instruction_graph& idag,
-    delegate* dlg, instruction_recorder* const recorder, const policy_set& policy)
+    instruction_graph_generator::delegate* const dlg, instruction_recorder* const recorder, const policy_set& policy)
     : m_impl(new instruction_graph_generator_detail::generator_impl(num_nodes, local_nid, system, idag, dlg, recorder, policy)) {}
 
 instruction_graph_generator::~instruction_graph_generator() = default;

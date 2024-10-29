@@ -64,20 +64,19 @@ namespace detail {
 			delegate(delegate&&) = default;
 			delegate& operator=(const delegate&) = default;
 			delegate& operator=(delegate&&) = default;
-			~delegate() = default; // do not allow destruction through base pointer
+			~delegate() = default;
 
 		  public:
 			/// Called whenever new tasks have been generated and inserted into the tasks graph.
-			virtual void notify_task_created(const task* tsk) = 0; // TODO rename
+			virtual void notify_task_created(const task* tsk) = 0;
 		};
 
 		struct policy_set {
 			error_policy uninitialized_read_error = error_policy::panic;
 		};
 
-		task_manager(size_t num_collective_nodes, detail::task_recorder* recorder, delegate* dlg, const policy_set& policy = default_policy_set());
-
-		virtual ~task_manager() = default;
+		task_manager(
+		    size_t num_collective_nodes, detail::task_recorder* recorder, task_manager::delegate* dlg, const policy_set& policy = default_policy_set());
 
 		template <typename CGF>
 		task_id submit_command_group(CGF&& cgf) {
@@ -162,7 +161,7 @@ namespace detail {
 
 		static constexpr task_id initial_epoch_task = 0;
 
-		delegate* m_delegate;
+		task_manager::delegate* m_delegate;
 
 		const size_t m_num_collective_nodes;
 		policy_set m_policy;

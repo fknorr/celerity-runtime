@@ -52,8 +52,8 @@ namespace detail {
 	const std::unordered_map<std::string, std::string> print_graphs_env_setting{{"CELERITY_PRINT_GRAPHS", "1"}};
 
 	struct graph_testspy {
-		template <typename Node, typename NodeIdLess, typename Predicate>
-		static size_t count_nodes_if(const epoch_partitioned_graph<Node, NodeIdLess>& dag, Predicate&& p) {
+		template <GraphNode Node, typename Predicate>
+		static size_t count_nodes_if(const graph<Node>& dag, Predicate&& p) {
 			size_t count = 0;
 			for(const auto& epoch : dag.m_epochs) {
 				for(const auto& node : epoch.nodes) {
@@ -63,8 +63,8 @@ namespace detail {
 			return count;
 		}
 
-		template <typename Node, typename NodeIdLess, typename Predicate>
-		static const Node* find_node_if(const epoch_partitioned_graph<Node, NodeIdLess>& dag, Predicate&& p) {
+		template <GraphNode Node, typename Predicate>
+		static const Node* find_node_if(const graph<Node>& dag, Predicate&& p) {
 			for(const auto& epoch : dag.m_epochs) {
 				for(const auto& node : epoch.nodes) {
 					if(p(*node)) { return node.get(); }
@@ -73,8 +73,8 @@ namespace detail {
 			return nullptr;
 		}
 
-		template <typename Node, typename NodeIdLess>
-		static size_t get_live_node_count(const epoch_partitioned_graph<Node, NodeIdLess>& dag) {
+		template <GraphNode Node>
+		static size_t get_live_node_count(const graph<Node>& dag) {
 			size_t count = 0;
 			for(const auto& epoch : dag.m_epochs) {
 				count += epoch.nodes.size();

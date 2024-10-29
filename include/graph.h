@@ -7,11 +7,17 @@
 #include <memory>
 #include <vector>
 
+
 namespace celerity::detail {
 
-/// An `epoch_partitioned_graph` keeps ownership of all graph nodes that have not been pruned by epoch or horizon application.
-template <typename Node, typename NodeIdLess>
-class epoch_partitioned_graph {
+template <typename Node>
+concept GraphNode = requires(const Node& node) {
+	{ node.get_id() < node.get_id() } -> std::convertible_to<bool>;
+};
+
+/// A `graph` keeps ownership of all nodes that have not been pruned by epoch or horizon application.
+template <GraphNode Node>
+class graph {
 	friend struct graph_testspy;
 
   public:
@@ -22,27 +28,27 @@ class epoch_partitioned_graph {
 	}
 
 	// Add a graph node to the current epoch. Its graph node id must be higher than any node inserted into the graph before.
-	void append(std::unique_ptr<Node> graph_node) {
+	void append(std::unique_ptr<Node> node) {
 		assert(!m_epochs.empty());
 		auto& nodes = m_epochs.back().nodes;
-		assert(nodes.empty() || NodeIdLess{}(nodes.back().get(), graph_node.get()));
-		nodes.push_back(std::move(graph_node));
+		assert(nodes.empty() || nodes.back()->get_id() < node->get_id());
+		nodes.push_back(std::move(node));
 	}
 
 	// Free all graph nodes that were pushed before begin_epoch(tid) was called.
 	void delete_before_epoch(const task_id tid) {
-		const auto first_retained = std::find_if(m_epochs.begin(), m_epochs.end(), [=](const graph_epoch& epoch) { return epoch.epoch_tid >= tid; });
+		const auto first_retained = std::find_if(m_epochs.begin(), m_epochs.end(), [=](const epoch& epoch) { return epoch.epoch_tid >= tid; });
 		assert(first_retained != m_epochs.end() && first_retained->epoch_tid == tid);
 		m_epochs.erase(m_epochs.begin(), first_retained);
 	}
 
   private:
-	struct graph_epoch {
+	struct epoch {
 		task_id epoch_tid;
 		std::vector<std::unique_ptr<Node>> nodes; // graph node pointers are stable, so it is safe to hand them to another thread
 	};
 
-	std::deque<graph_epoch> m_epochs;
+	std::deque<epoch> m_epochs;
 };
 
 } // namespace celerity::detail

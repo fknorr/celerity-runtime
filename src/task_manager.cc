@@ -271,7 +271,7 @@ namespace detail {
 
 	task_id task_manager::generate_epoch_task(epoch_action action) {
 		// A degenerate program wait()ing in a loop would never generate horizons, so we need to prune the task graph on epochs as well.
-		m_task_graph.delete_before_epoch(m_latest_epoch_reached.get());
+		if(m_next_tid != initial_epoch_task) { m_task_graph.delete_before_epoch(m_latest_epoch_reached.get()); }
 
 		const auto tid = m_next_tid++;
 		m_task_graph.begin_epoch(tid);
