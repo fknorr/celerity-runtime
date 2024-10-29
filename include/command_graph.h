@@ -135,6 +135,6 @@ using command_set = std::unordered_set<command*, command_hash_by_id>;
 /// The command graph (CDAG) provides a static schedule of commands executed on individual nodes, including kernel execution and peer-to-peer data transfers via
 /// push- and await-push commands. It is generated in a distributed fashion, where each cluster node only maintains the subset of commands it will execute
 /// itself.
-class command_graph : public graph<command> {}; // inheritance instead of type alias so we can forward declare task_graph
+class command_graph : public graph<command> {}; // inheritance instead of type alias so we can forward-declare command_graph
 
 } // namespace celerity::detail
