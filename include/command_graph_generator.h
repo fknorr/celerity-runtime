@@ -142,7 +142,7 @@ class command_graph_generator {
 	    execution_command(execution_command_record), fence_command(fence_command_record)>;
 
 	template <typename Command, typename... CtorParamsAndRecordWithFn, size_t... CtorParamIndices, size_t RecordWithFnIndex>
-	requires(std::is_base_of_v<command, Command>) Command* create_command_internal(batch& batch,
+	requires(std::is_base_of_v<command, Command>) Command* create_command_internal(batch& current_batch,
 	    std::tuple<CtorParamsAndRecordWithFn...>&& ctor_params_and_record_with, std::index_sequence<CtorParamIndices...> /* ctor_param_indices */,
 	    std::index_sequence<RecordWithFnIndex> /* record_with_fn_index */) //
 	{
@@ -151,7 +151,7 @@ class command_graph_generator {
 		const auto cmd = unique_cmd.get();
 		m_cdag->append(std::move(unique_cmd));
 		m_execution_front.insert(cmd);
-		batch.push_back(cmd);
+		current_batch.push_back(cmd);
 
 		if(is_recording()) {
 			const auto& record_with = std::get<RecordWithFnIndex>(ctor_params_and_record_with);
@@ -175,10 +175,10 @@ class command_graph_generator {
 	///     [&](const auto record_debug_info) { return record_debug_info(command-record-additional-ctor-params)})
 	/// ```
 	template <typename Command, typename... CtorParamsAndRecordWithFn>
-	Command* create_command(batch& batch, CtorParamsAndRecordWithFn&&... args) {
+	Command* create_command(batch& current_batch, CtorParamsAndRecordWithFn&&... args) {
 		constexpr auto n_args = sizeof...(CtorParamsAndRecordWithFn);
 		static_assert(n_args > 0);
-		return create_command_internal<Command>(batch, std::forward_as_tuple(std::forward<CtorParamsAndRecordWithFn>(args)...),
+		return create_command_internal<Command>(current_batch, std::forward_as_tuple(std::forward<CtorParamsAndRecordWithFn>(args)...),
 		    std::make_index_sequence<n_args - 1>{}, std::index_sequence<n_args - 1>{});
 	}
 
@@ -235,15 +235,15 @@ class command_graph_generator {
 	/// For local chunks, create a reduction command and a single await_push command that receives the partial reduction results from all other nodes.
 	/// For remote chunks, always create a push command, regardless of whether we own a partial reduction result or not.
 	/// This is required because remote nodes do not know how many partial reduction results there are.
-	void resolve_pending_reductions(batch& batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements);
+	void resolve_pending_reductions(batch& current_batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements);
 
 	/// For all remote chunks, find read requirements intersecting with owned buffer regions and generate push commands for those regions.
-	void generate_pushes(batch& batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements);
+	void generate_pushes(batch& current_batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements);
 
 	/// For all local chunks, find read requirements on remote data.
 	/// Generate a single await push command for each buffer that awaits the entire required region.
 	/// This will then be fulfilled by one or more incoming pushes.
-	void generate_await_pushes(batch& batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements);
+	void generate_await_pushes(batch& current_batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements);
 
 	/// Determine which local data is fresh or stale by comparing global (task-level) and local writes.
 	void update_local_buffer_fresh_regions(const task& tsk, const std::unordered_map<buffer_id, region<3>>& per_buffer_local_writes);

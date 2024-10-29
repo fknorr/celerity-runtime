@@ -213,7 +213,8 @@ command_graph_generator::assigned_chunks_with_requirements command_graph_generat
 	return result;
 }
 
-void command_graph_generator::resolve_pending_reductions(batch& batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements) {
+void command_graph_generator::resolve_pending_reductions(
+    batch& current_batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements) {
 	auto accessed_buffers = tsk.get_buffer_access_map().get_accessed_buffers();
 	// Handle chained reductions (i.e., reductions that combine into a buffer that currently is in a pending reduction state)
 	for(const auto& reduction : tsk.get_reductions()) {
@@ -260,7 +261,7 @@ void command_graph_generator::resolve_pending_reductions(batch& batch, const tas
 				if(!participating_nodes.test(nid)) continue;
 				regions.push_back({nid, push_box});
 			}
-			auto* const cmd = create_command<push_command>(batch, transfer_id(tsk.get_id(), bid, reduction.rid), std::move(regions),
+			auto* const cmd = create_command<push_command>(current_batch, transfer_id(tsk.get_id(), bid, reduction.rid), std::move(regions),
 			    [&, bid = bid](const auto& record_debug_info) { record_debug_info(m_buffers.at(bid).debug_name); });
 			if(notification_only) {
 				generate_epoch_dependencies(cmd);
@@ -283,11 +284,11 @@ void command_graph_generator::resolve_pending_reductions(batch& batch, const tas
 				continue;
 			}
 
-			auto* const ap_cmd = create_command<await_push_command>(batch, transfer_id(tsk.get_id(), bid, reduction.rid), scalar_reduction_box.get_subrange(),
-			    [&](const auto& record_debug_info) { record_debug_info(buffer.debug_name); });
+			auto* const ap_cmd = create_command<await_push_command>(current_batch, transfer_id(tsk.get_id(), bid, reduction.rid),
+			    scalar_reduction_box.get_subrange(), [&](const auto& record_debug_info) { record_debug_info(buffer.debug_name); });
 			generate_epoch_dependencies(ap_cmd);
 
-			auto* const reduce_cmd = create_command<reduction_command>(batch, reduction, local_last_writer.is_fresh() /* has_local_contribution */,
+			auto* const reduce_cmd = create_command<reduction_command>(current_batch, reduction, local_last_writer.is_fresh() /* has_local_contribution */,
 			    [&](const auto& record_debug_info) { record_debug_info(buffer.debug_name); });
 
 			// Only generate a true dependency on the last writer if this node participated in the intermediate result computation.
@@ -321,7 +322,7 @@ void command_graph_generator::resolve_pending_reductions(batch& batch, const tas
 	}
 }
 
-void command_graph_generator::generate_pushes(batch& batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements) {
+void command_graph_generator::generate_pushes(batch& current_batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements) {
 	struct push_scratch {
 		std::unordered_map<node_id, region<3>> target_regions;
 		std::unordered_set<command*> depends_on;
@@ -374,7 +375,7 @@ void command_graph_generator::generate_pushes(batch& batch, const task& tsk, con
 			target_regions.push_back({nid, std::move(region)});
 		}
 
-		auto* const cmd = create_command<push_command>(batch, transfer_id(tsk.get_id(), bid, no_reduction_id), std::move(target_regions),
+		auto* const cmd = create_command<push_command>(current_batch, transfer_id(tsk.get_id(), bid, no_reduction_id), std::move(target_regions),
 		    [&, bid = bid](const auto& record_debug_info) { record_debug_info(m_buffers.at(bid).debug_name); });
 		for(const auto dep : scratch.depends_on) {
 			add_dependency(cmd, dep, dependency_kind::true_dep, dependency_origin::dataflow);
@@ -386,7 +387,7 @@ void command_graph_generator::generate_pushes(batch& batch, const task& tsk, con
 }
 
 // TODO: We currently generate an await push command for each local chunk, whereas we only generate a single push command for all remote chunks
-void command_graph_generator::generate_await_pushes(batch& batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements) {
+void command_graph_generator::generate_await_pushes(batch& current_batch, const task& tsk, const assigned_chunks_with_requirements& chunks_with_requirements) {
 	for(auto& [a_chunk, requirements] : chunks_with_requirements.local_chunks) {
 		for(auto& [bid, consumed, _] : requirements) {
 			if(consumed.empty()) continue;
@@ -403,7 +404,7 @@ void command_graph_generator::generate_await_pushes(batch& batch, const task& ts
 			if(!missing_part_boxes.empty()) {
 				const region missing_parts(std::move(missing_part_boxes));
 				assert(m_num_nodes > 1);
-				auto* const ap_cmd = create_command<await_push_command>(batch, transfer_id(tsk.get_id(), bid, no_reduction_id), missing_parts,
+				auto* const ap_cmd = create_command<await_push_command>(current_batch, transfer_id(tsk.get_id(), bid, no_reduction_id), missing_parts,
 				    [&](const auto& record_debug_info) { record_debug_info(buffer.debug_name); });
 				generate_anti_dependencies(tsk, bid, buffer.local_last_writer, missing_parts, ap_cmd);
 				generate_epoch_dependencies(ap_cmd);

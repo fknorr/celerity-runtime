@@ -177,6 +177,18 @@ struct fmt::formatter<celerity::detail::sycl_backend_type> : fmt::formatter<std:
 
 namespace celerity::detail {
 
+inline const char* print_command_type(const command& cmd) {
+	return matchbox::match(
+	    cmd,                                                    //
+	    [](const epoch_command&) { return "epoch"; },           //
+	    [](const horizon_command&) { return "horizon"; },       //
+	    [](const execution_command&) { return "execution"; },   //
+	    [](const push_command&) { return "push"; },             //
+	    [](const await_push_command&) { return "await push"; }, //
+	    [](const reduction_command&) { return "reduction"; },   //
+	    [](const fence_command&) { return "fence"; });
+}
+
 /// Wrap a `std::chrono::duration` in this to auto-format it as seconds, milliseconds, microseconds, or nanoseconds.
 struct as_sub_second {
 	template <typename Rep, typename Period>
