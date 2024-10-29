@@ -214,7 +214,7 @@ namespace detail {
 	}
 
 	TEST_CASE("task_manager calls into delegate on task creation", "[task_manager]") {
-		struct counter_delegate : public task_manager::delegate {
+		struct counter_delegate final : public task_manager::delegate {
 			size_t counter = 0;
 			void notify_task_created(const task* /* tsk */) override { counter++; }
 		};

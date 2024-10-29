@@ -150,7 +150,7 @@ class mock_buffer_fence_promise : public fence_promise {
 	allocation_id m_user_aid;
 };
 
-class idag_test_context : private task_manager::delegate {
+class idag_test_context final : private task_manager::delegate {
 	friend class task_builder<idag_test_context>;
 
   private:
@@ -355,7 +355,7 @@ class idag_test_context : private task_manager::delegate {
 	instruction_graph m_idag;
 	instruction_recorder m_instr_recorder;
 	instruction_graph_generator m_iggen;
-	task_id m_initial_epoch_tid;
+	task_id m_initial_epoch_tid = 0;
 
 	allocation_id create_user_allocation() { return detail::allocation_id(detail::user_memory_id, m_next_user_allocation_id++); }
 

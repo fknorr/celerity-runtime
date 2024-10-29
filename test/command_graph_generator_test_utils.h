@@ -232,7 +232,7 @@ class distributed_command_query {
 	}
 };
 
-class cdag_test_context : private task_manager::delegate {
+class cdag_test_context final : private task_manager::delegate {
 	friend class task_builder<cdag_test_context>;
 
   public:

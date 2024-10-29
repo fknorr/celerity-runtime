@@ -7,7 +7,7 @@
 namespace celerity {
 namespace detail {
 
-	task_manager::task_manager(size_t num_collective_nodes, detail::task_recorder* recorder, delegate* const dlg, const policy_set& error_policy)
+	task_manager::task_manager(size_t num_collective_nodes, detail::task_recorder* recorder, task_manager::delegate* const dlg, const policy_set& error_policy)
 	    : m_delegate(dlg), m_num_collective_nodes(num_collective_nodes), m_policy(error_policy), m_task_recorder(recorder) {}
 
 	void task_manager::notify_buffer_created(const buffer_id bid, const range<3>& range, const bool host_initialized) {

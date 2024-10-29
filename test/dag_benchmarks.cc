@@ -122,7 +122,7 @@ struct task_manager_benchmark_context {
 };
 
 
-struct command_graph_generator_benchmark_context : private task_manager::delegate {
+struct command_graph_generator_benchmark_context : private task_manager::delegate { // NOLINT(cppcoreguidelines-virtual-class-destructor)
 	const size_t num_nodes;
 	command_graph cdag;
 	task_recorder trec;
@@ -152,7 +152,7 @@ struct command_graph_generator_benchmark_context : private task_manager::delegat
 	}
 };
 
-struct instruction_graph_generator_benchmark_context : private task_manager::delegate {
+struct instruction_graph_generator_benchmark_context final : private task_manager::delegate {
 	const size_t num_nodes;
 	const size_t num_devices;
 	const bool supports_d2d_copies;
@@ -202,6 +202,12 @@ class restartable_thread {
 
   public:
 	using thread_func = std::function<void()>;
+
+	restartable_thread() = default;
+	restartable_thread(const restartable_thread&) = delete;
+	restartable_thread(restartable_thread&&) = delete;
+	restartable_thread& operator=(const restartable_thread&) = delete;
+	restartable_thread& operator=(restartable_thread&&) = delete;
 
 	~restartable_thread() {
 		{
@@ -253,7 +259,7 @@ class restartable_thread {
 class benchmark_scheduler final : public abstract_scheduler {
   public:
 	benchmark_scheduler(restartable_thread& thread, const size_t num_nodes, const node_id local_node_id, const system_info& system_info,
-	    delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec)
+	    abstract_scheduler::delegate* const delegate, command_recorder* const crec, instruction_recorder* const irec)
 	    : abstract_scheduler(num_nodes, local_node_id, system_info, delegate, crec, irec), m_thread(&thread) {
 		m_thread->start([this] { schedule(); });
 	}
@@ -310,7 +316,7 @@ struct scheduler_benchmark_context {
 };
 
 template <typename BaseBenchmarkContext>
-struct submission_throttle_benchmark_context : public BaseBenchmarkContext {
+struct submission_throttle_benchmark_context final : public BaseBenchmarkContext {
 	const std::chrono::steady_clock::duration delay_per_submission;
 	std::chrono::steady_clock::time_point last_submission{};
 
