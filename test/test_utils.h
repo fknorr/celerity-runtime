@@ -130,6 +130,8 @@ namespace detail {
 	struct task_manager_testspy {
 		static const task_graph& get_task_graph(const task_manager& tm) { return tm.m_task_graph; }
 
+		static const task* get_epoch_for_new_tasks(const task_manager& tm) { return tm.m_epoch_for_new_tasks; }
+
 		static const task* get_current_horizon(const task_manager& tm) { return tm.m_current_horizon; }
 
 		static std::optional<task_id> get_latest_horizon_reached(const task_manager& tm) { return tm.m_latest_horizon_reached; }
