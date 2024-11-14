@@ -6,6 +6,7 @@
 #include "cgf_diagnostics.h"
 #include "command_graph_generator.h"
 #include "dry_run_executor.h"
+#include "dumb_profiler.h"
 #include "host_object.h"
 #include "instruction_graph_generator.h"
 #include "live_executor.h"
@@ -36,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -56,6 +58,8 @@
 #else
 #include <unistd.h>
 #endif
+
+#include <fmt/ranges.h>
 
 #if CELERITY_USE_MIMALLOC
 // override default new/delete operators to use the mimalloc memory allocator
@@ -167,6 +171,8 @@ namespace detail {
 		std::unique_ptr<detail::instruction_recorder> m_instruction_recorder; // accessed only by scheduler thread (until shutdown)
 
 		std::unique_ptr<detail::thread_pinning::thread_pinner> m_thread_pinner; // thread safe, manages lifetime of thread pinning machinery
+
+		dumb_profiler m_profiler;
 
 		/// Panic when not called from m_application_thread (see that variable for more info on the matter). Since there are thread-safe and non thread-safe
 		/// member functions, we call this check at the beginning of all the non-safe ones.
@@ -398,7 +404,7 @@ namespace detail {
 		if(m_cfg->get_lookahead() != experimental::lookahead::automatic) { m_schdlr->set_lookahead(m_cfg->get_lookahead()); }
 
 		// task_manager will pass generated tasks through its delegate, so generate the init epoch only after the scheduler has been initialized
-		m_task_mngr->generate_epoch_task(epoch_action::init);
+		sync(epoch_action::init);
 
 		m_num_local_devices = system.devices.size();
 	}
@@ -420,6 +426,7 @@ namespace detail {
 		// LCOV_EXCL_STOP
 
 		require_call_from_application_thread();
+		m_profiler.idle();
 
 		CELERITY_DETAIL_TRACY_ZONE_SCOPED("runtime::shutdown", DimGray);
 
@@ -469,6 +476,14 @@ namespace detail {
 
 		cgf_diagnostics::teardown();
 
+		m_profiler.dump("profile.runtime.csv");
+
+		{
+			std::ifstream args_ifs("/proc/self/cmdline");
+			std::ofstream args_ofs("profile.cmdline");
+			args_ofs << args_ifs.rdbuf();
+		}
+
 		if(!s_test_mode) { mpi_finalize_once(); }
 	}
 
@@ -493,11 +508,13 @@ namespace detail {
 	task_id runtime::impl::sync(epoch_action action) {
 		require_call_from_application_thread();
 
+		m_profiler.idle();
 		maybe_prune_task_graph();
 		auto promise = std::make_unique<epoch_promise>();
 		const auto future = promise->get_future();
 		const auto epoch = m_task_mngr->generate_epoch_task(action, std::move(promise));
 		future.wait();
+		m_profiler.busy("user");
 		return epoch;
 	}
 
@@ -585,6 +602,7 @@ namespace detail {
 
 	void runtime::impl::create_queue() {
 		require_call_from_application_thread();
+		m_profiler.busy("user");
 		++m_num_live_queues;
 	}
 
@@ -606,6 +624,7 @@ namespace detail {
 
 	buffer_id runtime::impl::create_buffer(const range<3>& range, const size_t elem_size, const size_t elem_align, const allocation_id user_aid) {
 		require_call_from_application_thread();
+		m_profiler.busy("user");
 
 		const auto bid = m_next_buffer_id++;
 		m_live_buffers.emplace(bid);
@@ -633,6 +652,7 @@ namespace detail {
 
 	host_object_id runtime::impl::create_host_object(std::unique_ptr<host_object_instance> instance) {
 		require_call_from_application_thread();
+		m_profiler.busy("user");
 
 		const auto hoid = m_next_host_object_id++;
 		m_live_host_objects.emplace(hoid);

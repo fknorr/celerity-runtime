@@ -1571,6 +1571,7 @@ void generator_impl::satisfy_task_buffer_requirements(batch& current_batch, cons
     const bool local_node_is_reduction_initializer, const std::vector<localized_chunk>& concurrent_chunks_after_split) //
 {
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("iggen::satisfy_buffer_requirements", ForestGreen);
+	CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", print_buffer_debug_label(bid));
 
 	assert(!concurrent_chunks_after_split.empty());
 

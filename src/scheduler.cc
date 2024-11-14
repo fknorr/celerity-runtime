@@ -3,6 +3,7 @@
 #include "command_graph.h"
 #include "command_graph_generator.h"
 #include "double_buffered_queue.h"
+#include "dumb_profiler.h"
 #include "instruction_graph_generator.h"
 #include "named_threads.h"
 #include "print_utils.h"
@@ -74,8 +75,9 @@ class task_queue {
   public:
 	void push(task_event&& evt) { m_global_queue.push(std::move(evt)); }
 
-	task_event wait_and_pop() {
+	task_event wait_and_pop(dumb_profiler& profiler) {
 		if(m_local_queue.empty()) {
+			profiler.idle();
 			// We can frequently suspend / resume the scheduler thread without adding latency as long as the executor remains busy
 			m_global_queue.wait_while_empty();
 			const auto& batch = m_global_queue.pop_all();
@@ -167,6 +169,8 @@ struct scheduler_impl {
 	std::optional<task_id> shutdown_epoch_created = std::nullopt;
 	bool shutdown_epoch_reached = false;
 
+	dumb_profiler m_profiler;
+
 	std::thread thread;
 
 	scheduler_impl(bool start_thread, size_t num_nodes, node_id local_node_id, const system_info& system, scheduler::delegate* dlg, command_recorder* crec,
@@ -203,6 +207,8 @@ void scheduler_impl::process_task_queue_event(const task_event& evt) {
 	matchbox::match(
 	    evt,
 	    [&](const event_task_available& e) {
+		    m_profiler.busy("cdag");
+
 		    assert(!shutdown_epoch_created && !shutdown_epoch_reached);
 		    assert(e.tsk != nullptr);
 		    auto& tsk = *e.tsk;
@@ -285,6 +291,7 @@ void scheduler_impl::process_command_queue_event(const command_event& evt) {
 	matchbox::match(
 	    evt, //
 	    [&](const event_command_available& e) {
+		    m_profiler.busy("idag");
 		    CELERITY_DETAIL_TRACY_ZONE_SCOPED_V("scheduler::compile_command", MidnightBlue, "C{} compile", e.cmd->get_id());
 		    CELERITY_DETAIL_TRACY_ZONE_TEXT("{}", print_command_type(*e.cmd));
 		    iggen.compile(*e.cmd);
@@ -312,11 +319,14 @@ void scheduler_impl::process_command_queue_event(const command_event& evt) {
 
 void scheduler_impl::scheduling_loop() {
 	while(!shutdown_epoch_reached) {
-		process_task_queue_event(task_queue.wait_and_pop());
+		auto tqe = task_queue.wait_and_pop(m_profiler);
+		process_task_queue_event(tqe);
 		while(command_queue.should_dequeue(lookahead)) {
 			process_command_queue_event(command_queue.pop());
 		}
 	}
+	m_profiler.idle();
+	m_profiler.dump("profile.scheduler.csv");
 	task_queue.assert_empty();
 	command_queue.assert_empty();
 }

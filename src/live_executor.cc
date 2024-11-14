@@ -2,6 +2,7 @@
 #include "backend/backend.h"
 #include "closure_hydrator.h"
 #include "communicator.h"
+#include "dumb_profiler.h"
 #include "grid.h"
 #include "host_object.h"
 #include "instruction_graph.h"
@@ -329,6 +330,7 @@ struct executor_impl {
 	double_buffered_queue<submission>* const submission_queue;
 	executor::delegate* const delegate;
 	const live_executor::policy_set policy;
+	dumb_profiler profiler;
 
 	receive_arbiter recv_arbiter{*root_communicator};
 	out_of_order_engine engine{backend->get_system_info()};
@@ -413,12 +415,15 @@ void executor_impl::run() {
 	uint8_t check_overflow_counter = 0;
 	for(;;) {
 		if(engine.is_idle()) {
+			profiler.idle();
 			if(!expecting_more_submissions) break; // shutdown complete
 
 			CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::starve", DarkSlateGray);
 			submission_queue->wait_while_empty(); // we are stalled on the scheduler, suspend thread
 			last_progress_timestamp.reset();      // do not treat suspension as being stuck
+			profiler.busy("execute");
 		}
+		if(profiler.log.empty()) { profiler.busy("execute"); }
 
 		recv_arbiter.poll_communicator();
 		poll_in_flight_async_instructions();
@@ -430,6 +435,9 @@ void executor_impl::run() {
 			check_progress();
 		}
 	}
+
+	if(!profiler.log.empty()) { profiler.idle(); }
+	profiler.dump("profile.executor.csv");
 
 	assert(in_flight_async_instructions.empty());
 	// check that for each alloc_instruction, we executed a corresponding free_instruction

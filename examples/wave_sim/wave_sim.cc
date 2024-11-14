@@ -142,6 +142,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	celerity::queue queue;
+	queue.wait();
 
 	celerity::buffer<float, 2> up{celerity::range<2>(cfg.N, cfg.N)}; // next
 	celerity::buffer<float, 2> u{celerity::range<2>(cfg.N, cfg.N)};  // current

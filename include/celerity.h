@@ -12,6 +12,8 @@
 #include "side_effect.h"
 #include "version.h"
 
+#include <chrono>
+#include <cstdio>
 
 namespace celerity {
 namespace runtime {
@@ -45,6 +47,20 @@ namespace runtime {
 	 * Shutdown is also performed automatically on application exit.
 	 */
 	inline void shutdown() { detail::runtime::shutdown(); }
+
+	inline void profile_start() {
+		auto now = std::chrono::steady_clock::now();
+		const auto f = fopen("profile.start.txt", "w");
+		fprintf(f, "%ld", now.time_since_epoch().count());
+		fclose(f);
+	}
+
+	inline void profile_stop() {
+		auto now = std::chrono::steady_clock::now();
+		const auto f = fopen("profile.stop.txt", "w");
+		fprintf(f, "%ld", now.time_since_epoch().count());
+		fclose(f);
+	}
 
 } // namespace runtime
 } // namespace celerity
